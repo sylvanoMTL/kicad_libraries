@@ -153,11 +153,13 @@ class MainWindow(QMainWindow):
         if not result.warnings:
             self._log.log("No warnings.", "success")
 
+        self._worker.wait()
         self._worker = None
 
     def _on_scan_error(self, error_msg: str):
         self._progress.close()
         self._log.log(f"Scan error: {error_msg}", "error")
+        self._worker.wait()
         self._worker = None
 
     def _on_generate(self):

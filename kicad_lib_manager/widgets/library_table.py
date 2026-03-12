@@ -135,6 +135,11 @@ class LibraryTableWidget(QWidget):
 
         self._updating = False
 
+        # Apply footprint filter based on selected symbols
+        sources = sorted(set(lib.source for lib in self._fp_libs))
+        for source in sources:
+            self._sync_footprint_selection(source)
+
     def _on_sym_item_changed(self, item: QTreeWidgetItem, column: int):
         if self._updating or column != 0:
             return
@@ -151,13 +156,21 @@ class LibraryTableWidget(QWidget):
                 if isinstance(child_lib, SymbolLibrary):
                     child_lib.selected = child.checkState(0) == Qt.CheckState.Checked
 
-        # Recalculate which footprint libraries are needed
-        self._sync_footprint_selection()
+        # Determine which source was changed
+        lib = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(lib, SymbolLibrary):
+            source = lib.source
+        else:
+            source = item.text(0)  # Group header text is the source name
 
-    def _sync_footprint_selection(self):
-        """Recalculate footprint check states based on all selected symbols.
+        # Recalculate footprints for that source only
+        self._sync_footprint_selection(source)
 
-        A footprint is selected only if at least one selected symbol references it.
+    def _sync_footprint_selection(self, source: str):
+        """Recalculate footprint check states for a given source.
+
+        Only footprints belonging to the affected source are updated.
+        A footprint is selected if at least one selected symbol references it.
         """
         needed = set()
         for lib in self._sym_libs:
@@ -167,12 +180,13 @@ class LibraryTableWidget(QWidget):
 
         self._updating = True
         for nickname, fp_item in self._fp_items.items():
+            fp_lib = fp_item.data(0, Qt.ItemDataRole.UserRole)
+            if not fp_lib or fp_lib.source != source:
+                continue  # Only manage footprints from the affected source
             should_check = nickname in needed
             state = Qt.CheckState.Checked if should_check else Qt.CheckState.Unchecked
             fp_item.setCheckState(0, state)
-            fp_lib = fp_item.data(0, Qt.ItemDataRole.UserRole)
-            if fp_lib:
-                fp_lib.selected = should_check
+            fp_lib.selected = should_check
         self._updating = False
 
     def _on_fp_item_changed(self, item: QTreeWidgetItem, column: int):
@@ -197,23 +211,25 @@ class LibraryTableWidget(QWidget):
     def _set_all_check_state(self, state: Qt.CheckState):
         selected = state == Qt.CheckState.Checked
 
-        # Block signals to prevent stray itemChanged after we're done
+        # Block signals to prevent stray itemChanged
         self._sym_tree.blockSignals(True)
         self._fp_tree.blockSignals(True)
 
-        for tree, libs in [
-            (self._sym_tree, self._sym_libs),
-            (self._fp_tree, self._fp_libs),
-        ]:
-            for i in range(tree.topLevelItemCount()):
-                group = tree.topLevelItem(i)
-                group.setCheckState(0, state)
-                for j in range(group.childCount()):
-                    child = group.child(j)
-                    child.setCheckState(0, state)
-                    lib = child.data(0, Qt.ItemDataRole.UserRole)
-                    if lib:
-                        lib.selected = selected
+        # Set all symbols to the requested state
+        for i in range(self._sym_tree.topLevelItemCount()):
+            group = self._sym_tree.topLevelItem(i)
+            group.setCheckState(0, state)
+            for j in range(group.childCount()):
+                child = group.child(j)
+                child.setCheckState(0, state)
+                lib = child.data(0, Qt.ItemDataRole.UserRole)
+                if lib:
+                    lib.selected = selected
 
         self._sym_tree.blockSignals(False)
         self._fp_tree.blockSignals(False)
+
+        # Footprints are driven by the symbol filter
+        sources = sorted(set(lib.source for lib in self._fp_libs))
+        for source in sources:
+            self._sync_footprint_selection(source)
