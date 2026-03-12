@@ -7,7 +7,14 @@ KiCad library management repo that aggregates open-source and custom libraries v
 - `Custom/` — submodule: `sylvanoMTL/kicad_custom_library` (personal parts)
 - `WurthElektronik/KiCad-Library/` — submodule: open-source Wurth library
 - `kicad_lib_manager.py` — PySide6 GUI entry point
-- `kicad_lib_manager/` — GUI package (scanner, table generator, widgets)
+- `kicad_lib_manager/` — GUI package:
+  - `main_window.py` — MainWindow, ScanWorker (QThread), KiCad detection
+  - `library_scanner.py` — scan repo, parse symbol/footprint links, cross-reference with KiCad defaults
+  - `table_generator.py` — generate tables, backup/restore logic (paired by number)
+  - `models.py` — dataclasses: SymbolLibrary, FootprintLibrary, FootprintRef, ScanResult
+  - `widgets/library_table.py` — two-column QTreeWidget (Symbols | Footprints), per-source sync
+  - `widgets/log_panel.py` — color-coded log panel (info, warning, error, success)
+  - `widgets/backup_dialog.py` — paired backup restore dialog
 - `generate_lib_tables.py` — CLI script for table generation (legacy, GUI preferred)
 
 ## KiCad Path Variables
@@ -34,10 +41,6 @@ Symbol and footprint folder names must match (e.g., `Connector_USB_GCT.kicad_sym
 4. Fix 3D model paths to use `${CUSTOM_3DMODEL_DIR}/<filename>.step`
 5. Commit in the Custom submodule first, then update parent repo
 
-## Known Issues
-- Some Custom symbols still reference old footprint library names from before the rename (e.g., `GCT_USB4056-03-A_REVA2` instead of `Connector_USB_GCT`). These show as orange warnings in the GUI. Fix by editing the Footprint property in KiCad Symbol Editor.
-- `USB4730-GF-A_REVA.kicad_sym` and `USB4745-03-A_REVA.kicad_sym` need merging into `Connector_USB_GCT.kicad_sym`
-
 ## Python Environment
 - Use `py -m venv env` (Windows CPython from python.org, NOT MSYS2 Python) — PySide6 requires standard Windows Python
 - Activate: `.\env\Scripts\activate` (PowerShell)
@@ -47,7 +50,20 @@ Symbol and footprint folder names must match (e.g., `Connector_USB_GCT.kicad_sym
 ```
 .\env\Scripts\python.exe kicad_lib_manager.py
 ```
-The GUI has two columns (Symbols left, Footprints right). Checking a symbol auto-selects linked footprints. Right-click for Expand/Collapse All.
+
+### GUI Behavior
+- **Startup**: auto-detects KiCad installation for default footprint cross-referencing. If not found, prompts the user to select the footprints folder.
+- **Two columns**: Symbols (left) and Footprints (right), grouped by source (Custom, WurthElektronik).
+- **Footprint selection is driven by symbols**: checking/unchecking a symbol auto-selects/deselects its linked footprints. Sync is scoped per source — changing Custom symbols only affects Custom footprints.
+- **Select All / Deselect All**: applies to all symbols, then recalculates footprints via the filter.
+- **Warnings**: orange text for symbols with missing footprint references. Cross-references check both the repo and KiCad's default libraries.
+- **Right-click**: Expand All / Collapse All context menu on both trees.
+
+### Menu Shortcuts
+- `Ctrl+G` — Generate Tables
+- `Ctrl+R` — Restore Backup (paired sym + fp)
+- `Ctrl+K` — Set KiCad Path (rescans after change)
+- `Ctrl+Q` — Exit
 
 ## Adding a New Library Submodule
 ```

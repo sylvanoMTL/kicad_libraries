@@ -6,6 +6,7 @@ from PySide6.QtWidgets import (
     QProgressDialog,
 )
 from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtGui import QAction, QKeySequence
 
 from .library_scanner import scan_all, find_kicad_footprint_dir
 from .table_generator import write_tables, restore_backup_pair
@@ -51,6 +52,7 @@ class MainWindow(QMainWindow):
         self._kicad_fp_dir: Path | None = None
         self._build_menu()
         self._build_ui()
+        self.statusBar()  # Enable status bar for menu hints
 
         # Detect KiCad installation, then start scan
         self._detect_kicad()
@@ -60,14 +62,48 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
 
         file_menu = menubar.addMenu("&File")
-        file_menu.addAction("&Generate Tables", self._on_generate, "Ctrl+G")
-        file_menu.addAction("&Restore Backup...", self._on_restore_backup, "Ctrl+R")
-        file_menu.addAction("Set &KiCad Path...", self._on_set_kicad_path, "Ctrl+K")
+
+        gen_action = QAction("&Generate Tables", self)
+        gen_action.setShortcut(QKeySequence("Ctrl+G"))
+        gen_action.setToolTip("Generate sym-lib-table and fp-lib-table from selected libraries")
+        gen_action.setStatusTip("Generate sym-lib-table and fp-lib-table from selected libraries")
+        gen_action.triggered.connect(self._on_generate)
+        file_menu.addAction(gen_action)
+
+        restore_action = QAction("&Restore Backup...", self)
+        restore_action.setShortcut(QKeySequence("Ctrl+R"))
+        restore_action.setToolTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
+        restore_action.setStatusTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
+        restore_action.triggered.connect(self._on_restore_backup)
+        file_menu.addAction(restore_action)
+
+        kicad_action = QAction("Set KiCad &Footprint Path...", self)
+        kicad_action.setShortcut(QKeySequence("Ctrl+K"))
+        kicad_action.setToolTip("Set KiCad default footprint library folder for cross-referencing")
+        kicad_action.setStatusTip("Set KiCad default footprint library folder for cross-referencing")
+        kicad_action.triggered.connect(self._on_set_kicad_path)
+        file_menu.addAction(kicad_action)
+
         file_menu.addSeparator()
-        file_menu.addAction("E&xit", self.close, "Ctrl+Q")
+
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut(QKeySequence("Ctrl+Q"))
+        exit_action.setToolTip("Close the application")
+        exit_action.setStatusTip("Close the application")
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+
+        # Ensure menu is wide enough and shows tooltips
+        file_menu.setMinimumWidth(350)
+        file_menu.setToolTipsVisible(True)
 
         help_menu = menubar.addMenu("&Help")
-        help_menu.addAction("&About", self._on_about)
+
+        about_action = QAction("&About", self)
+        about_action.setToolTip("About KiCad Library Manager")
+        about_action.setStatusTip("About KiCad Library Manager")
+        about_action.triggered.connect(self._on_about)
+        help_menu.addAction(about_action)
 
     def _build_ui(self):
         central = QWidget()
@@ -264,11 +300,14 @@ class MainWindow(QMainWindow):
         self._tree.deselect_all()
 
     def _on_about(self):
-        QMessageBox.about(
-            self,
-            "About KiCad Library Manager",
-            "KiCad Library Manager v1.0\n\n"
-            "Scan and manage KiCad symbol and footprint libraries.\n"
-            "Generate library tables for use in KiCad projects.\n\n"
-            "Repository: github.com/sylvanoMTL/kicad_libraries",
+        about = QMessageBox(self)
+        about.setWindowTitle("About KiCad Library Manager")
+        about.setTextFormat(Qt.TextFormat.RichText)
+        about.setText(
+            "<h3>KiCad Library Manager v1.0</h3>"
+            "<p>Scan and manage KiCad symbol and footprint libraries.<br>"
+            "Generate library tables for use in KiCad projects.</p>"
+            '<p>Repository: <a href="https://github.com/sylvanoMTL/kicad_libraries">'
+            "github.com/sylvanoMTL/kicad_libraries</a></p>"
         )
+        about.exec()
