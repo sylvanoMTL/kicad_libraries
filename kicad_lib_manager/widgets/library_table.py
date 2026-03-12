@@ -1,36 +1,74 @@
-from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem
+from PySide6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
+    QLabel, QMenu,
+)
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
+from PySide6.QtGui import QBrush, QColor
 
 from ..models import ScanResult, SymbolLibrary, FootprintLibrary
 
 
-class LibraryTableWidget(QTreeWidget):
+class LibraryTableWidget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setHeaderLabels([
-            "Library Name", "Type", "Source", "Linked Footprints", "Status"
-        ])
-        self.setColumnWidth(0, 300)
-        self.setColumnWidth(1, 80)
-        self.setColumnWidth(2, 150)
-        self.setColumnWidth(3, 350)
-        self.setColumnWidth(4, 60)
-        self.setAlternatingRowColors(True)
-        self.setRootIsDecorated(True)
-        self.itemChanged.connect(self._on_item_changed)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+
+        # Left: Symbols
+        sym_col = QVBoxLayout()
+        sym_label = QLabel("Symbols")
+        sym_label.setStyleSheet("font-weight: bold; font-size: 13px;")
+        sym_col.addWidget(sym_label)
+        self._sym_tree = QTreeWidget()
+        self._sym_tree.setHeaderLabels(["Library Name", "Source", "Linked Footprints", "Status"])
+        self._sym_tree.setColumnWidth(0, 280)
+        self._sym_tree.setColumnWidth(1, 130)
+        self._sym_tree.setColumnWidth(2, 300)
+        self._sym_tree.setColumnWidth(3, 60)
+        self._sym_tree.setAlternatingRowColors(True)
+        self._sym_tree.setRootIsDecorated(True)
+        self._sym_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._sym_tree.customContextMenuRequested.connect(
+            lambda pos: self._show_context_menu(self._sym_tree, pos)
+        )
+        sym_col.addWidget(self._sym_tree)
+        layout.addLayout(sym_col, stretch=1)
+
+        # Right: Footprints
+        fp_col = QVBoxLayout()
+        fp_label = QLabel("Footprints")
+        fp_label.setStyleSheet("font-weight: bold; font-size: 13px;")
+        fp_col.addWidget(fp_label)
+        self._fp_tree = QTreeWidget()
+        self._fp_tree.setHeaderLabels(["Library Name", "Source", "Status"])
+        self._fp_tree.setColumnWidth(0, 280)
+        self._fp_tree.setColumnWidth(1, 130)
+        self._fp_tree.setColumnWidth(2, 60)
+        self._fp_tree.setAlternatingRowColors(True)
+        self._fp_tree.setRootIsDecorated(True)
+        self._fp_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._fp_tree.customContextMenuRequested.connect(
+            lambda pos: self._show_context_menu(self._fp_tree, pos)
+        )
+        fp_col.addWidget(self._fp_tree)
+        layout.addLayout(fp_col, stretch=1)
 
         self._sym_libs: list[SymbolLibrary] = []
         self._fp_libs: list[FootprintLibrary] = []
+        self._fp_items: dict[str, QTreeWidgetItem] = {}  # nickname -> item
         self._updating = False
+
+        self._sym_tree.itemChanged.connect(self._on_sym_item_changed)
+        self._fp_tree.itemChanged.connect(self._on_fp_item_changed)
 
     def populate(self, scan_result: ScanResult):
         self._updating = True
-        self.clear()
+        self._sym_tree.clear()
+        self._fp_tree.clear()
+        self._fp_items.clear()
         self._sym_libs = scan_result.symbol_libs
         self._fp_libs = scan_result.footprint_libs
 
-        # Group by source
         sources = sorted(set(
             [lib.source for lib in self._sym_libs] +
             [lib.source for lib in self._fp_libs]
@@ -40,64 +78,101 @@ class LibraryTableWidget(QTreeWidget):
             self.style().StandardPixmap.SP_MessageBoxWarning
         )
 
-        for source in sources:
-            # Symbols group
-            sym_group = QTreeWidgetItem([f"{source} - Symbols", "", source])
-            sym_group.setFlags(sym_group.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
-            sym_group.setCheckState(0, Qt.CheckState.Checked)
-            font = sym_group.font(0)
-            font.setBold(True)
-            sym_group.setFont(0, font)
-            self.addTopLevelItem(sym_group)
+        bold_font = self._sym_tree.font()
+        bold_font.setBold(True)
 
-            source_syms = [lib for lib in self._sym_libs if lib.source == source]
-            for lib in source_syms:
+        # Populate symbols
+        for source in sources:
+            group = QTreeWidgetItem([source])
+            group.setFlags(group.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
+            group.setCheckState(0, Qt.CheckState.Checked)
+            group.setFont(0, bold_font)
+            self._sym_tree.addTopLevelItem(group)
+
+            for lib in self._sym_libs:
+                if lib.source != source:
+                    continue
                 fp_text = ", ".join(
                     f"{r.library_name}:{r.footprint_name}" for r in lib.footprint_refs
                 )
                 has_missing = any(not r.found_in_repo for r in lib.footprint_refs)
 
                 item = QTreeWidgetItem([
-                    lib.nickname, "Symbol", source, fp_text,
+                    lib.nickname, source, fp_text,
                     "Missing FP" if has_missing else "OK"
                 ])
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(0, Qt.CheckState.Checked)
-                item.setData(0, Qt.ItemDataRole.UserRole, ("sym", lib))
+                item.setData(0, Qt.ItemDataRole.UserRole, lib)
                 if has_missing:
-                    item.setIcon(4, warn_icon)
-                sym_group.addChild(item)
+                    item.setIcon(3, warn_icon)
+                    orange = QBrush(QColor("#CC7700"))
+                    for col in range(item.columnCount()):
+                        item.setForeground(col, orange)
+                group.addChild(item)
 
-            sym_group.setExpanded(True)
+            group.setExpanded(True)
 
-            # Footprints group
-            fp_group = QTreeWidgetItem([f"{source} - Footprints", "", source])
-            fp_group.setFlags(fp_group.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
-            fp_group.setCheckState(0, Qt.CheckState.Checked)
-            fp_group.setFont(0, font)
-            self.addTopLevelItem(fp_group)
+        # Populate footprints
+        for source in sources:
+            group = QTreeWidgetItem([source])
+            group.setFlags(group.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
+            group.setCheckState(0, Qt.CheckState.Checked)
+            group.setFont(0, bold_font)
+            self._fp_tree.addTopLevelItem(group)
 
-            source_fps = [lib for lib in self._fp_libs if lib.source == source]
-            for lib in source_fps:
-                item = QTreeWidgetItem([
-                    lib.nickname, "Footprint", source, "", "OK"
-                ])
+            for lib in self._fp_libs:
+                if lib.source != source:
+                    continue
+                item = QTreeWidgetItem([lib.nickname, source, "OK"])
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(0, Qt.CheckState.Checked)
-                item.setData(0, Qt.ItemDataRole.UserRole, ("fp", lib))
-                fp_group.addChild(item)
+                item.setData(0, Qt.ItemDataRole.UserRole, lib)
+                group.addChild(item)
+                self._fp_items[lib.nickname] = item
 
-            fp_group.setExpanded(True)
+            group.setExpanded(True)
 
         self._updating = False
 
-    def _on_item_changed(self, item: QTreeWidgetItem, column: int):
+    def _on_sym_item_changed(self, item: QTreeWidgetItem, column: int):
         if self._updating or column != 0:
             return
-        data = item.data(0, Qt.ItemDataRole.UserRole)
-        if data:
-            lib_type, lib = data
+
+        lib = item.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(lib, SymbolLibrary):
+            return
+
+        checked = item.checkState(0) == Qt.CheckState.Checked
+        lib.selected = checked
+
+        # Auto-select/deselect linked footprint libraries
+        if lib.footprint_refs:
+            self._updating = True
+            for ref in lib.footprint_refs:
+                fp_item = self._fp_items.get(ref.library_name)
+                if fp_item:
+                    fp_item.setCheckState(
+                        0,
+                        Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
+                    )
+                    fp_lib = fp_item.data(0, Qt.ItemDataRole.UserRole)
+                    if fp_lib:
+                        fp_lib.selected = checked
+            self._updating = False
+
+    def _on_fp_item_changed(self, item: QTreeWidgetItem, column: int):
+        if self._updating or column != 0:
+            return
+        lib = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(lib, FootprintLibrary):
             lib.selected = item.checkState(0) == Qt.CheckState.Checked
+
+    def _show_context_menu(self, tree: QTreeWidget, pos):
+        menu = QMenu(self)
+        menu.addAction("Expand All", tree.expandAll)
+        menu.addAction("Collapse All", tree.collapseAll)
+        menu.exec(tree.viewport().mapToGlobal(pos))
 
     def select_all(self):
         self._set_all_check_state(Qt.CheckState.Checked)
@@ -107,14 +182,18 @@ class LibraryTableWidget(QTreeWidget):
 
     def _set_all_check_state(self, state: Qt.CheckState):
         self._updating = True
-        for i in range(self.topLevelItemCount()):
-            group = self.topLevelItem(i)
-            group.setCheckState(0, state)
-            for j in range(group.childCount()):
-                child = group.child(j)
-                child.setCheckState(0, state)
-                data = child.data(0, Qt.ItemDataRole.UserRole)
-                if data:
-                    _, lib = data
-                    lib.selected = state == Qt.CheckState.Checked
+        selected = state == Qt.CheckState.Checked
+        for tree, libs in [
+            (self._sym_tree, self._sym_libs),
+            (self._fp_tree, self._fp_libs),
+        ]:
+            for i in range(tree.topLevelItemCount()):
+                group = tree.topLevelItem(i)
+                group.setCheckState(0, state)
+                for j in range(group.childCount()):
+                    child = group.child(j)
+                    child.setCheckState(0, state)
+                    lib = child.data(0, Qt.ItemDataRole.UserRole)
+                    if lib:
+                        lib.selected = selected
         self._updating = False
