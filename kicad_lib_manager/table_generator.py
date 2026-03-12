@@ -85,6 +85,29 @@ def list_backups(folder: Path) -> list[Path]:
     return backups
 
 
+def list_backup_pairs(folder: Path) -> list[tuple[int, Path | None, Path | None]]:
+    """List backups grouped by number. Returns (number, sym_path, fp_path) tuples."""
+    sym_pattern = re.compile(r"sym-lib-table_backup_(\d+)$")
+    fp_pattern = re.compile(r"fp-lib-table_backup_(\d+)$")
+    sym_map: dict[int, Path] = {}
+    fp_map: dict[int, Path] = {}
+
+    if folder.exists():
+        for f in folder.iterdir():
+            if not f.is_file():
+                continue
+            m = sym_pattern.match(f.name)
+            if m:
+                sym_map[int(m.group(1))] = f
+                continue
+            m = fp_pattern.match(f.name)
+            if m:
+                fp_map[int(m.group(1))] = f
+
+    all_nums = sorted(set(sym_map) | set(fp_map), reverse=True)
+    return [(n, sym_map.get(n), fp_map.get(n)) for n in all_nums]
+
+
 def restore_backup(backup_path: Path) -> list[str]:
     messages = []
     name = backup_path.name
@@ -99,4 +122,19 @@ def restore_backup(backup_path: Path) -> list[str]:
 
     shutil.copy2(backup_path, current_path)
     messages.append(f"Restored {name} -> {base_name}")
+    return messages
+
+
+def restore_backup_pair(folder: Path, backup_num: int) -> list[str]:
+    """Restore both sym-lib-table and fp-lib-table for a given backup number."""
+    messages = []
+    for base_name in ("sym-lib-table", "fp-lib-table"):
+        backup_path = folder / f"{base_name}_backup_{backup_num}"
+        if backup_path.exists():
+            current_path = folder / base_name
+            existing_backup = backup_existing(current_path)
+            if existing_backup:
+                messages.append(f"Backed up current {base_name} -> {existing_backup.name}")
+            shutil.copy2(backup_path, current_path)
+            messages.append(f"Restored {backup_path.name} -> {base_name}")
     return messages

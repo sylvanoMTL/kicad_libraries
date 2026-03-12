@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QThread, Signal, Qt
 
 from .library_scanner import scan_all
-from .table_generator import write_tables, restore_backup
+from .table_generator import write_tables, restore_backup_pair
 from .models import ScanResult
 from .widgets.library_table import LibraryTableWidget
 from .widgets.log_panel import LogPanel
@@ -191,8 +191,10 @@ class MainWindow(QMainWindow):
 
     def _on_restore_backup(self):
         dialog = BackupDialog(self._dest_edit.text(), parent=self)
-        if dialog.exec() and dialog.selected_backup:
-            messages = restore_backup(dialog.selected_backup)
+        if dialog.exec() and dialog.selected_backup_num is not None:
+            messages = restore_backup_pair(
+                dialog.selected_folder, dialog.selected_backup_num
+            )
             for msg in messages:
                 self._log.log(msg, "success")
 

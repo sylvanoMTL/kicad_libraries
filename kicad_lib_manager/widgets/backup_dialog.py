@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
     QPushButton, QListWidget, QDialogButtonBox, QFileDialog,
 )
 
-from ..table_generator import list_backups
+from ..table_generator import list_backup_pairs
 
 
 class BackupDialog(QDialog):
@@ -15,7 +15,8 @@ class BackupDialog(QDialog):
         self.setMinimumWidth(500)
         self.setMinimumHeight(350)
 
-        self.selected_backup: Path | None = None
+        self.selected_backup_num: int | None = None
+        self.selected_folder: Path | None = None
 
         layout = QVBoxLayout(self)
 
@@ -46,7 +47,7 @@ class BackupDialog(QDialog):
         layout.addWidget(self._buttons)
 
         self._list.currentRowChanged.connect(self._on_selection_changed)
-        self._backups: list[Path] = []
+        self._pairs: list[tuple[int, Path | None, Path | None]] = []
 
         if default_folder:
             self._scan()
@@ -61,23 +62,30 @@ class BackupDialog(QDialog):
 
     def _scan(self):
         self._list.clear()
-        self._backups.clear()
+        self._pairs.clear()
         folder = Path(self._folder_edit.text())
         if folder.exists():
-            self._backups = list_backups(folder)
-            for backup in self._backups:
-                self._list.addItem(backup.name)
+            self._pairs = list_backup_pairs(folder)
+            for num, sym_path, fp_path in self._pairs:
+                parts = []
+                if sym_path:
+                    parts.append("sym-lib-table")
+                if fp_path:
+                    parts.append("fp-lib-table")
+                label = f"Backup #{num}  —  {' + '.join(parts)}"
+                self._list.addItem(label)
 
-        if not self._backups:
+        if not self._pairs:
             self._list.addItem("(No backups found)")
 
     def _on_selection_changed(self, row: int):
         self._buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(
-            0 <= row < len(self._backups)
+            0 <= row < len(self._pairs)
         )
 
     def _on_accept(self):
         row = self._list.currentRow()
-        if 0 <= row < len(self._backups):
-            self.selected_backup = self._backups[row]
+        if 0 <= row < len(self._pairs):
+            self.selected_backup_num = self._pairs[row][0]
+            self.selected_folder = Path(self._folder_edit.text())
             self.accept()

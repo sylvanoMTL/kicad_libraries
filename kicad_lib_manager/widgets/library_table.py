@@ -139,27 +139,41 @@ class LibraryTableWidget(QWidget):
         if self._updating or column != 0:
             return
 
+        # Update selected state for the changed item (and children if group)
         lib = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(lib, SymbolLibrary):
-            return
+        if isinstance(lib, SymbolLibrary):
+            lib.selected = item.checkState(0) == Qt.CheckState.Checked
+        else:
+            # Group header changed — update all children
+            for i in range(item.childCount()):
+                child = item.child(i)
+                child_lib = child.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(child_lib, SymbolLibrary):
+                    child_lib.selected = child.checkState(0) == Qt.CheckState.Checked
 
-        checked = item.checkState(0) == Qt.CheckState.Checked
-        lib.selected = checked
+        # Recalculate which footprint libraries are needed
+        self._sync_footprint_selection()
 
-        # Auto-select/deselect linked footprint libraries
-        if lib.footprint_refs:
-            self._updating = True
-            for ref in lib.footprint_refs:
-                fp_item = self._fp_items.get(ref.library_name)
-                if fp_item:
-                    fp_item.setCheckState(
-                        0,
-                        Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked
-                    )
-                    fp_lib = fp_item.data(0, Qt.ItemDataRole.UserRole)
-                    if fp_lib:
-                        fp_lib.selected = checked
-            self._updating = False
+    def _sync_footprint_selection(self):
+        """Recalculate footprint check states based on all selected symbols.
+
+        A footprint is selected only if at least one selected symbol references it.
+        """
+        needed = set()
+        for lib in self._sym_libs:
+            if lib.selected:
+                for ref in lib.footprint_refs:
+                    needed.add(ref.library_name)
+
+        self._updating = True
+        for nickname, fp_item in self._fp_items.items():
+            should_check = nickname in needed
+            state = Qt.CheckState.Checked if should_check else Qt.CheckState.Unchecked
+            fp_item.setCheckState(0, state)
+            fp_lib = fp_item.data(0, Qt.ItemDataRole.UserRole)
+            if fp_lib:
+                fp_lib.selected = should_check
+        self._updating = False
 
     def _on_fp_item_changed(self, item: QTreeWidgetItem, column: int):
         if self._updating or column != 0:
@@ -181,8 +195,12 @@ class LibraryTableWidget(QWidget):
         self._set_all_check_state(Qt.CheckState.Unchecked)
 
     def _set_all_check_state(self, state: Qt.CheckState):
-        self._updating = True
         selected = state == Qt.CheckState.Checked
+
+        # Block signals to prevent stray itemChanged after we're done
+        self._sym_tree.blockSignals(True)
+        self._fp_tree.blockSignals(True)
+
         for tree, libs in [
             (self._sym_tree, self._sym_libs),
             (self._fp_tree, self._fp_libs),
@@ -196,4 +214,6 @@ class LibraryTableWidget(QWidget):
                     lib = child.data(0, Qt.ItemDataRole.UserRole)
                     if lib:
                         lib.selected = selected
-        self._updating = False
+
+        self._sym_tree.blockSignals(False)
+        self._fp_tree.blockSignals(False)
