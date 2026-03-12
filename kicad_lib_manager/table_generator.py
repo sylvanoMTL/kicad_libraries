@@ -5,32 +5,146 @@ from pathlib import Path
 from .models import FootprintLibrary, SymbolLibrary
 
 ENV_VAR = "KICAD_LIB_GITHUB"
+_MANAGED_MARKER = f"${{{ENV_VAR}}}/"
+
+# Regex to extract individual (lib ...) entries from a table file
+_LIB_ENTRY_RE = re.compile(
+    r'\(lib\s+\(name\s+"([^"]*)"\)'
+    r'\(type\s+"([^"]*)"\)'
+    r'\(uri\s+"([^"]*)"\)'
+    r'\(options\s+"([^"]*)"\)'
+    r'\(descr\s+"([^"]*)"\)\)',
+)
 
 
-def generate_sym_lib_table(libs: list[SymbolLibrary]) -> str:
-    selected = [lib for lib in libs if lib.selected]
-    lines = ["(sym_lib_table"]
-    for lib in selected:
-        lines.append(
-            f'  (lib (name "{lib.nickname}")(type "KiCad")'
-            f'(uri "${{{ENV_VAR}}}/{lib.rel_path}")'
-            f'(options "")(descr ""))'
-        )
+def parse_lib_table(path: Path) -> list[dict]:
+    """Parse an existing sym-lib-table or fp-lib-table file.
+
+    Returns a list of dicts with keys: name, type, uri, options, descr, raw.
+    """
+    if not path.exists():
+        return []
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    entries = []
+    for m in _LIB_ENTRY_RE.finditer(text):
+        entries.append({
+            "name": m.group(1),
+            "type": m.group(2),
+            "uri": m.group(3),
+            "options": m.group(4),
+            "descr": m.group(5),
+            "raw": m.group(0),
+        })
+    return entries
+
+
+def count_table_entries(path: Path) -> int:
+    """Count the number of library entries in an existing table file."""
+    return len(parse_lib_table(path))
+
+
+def _format_entry(name: str, lib_type: str, uri: str,
+                   options: str = "", descr: str = "") -> str:
+    return (
+        f'  (lib (name "{name}")(type "{lib_type}")'
+        f'(uri "{uri}")'
+        f'(options "{options}")(descr "{descr}"))'
+    )
+
+
+class MergeResult:
+    """Result of a table merge operation."""
+    __slots__ = ("content", "preserved", "added", "removed")
+
+    def __init__(self, content: str, preserved: int, added: int,
+                 removed: list[str] | None = None):
+        self.content = content
+        self.preserved = preserved
+        self.added = added
+        self.removed = removed or []
+
+
+def _merge_table(table_tag: str, existing_path: Path,
+                 new_entries: list[str],
+                 new_nicknames: set[str]) -> MergeResult:
+    """Merge new entries with existing non-managed entries.
+
+    Preserves external entries, replaces managed entries with new selection.
+    Reports which managed entries were removed (deselected).
+    """
+    existing = parse_lib_table(existing_path)
+
+    preserved = [e for e in existing if _MANAGED_MARKER not in e["uri"]]
+    old_managed = [e for e in existing if _MANAGED_MARKER in e["uri"]]
+
+    # Entries that were managed but are no longer in the selection
+    removed = [e["name"] for e in old_managed if e["name"] not in new_nicknames]
+
+    lines = [f"({table_tag}"]
+    for e in preserved:
+        lines.append(f"  {e['raw']}")
+    lines.extend(new_entries)
     lines.append(")")
-    return "\n".join(lines) + "\n"
+
+    return MergeResult(
+        content="\n".join(lines) + "\n",
+        preserved=len(preserved),
+        added=len(new_entries),
+        removed=removed,
+    )
 
 
-def generate_fp_lib_table(libs: list[FootprintLibrary]) -> str:
+def generate_sym_lib_table(libs: list[SymbolLibrary],
+                           existing_path: Path | None = None) -> MergeResult:
     selected = [lib for lib in libs if lib.selected]
-    lines = ["(fp_lib_table"]
-    for lib in selected:
-        lines.append(
-            f'  (lib (name "{lib.nickname}")(type "KiCad")'
-            f'(uri "${{{ENV_VAR}}}/{lib.rel_path}")'
-            f'(options "")(descr ""))'
-        )
-    lines.append(")")
-    return "\n".join(lines) + "\n"
+    new_entries = [
+        _format_entry(lib.nickname, "KiCad", f"${{{ENV_VAR}}}/{lib.rel_path}")
+        for lib in selected
+    ]
+    new_nicknames = {lib.nickname for lib in selected}
+
+    if existing_path and existing_path.exists():
+        return _merge_table("sym_lib_table", existing_path,
+                            new_entries, new_nicknames)
+
+    lines = ["(sym_lib_table"] + new_entries + [")"]
+    return MergeResult("\n".join(lines) + "\n", 0, len(new_entries))
+
+
+def generate_fp_lib_table(libs: list[FootprintLibrary],
+                          existing_path: Path | None = None) -> MergeResult:
+    selected = [lib for lib in libs if lib.selected]
+    new_entries = [
+        _format_entry(lib.nickname, "KiCad", f"${{{ENV_VAR}}}/{lib.rel_path}")
+        for lib in selected
+    ]
+    new_nicknames = {lib.nickname for lib in selected}
+
+    if existing_path and existing_path.exists():
+        return _merge_table("fp_lib_table", existing_path,
+                            new_entries, new_nicknames)
+
+    lines = ["(fp_lib_table"] + new_entries + [")"]
+    return MergeResult("\n".join(lines) + "\n", 0, len(new_entries))
+
+
+def _check_nickname_collisions(existing_path: Path,
+                               new_libs: list) -> list[str]:
+    """Warn if a new entry has the same name as a preserved external entry."""
+    existing = parse_lib_table(existing_path)
+    external_names = {
+        e["name"] for e in existing if _MANAGED_MARKER not in e["uri"]
+    }
+    new_names = {lib.nickname for lib in new_libs if lib.selected}
+    collisions = external_names & new_names
+    return [
+        f"Warning: nickname '{n}' exists in both external table and selection"
+        for n in sorted(collisions)
+    ]
 
 
 def backup_existing(file_path: Path) -> Path | None:
@@ -62,15 +176,35 @@ def write_tables(dest_folder: Path,
     sym_path = dest_folder / "sym-lib-table"
     fp_path = dest_folder / "fp-lib-table"
 
-    for path, content, label in [
-        (sym_path, generate_sym_lib_table(sym_libs), "sym-lib-table"),
-        (fp_path, generate_fp_lib_table(fp_libs), "fp-lib-table"),
+    # Check for nickname collisions
+    for path, libs, label in [
+        (sym_path, sym_libs, "sym-lib-table"),
+        (fp_path, fp_libs, "fp-lib-table"),
+    ]:
+        collisions = _check_nickname_collisions(path, libs)
+        messages.extend(collisions)
+
+    # Generate merged content
+    sym_result = generate_sym_lib_table(sym_libs, sym_path)
+    fp_result = generate_fp_lib_table(fp_libs, fp_path)
+
+    for path, result, label in [
+        (sym_path, sym_result, "sym-lib-table"),
+        (fp_path, fp_result, "fp-lib-table"),
     ]:
         backup = backup_existing(path)
         if backup:
             messages.append(f"Backed up {label} -> {backup.name}")
-        path.write_text(content, encoding="utf-8")
-        messages.append(f"Written {label} to {path}")
+        path.write_text(result.content, encoding="utf-8")
+
+        parts = [f"Written {label}:"]
+        if result.preserved:
+            parts.append(f"preserved {result.preserved} external")
+        parts.append(f"added {result.added} from selection")
+        if result.removed:
+            parts.append(f"removed {len(result.removed)} "
+                         f"({', '.join(result.removed)})")
+        messages.append(" | ".join(parts))
 
     return messages
 

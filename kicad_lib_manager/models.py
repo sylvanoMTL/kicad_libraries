@@ -14,7 +14,7 @@ class SymbolLibrary:
     rel_path: str
     source: str
     footprint_refs: list[FootprintRef] = field(default_factory=list)
-    selected: bool = True
+    selected: bool = False
 
 
 @dataclass
@@ -22,7 +22,7 @@ class FootprintLibrary:
     nickname: str
     rel_path: str
     source: str
-    selected: bool = True
+    selected: bool = False
 
 
 @dataclass

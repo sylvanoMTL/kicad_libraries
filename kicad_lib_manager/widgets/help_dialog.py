@@ -71,7 +71,7 @@ HELP_PAGES["overview"] = _wrap(
     "symbol and footprint libraries. When you maintain custom parts alongside "
     "third-party libraries (e.g.&nbsp;W&uuml;rth Elektronik), keeping those "
     "tables in sync manually is tedious and error-prone.</p>"
-    "<p><b>KiCad Library Manager</b> automates the process:</p>"
+    "<p><b>KiCad External Lib Manager</b> automates the process:</p>"
     "<ul>"
     "<li>Scans your repository and discovers every library automatically</li>"
     "<li>Cross-references symbol&rarr;footprint links to detect broken references</li>"
@@ -296,7 +296,7 @@ TOC_STRUCTURE: list[tuple[str, str, list[tuple[str, str]]]] = [
 class HelpDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("User Guide — KiCad Library Manager")
+        self.setWindowTitle("User Guide — KiCad External Lib Manager")
         self.resize(860, 620)
 
         layout = QVBoxLayout(self)

@@ -2,20 +2,29 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QLineEdit, QLabel, QFileDialog, QMessageBox,
+    QPushButton, QComboBox, QLabel, QFileDialog, QMessageBox,
     QProgressDialog,
 )
 from PySide6.QtCore import QThread, Signal, Qt
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
 from .library_scanner import scan_all, find_kicad_footprint_dir
-from .table_generator import write_tables, restore_backup_pair
+from .table_generator import (
+    write_tables, restore_backup_pair, count_table_entries, parse_lib_table,
+    _MANAGED_MARKER,
+)
 from .models import ScanResult
+from .settings import (
+    load_kicad_fp_dir, save_kicad_fp_dir,
+    load_dest_history, add_dest_to_history,
+    load_window_geometry, save_window_geometry,
+)
 from .widgets.library_table import LibraryTableWidget
 from .widgets.log_panel import LogPanel
 from .widgets.backup_dialog import BackupDialog
 from .widgets.help_dialog import HelpDialog
 
+APP_TITLE = "KiCad External Lib Manager"
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 
 
@@ -45,8 +54,13 @@ class ScanWorker(QThread):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("KiCad Library Manager")
+        self.setWindowTitle(APP_TITLE)
         self.resize(1100, 750)
+
+        # Restore saved window geometry
+        geometry = load_window_geometry()
+        if geometry:
+            self.restoreGeometry(geometry)
 
         self._scan_result: ScanResult | None = None
         self._worker: ScanWorker | None = None
@@ -57,6 +71,7 @@ class MainWindow(QMainWindow):
 
         # Detect KiCad installation, then start scan
         self._detect_kicad()
+        self._check_existing_tables()
         self._start_scan()
 
     def _build_menu(self):
@@ -102,16 +117,16 @@ class MainWindow(QMainWindow):
 
         help_action = QAction("&User Guide", self)
         help_action.setShortcut(QKeySequence("F1"))
-        help_action.setToolTip("How to use the KiCad Library Manager")
-        help_action.setStatusTip("How to use the KiCad Library Manager")
+        help_action.setToolTip(f"How to use the {APP_TITLE}")
+        help_action.setStatusTip(f"How to use the {APP_TITLE}")
         help_action.triggered.connect(self._on_help)
         help_menu.addAction(help_action)
 
         help_menu.addSeparator()
 
         about_action = QAction("&About", self)
-        about_action.setToolTip("About KiCad Library Manager")
-        about_action.setStatusTip("About KiCad Library Manager")
+        about_action.setToolTip(f"About {APP_TITLE}")
+        about_action.setStatusTip(f"About {APP_TITLE}")
         about_action.triggered.connect(self._on_about)
         help_menu.addAction(about_action)
 
@@ -134,9 +149,12 @@ class MainWindow(QMainWindow):
         toolbar.addStretch()
 
         toolbar.addWidget(QLabel("Destination:"))
-        self._dest_edit = QLineEdit(str(REPO_ROOT))
-        self._dest_edit.setMinimumWidth(300)
-        toolbar.addWidget(self._dest_edit)
+        self._dest_combo = QComboBox()
+        self._dest_combo.setEditable(True)
+        self._dest_combo.setMinimumWidth(300)
+        self._populate_dest_combo()
+        self._dest_combo.currentTextChanged.connect(self._on_dest_changed)
+        toolbar.addWidget(self._dest_combo)
 
         browse_btn = QPushButton("Browse...")
         browse_btn.clicked.connect(self._on_browse_dest)
@@ -160,9 +178,31 @@ class MainWindow(QMainWindow):
         self._log = LogPanel()
         layout.addWidget(self._log)
 
+    def _populate_dest_combo(self):
+        self._dest_combo.blockSignals(True)
+        self._dest_combo.clear()
+        history = load_dest_history()
+        if history:
+            self._dest_combo.addItems(history)
+        else:
+            self._dest_combo.addItem(str(REPO_ROOT))
+        self._dest_combo.setCurrentIndex(0)
+        self._dest_combo.blockSignals(False)
+
     def _detect_kicad(self):
+        # Try saved path first
+        saved = load_kicad_fp_dir()
+        if saved:
+            self._kicad_fp_dir = saved
+            self._log.log(
+                f"KiCad footprints (saved): {self._kicad_fp_dir}", "success"
+            )
+            return
+
+        # Try auto-detection
         self._kicad_fp_dir = find_kicad_footprint_dir()
         if self._kicad_fp_dir:
+            save_kicad_fp_dir(self._kicad_fp_dir)
             self._log.log(
                 f"KiCad footprints detected: {self._kicad_fp_dir}",
                 "success",
@@ -179,6 +219,7 @@ class MainWindow(QMainWindow):
             )
             if folder:
                 self._kicad_fp_dir = Path(folder)
+                save_kicad_fp_dir(self._kicad_fp_dir)
                 self._log.log(
                     f"KiCad footprints set to: {self._kicad_fp_dir}",
                     "success",
@@ -188,6 +229,21 @@ class MainWindow(QMainWindow):
                     "No KiCad footprint path selected. "
                     "Default library cross-references will show as warnings.",
                     "warning",
+                )
+
+    def _check_existing_tables(self):
+        """Log a message if the current destination already has table files."""
+        dest = Path(self._dest_combo.currentText())
+        if not dest.is_dir():
+            return
+        for name in ("sym-lib-table", "fp-lib-table"):
+            table_path = dest / name
+            if table_path.exists():
+                n = count_table_entries(table_path)
+                self._log.log(
+                    f"Existing {name} found at {dest} ({n} entries) "
+                    "— external entries will be preserved on generate",
+                    "info",
                 )
 
     def _start_scan(self):
@@ -226,6 +282,9 @@ class MainWindow(QMainWindow):
             "success",
         )
 
+        # Pre-select libraries that exist in the current table files
+        self._apply_existing_selection(result)
+
         self._tree.populate(result)
 
         for warning in result.warnings:
@@ -236,6 +295,47 @@ class MainWindow(QMainWindow):
 
         self._worker.wait()
         self._worker = None
+
+    def _apply_existing_selection(self, result: ScanResult):
+        """Pre-select libraries that are already present in the destination tables."""
+        dest = Path(self._dest_combo.currentText())
+        if not dest.is_dir():
+            return
+
+        # Parse existing tables and collect managed nicknames
+        sym_path = dest / "sym-lib-table"
+        fp_path = dest / "fp-lib-table"
+
+        sym_nicknames: set[str] = set()
+        fp_nicknames: set[str] = set()
+
+        for entry in parse_lib_table(sym_path):
+            if _MANAGED_MARKER in entry["uri"]:
+                sym_nicknames.add(entry["name"])
+        for entry in parse_lib_table(fp_path):
+            if _MANAGED_MARKER in entry["uri"]:
+                fp_nicknames.add(entry["name"])
+
+        if not sym_nicknames and not fp_nicknames:
+            return
+
+        selected_sym = 0
+        for lib in result.symbol_libs:
+            if lib.nickname in sym_nicknames:
+                lib.selected = True
+                selected_sym += 1
+
+        selected_fp = 0
+        for lib in result.footprint_libs:
+            if lib.nickname in fp_nicknames:
+                lib.selected = True
+                selected_fp += 1
+
+        self._log.log(
+            f"Pre-selected {selected_sym} symbol and {selected_fp} footprint "
+            f"libraries from existing tables at {dest}",
+            "info",
+        )
 
     def _on_scan_error(self, error_msg: str):
         self._progress.close()
@@ -248,7 +348,7 @@ class MainWindow(QMainWindow):
             self._log.log("No scan results available. Please wait for scan.", "error")
             return
 
-        dest = Path(self._dest_edit.text())
+        dest = Path(self._dest_combo.currentText())
         if not dest.exists():
             self._log.log(f"Destination folder does not exist: {dest}", "error")
             return
@@ -270,10 +370,22 @@ class MainWindow(QMainWindow):
             dest, self._scan_result.symbol_libs, self._scan_result.footprint_libs
         )
         for msg in messages:
-            self._log.log(msg, "success")
+            if msg.startswith("Warning:") or "removed" in msg:
+                level = "warning"
+            else:
+                level = "success"
+            self._log.log(msg, level)
+
+        # Save destination to history
+        history = add_dest_to_history(str(dest))
+        self._dest_combo.blockSignals(True)
+        self._dest_combo.clear()
+        self._dest_combo.addItems(history)
+        self._dest_combo.setCurrentIndex(0)
+        self._dest_combo.blockSignals(False)
 
     def _on_restore_backup(self):
-        dialog = BackupDialog(self._dest_edit.text(), parent=self)
+        dialog = BackupDialog(self._dest_combo.currentText(), parent=self)
         if dialog.exec() and dialog.selected_backup_num is not None:
             messages = restore_backup_pair(
                 dialog.selected_folder, dialog.selected_backup_num
@@ -290,6 +402,7 @@ class MainWindow(QMainWindow):
         )
         if folder:
             self._kicad_fp_dir = Path(folder)
+            save_kicad_fp_dir(self._kicad_fp_dir)
             self._log.log(
                 f"KiCad footprints set to: {self._kicad_fp_dir}", "success"
             )
@@ -298,10 +411,31 @@ class MainWindow(QMainWindow):
 
     def _on_browse_dest(self):
         folder = QFileDialog.getExistingDirectory(
-            self, "Select destination folder", self._dest_edit.text()
+            self, "Select destination folder", self._dest_combo.currentText()
         )
         if folder:
-            self._dest_edit.setText(folder)
+            history = add_dest_to_history(folder)
+            self._dest_combo.blockSignals(True)
+            self._dest_combo.clear()
+            self._dest_combo.addItems(history)
+            self._dest_combo.setCurrentIndex(0)
+            self._dest_combo.blockSignals(False)
+            self._check_existing_tables()
+
+    def _on_dest_changed(self, text: str):
+        """Called when the user selects a different destination from the combo."""
+        dest = Path(text)
+        if not dest.is_dir():
+            return
+        for name in ("sym-lib-table", "fp-lib-table"):
+            table_path = dest / name
+            if table_path.exists():
+                n = count_table_entries(table_path)
+                self._log.log(
+                    f"Existing {name} found at {dest} ({n} entries) "
+                    "— external entries will be preserved on generate",
+                    "info",
+                )
 
     def _on_select_all(self):
         self._tree.select_all()
@@ -314,13 +448,17 @@ class MainWindow(QMainWindow):
 
     def _on_about(self):
         about = QMessageBox(self)
-        about.setWindowTitle("About KiCad Library Manager")
+        about.setWindowTitle(f"About {APP_TITLE}")
         about.setTextFormat(Qt.TextFormat.RichText)
         about.setText(
-            "<h3>KiCad Library Manager v1.0</h3>"
+            f"<h3>{APP_TITLE} v1.0</h3>"
             "<p>Scan and manage KiCad symbol and footprint libraries.<br>"
             "Generate library tables for use in KiCad projects.</p>"
             '<p>Repository: <a href="https://github.com/sylvanoMTL/kicad_libraries">'
             "github.com/sylvanoMTL/kicad_libraries</a></p>"
         )
         about.exec()
+
+    def closeEvent(self, event: QCloseEvent):
+        save_window_geometry(self.saveGeometry())
+        super().closeEvent(event)

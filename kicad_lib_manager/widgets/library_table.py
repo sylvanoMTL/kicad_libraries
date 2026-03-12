@@ -85,7 +85,7 @@ class LibraryTableWidget(QWidget):
         for source in sources:
             group = QTreeWidgetItem([source])
             group.setFlags(group.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
-            group.setCheckState(0, Qt.CheckState.Checked)
+            group.setCheckState(0, Qt.CheckState.Unchecked)
             group.setFont(0, bold_font)
             self._sym_tree.addTopLevelItem(group)
 
@@ -96,13 +96,14 @@ class LibraryTableWidget(QWidget):
                     f"{r.library_name}:{r.footprint_name}" for r in lib.footprint_refs
                 )
                 has_missing = any(not r.found_in_repo for r in lib.footprint_refs)
+                state = Qt.CheckState.Checked if lib.selected else Qt.CheckState.Unchecked
 
                 item = QTreeWidgetItem([
                     lib.nickname, source, fp_text,
                     "Missing FP" if has_missing else "OK"
                 ])
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(0, Qt.CheckState.Checked)
+                item.setCheckState(0, state)
                 item.setData(0, Qt.ItemDataRole.UserRole, lib)
                 if has_missing:
                     item.setIcon(3, warn_icon)
@@ -117,16 +118,17 @@ class LibraryTableWidget(QWidget):
         for source in sources:
             group = QTreeWidgetItem([source])
             group.setFlags(group.flags() | Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsAutoTristate)
-            group.setCheckState(0, Qt.CheckState.Checked)
+            group.setCheckState(0, Qt.CheckState.Unchecked)
             group.setFont(0, bold_font)
             self._fp_tree.addTopLevelItem(group)
 
             for lib in self._fp_libs:
                 if lib.source != source:
                     continue
+                state = Qt.CheckState.Checked if lib.selected else Qt.CheckState.Unchecked
                 item = QTreeWidgetItem([lib.nickname, source, "OK"])
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                item.setCheckState(0, Qt.CheckState.Checked)
+                item.setCheckState(0, state)
                 item.setData(0, Qt.ItemDataRole.UserRole, lib)
                 group.addChild(item)
                 self._fp_items[lib.nickname] = item
