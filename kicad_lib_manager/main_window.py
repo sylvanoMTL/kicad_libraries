@@ -7,7 +7,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QThread, Signal, Qt
 
-from .library_scanner import scan_all
+from .library_scanner import scan_all, find_kicad_footprint_dir
 from .table_generator import write_tables, restore_backup_pair
 from .models import ScanResult
 from .widgets.library_table import LibraryTableWidget
@@ -22,9 +22,10 @@ class ScanWorker(QThread):
     finished = Signal(object)    # ScanResult
     error = Signal(str)
 
-    def __init__(self, repo_root: Path):
+    def __init__(self, repo_root: Path, kicad_fp_dir: Path | None = None):
         super().__init__()
         self._repo_root = repo_root
+        self._kicad_fp_dir = kicad_fp_dir
 
     def run(self):
         try:
@@ -32,7 +33,8 @@ class ScanWorker(QThread):
                 pct = int(current / max(total, 1) * 100)
                 self.progress.emit(msg, pct)
 
-            result = scan_all(self._repo_root, progress=on_progress)
+            result = scan_all(self._repo_root, progress=on_progress,
+                              kicad_fp_dir=self._kicad_fp_dir)
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(str(e))
@@ -46,10 +48,12 @@ class MainWindow(QMainWindow):
 
         self._scan_result: ScanResult | None = None
         self._worker: ScanWorker | None = None
+        self._kicad_fp_dir: Path | None = None
         self._build_menu()
         self._build_ui()
 
-        # Start scan after window is shown
+        # Detect KiCad installation, then start scan
+        self._detect_kicad()
         self._start_scan()
 
     def _build_menu(self):
@@ -58,6 +62,7 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("&File")
         file_menu.addAction("&Generate Tables", self._on_generate, "Ctrl+G")
         file_menu.addAction("&Restore Backup...", self._on_restore_backup, "Ctrl+R")
+        file_menu.addAction("Set &KiCad Path...", self._on_set_kicad_path, "Ctrl+K")
         file_menu.addSeparator()
         file_menu.addAction("E&xit", self.close, "Ctrl+Q")
 
@@ -109,6 +114,36 @@ class MainWindow(QMainWindow):
         self._log = LogPanel()
         layout.addWidget(self._log)
 
+    def _detect_kicad(self):
+        self._kicad_fp_dir = find_kicad_footprint_dir()
+        if self._kicad_fp_dir:
+            self._log.log(
+                f"KiCad footprints detected: {self._kicad_fp_dir}",
+                "success",
+            )
+        else:
+            self._log.log(
+                "KiCad installation not found automatically.", "warning"
+            )
+            folder = QFileDialog.getExistingDirectory(
+                self,
+                "Select KiCad footprints folder "
+                "(e.g. C:/Program Files/KiCad/9.0/share/kicad/footprints)",
+                "C:/Program Files",
+            )
+            if folder:
+                self._kicad_fp_dir = Path(folder)
+                self._log.log(
+                    f"KiCad footprints set to: {self._kicad_fp_dir}",
+                    "success",
+                )
+            else:
+                self._log.log(
+                    "No KiCad footprint path selected. "
+                    "Default library cross-references will show as warnings.",
+                    "warning",
+                )
+
     def _start_scan(self):
         self._progress = QProgressDialog(
             "Scanning libraries...", None, 0, 100, self
@@ -124,7 +159,7 @@ class MainWindow(QMainWindow):
 
         self._log.log("Scanning repository...", "info")
 
-        self._worker = ScanWorker(REPO_ROOT)
+        self._worker = ScanWorker(REPO_ROOT, self._kicad_fp_dir)
         self._worker.progress.connect(self._on_scan_progress)
         self._worker.finished.connect(self._on_scan_finished)
         self._worker.error.connect(self._on_scan_error)
@@ -199,6 +234,21 @@ class MainWindow(QMainWindow):
             )
             for msg in messages:
                 self._log.log(msg, "success")
+
+    def _on_set_kicad_path(self):
+        current = str(self._kicad_fp_dir) if self._kicad_fp_dir else "C:/Program Files"
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select KiCad footprints folder",
+            current,
+        )
+        if folder:
+            self._kicad_fp_dir = Path(folder)
+            self._log.log(
+                f"KiCad footprints set to: {self._kicad_fp_dir}", "success"
+            )
+            self._log.log("Rescanning with updated KiCad path...", "info")
+            self._start_scan()
 
     def _on_browse_dest(self):
         folder = QFileDialog.getExistingDirectory(

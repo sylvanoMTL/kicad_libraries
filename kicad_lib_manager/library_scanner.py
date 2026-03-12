@@ -1,4 +1,5 @@
 import re
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -8,6 +9,47 @@ FOOTPRINT_RE = re.compile(r'\(property\s+"Footprint"\s+"([^"]*)"')
 MODEL_RE = re.compile(r'\(model\s+"([^"]*)"')
 
 SKIP_DIRS = {"env", "venv", ".venv", ".git", ".claude", "__pycache__"}
+
+
+def find_kicad_footprint_dir() -> Path | None:
+    """Auto-detect KiCad's default footprint library directory."""
+    if sys.platform == "win32":
+        base = Path("C:/Program Files/KiCad")
+    elif sys.platform == "darwin":
+        base = Path("/Applications/KiCad")
+    else:
+        base = Path("/usr/share/kicad")
+
+    if not base.exists():
+        return None
+
+    # Find the latest version directory (e.g., 9.0, 8.0)
+    if sys.platform == "win32":
+        versions = sorted(
+            (d for d in base.iterdir() if d.is_dir()),
+            reverse=True,
+        )
+        for v in versions:
+            fp_dir = v / "share" / "kicad" / "footprints"
+            if fp_dir.is_dir():
+                return fp_dir
+    else:
+        fp_dir = base / "footprints"
+        if fp_dir.is_dir():
+            return fp_dir
+
+    return None
+
+
+def get_kicad_default_fp_nicknames(kicad_fp_dir: Path | None = None) -> set[str]:
+    """Return the set of footprint library nicknames from KiCad's default install."""
+    fp_dir = kicad_fp_dir or find_kicad_footprint_dir()
+    if not fp_dir or not fp_dir.is_dir():
+        return set()
+    return {
+        d.stem for d in fp_dir.iterdir()
+        if d.is_dir() and d.suffix == ".pretty"
+    }
 
 
 def _determine_source(rel_path: str) -> str:
@@ -87,19 +129,24 @@ def _parse_footprint_refs(sym_file: Path) -> list[FootprintRef]:
 
 
 def cross_reference(sym_libs: list[SymbolLibrary],
-                    fp_libs: list[FootprintLibrary]) -> list[str]:
+                    fp_libs: list[FootprintLibrary],
+                    kicad_fp_dir: Path | None = None) -> list[str]:
     fp_nicknames = {lib.nickname for lib in fp_libs}
+    kicad_defaults = get_kicad_default_fp_nicknames(kicad_fp_dir)
     warnings = []
 
     for sym in sym_libs:
         for ref in sym.footprint_refs:
             if ref.library_name in fp_nicknames:
                 ref.found_in_repo = True
+            elif ref.library_name in kicad_defaults:
+                ref.found_in_repo = True  # Available in KiCad's default libraries
             else:
                 ref.found_in_repo = False
                 warnings.append(
                     f"[{sym.nickname}] Footprint library '{ref.library_name}' "
-                    f"not found in repo (referenced by {ref.footprint_name})"
+                    f"not found in repo or KiCad defaults "
+                    f"(referenced by {ref.footprint_name})"
                 )
     return warnings
 
@@ -127,7 +174,8 @@ def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[s
     return warnings
 
 
-def scan_all(repo_root: Path, progress: Callable | None = None) -> ScanResult:
+def scan_all(repo_root: Path, progress: Callable | None = None,
+             kicad_fp_dir: Path | None = None) -> ScanResult:
     if progress:
         progress("Discovering files...", 0, 100)
 
@@ -136,7 +184,7 @@ def scan_all(repo_root: Path, progress: Callable | None = None) -> ScanResult:
 
     if progress:
         progress("Cross-referencing...", 95, 100)
-    warnings = cross_reference(sym_libs, fp_libs)
+    warnings = cross_reference(sym_libs, fp_libs, kicad_fp_dir)
 
     model_warnings = check_3d_model_paths(repo_root, progress)
     warnings.extend(model_warnings)
