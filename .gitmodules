@@ -1,0 +1,6 @@
+[submodule "WurthElektronik/KiCad-Library"]
+	path = WurthElektronik/KiCad-Library
+	url = https://github.com/WurthElektronik/KiCad-Library.git
+[submodule "Custom"]
+	path = Custom
+	url = https://github.com/sylvanoMTL/kicad_custom_library.git
