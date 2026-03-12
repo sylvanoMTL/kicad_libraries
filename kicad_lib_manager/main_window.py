@@ -14,6 +14,7 @@ from .models import ScanResult
 from .widgets.library_table import LibraryTableWidget
 from .widgets.log_panel import LogPanel
 from .widgets.backup_dialog import BackupDialog
+from .widgets.help_dialog import HelpDialog
 
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 
@@ -98,6 +99,15 @@ class MainWindow(QMainWindow):
         file_menu.setToolTipsVisible(True)
 
         help_menu = menubar.addMenu("&Help")
+
+        help_action = QAction("&User Guide", self)
+        help_action.setShortcut(QKeySequence("F1"))
+        help_action.setToolTip("How to use the KiCad Library Manager")
+        help_action.setStatusTip("How to use the KiCad Library Manager")
+        help_action.triggered.connect(self._on_help)
+        help_menu.addAction(help_action)
+
+        help_menu.addSeparator()
 
         about_action = QAction("&About", self)
         about_action.setToolTip("About KiCad Library Manager")
@@ -298,6 +308,9 @@ class MainWindow(QMainWindow):
 
     def _on_deselect_all(self):
         self._tree.deselect_all()
+
+    def _on_help(self):
+        HelpDialog(parent=self).exec()
 
     def _on_about(self):
         about = QMessageBox(self)

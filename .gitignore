@@ -7,3 +7,9 @@ env/
 venv/
 .venv/
 __pycache__/
+
+# Claude Code local config (machine-specific paths)
+.claude/
+
+# Backup files
+*_backup_*

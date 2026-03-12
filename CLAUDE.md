@@ -19,7 +19,7 @@ KiCad library management repo that aggregates open-source and custom libraries v
 
 ## KiCad Path Variables
 These must be set in KiCad: Preferences > Configure Paths:
-- `KICAD_LIB_GITHUB` — points to this repo root (e.g., `C:\Git_Repo_Clones\Kicad_Libraries`)
+- `KICAD_LIB_GITHUB` — points to this repo root (wherever the repo is cloned)
 - `CUSTOM_3DMODEL_DIR` — points to `Custom/3DModels/` for custom 3D step files
 - `WE_3DMODEL_DIR` — used by WurthElektronik footprints (set by their library)
 

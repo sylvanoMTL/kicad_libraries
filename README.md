@@ -44,7 +44,7 @@ This scans the repo for all `.kicad_sym` files and `.pretty` directories and gen
 2. Go to **Preferences > Configure Paths**
 3. Add a new entry:
    - **Name:** `KICAD_LIB_GITHUB`
-   - **Path:** `<path to this repo>` (e.g., `C:\Git_Repo_Clones\Kicad_Libraries`)
+   - **Path:** `<path to this repo>` (wherever you cloned it)
 4. Import the library tables using one of these methods:
 
 #### Option A: Replace global tables
