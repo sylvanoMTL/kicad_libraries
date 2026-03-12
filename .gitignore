@@ -1,3 +1,9 @@
 # Generated library tables (machine-specific)
 sym-lib-table
 fp-lib-table
+
+# Python virtual environments
+env/
+venv/
+.venv/
+__pycache__/

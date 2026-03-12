@@ -1,0 +1,151 @@
+import re
+from pathlib import Path
+from typing import Callable
+
+from .models import FootprintLibrary, FootprintRef, ScanResult, SymbolLibrary
+
+FOOTPRINT_RE = re.compile(r'\(property\s+"Footprint"\s+"([^"]*)"')
+MODEL_RE = re.compile(r'\(model\s+"([^"]*)"')
+
+SKIP_DIRS = {"env", "venv", ".venv", ".git", ".claude", "__pycache__"}
+
+
+def _determine_source(rel_path: str) -> str:
+    parts = rel_path.split("/")
+    if parts:
+        return parts[0]
+    return "Unknown"
+
+
+def _in_skip_dir(path: Path, root: Path) -> bool:
+    rel = path.relative_to(root).parts
+    return rel[0] in SKIP_DIRS if rel else False
+
+
+def _collect_files(root: Path, pattern: str) -> list[Path]:
+    return sorted(
+        f for f in root.rglob(pattern)
+        if not _in_skip_dir(f, root)
+    )
+
+
+def find_symbol_libs(root: Path, progress: Callable | None = None) -> list[SymbolLibrary]:
+    sym_files = _collect_files(root, "*.kicad_sym")
+    libs = []
+    for i, f in enumerate(sym_files):
+        if progress:
+            progress(f"Parsing symbol: {f.stem}", i, len(sym_files))
+        rel = f.relative_to(root).as_posix()
+        source = _determine_source(rel)
+        fp_refs = _parse_footprint_refs(f)
+        libs.append(SymbolLibrary(
+            nickname=f.stem,
+            rel_path=rel,
+            source=source,
+            footprint_refs=fp_refs,
+        ))
+    return libs
+
+
+def find_footprint_libs(root: Path, progress: Callable | None = None) -> list[FootprintLibrary]:
+    pretty_dirs = sorted(
+        d for d in root.rglob("*.pretty")
+        if d.is_dir() and not _in_skip_dir(d, root)
+    )
+    libs = []
+    for i, d in enumerate(pretty_dirs):
+        if progress:
+            progress(f"Scanning footprint: {d.stem}", i, len(pretty_dirs))
+        rel = d.relative_to(root).as_posix()
+        source = _determine_source(rel)
+        libs.append(FootprintLibrary(
+            nickname=d.stem,
+            rel_path=rel,
+            source=source,
+        ))
+    return libs
+
+
+def _parse_footprint_refs(sym_file: Path) -> list[FootprintRef]:
+    refs = []
+    seen = set()
+    try:
+        text = sym_file.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return refs
+
+    for match in FOOTPRINT_RE.finditer(text):
+        value = match.group(1).strip()
+        if not value or ":" not in value:
+            continue
+        lib_name, fp_name = value.split(":", 1)
+        key = (lib_name, fp_name)
+        if key not in seen:
+            seen.add(key)
+            refs.append(FootprintRef(library_name=lib_name, footprint_name=fp_name))
+    return refs
+
+
+def cross_reference(sym_libs: list[SymbolLibrary],
+                    fp_libs: list[FootprintLibrary]) -> list[str]:
+    fp_nicknames = {lib.nickname for lib in fp_libs}
+    warnings = []
+
+    for sym in sym_libs:
+        for ref in sym.footprint_refs:
+            if ref.library_name in fp_nicknames:
+                ref.found_in_repo = True
+            else:
+                ref.found_in_repo = False
+                warnings.append(
+                    f"[{sym.nickname}] Footprint library '{ref.library_name}' "
+                    f"not found in repo (referenced by {ref.footprint_name})"
+                )
+    return warnings
+
+
+def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[str]:
+    mod_files = _collect_files(root, "*.kicad_mod")
+    warnings = []
+    for i, mod_file in enumerate(mod_files):
+        if progress:
+            progress(f"Checking 3D paths: {mod_file.stem}", i, len(mod_files))
+        try:
+            text = mod_file.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+
+        rel = mod_file.relative_to(root).as_posix()
+        for match in MODEL_RE.finditer(text):
+            path = match.group(1)
+            if path.startswith("${"):
+                continue
+            if "/" in path or "\\" in path:
+                warnings.append(
+                    f"[{rel}] Absolute/non-variable 3D model path: {path}"
+                )
+    return warnings
+
+
+def scan_all(repo_root: Path, progress: Callable | None = None) -> ScanResult:
+    if progress:
+        progress("Discovering files...", 0, 100)
+
+    fp_libs = find_footprint_libs(repo_root, progress)
+    sym_libs = find_symbol_libs(repo_root, progress)
+
+    if progress:
+        progress("Cross-referencing...", 95, 100)
+    warnings = cross_reference(sym_libs, fp_libs)
+
+    model_warnings = check_3d_model_paths(repo_root, progress)
+    warnings.extend(model_warnings)
+
+    if progress:
+        progress("Done", 100, 100)
+
+    return ScanResult(
+        symbol_libs=sym_libs,
+        footprint_libs=fp_libs,
+        warnings=warnings,
+    )
