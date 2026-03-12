@@ -36,14 +36,14 @@ git submodule update --init --recursive
 python generate_lib_tables.py
 ```
 
-This scans the repo for all `.kicad_sym` files and `.pretty` directories and generates `sym-lib-table` and `fp-lib-table` using the `${KICAD_LIBS_REPO}` environment variable for portable paths.
+This scans the repo for all `.kicad_sym` files and `.pretty` directories and generates `sym-lib-table` and `fp-lib-table` using the `${KICAD_LIBS_GITHUB}` environment variable for portable paths.
 
 ### 3. Configure KiCad
 
 1. Open KiCad
 2. Go to **Preferences > Configure Paths**
 3. Add a new entry:
-   - **Name:** `KICAD_LIBS_REPO`
+   - **Name:** `KICAD_LIBS_GITHUB`
    - **Path:** `<path to this repo>` (e.g., `C:\Git_Repo_Clones\Kicad_Libraries`)
 4. Import the library tables using one of these methods:
 

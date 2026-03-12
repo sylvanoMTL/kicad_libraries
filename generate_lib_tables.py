@@ -7,12 +7,12 @@ Usage:
     python generate_lib_tables.py
 
 This scans for .kicad_sym files and .pretty directories, then generates
-library table files using the ${KICAD_LIBS_REPO} environment variable
+library table files using the ${KICAD_LIBS_GITHUB} environment variable
 so paths remain portable across machines.
 
 Setup in KiCad:
     1. Go to Preferences > Configure Paths
-    2. Add: KICAD_LIBS_REPO = <path to this repo>
+    2. Add: KICAD_LIBS_GITHUB = <path to this repo>
        e.g. C:\Git_Repo_Clones\Kicad_Libraries
     3. Copy the generated table entries into your global library tables:
        - Preferences > Manage Symbol Libraries > paste sym-lib-table entries
@@ -24,7 +24,7 @@ import os
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).parent.resolve()
-ENV_VAR = "KICAD_LIBS_REPO"
+ENV_VAR = "KICAD_LIBS_GITHUB"
 
 
 def find_symbol_libs(root: Path) -> list[tuple[str, str]]:
