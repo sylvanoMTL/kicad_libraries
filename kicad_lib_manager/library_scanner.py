@@ -1,3 +1,5 @@
+import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -9,6 +11,80 @@ FOOTPRINT_RE = re.compile(r'\(property\s+"Footprint"\s+"([^"]*)"')
 MODEL_RE = re.compile(r'\(model\s+"([^"]*)"')
 
 SKIP_DIRS = {"env", "venv", ".venv", ".git", ".claude", "__pycache__"}
+
+
+def find_kicad_config_dir() -> Path | None:
+    """Find the latest KiCad user config directory."""
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            return None
+        base = Path(appdata) / "kicad"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library" / "Preferences" / "kicad"
+    else:
+        base = Path.home() / ".config" / "kicad"
+
+    if not base.is_dir():
+        return None
+
+    versions = sorted(
+        (d for d in base.iterdir() if d.is_dir()),
+        reverse=True,
+    )
+    return versions[0] if versions else None
+
+
+def sync_kicad_path_vars(repo_root: Path) -> list[str]:
+    """Set KICAD_LIB_GITHUB and CUSTOM_3DMODEL_DIR in kicad_common.json."""
+    config_dir = find_kicad_config_dir()
+    if not config_dir:
+        return ["Could not find KiCad config directory"]
+
+    config_file = config_dir / "kicad_common.json"
+    if not config_file.exists():
+        return [f"KiCad config not found: {config_file}"]
+
+    try:
+        config = json.loads(config_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        return [f"Failed to read KiCad config: {e}"]
+
+    env = config.setdefault("environment", {})
+    env_vars = env.setdefault("vars", {})
+
+    repo_str = str(repo_root).replace("\\", "/")
+    desired = {
+        "KICAD_LIB_GITHUB": repo_str,
+        "CUSTOM_3DMODEL_DIR": f"{repo_str}/Custom/3DModels",
+    }
+
+    messages = []
+    changed = False
+    for key, value in desired.items():
+        old = env_vars.get(key)
+        if old == value:
+            messages.append(f"KiCad path '{key}' already set correctly")
+        else:
+            env_vars[key] = value
+            changed = True
+            if old is None:
+                messages.append(f"KiCad path '{key}' set to: {value}")
+            else:
+                messages.append(f"KiCad path '{key}' updated: {old} -> {value}")
+
+    if changed:
+        try:
+            config_file.write_text(
+                json.dumps(config, indent=2) + "\n", encoding="utf-8"
+            )
+            messages.append(
+                f"Updated {config_file} (restart KiCad to apply)"
+            )
+        except OSError as e:
+            messages.append(f"Failed to write KiCad config: {e}")
+
+    return messages
 
 
 def find_kicad_footprint_dir() -> Path | None:

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
-from .library_scanner import scan_all, find_kicad_footprint_dir
+from .library_scanner import scan_all, find_kicad_footprint_dir, sync_kicad_path_vars
 from .table_generator import (
     write_tables, restore_backup_pair, count_table_entries, parse_lib_table,
     _MANAGED_MARKER,
@@ -375,6 +375,14 @@ class MainWindow(QMainWindow):
             else:
                 level = "success"
             self._log.log(msg, level)
+
+        # Sync KiCad path variables
+        path_msgs = sync_kicad_path_vars(REPO_ROOT)
+        for msg in path_msgs:
+            if "Failed" in msg or "Could not" in msg or "not found" in msg:
+                self._log.log(msg, "warning")
+            else:
+                self._log.log(msg, "success")
 
         # Save destination to history
         history = add_dest_to_history(str(dest))
