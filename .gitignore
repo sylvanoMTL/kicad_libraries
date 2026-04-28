@@ -13,3 +13,14 @@ __pycache__/
 
 # Backup files
 *_backup_*
+
+# Dummy KiCad project (local editing convenience)
+_LibraryEditor.kicad_pro
+_LibraryEditor.kicad_sch
+_LibraryEditor.kicad_pcb
+_LibraryEditor.kicad_prl
+_LibraryEditor-backups/
+fp-info-cache
+
+# Notes
+REFLECTION.md
