@@ -21,6 +21,8 @@ _LibraryEditor.kicad_pcb
 _LibraryEditor.kicad_prl
 _LibraryEditor-backups/
 fp-info-cache
+~*.lck
+_autosave-*
 
 # Notes
 REFLECTION.md
