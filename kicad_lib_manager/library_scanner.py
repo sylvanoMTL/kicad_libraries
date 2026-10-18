@@ -10,7 +10,7 @@ from .models import FootprintLibrary, FootprintRef, ScanResult, SymbolLibrary
 FOOTPRINT_RE = re.compile(r'\(property\s+"Footprint"\s+"([^"]*)"')
 MODEL_RE = re.compile(r'\(model\s+"([^"]*)"')
 
-SKIP_DIRS = {"env", "venv", ".venv", ".git", ".claude", "__pycache__"}
+SKIP_DIRS = {"env", "venv", ".venv", ".git", ".claude", "__pycache__", "tests"}
 
 
 def find_kicad_config_dir() -> Path | None:
