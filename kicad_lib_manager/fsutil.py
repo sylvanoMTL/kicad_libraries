@@ -1,11 +1,15 @@
 import os
+import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .models import Issue, Severity
 
 _BOM = b"\xef\xbb\xbf"
+# Sums to 1.0 s: D-05 asks for a retry window of about one second
+_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.3, 0.35)
 
 
 @dataclass(frozen=True)
@@ -66,8 +70,21 @@ def encode_source(text: str, bom: bool) -> bytes:
     return _BOM + data if bom else data
 
 
-def atomic_write_bytes(path: Path, data: bytes) -> Issue | None:
+def atomic_write_bytes(
+    path: Path,
+    data: bytes,
+    *,
+    retry_delays: tuple[float, ...] = _RETRY_DELAYS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Issue | None:
     """Replace path with data via a same-directory temp file; return an Issue on failure."""
+    # A read-only target never becomes writable by waiting, so fail before any retry
+    if path.exists() and not os.access(path, os.W_OK):
+        return Issue(
+            Severity.ERROR,
+            "fs.read_only",
+            f"Could not write {path.name}: file is read-only",
+        )
     tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     created = False
     try:
@@ -77,8 +94,22 @@ def atomic_write_bytes(path: Path, data: bytes) -> Issue | None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
-        return None
+        # A PermissionError here is a lock held by another process (antivirus, KiCad); retry briefly
+        for delay in retry_delays:
+            try:
+                os.replace(tmp, path)
+                return None
+            except PermissionError:
+                sleep(delay)
+        try:
+            os.replace(tmp, path)
+            return None
+        except PermissionError:
+            return Issue(
+                Severity.ERROR,
+                "fs.locked",
+                f"Could not write {path.name}: file is in use",
+            )
     except OSError as e:
         return Issue(
             Severity.ERROR,
@@ -91,3 +122,17 @@ def atomic_write_bytes(path: Path, data: bytes) -> Issue | None:
                 tmp.unlink()
             except OSError:
                 pass  # already replaced, or unremovable
+
+
+def atomic_write_text(
+    path: Path,
+    text: str,
+    *,
+    bom: bool = False,
+    retry_delays: tuple[float, ...] = _RETRY_DELAYS,
+    sleep: Callable[[float], None] = time.sleep,
+) -> Issue | None:
+    """Encode text with encode_source and write it atomically."""
+    return atomic_write_bytes(
+        path, encode_source(text, bom), retry_delays=retry_delays, sleep=sleep
+    )
