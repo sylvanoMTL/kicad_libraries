@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from enum import Enum
 
 
 @dataclass
@@ -30,3 +31,18 @@ class ScanResult:
     symbol_libs: list[SymbolLibrary] = field(default_factory=list)
     footprint_libs: list[FootprintLibrary] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+
+
+class Severity(str, Enum):
+    # Values equal the LogPanel.COLORS keys
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    SUCCESS = "success"
+
+
+@dataclass(frozen=True)
+class Issue:
+    severity: Severity
+    code: str
+    text: str
