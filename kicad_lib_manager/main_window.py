@@ -93,6 +93,13 @@ class MainWindow(QMainWindow):
         restore_action.triggered.connect(self._on_restore_backup)
         file_menu.addAction(restore_action)
 
+        rescan_action = QAction("Re&scan Libraries", self)
+        rescan_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        rescan_action.setToolTip("Rescan the repository for symbol and footprint libraries")
+        rescan_action.setStatusTip("Rescan the repository for symbol and footprint libraries")
+        rescan_action.triggered.connect(self._on_rescan)
+        file_menu.addAction(rescan_action)
+
         kicad_action = QAction("Set KiCad &Footprint Path...", self)
         kicad_action.setShortcut(QKeySequence("Ctrl+K"))
         kicad_action.setToolTip("Set KiCad default footprint library folder for cross-referencing")
@@ -159,6 +166,11 @@ class MainWindow(QMainWindow):
         browse_btn = QPushButton("Browse...")
         browse_btn.clicked.connect(self._on_browse_dest)
         toolbar.addWidget(browse_btn)
+
+        rescan_btn = QPushButton("Rescan")
+        rescan_btn.setToolTip("Rescan repository for libraries (Ctrl+Shift+R)")
+        rescan_btn.clicked.connect(self._on_rescan)
+        toolbar.addWidget(rescan_btn)
 
         self._generate_btn = QPushButton("Generate Tables")
         self._generate_btn.setStyleSheet(
@@ -391,6 +403,11 @@ class MainWindow(QMainWindow):
         self._dest_combo.addItems(history)
         self._dest_combo.setCurrentIndex(0)
         self._dest_combo.blockSignals(False)
+
+    def _on_rescan(self):
+        self._log.log("Rescanning repository...", "info")
+        self._check_existing_tables()
+        self._start_scan()
 
     def _on_restore_backup(self):
         dialog = BackupDialog(self._dest_combo.currentText(), parent=self)
