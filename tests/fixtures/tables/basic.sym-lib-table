@@ -1,0 +1,5 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "Fixture_A")(type "KiCad")(uri "${KICAD_LIB_GITHUB}/Custom/Symbols/Fixture_A.kicad_sym")(options "")(descr ""))
+  (lib (name "Fixture_B")(type "KiCad")(uri "${KICAD_LIB_GITHUB}/Custom/Symbols/Fixture_B.kicad_sym")(options "")(descr "Second fixture"))
+)

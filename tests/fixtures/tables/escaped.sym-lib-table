@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "Escaped_Lib")(type "KiCad")(uri "C:\\KiCad\\libs\\Escaped.kicad_sym")(options "")(descr "Has \"quotes\" and (parens)"))
+)
