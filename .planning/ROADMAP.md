@@ -31,7 +31,15 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Every `.kicad_sym`, `.kicad_mod`, `sym-lib-table` and `fp-lib-table` file in the repo (all of `Custom/`, plus WurthElektronik when checked out) parses and re-serialises byte-identically when no edits are applied
   3. A targeted edit, such as changing one property value, changes only that span. The rest of the file stays byte-identical and its CRLF or LF line endings are kept.
   4. Writing over a locked or read-only file logs an error and leaves the original content intact, with no crash and no truncated file. A successful write replaces the file in one step (temp file + replace).
-**Plans**: TBD
+**Plans**: 6 plans
+
+Plans:
+- [ ] 01-01-PLAN.md — Tracer: one property edit end to end (models, sexpr, fsutil, kicad_files), pinned manifests, pytest config, offscreen Qt test, .gitattributes, tracked UL zip (wave 1)
+- [ ] 01-02-PLAN.md — fsutil hardening: atomic-write failure matrix, numbered backups, EOL/BOM/encoding, Issue contract (wave 2)
+- [ ] 01-03-PLAN.md — sexpr hardening: tokenizer edge cases, error positions, hostile input, splice and quoting contract (wave 2)
+- [ ] 01-04-PLAN.md — "tests" in SKIP_DIRS, byte-exact fixture builder and frozen fixtures with self-checks (wave 2)
+- [ ] 01-05-PLAN.md — kicad_files read side complete, layering checks, full targeted-edit suite (wave 3)
+- [ ] 01-06-PLAN.md — Corpus round-trip: live Custom, fixtures, UL zip members, opt-in local KiCad tables and Wurth (wave 3)
 
 ### Phase 2: Hardening Existing Code
 **Goal**: Generating tables, detecting KiCad and rescanning no longer lose data, crash or race, so the importer can safely build on them
@@ -114,7 +122,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/TBD | Not started | - |
+| 1. Foundation | 0/6 | Not started | - |
 | 2. Hardening Existing Code | 0/TBD | Not started | - |
 | 3. Package Intake and Naming | 0/TBD | Not started | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
