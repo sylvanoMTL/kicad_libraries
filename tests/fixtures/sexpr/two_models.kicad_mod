@@ -1,0 +1,17 @@
+(footprint "FIX_TWO_MODELS" (version 20240108) (generator "pcbnew")
+  (layer "F.Cu")
+  (property "Reference" "REF**" (at 0 -2 0) (layer "F.SilkS")
+    (effects (font (size 1 1) (thickness 0.15)))
+  )
+  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu" "F.Paste" "F.Mask"))
+  (model "${CUSTOM_3DMODEL_DIR}/FIX_A.step"
+    (offset (xyz 0 0 0))
+    (scale (xyz 1 1 1))
+    (rotate (xyz 0 0 0))
+  )
+  (model "${CUSTOM_3DMODEL_DIR}/FIX_B.stp"
+    (offset (xyz 0 0 0.5))
+    (scale (xyz 1 1 1))
+    (rotate (xyz 0 0 90))
+  )
+)

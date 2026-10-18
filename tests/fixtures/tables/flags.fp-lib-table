@@ -1,0 +1,6 @@
+(fp_lib_table
+  (version 7)
+  (lib (name "Disabled_Lib")(type "KiCad")(uri "${KICAD_LIB_GITHUB}/Custom/Footprints/Disabled_Lib.pretty")(options "")(descr "")(disabled))
+  (lib (name "Hidden_Lib")(type "KiCad")(uri "${KICAD_LIB_GITHUB}/Custom/Footprints/Hidden_Lib.pretty")(options "")(descr "")(hidden))
+  (lib (name "Future_Lib")(type "KiCad")(uri "${KICAD_LIB_GITHUB}/Custom/Footprints/Future_Lib.pretty")(options "")(descr "")(future_field "x"))
+)
