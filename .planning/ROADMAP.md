@@ -23,6 +23,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 ## Phase Details
 
 ### Phase 1: Foundation
+
 **Goal**: The developer has a headless test harness and a shared S-expression and file-writing layer that provably never damages bytes it was not asked to change
 **Depends on**: Nothing (first phase)
 **Requirements**: FOUND-01, FOUND-02, FOUND-03, FOUND-04, FOUND-05
@@ -31,17 +32,24 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Every `.kicad_sym`, `.kicad_mod`, `sym-lib-table` and `fp-lib-table` file in the repo (all of `Custom/`, plus WurthElektronik when checked out) parses and re-serialises byte-identically when no edits are applied
   3. A targeted edit, such as changing one property value, changes only that span. The rest of the file stays byte-identical and its CRLF or LF line endings are kept.
   4. Writing over a locked or read-only file logs an error and leaves the original content intact, with no crash and no truncated file. A successful write replaces the file in one step (temp file + replace).
+
 **Plans**: 6 plans
 
 Plans:
+**Wave 1**
 - [ ] 01-01-PLAN.md — Tracer: one property edit end to end (models, sexpr, fsutil, kicad_files), pinned manifests, pytest config, offscreen Qt test, .gitattributes, tracked UL zip (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 01-02-PLAN.md — fsutil hardening: atomic-write failure matrix, numbered backups, EOL/BOM/encoding, Issue contract (wave 2)
 - [ ] 01-03-PLAN.md — sexpr hardening: tokenizer edge cases, error positions, hostile input, splice and quoting contract (wave 2)
 - [ ] 01-04-PLAN.md — "tests" in SKIP_DIRS, byte-exact fixture builder and frozen fixtures with self-checks (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 01-05-PLAN.md — kicad_files read side complete, layering checks, full targeted-edit suite (wave 3)
 - [ ] 01-06-PLAN.md — Corpus round-trip: live Custom, fixtures, UL zip members, opt-in local KiCad tables and Wurth (wave 3)
 
 ### Phase 2: Hardening Existing Code
+
 **Goal**: Generating tables, detecting KiCad and rescanning no longer lose data, crash or race, so the importer can safely build on them
 **Depends on**: Phase 1
 **Requirements**: HARD-01, HARD-02, HARD-03, HARD-04, HARD-05, HARD-06, HARD-07, HARD-08, HARD-09
@@ -51,9 +59,11 @@ Plans:
   3. When both KiCad 9.0 and 10.0 are present, 10.0 is chosen. Pressing Rescan or Set KiCad Path while a scan is running does not start a second scan.
   4. After Rescan, the user's symbol and footprint selection is unchanged. Two libraries with the same nickname in different sources are reported as a collision and stay distinct in the UI, so neither overwrites the other.
   5. The existing footprints that used `${KIPRJMOD}/Custom/3DModels/...` reference `${CUSTOM_3DMODEL_DIR}/...` after one dedicated cleanup commit in `Custom`. A scan warns about any model path that still doesn't use `${CUSTOM_3DMODEL_DIR}`.
+
 **Plans**: TBD
 
 ### Phase 3: Package Intake and Naming
+
 **Goal**: Given a vendor zip or a folder of loose files, the importer safely finds the KiCad symbol, footprint and 3D model and proposes a sanitised, convention-following target library name, without writing anything into the repo
 **Depends on**: Phase 2
 **Requirements**: INTK-01, INTK-02, INTK-05, INTK-06, LIB-01, LIB-03
@@ -63,9 +73,11 @@ Plans:
   3. A zip is refused if it has `..`, absolute or drive-letter member names, symlinks, or exceeds the size, count or compression-ratio limits. Package content is only ever staged in a temporary folder outside the repo, never inside it.
   4. For the UL sample, the suggested target library follows `<Type>_<SubCategory>_<Manufacturer>`, ends in `_TI` (from the `ti.com` datasheet host and existing `Custom/` prefixes), and is a default that can be overridden
   5. Names containing `/`, `:`, Windows-reserved names (e.g. `CON`, `NUL`) or traversal are sanitised, with `.` and `-` kept. Both the original and the sanitised name are reported.
+
 **Plans**: TBD
 
 ### Phase 4: Plan and Install Core
+
 **Goal**: A parsed part installs into `Custom/` correctly and transactionally. The symbol is merged, the footprint and 3D model are placed and linked, failures are rolled back and the result is verified, all testable without a display.
 **Depends on**: Phase 3
 **Requirements**: INST-01, INST-02, INST-03, INST-04, INST-05, INST-06, INST-07, INST-08, INST-09, INTK-08, LIB-02, POST-03, POST-04
@@ -75,10 +87,12 @@ Plans:
   3. Installing into a new library name creates a matching `.kicad_sym` + `.pretty/` pair, and an existing library's version header is never changed. When `kicad-cli` is available, the incoming symbol and footprint are normalised to the installed KiCad's format before merging. Without it, they are merged as-is with a warning.
   4. A failure injected on any write leaves every file the install touched exactly as it was, with no dangling symbol, orphan footprint or stray model, and the failure is logged. An existing model with the same SHA-256 is reused, and a different one is reported as a conflict instead of being overwritten.
   5. After install, verification re-parses the written files, resolves `<Lib>:<FP>` and confirms the model file exists. It warns when the part name already exists in another library or the symbol's pin numbers don't match the footprint's pad numbers. Importing the same package twice with the same choices changes nothing the second time.
+
 **Plans**: TBD
 **Research flag**: Spike early. Check that KiCad 9/10 loads a `20211014` symbol spliced into a `20241209` library, and check how `kicad-cli sym upgrade` / `fp upgrade` behave on a staging copy. Also decide how vendor symbols that use `extends` are handled.
 
 ### Phase 5: Import UI and Post-Install
+
 **Goal**: The user imports a part end to end from the Library Manager. They pick a package, review and edit an exact preview, resolve conflicts, install, and see the new library selected with tables refreshed.
 **Depends on**: Phase 4
 **Requirements**: INTK-07, PREV-01, PREV-02, PREV-03, PREV-04, PREV-05, PREV-06, PREV-07, POST-01, POST-02, POST-05, UX-01, UX-02
@@ -88,10 +102,12 @@ Plans:
   3. User can edit the target library (an existing `Custom/` library or a new name), the footprint name (defaulting to the vendor name, e.g. `DQK0006B`), Value, Datasheet, Description, `Manufacturer` and `MPN`. The displayed `Footprint` field follows as `<Lib>:<FP>` on every edit. The installed files match exactly what the preview last showed.
   4. Every conflict with an existing symbol, footprint or 3D model appears in the preview with its own overwrite / rename / skip choice. There is no "overwrite all" option.
   5. After install, the library list rescans and shows the new or updated library selected. `sym-lib-table` / `fp-lib-table` are regenerated when a new library was created. If KiCad appears to be running, the user is told to reopen KiCad's library editors.
+
 **Plans**: TBD
 **UI hint**: yes
 
 ### Phase 6: Git Commit Step
+
 **Goal**: After a successful install, one confirmed action commits exactly the imported part in the `Custom` submodule and bumps the parent repo's ref. The importer never pushes.
 **Depends on**: Phase 5
 **Requirements**: GIT-01, GIT-02, GIT-03, GIT-04, GIT-05
@@ -100,11 +116,13 @@ Plans:
   2. On confirm, only the files touched by the install are committed in `Custom`, so other modified or untracked files stay uncommitted. A parent-repo commit of the updated `Custom` ref follows.
   3. If `Custom` is on a detached HEAD that lies on `main`'s history, the user is offered a switch to `main` before committing. Otherwise the commit is refused with an explanation and nothing is committed.
   4. No importer code path pushes. After a commit, the local branches are ahead of their remotes and no remote has changed.
+
 **Plans**: TBD
 **UI hint**: yes
 **Research flag**: Spike early. `Custom` is on a detached HEAD, and its gitdir is worktree-private (`.git/worktrees/Kicad_Libraries-importer/modules/Custom`). How `git commit -- Custom` behaves in the parent under the owner's hooks is unverified.
 
 ### Phase 7: SnapEDA and SamacSys Adapters
+
 **Goal**: SnapEDA and SamacSys / Component Search Engine downloads import through the same flow as Ultra Librarian packages
 **Depends on**: Phase 6
 **Requirements**: INTK-03, INTK-04
@@ -112,6 +130,7 @@ Plans:
   1. A real SnapEDA zip in `downloaded_examples/` is recognised as SnapEDA, and its symbol, footprint and any 3D model are found. If it ships no model, it installs with the "no 3D model found" warning.
   2. A real SamacSys / CSE zip in `downloaded_examples/` is recognised, and its KiCad v6+ symbol, footprint and 3D model are found. Legacy `.lib` / `.dcm` files alongside them are ignored instead of causing a rejection.
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
+
 **Plans**: TBD
 **Research flag**: Blocked until the owner adds one real SnapEDA download and one real SamacSys/CSE download to `downloaded_examples/`. The layouts are unverified: SnapEDA may ship no 3D model, and SamacSys may ship legacy files alongside v6 files.
 
