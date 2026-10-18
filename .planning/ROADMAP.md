@@ -33,7 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. A targeted edit, such as changing one property value, changes only that span. The rest of the file stays byte-identical and its CRLF or LF line endings are kept.
   4. Writing over a locked or read-only file logs an error and leaves the original content intact, with no crash and no truncated file. A successful write replaces the file in one step (temp file + replace).
 
-**Plans**: 4/6 plans executed
+**Plans**: 6/6 plans executed
 
 Plans:
 **Wave 1**
@@ -45,8 +45,8 @@ Plans:
 - [x] 01-04-PLAN.md — "tests" in SKIP_DIRS, byte-exact fixture builder and frozen fixtures with self-checks (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 01-05-PLAN.md — kicad_files read side complete, layering checks, full targeted-edit suite (wave 3)
-- [ ] 01-06-PLAN.md — Corpus round-trip: live Custom, fixtures, UL zip members, opt-in local KiCad tables and Wurth (wave 3)
+- [x] 01-05-PLAN.md — kicad_files read side complete, layering checks, full targeted-edit suite (wave 3)
+- [x] 01-06-PLAN.md — Corpus round-trip: live Custom, fixtures, UL zip members, opt-in local KiCad tables and Wurth (wave 3)
 
 ### Phase 2: Hardening Existing Code
 
@@ -141,7 +141,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 4/6 | In Progress | - |
+| 1. Foundation | 6/6 | In Progress | - |
 | 2. Hardening Existing Code | 0/TBD | Not started | - |
 | 3. Package Intake and Naming | 0/TBD | Not started | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
