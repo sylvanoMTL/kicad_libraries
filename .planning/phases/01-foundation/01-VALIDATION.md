@@ -48,7 +48,7 @@ created: "2026-10-18"
 | 01-03-01 | 03 | 2 | FOUND-03 | T-01-11 | Deep nesting, 2 MB input and fuzz handled without crash | unit | `./env/Scripts/python.exe -m pytest tests/test_sexpr.py -x -q` | ❌ W0 (task creates it) | ⬜ pending |
 | 01-03-02 | 03 | 2 | FOUND-04 | T-01-12, T-01-13 | quote() cannot break out of a string; bad splices raise | unit | `./env/Scripts/python.exe -m pytest tests/test_sexpr.py -x -q` | ✅ (01-03-01) | ⬜ pending |
 | 01-04-01 | 04 | 2 | FOUND-03 | T-01-14 | tests/ never appears as a library source in the GUI scan | unit | `./env/Scripts/python.exe -m pytest tests/test_scanner_skip_dirs.py -x -q` | ❌ W0 (task creates it) | ⬜ pending |
-| 01-04-02 | 04 | 2 | FOUND-03 | T-01-15, T-01-16 | Fixture bytes match the builder and carry `-text` | unit | `./env/Scripts/python.exe -m pytest tests/test_fixtures.py tests/test_scanner_skip_dirs.py -x -q` | ❌ W0 (task creates it) | ⬜ pending |
+| 01-04-02 | 04 | 2 | FOUND-03 | T-01-15, T-01-16 | Fixture bytes match the builder and carry `-text`; a named check per D-02 case proves the table fixtures hold every lib-table edge case, odd whitespace included | unit | `./env/Scripts/python.exe -m pytest tests/test_fixtures.py tests/test_scanner_skip_dirs.py -x -q` | ❌ W0 (task creates it) | ⬜ pending |
 | 01-05-01 | 05 | 3 | FOUND-04, FOUND-03 | T-01-17, T-01-20 | Exact-name locators with spans; foundation modules import no Qt | unit | `./env/Scripts/python.exe -m pytest tests/test_kicad_files.py tests/test_layering.py -x -q` | ❌ W0 (task creates it) | ⬜ pending |
 | 01-05-02 | 05 | 3 | FOUND-04 | T-01-18, T-01-19 | Edits/inserts keep EOL and BOM; interrupted write leaves original intact | unit | `./env/Scripts/python.exe -m pytest tests/test_edits.py -x -q` | ✅ (01-01-01) | ⬜ pending |
 | 01-06-01 | 06 | 3 | FOUND-03 | T-01-22, T-01-23 | Zip members read in memory under a size cap; repo corpus round-trips | corpus | `./env/Scripts/python.exe -m pytest tests/test_roundtrip_corpus.py -x -q -m "not wurth and not local_kicad"` | ❌ W0 (task creates it) | ⬜ pending |
@@ -65,7 +65,7 @@ created: "2026-10-18"
 - [ ] `tests/test_manifests.py`, `tests/test_library_table_widget.py`, `tests/test_models.py`, `tests/test_layering.py`
 - [ ] `tests/test_sexpr.py`, `tests/test_roundtrip_corpus.py`, `tests/test_edits.py`, `tests/test_kicad_files.py`, `tests/test_fsutil.py`
 - [ ] `tests/fixtures/sexpr/*` created byte-exact (LF, CRLF, BOM, mixed EOL, parens and escaped quotes in strings, bare atoms, no trailing newline)
-- [ ] `tests/fixtures/tables/*.sym-lib-table` / `*.fp-lib-table` (not named bare `sym-lib-table` / `fp-lib-table`, which `.gitignore` ignores)
+- [ ] `tests/fixtures/tables/*.sym-lib-table` / `*.fp-lib-table` (not named bare `sym-lib-table` / `fp-lib-table`, which `.gitignore` ignores) covering escaped `"` and `\`, reordered fields, odd whitespace between sub-forms (three spaces, a TAB, a line break inside an entry), missing options/descr, `(disabled)`/`(hidden)`, an unknown child and an empty table, each asserted by `test_table_fixtures_cover_d02_edge_cases`
 - [ ] `downloaded_examples/ul_CSD85301Q2.zip` tracked by explicit path
 - [ ] `pytest-qt` installed: `.\env\Scripts\python.exe -m pip install -r requirements-dev.txt`
 
