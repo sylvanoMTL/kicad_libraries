@@ -183,6 +183,168 @@ def test_concurrent_writers_leave_one_complete_payload(tmp_path, target):
 
 def test_atomic_write_text_matches_encode_source(tmp_path):
     path = tmp_path / "out.kicad_sym"
-    assert fsutil.atomic_write_text(path,"café\r\n", bom=True, sleep=_no_sleep) is None
+    assert fsutil.atomic_write_text(path, "café\r\n", bom=True, sleep=_no_sleep) is None
     assert path.read_bytes() == encode_source("café\r\n", True)
     _only(tmp_path, path.name)
+
+
+# -- Task 2: backups, default dir, EOL/BOM/encoding (D-06, D-09, D-10, D-11) ----
+
+
+def test_backup_file_numbers_like_table_generator(tmp_path):
+    src = tmp_path / "sym-lib-table"
+    src.write_bytes(b"data")
+    first = fsutil.backup_file(src, src.parent)
+    assert first == tmp_path / "sym-lib-table_backup_1"
+    second = fsutil.backup_file(src, src.parent)
+    assert second == tmp_path / "sym-lib-table_backup_2"
+
+
+def test_backup_file_name_matches_backup_existing_with_gaps(tmp_path):
+    from kicad_lib_manager.table_generator import backup_existing
+
+    dirs = []
+    for label in ("mine", "theirs"):
+        d = tmp_path / label
+        d.mkdir()
+        (d / "fp-lib-table").write_bytes(b"data")
+        (d / "fp-lib-table_backup_1").write_bytes(b"old")
+        (d / "fp-lib-table_backup_3").write_bytes(b"old")
+        dirs.append(d)
+    mine = fsutil.backup_file(dirs[0] / "fp-lib-table", dirs[0])
+    theirs = backup_existing(dirs[1] / "fp-lib-table")
+    assert mine.name == theirs.name == "fp-lib-table_backup_4"
+
+
+def test_backup_file_copies_bytes_and_creates_backup_dir(tmp_path):
+    src = tmp_path / "sym-lib-table"
+    payload = b"\xef\xbb\xbfline\r\nline\n\x00\xff"
+    src.write_bytes(payload)
+    backup_dir = tmp_path / "nested" / "backups"
+    result = fsutil.backup_file(src, backup_dir)
+    assert result == backup_dir / "sym-lib-table_backup_1"
+    assert result.read_bytes() == payload
+    assert src.read_bytes() == payload
+
+
+def test_backup_file_missing_source_returns_issue(tmp_path):
+    result = fsutil.backup_file(tmp_path / "nope", tmp_path / "backups")
+    assert isinstance(result, Issue)
+    assert result.severity is Severity.ERROR
+    assert result.code == "fs.backup_failed"
+    assert result.text.startswith("Could not back up")
+
+
+def test_backup_file_skips_a_name_taken_after_listing(tmp_path, monkeypatch):
+    src = tmp_path / "sym-lib-table"
+    src.write_bytes(b"new")
+    (tmp_path / "sym-lib-table_backup_1").write_bytes(b"taken")
+    # A stale listing makes the computed name collide on exclusive create
+    monkeypatch.setattr(fsutil.os, "listdir", lambda p: [])
+    result = fsutil.backup_file(src, tmp_path)
+    assert result == tmp_path / "sym-lib-table_backup_2"
+    assert (tmp_path / "sym-lib-table_backup_1").read_bytes() == b"taken"
+    assert result.read_bytes() == b"new"
+
+
+def test_default_backup_dir_win32_uses_localappdata(tmp_path):
+    result = fsutil.default_backup_dir(platform="win32", environ={"LOCALAPPDATA": str(tmp_path)})
+    assert result == tmp_path / "KiCadExtLibManager" / "backups"
+    assert not result.exists()
+
+
+def test_default_backup_dir_win32_without_localappdata_falls_back_to_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(fsutil.Path, "home", lambda: tmp_path)
+    result = fsutil.default_backup_dir(platform="win32", environ={})
+    assert result == tmp_path / "AppData" / "Local" / "KiCadExtLibManager" / "backups"
+    assert not result.exists()
+
+
+def test_default_backup_dir_darwin(tmp_path, monkeypatch):
+    monkeypatch.setattr(fsutil.Path, "home", lambda: tmp_path)
+    result = fsutil.default_backup_dir(platform="darwin", environ={})
+    assert result == tmp_path / "Library" / "Application Support" / "KiCadExtLibManager" / "backups"
+    assert not result.exists()
+
+
+def test_default_backup_dir_linux_prefers_xdg_data_home(tmp_path, monkeypatch):
+    monkeypatch.setattr(fsutil.Path, "home", lambda: tmp_path / "home")
+    xdg = tmp_path / "xdg"
+    with_xdg = fsutil.default_backup_dir(platform="linux", environ={"XDG_DATA_HOME": str(xdg)})
+    assert with_xdg == xdg / "KiCadExtLibManager" / "backups"
+    without = fsutil.default_backup_dir(platform="linux", environ={})
+    assert without == tmp_path / "home" / ".local" / "share" / "KiCadExtLibManager" / "backups"
+    assert not with_xdg.exists() and not without.exists()
+
+
+def test_default_backup_dir_is_outside_the_repo(repo_root):
+    result = fsutil.default_backup_dir()
+    assert repo_root not in result.parents
+
+
+_EOL_BODIES = {
+    "lf": b"(a)\n(b)\n",
+    "crlf": b"(a)\r\n(b)\r\n",
+    "mixed": b"(a)\r\n(b)\r\n(c)\n",
+    "lone_cr": b"(a)\r(b)\r",
+    "none": b"(a)",
+}
+
+
+@pytest.mark.parametrize("bom", [False, True], ids=["nobom", "bom"])
+@pytest.mark.parametrize("body", sorted(_EOL_BODIES))
+def test_decode_encode_is_byte_identical(body, bom):
+    data = (b"\xef\xbb\xbf" if bom else b"") + _EOL_BODIES[body]
+    decoded = fsutil.decode_source(data, "x.kicad_sym")
+    assert isinstance(decoded, fsutil.SourceText)
+    assert decoded.bom is bom
+    assert encode_source(decoded.text, decoded.bom) == data
+
+
+@pytest.mark.parametrize(
+    ("data", "eol", "mixed"),
+    [
+        (b"a\r\nb\r\nc\n", "\r\n", True),
+        (b"a\r\nb\r\n", "\r\n", False),
+        (b"a\nb\n", "\n", False),
+        (b"a\r\nb\n", "\n", True),
+        (b"abc", "\n", False),
+        (b"a\rb\n", "\n", True),
+    ],
+    ids=["crlf_majority", "crlf", "lf", "tie", "no_eol", "bare_cr"],
+)
+def test_eol_detection(data, eol, mixed):
+    decoded = fsutil.decode_source(data, "x")
+    assert decoded.eol == eol
+    assert decoded.mixed_eol is mixed
+
+
+def test_mixed_file_yields_exactly_one_warning_naming_the_file():
+    decoded = fsutil.decode_source(b"a\r\nb\n", "my_lib.kicad_sym")
+    warnings = [i for i in decoded.issues if i.code == "fs.mixed_eol"]
+    assert len(warnings) == 1
+    assert warnings[0].severity is Severity.WARNING
+    assert "my_lib.kicad_sym" in warnings[0].text
+    clean = fsutil.decode_source(b"a\r\nb\r\n", "my_lib.kicad_sym")
+    assert clean.issues == ()
+
+
+def test_invalid_utf8_yields_only_an_issue():
+    result = fsutil.decode_source(b"\xff\xfe(a)", "bad.kicad_sym")
+    assert isinstance(result, Issue)
+    assert not isinstance(result, fsutil.SourceText)
+    assert result.severity is Severity.ERROR
+    assert result.code == "fs.bad_encoding"
+
+
+def test_read_source_missing_path_gives_read_failed(tmp_path):
+    result = fsutil.read_source(tmp_path / "missing.kicad_sym")
+    assert isinstance(result, Issue)
+    assert result.severity is Severity.ERROR
+    assert result.code == "fs.read_failed"
+
+
+def test_normalize_eol_converts_every_style():
+    mixed = "a\r\nb\nc\rd"
+    assert fsutil.normalize_eol(mixed, "\r\n") == "a\r\nb\r\nc\r\nd"
+    assert fsutil.normalize_eol(mixed, "\n") == "a\nb\nc\nd"
