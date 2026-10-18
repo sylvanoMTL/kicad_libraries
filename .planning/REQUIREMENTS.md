@@ -130,12 +130,65 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| FOUND-01 | Phase 1 | Pending |
+| FOUND-02 | Phase 1 | Pending |
+| FOUND-03 | Phase 1 | Pending |
+| FOUND-04 | Phase 1 | Pending |
+| FOUND-05 | Phase 1 | Pending |
+| HARD-01 | Phase 2 | Pending |
+| HARD-02 | Phase 2 | Pending |
+| HARD-03 | Phase 2 | Pending |
+| HARD-04 | Phase 2 | Pending |
+| HARD-05 | Phase 2 | Pending |
+| HARD-06 | Phase 2 | Pending |
+| HARD-07 | Phase 2 | Pending |
+| HARD-08 | Phase 2 | Pending |
+| HARD-09 | Phase 2 | Pending |
+| INTK-01 | Phase 3 | Pending |
+| INTK-02 | Phase 3 | Pending |
+| INTK-03 | Phase 7 | Pending |
+| INTK-04 | Phase 7 | Pending |
+| INTK-05 | Phase 3 | Pending |
+| INTK-06 | Phase 3 | Pending |
+| INTK-07 | Phase 5 | Pending |
+| INTK-08 | Phase 4 | Pending |
+| LIB-01 | Phase 3 | Pending |
+| LIB-02 | Phase 4 | Pending |
+| LIB-03 | Phase 3 | Pending |
+| PREV-01 | Phase 5 | Pending |
+| PREV-02 | Phase 5 | Pending |
+| PREV-03 | Phase 5 | Pending |
+| PREV-04 | Phase 5 | Pending |
+| PREV-05 | Phase 5 | Pending |
+| PREV-06 | Phase 5 | Pending |
+| PREV-07 | Phase 5 | Pending |
+| INST-01 | Phase 4 | Pending |
+| INST-02 | Phase 4 | Pending |
+| INST-03 | Phase 4 | Pending |
+| INST-04 | Phase 4 | Pending |
+| INST-05 | Phase 4 | Pending |
+| INST-06 | Phase 4 | Pending |
+| INST-07 | Phase 4 | Pending |
+| INST-08 | Phase 4 | Pending |
+| INST-09 | Phase 4 | Pending |
+| POST-01 | Phase 5 | Pending |
+| POST-02 | Phase 5 | Pending |
+| POST-03 | Phase 4 | Pending |
+| POST-04 | Phase 4 | Pending |
+| POST-05 | Phase 5 | Pending |
+| GIT-01 | Phase 6 | Pending |
+| GIT-02 | Phase 6 | Pending |
+| GIT-03 | Phase 6 | Pending |
+| GIT-04 | Phase 6 | Pending |
+| GIT-05 | Phase 6 | Pending |
+| UX-01 | Phase 5 | Pending |
+| UX-02 | Phase 5 | Pending |
 
 **Coverage:**
 - v1 requirements: 53 total
-- Mapped to phases: 0
-- Unmapped: 53 ⚠️
+- Mapped to phases: 53
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-10-18*
-*Last updated: 2026-10-18 after initial definition*
+*Last updated: 2026-10-18 after roadmap creation (traceability mapped)*
