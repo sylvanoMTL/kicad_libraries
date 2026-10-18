@@ -1,5 +1,9 @@
 import hashlib
+import os
+import re
 import subprocess
+import sys
+import time
 import zipfile
 from functools import partial
 from pathlib import Path
@@ -140,3 +144,108 @@ def test_corpus_sources_are_present():
     assert sum(i.startswith("fixture/sexpr/") for i in ids) >= 9
     assert sum(i.startswith("fixture/tables/") for i in ids) >= 5
     assert sum(i.startswith("zip/") for i in ids) == 2
+
+
+# ── Opt-in: the owner's real KiCad tables (read in place, in memory only) ───
+
+_LOCAL_TABLE_NAMES = ("sym-lib-table", "fp-lib-table", "design-block-lib-table")
+_VERSION_DIR_RE = re.compile(r"^\d+\.\d+$")
+
+
+def _kicad_config_root() -> Path | None:
+    if sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        return Path(appdata) / "kicad" if appdata else None
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Preferences" / "kicad"
+    xdg = os.environ.get("XDG_CONFIG_HOME")
+    return (Path(xdg) if xdg else Path.home() / ".config") / "kicad"
+
+
+def _local_table_params() -> list:
+    params = []
+    root = _kicad_config_root()
+    if root is not None and root.is_dir():
+        for version_dir in sorted(root.iterdir()):
+            if not (_VERSION_DIR_RE.match(version_dir.name) and version_dir.is_dir()):
+                continue
+            for filename in _LOCAL_TABLE_NAMES:
+                path = version_dir / filename
+                if path.is_file():
+                    params.append(pytest.param(
+                        path,
+                        id=f"local/{version_dir.name}/{filename}",
+                        marks=pytest.mark.local_kicad,
+                    ))
+    if not params:
+        params.append(pytest.param(
+            None,
+            id="local/none",
+            marks=[
+                pytest.mark.local_kicad,
+                pytest.mark.skip(reason="no KiCad user config tables found"),
+            ],
+        ))
+    return params
+
+
+@pytest.mark.parametrize("path", _local_table_params())
+def test_roundtrip_local_kicad_table(path, request, assert_tiles):
+    # Personal data: bytes stay in memory, nothing is written or copied, no content in messages
+    _check_roundtrip(path.read_bytes(), request.node.callspec.id, assert_tiles)
+
+
+# ── Opt-in: WurthElektronik submodule (stress and performance corpus) ───────
+
+_WURTH_SKIP_REASON = (
+    "WurthElektronik submodule not checked out "
+    "(git submodule update --init WurthElektronik/KiCad-Library)"
+)
+
+
+def _wurth_files() -> list[Path]:
+    wurth = REPO / "WurthElektronik"
+    files = []
+    for pattern in ("*.kicad_sym", "*.kicad_mod", "*sym-lib-table", "*fp-lib-table"):
+        files.extend(p for p in wurth.rglob(pattern) if p.is_file())
+    return sorted(set(files), key=lambda p: p.relative_to(wurth).as_posix())
+
+
+def _wurth_params() -> list:
+    wurth = REPO / "WurthElektronik"
+    files = _wurth_files()
+    if not files:
+        return [pytest.param(
+            None,
+            id="wurth/none",
+            marks=[pytest.mark.wurth, pytest.mark.skip(reason=_WURTH_SKIP_REASON)],
+        )]
+    return [
+        pytest.param(p, id=f"wurth/{p.relative_to(wurth).as_posix()}", marks=pytest.mark.wurth)
+        for p in files
+    ]
+
+
+@pytest.mark.parametrize("path", _wurth_params())
+def test_roundtrip_wurth_file(path, request, tmp_path, assert_tiles):
+    data = path.read_bytes()
+    name = request.node.callspec.id
+    _check_roundtrip(data, name, assert_tiles)
+    src = decode_source(data, name)
+    target = tmp_path / "out.bin"
+    assert atomic_write_bytes(target, encode_source(src.text, src.bom)) is None
+    assert target.read_bytes() == data, f"{name}: atomic write changed the bytes"
+
+
+@pytest.mark.wurth
+def test_wurth_corpus_parse_budget():
+    files = _wurth_files()
+    if not files:
+        pytest.skip(_WURTH_SKIP_REASON)
+    start = time.perf_counter()
+    for p in files:
+        src = decode_source(p.read_bytes(), p.name)
+        assert isinstance(src, SourceText), f"{p.name}: decode failed"
+        parse(src.text)
+    elapsed = time.perf_counter() - start
+    assert elapsed < 60, f"parsing {len(files)} Wurth files took {elapsed:.1f}s (budget 60s)"
