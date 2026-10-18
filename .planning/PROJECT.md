@@ -22,6 +22,10 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ Generate `sym-lib-table` / `fp-lib-table`, merging in existing external entries, with numbered paired backups and restore — existing
 - ✓ Write `KICAD_LIB_GITHUB` and `CUSTOM_3DMODEL_DIR` into KiCad's `kicad_common.json` — existing
 - ✓ Background scan on a QThread, a colour-coded log panel, Rescan (Ctrl+Shift+R), and persisted settings (QSettings) — existing
+- ✓ Dependency manifest with pinned PySide6 (`requirements.txt` / `requirements-dev.txt`) — Phase 1
+- ✓ Headless pytest harness (offscreen Qt, strict markers), run bare from the repo root — Phase 1
+- ✓ Lossless S-expression layer: every repo `.kicad_sym`, `.kicad_mod` and lib table round-trips byte-identically; edits change only the targeted span and keep CRLF/LF — Phase 1
+- ✓ Atomic write helper (temp file + `os.replace`, read-only pre-check, locked-file retry) and `<name>_backup_<N>` backup helper in `fsutil.py` — Phase 1
 
 ### Active
 
@@ -51,14 +55,13 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 **Hardening of existing code (all High / Medium-High concerns from `.planning/codebase/CONCERNS.md`)**
 - [ ] Table merge no longer silently drops external entries that don't match the strict regex. Use a proper S-expression parse, and warn about entries that can't be classified.
 - [ ] File-system errors during Generate (locked or read-only tables) are caught and logged instead of raising inside a Qt slot
-- [ ] Atomic writes (temp file + `os.replace`) for the library tables and `kicad_common.json`, with a backup of `kicad_common.json` before it is modified
+- [ ] Atomic writes (temp file + `os.replace`) for the library tables and `kicad_common.json`, with a backup of `kicad_common.json` before it is modified (helpers exist since Phase 1; wiring into table generation and config writes is Phase 2)
 - [ ] KiCad version directories sorted numerically, so `10.0` is chosen over `9.0`
 - [ ] No overlapping scans: Rescan and Set KiCad Path can't start a scan while one is running
 - [ ] Generated S-expression values are escaped
 
 **Quality**
-- [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code
-- [ ] Dependency manifest with pinned PySide6
+- [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code (harness and parser tests done in Phase 1; importer and hardened-table tests still to come)
 
 ### Out of Scope
 
@@ -101,8 +104,8 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | One package per import | Simpler review; batch not needed | — Pending |
 | Commit in `Custom` + bump parent ref after confirmation; never push | Matches the CLAUDE.md git workflow; pushing stays a deliberate act | — Pending |
 | Fix all High/Medium-High concerns from the codebase map | Importer builds on table/scan/write code that has known data-loss risks | — Pending |
-| Headless pytest for importer and hardened logic | No tests today; parsers and merges are regression-prone | — Pending |
-| Replace regex parsing with an S-expression tokenizer | Needed for safe symbol merge and fixes the table-merge bug | — Pending |
+| Headless pytest for importer and hardened logic | No tests today; parsers and merges are regression-prone | ✓ Good — harness in place, 290+ tests at Phase 1 close |
+| Replace regex parsing with an S-expression tokenizer | Needed for safe symbol merge and fixes the table-merge bug | ✓ Good — span-splicing layer round-trips the whole corpus byte-identically (Phase 1) |
 
 ## Evolution
 
@@ -122,4 +125,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-18 after initialization*
+*Last updated: 2026-10-18 after Phase 1*

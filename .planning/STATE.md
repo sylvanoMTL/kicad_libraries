@@ -1,19 +1,19 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 01
-current_phase_name: Foundation
-status: executing
-stopped_at: Phase 1 context gathered
-last_updated: "2026-10-18T14:17:59.191Z"
+current_phase: 2
+current_phase_name: Hardening Existing Code
+status: planning
+stopped_at: Phase 01 complete, ready to plan Phase 2
+last_updated: "2026-10-18T18:42:32.731Z"
 last_activity: 2026-10-18
-last_activity_desc: Phase 01 execution started
-state_head: 92834260b397b91ca6bd644b09405ef613ad4e97
+last_activity_desc: Phase 01 complete, transitioned to Phase 2
+state_head: 2d15758297e7e244fc94b67e36010bd92a63ea99
 progress:
   total_phases: 7
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 6
-  completed_plans: 0
-  percent: 0
+  completed_plans: 6
+  percent: 14
 ---
 
 # Project State
@@ -23,21 +23,21 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-18)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 01 — Foundation
+**Current focus:** Phase 2 — Hardening Existing Code
 
 ## Current Position
 
-Phase: 01 (Foundation) — EXECUTING
-Plan: 1 of 6
-Status: Executing Phase 01
-Last activity: 2026-10-18 — Phase 01 execution started
+Phase: 2 — Hardening Existing Code
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-18 — Phase 01 complete, transitioned to Phase 2
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [█░░░░░░░░░] 14%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 0
+- Total plans completed: 6
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -45,7 +45,7 @@ Progress: [░░░░░░░░░░] 0%
 
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
-| - | - | - | - |
+| 01 | 6 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -64,6 +64,8 @@ Recent decisions affecting current work:
 - [Requirements]: The importer writes `Manufacturer` and `MPN` properties. Existing `MF` / `MP` / `MANUFACTURER` fields are left alone (migration is v2).
 - [Requirements]: 3D model saved as `<MPN>.<original ext>`. A file with the same SHA-256 is reused silently; different content is a per-item conflict.
 - [Requirements]: `kicad-cli` normalises only the incoming part, when available. The target library's version header is never changed.
+- [Phase 1]: `atomic_write_bytes` pre-checks read-only targets, retries `os.replace` on PermissionError for about 1 s, and reports `fs.locked` / `fs.write_failed` as Issues instead of raising.
+- [Phase 1]: `tests/` is in the scanner's `SKIP_DIRS`, so fixture libraries never reach Select All + Generate.
 - [Requirements]: Detached `Custom` HEAD: switch to `main` is offered only if HEAD is on `main`'s history, otherwise the commit is refused. Legacy `${KIPRJMOD}` model paths are fixed in one explicit cleanup commit (HARD-09).
 
 ### Pending Todos
@@ -72,6 +74,7 @@ None yet.
 
 ### Blockers/Concerns
 
+- [Phase 2]: `Severity(str, Enum)` hashes by member name, so `LogPanel.COLORS[Severity.WARNING]` raises KeyError. Index COLORS with `.value` when wiring Issues into the log panel.
 - [Phase 2]: The HARD-09 cleanup commit lands in `Custom`, which is on a detached HEAD with a worktree-private gitdir. Decide the branch state before committing (the same issue Phase 6 automates).
 - [Phase 4]: Research flag. Verify that KiCad 9/10 loads a `20211014` symbol spliced into a `20241209` library, and check `kicad-cli` normalisation on a staging copy.
 - [Phase 6]: Research flag. Spike git in this worktree early: detached HEAD, worktree-private module gitdir, and the owner's hooks on `commit -- Custom`.
@@ -88,5 +91,5 @@ Items acknowledged and deferred at milestone close, most recent first:
 ## Session Continuity
 
 Last session: 2026-10-18T12:56:04.052Z
-Stopped at: Phase 1 context gathered
-Resume file: .planning/phases/01-foundation/01-CONTEXT.md
+Stopped at: Phase 01 complete, ready to plan Phase 2
+Resume file: None

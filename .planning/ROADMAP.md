@@ -12,7 +12,7 @@ The importer is built bottom-up on a shared foundation. First comes a headless t
 
 Decimal phases appear between their surrounding integers in numeric order.
 
-- [ ] **Phase 1: Foundation** - Pinned dependencies, headless pytest harness, atomic writes and a lossless S-expression layer
+- [x] **Phase 1: Foundation** - Pinned dependencies, headless pytest harness, atomic writes and a lossless S-expression layer (completed 2026-10-18)
 - [ ] **Phase 2: Hardening Existing Code** - Table generation, KiCad detection, scanning and config writes made safe on the new foundation
 - [ ] **Phase 3: Package Intake and Naming** - Headless, safe reading of Ultra Librarian and loose-file packages, plus library name suggestion and sanitisation
 - [ ] **Phase 4: Plan and Install Core** - Headless, transactional install of a part into `Custom/` with linking, rollback and verification
@@ -33,7 +33,7 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. A targeted edit, such as changing one property value, changes only that span. The rest of the file stays byte-identical and its CRLF or LF line endings are kept.
   4. Writing over a locked or read-only file logs an error and leaves the original content intact, with no crash and no truncated file. A successful write replaces the file in one step (temp file + replace).
 
-**Plans**: 6/6 plans executed
+**Plans**: 6/6 plans complete
 
 Plans:
 **Wave 1**
@@ -141,7 +141,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 6/6 | In Progress | - |
+| 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 0/TBD | Not started | - |
 | 3. Package Intake and Naming | 0/TBD | Not started | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |

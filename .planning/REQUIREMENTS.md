@@ -9,11 +9,11 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 
 ### Foundation
 
-- [ ] **FOUND-01**: Developer can install pinned runtime and dev dependencies from `requirements.txt` / `requirements-dev.txt` (PySide6 pinned, pytest, pytest-qt)
-- [ ] **FOUND-02**: Developer can run a headless pytest suite (`pytest`) with no display, which includes Qt tests in offscreen mode
-- [ ] **FOUND-03**: Every `.kicad_sym`, `.kicad_mod` and lib-table file in the repo round-trips byte-identically through the S-expression layer when no edits are applied
-- [ ] **FOUND-04**: An edit made through the S-expression layer changes only the targeted span, keeps the file's line endings (CRLF/LF) and leaves the rest byte-identical
-- [ ] **FOUND-05**: Files written by the app are replaced atomically (temp file + replace) and a locked or read-only target produces a logged error, not a crash or truncated file
+- [x] **FOUND-01**: Developer can install pinned runtime and dev dependencies from `requirements.txt` / `requirements-dev.txt` (PySide6 pinned, pytest, pytest-qt)
+- [x] **FOUND-02**: Developer can run a headless pytest suite (`pytest`) with no display, which includes Qt tests in offscreen mode
+- [x] **FOUND-03**: Every `.kicad_sym`, `.kicad_mod` and lib-table file in the repo round-trips byte-identically through the S-expression layer when no edits are applied
+- [x] **FOUND-04**: An edit made through the S-expression layer changes only the targeted span, keeps the file's line endings (CRLF/LF) and leaves the rest byte-identical
+- [x] **FOUND-05**: Files written by the app are replaced atomically (temp file + replace) and a locked or read-only target produces a logged error, not a crash or truncated file
 
 ### Hardening
 
@@ -130,11 +130,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| FOUND-01 | Phase 1 | Pending |
-| FOUND-02 | Phase 1 | Pending |
-| FOUND-03 | Phase 1 | Pending |
-| FOUND-04 | Phase 1 | Pending |
-| FOUND-05 | Phase 1 | Pending |
+| FOUND-01 | Phase 1 | Complete |
+| FOUND-02 | Phase 1 | Complete |
+| FOUND-03 | Phase 1 | Complete |
+| FOUND-04 | Phase 1 | Complete |
+| FOUND-05 | Phase 1 | Complete |
 | HARD-01 | Phase 2 | Pending |
 | HARD-02 | Phase 2 | Pending |
 | HARD-03 | Phase 2 | Pending |
