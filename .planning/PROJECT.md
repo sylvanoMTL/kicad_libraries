@@ -44,7 +44,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 **Importer — install**
 - [ ] Merge the symbol into the target `.kicad_sym` without hand-editing (S-expression-aware, not regex-on-first-match)
 - [ ] Copy the footprint into the target `.pretty/` folder
-- [ ] Copy the 3D model into `Custom/3DModels/` and rewrite the footprint's model path to `${CUSTOM_3DMODEL_DIR}/<file>.step`
+- [ ] Copy the 3D model into `Custom/3DModels/` and point the footprint at `${CUSTOM_3DMODEL_DIR}/<file>.step`. Rewrite the existing `(model ...)` path, or insert a model block when the vendor footprint has none.
 - [ ] After install: rescan and regenerate `sym-lib-table` / `fp-lib-table`
 - [ ] After install: ask for confirmation, then commit the new part in the `Custom` submodule and bump the parent repo's submodule ref. Commit only, never push.
 
@@ -74,7 +74,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 
 - **Brownfield.** The importer extends `kicad_lib_manager/`, a layered PySide6 app with Qt-free services (`library_scanner.py`, `table_generator.py`), dataclass models, and a widgets package. See `.planning/codebase/ARCHITECTURE.md`.
 - **Existing parsing is regex-based** and flagged as fragile. Symbol merging and footprint model-path rewriting need a real S-expression tokenizer, which can also be used to fix the table-merge bug.
-- **Sample data:** only one example exists so far, `downloaded_examples/ul_CSD85301Q2.zip` (Ultra Librarian). It contains `KiCADv6/<timestamp>.kicad_sym` and `KiCADv6/footprints.pretty/DQK0006B.kicad_mod`, plus import guides, and no STEP model. The symbol file is named by timestamp, not part number.
+- **Sample data:** only one example exists so far, `downloaded_examples/ul_CSD85301Q2.zip` (Ultra Librarian). It contains `KiCADv6/<timestamp>.kicad_sym`, `KiCADv6/footprints.pretty/DQK0006B.kicad_mod`, import guides, and a STEP model `DLV0006A.stp` at the zip root, outside `KiCADv6/`. Its name matches neither the footprint nor the part. The symbol file is named by timestamp, not part number. The vendor footprint has no `(model ...)` block, so the importer must be able to insert one, not only rewrite an existing path. The symbol's `Footprint` field is the bare `DQK0006B` with no `Lib:` prefix, and `ki_fp_filters` repeats the vendor footprint name.
 - **Manual process being replaced** (from CLAUDE.md): download → move the `.kicad_mod` into `<Lib>.pretty/` → copy and paste the symbol into `<Lib>.kicad_sym` in the KiCad Symbol Editor → fix 3D paths to `${CUSTOM_3DMODEL_DIR}` → commit in the submodule, then update the parent repo.
 - **Repo layout:** `Custom/` is a git submodule (`sylvanoMTL/kicad_custom_library`) and is also detected as a separate repo by GSD. Work happens in the worktree `Kicad_Libraries-importer` on branch `feature/part-importer`.
 - **No tests exist today.** There's no lint config and no requirements file either.
