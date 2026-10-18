@@ -56,6 +56,10 @@ Requirements: FOUND-01 to FOUND-05. Existing modules (`table_generator`, `librar
 - **D-14:** Pin every dependency exactly. `requirements.txt`: `PySide6==6.12.0`. `requirements-dev.txt`: `-r requirements.txt`, `pytest==9.1.x` (the exact patch the researcher verified) and `pytest-qt==4.5.0`. Upgrades are deliberate.
 - **D-15:** The offscreen Qt test is a `LibraryTableWidget` symbol-to-footprint sync test. Populate the widget from a hand-built `ScanResult` with two sources, then check two things: toggling a symbol selects and deselects its linked footprints, and the sync is scoped per source (changing Custom symbols doesn't touch WurthElektronik footprints). This pins down current behaviour before Phase 2 changes rescans and nickname handling.
 
+### Resolved during planning (2026-10-18)
+- **D-16:** Add `"tests"` to `SKIP_DIRS` in `kicad_lib_manager/library_scanner.py`, with a regression test. This lets fixtures under `tests/fixtures/` keep real `.kicad_sym` / `.kicad_mod` names without showing up as a `tests` library source in the GUI scan. It is the one exception to "existing modules are not touched in Phase 1" (RESEARCH.md Open Question 1).
+- **D-17:** The owner approved the three D-14 pins (`pytest==9.1.1`, `pytest-qt==4.5.0`, `PySide6==6.12.0`), which the package-legitimacy check had flagged SUS only for missing download data or recent release. That approval is the human verification, so the install step runs without a `checkpoint:human-verify`.
+
 ### Claude's Discretion
 - Exact retry count and backoff inside the ~1 s window (D-05).
 - App-data backup path naming and cross-platform equivalents (D-06).
