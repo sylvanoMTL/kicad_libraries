@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from kicad_lib_manager.sexpr import Node, SexprError, apply_edits, parse, unquote
+from kicad_lib_manager.sexpr import Edit, Node, SexprError, apply_edits, parse, quote, unquote
 
 
 def _spans(root: Node) -> list[tuple[int, int, str]]:
@@ -267,3 +267,134 @@ def test_parse_is_thread_safe_and_deterministic():
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda _: _spans(parse(text)), range(8)))
     assert all(r == expected for r in results)
+
+
+# -- apply_edits splice contract --------------------------------------------
+
+
+def test_apply_edits_without_edits_returns_source():
+    assert apply_edits("abcdef", []) == "abcdef"
+
+
+def test_apply_edits_single_replace_keeps_prefix_and_suffix():
+    assert apply_edits("abcdef", [Edit(2, 4, "XY")]) == "abXYef"
+
+
+def test_apply_edits_pure_insert_and_pure_delete():
+    assert apply_edits("abcdef", [Edit(3, 3, "-")]) == "abc-def"
+    assert apply_edits("abcdef", [Edit(1, 4, "")]) == "aef"
+
+
+def test_apply_edits_order_of_input_does_not_matter():
+    edits = [Edit(0, 1, "A"), Edit(2, 3, "C"), Edit(4, 6, "EF")]
+    assert apply_edits("abcdef", list(reversed(edits))) == apply_edits("abcdef", edits) == "AbCdEF"
+
+
+def test_apply_edits_zero_width_inserts_keep_input_order():
+    assert apply_edits("abcdef", [Edit(2, 2, "1"), Edit(2, 2, "2")]) == "ab12cdef"
+    assert apply_edits("abcdef", [Edit(2, 2, "2"), Edit(2, 2, "1")]) == "ab21cdef"
+
+
+def test_apply_edits_insert_precedes_replace_at_same_offset():
+    expected = "abIRef"
+    assert apply_edits("abcdef", [Edit(2, 2, "I"), Edit(2, 4, "R")]) == expected
+    assert apply_edits("abcdef", [Edit(2, 4, "R"), Edit(2, 2, "I")]) == expected
+
+
+def test_apply_edits_touching_edits_are_allowed():
+    assert apply_edits("abcdef", [Edit(0, 2, "A"), Edit(2, 4, "B")]) == "ABef"
+
+
+def test_apply_edits_overlap_raises_value_error():
+    with pytest.raises(ValueError):
+        apply_edits("abcdef", [Edit(1, 3, "x"), Edit(2, 4, "y")])
+
+
+def test_apply_edits_insert_inside_replaced_span_is_overlap():
+    with pytest.raises(ValueError):
+        apply_edits("abcdef", [Edit(1, 4, "x"), Edit(2, 2, "y")])
+
+
+@pytest.mark.parametrize("edit", [Edit(-1, 0, ""), Edit(0, 99, ""), Edit(3, 2, "")])
+def test_apply_edits_out_of_range_raises_value_error(edit):
+    with pytest.raises(ValueError):
+        apply_edits("abcdef", [edit])
+
+
+def test_apply_edits_on_parsed_span_changes_only_that_span():
+    text = '(a "old" (b) c)\r\n'
+    root = parse(text)
+    target = root.children[0].children[1]
+    assert target.kind == "str"
+    out = apply_edits(text, [Edit(target.start, target.end, quote("new"))])
+    assert out == '(a "new" (b) c)\r\n'
+
+
+# -- quote / unquote --------------------------------------------------------
+
+
+def test_quote_plain_and_double_quote():
+    assert quote("a") == '"a"'
+    assert quote('a"b') == r'"a\"b"'
+
+
+def test_quote_escapes_backslash_once():
+    assert quote("a\\b") == r'"a\\b"'
+    assert quote('\\"') == r'"\\\""'
+
+
+def test_quote_escapes_lf_and_cr_but_not_tab():
+    q_lf = quote("x\ny")
+    assert "\\n" in q_lf and "\n" not in q_lf
+    q_cr = quote("x\ry")
+    assert "\\r" in q_cr and "\r" not in q_cr
+    assert quote("x\ty") == '"x\ty"'
+
+
+ROUND_TRIP_VALUES = [
+    "",
+    "plain",
+    'q"uote',
+    "back\\slash",
+    "trail\\",
+    "nl\nnl",
+    "cr\rcr",
+    "tab\there",
+    "10kΩ ±1%",
+    "(parens)",
+    "${VAR}/x.step",
+    '") (evil "',
+    "\\n is not a newline",
+    'all "of\\them"\n\r\t',
+]
+
+
+@pytest.mark.parametrize("value", ROUND_TRIP_VALUES)
+def test_unquote_inverts_quote(value):
+    assert unquote(quote(value)) == value
+
+
+@pytest.mark.parametrize("value", ROUND_TRIP_VALUES)
+def test_quoted_value_parses_as_one_str_token(value, assert_tiles):
+    text = f"(property {quote(value)} (id 1))"
+    root = _check(text, assert_tiles)
+    items = root.children[0].children
+    assert [c.kind for c in items] == ["atom", "str", "list"]
+    assert unquote(items[1].text) == value
+
+
+def test_unquote_leaves_atoms_unchanged():
+    assert unquote("F.Cu") == "F.Cu"
+    assert unquote("${KICAD_LIB_GITHUB}/x.kicad_sym") == "${KICAD_LIB_GITHUB}/x.kicad_sym"
+
+
+def test_unquote_unknown_escape_survives_verbatim():
+    assert unquote('"a\\qb"') == "a\\qb"
+
+
+def test_unquote_decodes_tab_escape():
+    assert unquote('"a\\tb"') == "a\tb"
+
+
+def test_unquote_escaped_backslash_before_n_stays_two_characters():
+    assert unquote(r'"a\\nb"') == "a\\nb"
