@@ -33,11 +33,11 @@ Decimal phases appear between their surrounding integers in numeric order.
   3. A targeted edit, such as changing one property value, changes only that span. The rest of the file stays byte-identical and its CRLF or LF line endings are kept.
   4. Writing over a locked or read-only file logs an error and leaves the original content intact, with no crash and no truncated file. A successful write replaces the file in one step (temp file + replace).
 
-**Plans**: 6 plans
+**Plans**: 1/6 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 01-01-PLAN.md — Tracer: one property edit end to end (models, sexpr, fsutil, kicad_files), pinned manifests, pytest config, offscreen Qt test, .gitattributes, tracked UL zip (wave 1)
+- [x] 01-01-PLAN.md — Tracer: one property edit end to end (models, sexpr, fsutil, kicad_files), pinned manifests, pytest config, offscreen Qt test, .gitattributes, tracked UL zip (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 01-02-PLAN.md — fsutil hardening: atomic-write failure matrix, numbered backups, EOL/BOM/encoding, Issue contract (wave 2)
@@ -141,7 +141,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
-| 1. Foundation | 0/6 | Not started | - |
+| 1. Foundation | 1/6 | In Progress | - |
 | 2. Hardening Existing Code | 0/TBD | Not started | - |
 | 3. Package Intake and Naming | 0/TBD | Not started | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
