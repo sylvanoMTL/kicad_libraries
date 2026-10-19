@@ -1,5 +1,5 @@
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -282,6 +282,112 @@ def symbol_insert_edit(target: LoadedFile, block: str) -> Edit:
         anchor = lib.children[-1]
         indent = "  "
     return Edit(anchor.end, anchor.end, eol + indent + normalize_eol(block, eol))
+
+
+def _extends_token(symbol_node: Node) -> Node | None:
+    """Return the name token of a direct (extends ...) child, or None."""
+    for child in symbol_node.children:
+        if child.head == "extends" and len(child.children) >= 2 and _is_token(child.children[1]):
+            return child.children[1]
+    return None
+
+
+def extends_name(symbol_node: Node) -> str | None:
+    """Return the unquoted parent name of a symbol that extends another, or None."""
+    token = _extends_token(symbol_node)
+    return unquote(token.text) if token is not None else None
+
+
+def symbol_unit(root: Node, name: str) -> list[SymbolRef] | None:
+    """Return the named symbol with its extends ancestors, parent first.
+
+    None when the symbol or a parent is missing from the file, or the extends chain loops.
+    """
+    chain: list[SymbolRef] = []
+    seen: set[str] = set()
+    current: str | None = name
+    while current is not None:
+        if current in seen:
+            return None
+        seen.add(current)
+        ref = find_symbol(root, current)
+        if ref is None:
+            return None
+        chain.append(ref)
+        current = extends_name(ref.node)
+    chain.reverse()
+    return chain
+
+
+def unit_library_text(loaded: LoadedFile, keep: Collection[str]) -> str:
+    """Return the file text with every top-level symbol not named in keep deleted.
+
+    Each deleted symbol takes the whitespace between it and the previous sibling with it,
+    so no blank line is left behind.
+    """
+    edits = []
+    for lib in loaded.root.children:
+        if lib.head != "kicad_symbol_lib":
+            continue
+        for index, child in enumerate(lib.children):
+            if child.head != "symbol" or len(child.children) < 2 or not _is_token(child.children[1]):
+                continue
+            if unquote(child.children[1].text) in keep:
+                continue
+            previous = lib.children[index - 1]
+            edits.append(Edit(previous.end, child.end, ""))
+    return apply_edits(loaded.source.text, edits)
+
+
+_SUB_SYMBOL_SUFFIX = "_([0-9]+)_([0-9]+)"
+
+
+def rename_symbol_edits(root: Node, old: str, new: str) -> list[Edit]:
+    """Return the edits that rename a symbol, its unit sub-symbols and every extends reference.
+
+    Names are compared unquoted, case-sensitively and exactly; a name that merely contains
+    old is never touched. Property values are not edited here.
+    """
+    if old == new:
+        return []
+    sub_pattern = re.compile(re.escape(old) + _SUB_SYMBOL_SUFFIX)
+    edits = []
+    for ref in find_symbols(root):
+        if ref.name == old:
+            edits.append(Edit(ref.name_node.start, ref.name_node.end, quote(new)))
+            for child in ref.node.children:
+                if child.head != "symbol" or len(child.children) < 2 or not _is_token(child.children[1]):
+                    continue
+                match = sub_pattern.fullmatch(unquote(child.children[1].text))
+                if match:
+                    token = child.children[1]
+                    edits.append(Edit(token.start, token.end, quote(f"{new}_{match[1]}_{match[2]}")))
+        parent = _extends_token(ref.node)
+        if parent is not None and unquote(parent.text) == old:
+            edits.append(Edit(parent.start, parent.end, quote(new)))
+    return edits
+
+
+def replace_exact_tokens(value: str, old: str, new: str) -> str:
+    """Replace the space-separated tokens of value that equal old, keeping the original spacing."""
+    return " ".join(new if token == old else token for token in value.split(" "))
+
+
+def block_text(text: str, node: Node) -> str:
+    """Return the source text of a node."""
+    return text[node.start:node.end]
+
+
+def symbol_replace_edit(target: LoadedFile, ref: SymbolRef, block: str) -> Edit:
+    """Return the edit that replaces exactly the symbol's span with block, in the target's EOL."""
+    return Edit(ref.node.start, ref.node.end, normalize_eol(block, target.source.eol))
+
+
+def symbol_insert_before_edit(target: LoadedFile, before: SymbolRef, block: str) -> Edit:
+    """Return the zero-width insert of a symbol block just before another symbol."""
+    eol = target.source.eol
+    indent = _line_indent(target.source.text, before.node.start)
+    return Edit(before.node.start, before.node.start, normalize_eol(block, eol) + eol + indent)
 
 
 @dataclass(frozen=True, eq=False)
