@@ -3,14 +3,10 @@ phase: 03
 review: 03-REVIEW.md
 titles: json
 findings:
-  - id: CR-01
+  - id: CR-03
     severity: critical
     disposition: open
-    title: "Untrusted KiCad files are parsed in memory with a 100 MB cap, a practical DoS (T-03-15 is not really closed)"
-  - id: CR-02
-    severity: critical
-    disposition: open
-    title: "`open_package` raises on corrupt LZMA members and on temp-folder failures, breaking its \"never raised\" contract"
+    title: "A single large quoted string costs about 2.7 GiB in the parser, so the 8 MiB cap and the node ceiling do not bound memory"
   - id: WR-01
     severity: warning
     disposition: open
@@ -55,17 +51,24 @@ findings:
     severity: info
     disposition: open
     title: "The layering guard only matches the attribute names `extract` and `extractall`"
-open: 13
-total: 13
-recorded: 2026-10-19T14:40:05.763Z
+  - id: CR-01
+    severity: critical
+    disposition: fixed
+    title: "Untrusted KiCad files are parsed in memory with a 100 MB cap, a practical DoS (T-03-15 is not really closed)"
+  - id: CR-02
+    severity: critical
+    disposition: fixed
+    title: "`open_package` raises on corrupt LZMA members and on temp-folder failures, breaking its \"never raised\" contract"
+open: 12
+total: 14
+recorded: 2026-10-19T16:35:17.760Z
 ---
 
 # Phase 03: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | open | - |
-| CR-02 | critical | open | - |
+| CR-03 | critical | open | - |
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
 | WR-03 | warning | open | - |
@@ -77,6 +80,8 @@ recorded: 2026-10-19T14:40:05.763Z
 | IN-04 | info | open | - |
 | IN-05 | info | open | - |
 | IN-06 | info | open | - |
+| CR-01 | critical | fixed | plan 03-08 (text byte cap + node ceiling, verified in re-review); string-token residual tracked as CR-03 (not in the current review) |
+| CR-02 | critical | fixed | plan 03-09 (_READ_ERRORS + intake.staging_failed, verified in re-review) (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
