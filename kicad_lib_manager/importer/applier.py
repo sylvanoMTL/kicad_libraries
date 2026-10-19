@@ -7,9 +7,11 @@ at any write (the same seam table_generator.write_tables uses).
 import hashlib
 import os
 import re
+import shutil
+import time
 from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
+from typing import NamedTuple
 
 from .. import fsutil
 from ..models import Issue, Severity
@@ -34,23 +36,108 @@ def _result(plan: InstallPlan, ok: bool, issues, touched=(), backup_dir=None) ->
     )
 
 
-def _undo(undo: list[tuple[str, Path, bytes | None]], backup_dir: Path | None) -> list[Issue]:
-    """Reverse the writes made so far; keep going past a failed step and report every leftover."""
+INSTALL_BACKUPS_KEPT = 10
+_BACKUP_FOLDER_RE = re.compile(r"(\d{8})-(\d{6})(?:-(\d+))?_.+")
+
+
+class _Undo(NamedTuple):
+    """How to reverse one step: restore is the on-disk spelling, written is what the install wrote."""
+
+    kind: str  # "file" | "mkdir"
+    restore: Path
+    written: Path
+    pre_image: bytes | None
+
+
+def _rollback_failed(text: str) -> Issue:
+    return _err("install.rollback_failed", text)
+
+
+def _drop_twin(step: _Undo) -> None:
+    """After a restore, remove the file written under another spelling when both spellings now coexist."""
+    if step.written.name == step.restore.name:
+        return
+    names = os.listdir(step.written.parent)
+    if step.written.name in names and step.restore.name in names:
+        step.written.unlink()
+
+
+def _rollback(undo: list[_Undo], backup_dir: Path | None) -> list[Issue]:
+    """Reverse the writes in reverse order; keep going past a failed step and report every leftover (INST-07)."""
     leftovers: list[Issue] = []
-    where = f" (backups are in {backup_dir})" if backup_dir is not None else ""
-    for kind, path, pre_image in reversed(undo):
+    where = f"; the original is in {backup_dir}" if backup_dir is not None else ""
+    # Several writes to one path restore once, from the earliest pre-image
+    first: dict[str, _Undo] = {}
+    for step in undo:
+        if step.kind == "file":
+            first.setdefault(str(step.restore).casefold(), step)
+    for step in reversed(undo):
+        if step.kind == "file" and first[str(step.restore).casefold()] is not step:
+            continue
         try:
-            if kind == "mkdir":
-                path.rmdir()
-            elif pre_image is None:
-                path.unlink(missing_ok=True)
+            if step.kind == "mkdir":
+                step.written.rmdir()
+            elif step.pre_image is None:
+                step.written.unlink(missing_ok=True)
             else:
-                problem = fsutil.atomic_write_bytes(path, pre_image)
+                problem = fsutil.atomic_write_bytes(step.restore, step.pre_image)
                 if problem is not None:
-                    leftovers.append(_err("install.rollback_failed", f"Could not restore {path}: {problem.text}{where}"))
+                    leftovers.append(_rollback_failed(f"{step.restore} could not be restored ({problem.text}){where}"))
+                _drop_twin(step)
+        except FileNotFoundError:
+            continue
         except OSError as e:
-            leftovers.append(_err("install.rollback_failed", f"Could not undo {path}: {e.strerror or e}{where}"))
+            what = "restored" if step.pre_image is not None else "removed"
+            leftovers.append(_rollback_failed(f"{step.written} could not be {what} ({e.strerror or e}){where}"))
     return leftovers
+
+
+def prune_install_backups(installs_dir: Path, keep: int = INSTALL_BACKUPS_KEPT) -> list[Issue]:
+    """Keep the newest `keep` install backup folders and delete the rest (D-19).
+
+    Only direct child folders named <YYYYmmdd>-<HHMMSS>[-<n>]_<library> are candidates, and a
+    link whose target lies elsewhere is never followed; anything else in installs_dir is left alone.
+    """
+    try:
+        root = installs_dir.resolve()
+        children = list(installs_dir.iterdir())
+    except OSError as e:
+        return [Issue(Severity.WARNING, "install.backup_prune_failed", f"Could not list the install backups in {installs_dir}: {e.strerror or e}")]
+    is_junction = getattr(os.path, "isjunction", lambda path: False)
+    found = []
+    for child in children:
+        match = _BACKUP_FOLDER_RE.fullmatch(child.name)
+        if match is None:
+            continue
+        try:
+            if child.is_symlink() or is_junction(child) or not child.is_dir() or child.resolve().parent != root:
+                continue
+        except OSError:
+            continue
+        # A suffix-less name is the first of its second, so -2 is newer than none
+        found.append(((match[1], match[2], int(match[3] or 1), child.name), child))
+    found.sort(key=lambda item: item[0], reverse=True)
+    issues: list[Issue] = []
+    for _, child in found[max(keep, 0):]:
+        try:
+            shutil.rmtree(child)
+        except OSError as e:
+            issues.append(Issue(Severity.WARNING, "install.backup_prune_failed", f"Could not delete the old install backup {child.name}: {e.strerror or e}"))
+    return issues
+
+
+def _backup_folder(root: Path, library: str) -> Path:
+    """installs/<timestamp>_<library>, with -2, -3 ... after the timestamp when the name is taken."""
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", library)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    installs = root / "installs"
+    number = 1
+    while True:
+        suffix = "" if number == 1 else f"-{number}"
+        folder = installs / f"{stamp}{suffix}_{safe}"
+        if not folder.exists():
+            return folder
+        number += 1
 
 
 def _name_taken(path: Path) -> bool:
@@ -182,29 +269,29 @@ def apply_plan(
     if rejected:
         return _result(plan, False, rejected)
 
-    # Back up every existing file the install changes, before the first write
+    # D-19: every existing file the install changes is backed up before the first write
     backup_dir: Path | None = None
+    housekeeping: list[Issue] = []
     if any(op.base_sha256 is not None for op in plan.ops):
-        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", plan.library)
-        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         root = backup_root if backup_root is not None else fsutil.default_backup_dir()
-        backup_dir = root / "installs" / f"{stamp}_{safe}"
+        backup_dir = _backup_folder(root, plan.library)
         for op in plan.ops:
             if op.base_sha256 is None:
                 continue
-            saved = fsutil.backup_file(op.path, backup_dir)
+            saved = fsutil.backup_file(op.listed_path or op.path, backup_dir)
             if isinstance(saved, Issue):
                 return _result(plan, False, [saved])
+        housekeeping = prune_install_backups(backup_dir.parent)
 
     # Writes in plan order; an entry reaches the undo list only after its write succeeded
-    undo: list[tuple[str, Path, bytes | None]] = []
+    undo: list[_Undo] = []
     touched: list[Path] = []
     failures: list[Issue] = []
     total = len(plan.ops)
     for index, op in enumerate(plan.ops):
         if progress is not None:
             progress(f"Writing {op.path.name}", index, total)
-        problem = _write(op, sources.get(index), undo, touched, pre_images.get(index))
+        problem = _write(plan, op, sources.get(index), undo, touched, pre_images.get(index))
         if problem is not None:
             failures.append(problem)
             break
@@ -214,42 +301,63 @@ def apply_plan(
         failures.extend(i for i in checked if i.severity is Severity.ERROR)
         warnings = [i for i in checked if i.severity is not Severity.ERROR]
     if failures:
-        leftovers = _undo(undo, backup_dir)
+        leftovers = _rollback(undo, backup_dir)
+        cause = failures[0].text
+        summary = "some files could not be restored" if leftovers else "every change was undone"
         return _result(
             plan,
             False,
-            [*failures, _err("install.rolled_back", "The install failed and every change was undone"), *leftovers],
+            [*failures, _err("install.rolled_back", f"The install failed ({cause}); {summary}"), *leftovers, *housekeeping],
             backup_dir=backup_dir,
         )
 
     issues = [*plan.issues]
     known = {i.code for i in issues}
     issues.extend(i for i in gate if i.code not in known)
+    issues.extend(housekeeping)
     issues.extend(warnings)
     issues.append(Issue(Severity.SUCCESS, "install.done", f"Installed {plan.symbol_name} into {plan.library}"))
     return _result(plan, True, issues, touched=touched, backup_dir=backup_dir)
 
 
+def _make_folders(plan: InstallPlan, op: FileOp, undo: list[_Undo]) -> Issue | None:
+    """Create op.path and any missing parents below Custom/, recording each folder for the rollback."""
+    custom = plan.layout.custom_dir.resolve()
+    missing: list[Path] = []
+    folder = op.path
+    while not folder.exists() and folder != folder.parent:
+        missing.append(folder)
+        folder = folder.parent
+    for folder in reversed(missing):
+        resolved = folder.resolve()
+        if resolved == custom or not resolved.is_relative_to(custom):
+            return _err("fs.write_failed", f"Could not create {op.path.name}: {custom} does not exist")
+        try:
+            folder.mkdir()
+        except OSError as e:
+            return _err("fs.write_failed", f"Could not create {folder.name}: {e.strerror or e}")
+        undo.append(_Undo("mkdir", folder, folder, None))
+    return None
+
+
 def _write(
+    plan: InstallPlan,
     op: FileOp,
     source_bytes: bytes | None,
-    undo: list[tuple[str, Path, bytes | None]],
+    undo: list[_Undo],
     touched: list[Path],
     pre_image: bytes | None,
 ) -> Issue | None:
     """Perform one op and record how to undo it; return an Issue when it failed."""
     if op.kind == "mkdir":
-        try:
-            op.path.mkdir()
-        except OSError as e:
-            return _err("fs.write_failed", f"Could not create {op.path.name}: {e.strerror or e}")
-        undo.append(("mkdir", op.path, None))
-        return None
+        return _make_folders(plan, op, undo)
     data = source_bytes if source_bytes is not None else op.data
+    if data is None:
+        return _err("fs.write_failed", f"Could not write {op.path.name}: the plan carries no content for it")
     problem = fsutil.atomic_write_bytes(op.path, data)
     if problem is not None:
         return problem
     # The pre-image goes back under the spelling the file had on disk
-    undo.append(("file", op.listed_path or op.path, pre_image))
+    undo.append(_Undo("file", op.listed_path or op.path, op.path, pre_image))
     touched.append(op.path)
     return None
