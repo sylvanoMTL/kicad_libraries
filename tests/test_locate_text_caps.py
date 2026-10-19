@@ -11,6 +11,8 @@ is still read. The hostile files are generated in memory or tmp_path; none is co
 import hashlib
 import os
 import random
+import sys
+import time
 import zipfile
 import zlib
 from pathlib import Path
@@ -24,16 +26,20 @@ from zipfixtures import (
     UL_ZIP,
     footprint,
     make_zip,
+    string_body,
     symbol_lib,
+    traced_peak,
 )
 
 from kicad_lib_manager.importer import package as package_module
 from kicad_lib_manager.importer.adapters import base
 from kicad_lib_manager.importer.adapters.base import Detection, locate
+from kicad_lib_manager.importer.candidate import ImportCandidate
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.package import Package, PackageFile, open_package
 from kicad_lib_manager.kicad_files import LoadedFile, parse_bytes
-from kicad_lib_manager.models import Severity
+from kicad_lib_manager.models import Issue, Severity
+from kicad_lib_manager.sexpr import parse, unquote
 
 _TOKENS = [b"(a)", b"(b 1)", b"()", b"(c d)", b"(e (f))"]
 
@@ -341,3 +347,177 @@ def test_real_files_are_below_both_caps():
         assert len(data) <= package_module.MAX_KICAD_TEXT_BYTES, name
         loaded = parse_bytes(data, name, max_nodes=package_module.MAX_KICAD_TEXT_NODES)
         assert isinstance(loaded, LoadedFile), f"{name}: {loaded}"
+
+
+# -- CR-03: one hostile quoted string at the byte cap ----------------------------------
+#
+# A single string is one node, so it passes the 8 MiB byte cap, the 200:1 ratio rule and the
+# node ceiling. The bound here is memory: at most 10 times sys.getsizeof of the decoded text.
+
+_SYMBOL_HEAD = (
+    '(kicad_symbol_lib (version 20211014) (generator "test")\n'
+    '  (symbol "P"\n'
+    '    (property "Reference" "U" (at 0 0 0))\n'
+    '    (property "'
+)
+_SYMBOL_TAIL = ' (at 0 0 0))\n  )\n)\n'
+_END_TO_END_SECONDS = 30  # catastrophic-regression bound only; memory is decided by traced_peak
+_MEMORY_FACTOR = 10
+
+
+def _string_symbol(
+    kind: str, total: int, *, as_name: bool = False, astral: bool = False, seed: int = 0
+) -> tuple[bytes, str]:
+    """Return a one-symbol file of exactly total bytes holding one raw hostile string, and that string.
+
+    The string is the value of property Description, or the name of a property whose value is "x".
+    It goes between the quotes without re-escaping, so symbol_lib (which doubles backslashes) is not used.
+    """
+    before = _SYMBOL_HEAD + ("" if as_name else 'Description" "')
+    after = ('" "x"' if as_name else '"') + _SYMBOL_TAIL
+    free = total - len(before) - len(after)  # the frame is ASCII, so bytes equal characters
+    if astral:
+        body = chr(0x1F600) + string_body(kind, free - 4, seed=seed)  # U+1F600 is 4 UTF-8 bytes
+    else:
+        body = string_body(kind, free, seed=seed)
+    data = (before + body + after).encode("utf-8")
+    assert len(data) == total
+    return data, body
+
+
+def _open_and_detect(path: Path) -> tuple[bool, ImportCandidate | None, list[Issue]]:
+    """Open a package and return (refused, candidate, issues); the zip is built before this is measured."""
+    with open_package(path, REPO_ROOT) as package:
+        refused = package.refused
+        candidate, issues = detect_candidate(package)
+    return refused, candidate, issues
+
+
+def _require_linear_tokenizer() -> None:
+    """Fail at once when the tokenizer is not linear on one long string, before any full-size input is built."""
+    text = '(d "' + string_body("plain", 64 * 1024) + '")'
+    _, peak = traced_peak(lambda: parse(text))
+    if peak > 3 * sys.getsizeof(text):
+        pytest.fail(
+            f"tokenizer is not linear on one long string: peak {peak} bytes for a {sys.getsizeof(text)} byte text"
+        )
+
+
+def _require_linear_unquote() -> None:
+    """Fail at once when unquote is not linear on one escape-dense token, before any full-size input is built."""
+    token = '"' + string_body("escape", 64 * 1024) + '"'
+    _, peak = traced_peak(lambda: unquote(token))
+    if peak > 6 * sys.getsizeof(token):
+        pytest.fail(f"unquote is not linear on one escape-dense token: peak {peak} bytes for a {sys.getsizeof(token)} byte token")
+
+
+def _measure(path: Path) -> tuple[tuple[bool, ImportCandidate | None, list[Issue]], int, float]:
+    """Return (open_and_detect result, tracemalloc peak, seconds) for one full-size call."""
+    t0 = time.perf_counter()
+    result, peak = traced_peak(lambda: _open_and_detect(path))
+    return result, peak, time.perf_counter() - t0
+
+
+def _assert_read_in_bounds(result, peak: int, seconds: float, data: bytes, *, description: str) -> None:
+    refused, candidate, issues = result
+    assert refused is False
+    assert not [i for i in issues if i.severity is Severity.ERROR]
+    assert not _codes(issues, "intake.unreadable_file")
+    assert candidate is not None
+    assert [s.name for s in candidate.symbols] == ["P"]
+    assert candidate.symbols[0].meta.description == description
+    assert [f.name for f in candidate.footprints] == ["GOOD"]
+    storage = sys.getsizeof(data.decode("utf-8"))
+    assert peak <= _MEMORY_FACTOR * storage, f"peak {peak} bytes for {storage} bytes of decoded text"
+    assert seconds < _END_TO_END_SECONDS
+
+
+def test_string_heavy_symbol_at_byte_cap_is_read_with_bounded_memory(tmp_path):
+    _require_linear_tokenizer()
+    data, body = _string_symbol("plain", package_module.MAX_KICAD_TEXT_BYTES)
+    assert len(data) == 8 * 1024 * 1024
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+
+
+@pytest.mark.parametrize("kind", ["escape", "mixed"])
+def test_string_heavy_escape_classes_at_byte_cap(tmp_path, kind):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol(kind, package_module.MAX_KICAD_TEXT_BYTES)
+    assert len(data) == 8 * 1024 * 1024
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    # Unknown escapes are kept verbatim, so the decoded Description equals the raw body
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+
+
+def test_string_heavy_property_name_at_byte_cap(tmp_path):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    # find_property unquotes every property name on each of the up to 16 part_meta lookups
+    data, _ = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES, as_name=True)
+    assert len(data) == 8 * 1024 * 1024
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description="")
+
+
+def test_string_heavy_folder_at_byte_cap(tmp_path):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES)
+    folder = tmp_path / "pick"
+    folder.mkdir()
+    (folder / "hostile.kicad_sym").write_bytes(data)
+    (folder / "good.kicad_mod").write_bytes(footprint("GOOD"))
+    before = _snapshot(folder)
+    result, peak, seconds = _measure(folder)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+    assert _snapshot(folder) == before
+
+
+def test_string_heavy_byte_cap_boundary(tmp_path, monkeypatch):
+    # (a) one byte over the cap is skipped with one WARNING and never reaches the parser
+    over, _ = _string_symbol("plain", package_module.MAX_KICAD_TEXT_BYTES + 1)
+    assert len(over) == package_module.MAX_KICAD_TEXT_BYTES + 1
+    zip_path = make_zip(tmp_path / "over.zip", [("big.kicad_sym", over), ("good.kicad_mod", footprint("GOOD"))])
+    seen = _spy_parse(monkeypatch)
+    refused, candidate, issues = _open_and_detect(zip_path)
+    assert refused is False
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert "big.kicad_sym" in skipped[0].text
+    assert "8388608" in skipped[0].text
+    assert "big.kicad_sym" not in seen
+    assert candidate.symbols == ()
+    assert [f.name for f in candidate.footprints] == ["GOOD"]
+    monkeypatch.undo()
+
+    # (b) one byte under the cap is read, with the same memory bound as the cap itself
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES - 1)
+    assert len(data) == package_module.MAX_KICAD_TEXT_BYTES - 1
+    zip_path = make_zip(tmp_path / "under.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+
+
+def test_string_heavy_astral_text_bound_is_in_storage_bytes(tmp_path):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES, astral=True)
+    assert len(data) == 8 * 1024 * 1024
+    # CPython stores text holding an astral character at 4 bytes per character, so raw bytes are not the yardstick
+    storage = sys.getsizeof(data.decode("utf-8"))
+    assert storage > 3 * len(data)
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)

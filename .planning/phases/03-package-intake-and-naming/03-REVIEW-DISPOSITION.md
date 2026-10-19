@@ -5,7 +5,7 @@ titles: json
 findings:
   - id: CR-03
     severity: critical
-    disposition: open
+    disposition: fixed
     title: "A single large quoted string costs about 2.7 GiB in the parser, so the 8 MiB cap and the node ceiling do not bound memory"
   - id: WR-01
     severity: warning
@@ -59,7 +59,7 @@ findings:
     severity: critical
     disposition: fixed
     title: "`open_package` raises on corrupt LZMA members and on temp-folder failures, breaking its \"never raised\" contract"
-open: 12
+open: 11
 total: 14
 recorded: 2026-10-19T16:35:17.760Z
 ---
@@ -68,7 +68,7 @@ recorded: 2026-10-19T16:35:17.760Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-03 | critical | open | - |
+| CR-03 | critical | fixed | plan 03-10 (linear string scan sexpr._string_end + linear unquote; string-heavy hostile tests); re-review pending |
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
 | WR-03 | warning | open | - |

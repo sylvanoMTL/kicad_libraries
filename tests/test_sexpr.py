@@ -1,10 +1,26 @@
 import random
+import re
+import sys
 import time
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from zipfixtures import (
+    REPO_ROOT,
+    STRING_KINDS,
+    UL_FOOTPRINT_MEMBER,
+    UL_SYMBOL_MEMBER,
+    UL_ZIP,
+    string_body,
+    traced_peak,
+)
 
-from kicad_lib_manager.sexpr import Edit, Node, SexprError, apply_edits, parse, quote, unquote
+from kicad_lib_manager import sexpr as sexpr_module
+from kicad_lib_manager.fsutil import decode_source
+from kicad_lib_manager.kicad_files import parse_bytes
+from kicad_lib_manager.models import Issue
+from kicad_lib_manager.sexpr import Edit, Node, SexprError, _string_end, apply_edits, parse, quote, unquote
 
 
 def _spans(root: Node) -> list[tuple[int, int, str]]:
@@ -455,3 +471,325 @@ def test_unquote_decodes_tab_escape():
 
 def test_unquote_escaped_backslash_before_n_stays_two_characters():
     assert unquote(r'"a\\nb"') == "a\\nb"
+
+
+# -- CR-03: one long string costs no more than its own text ---------------------------
+
+_KIB_512 = 512 * 1024
+
+
+@pytest.mark.parametrize("kind", STRING_KINDS)
+def test_one_string_token_parse_memory_is_linear(kind):
+    text = '(d "' + string_body(kind, _KIB_512) + '")'
+    root, peak = traced_peak(lambda: parse(text))
+    (lst,) = root.children
+    assert [c.kind for c in lst.children] == ["atom", "str"]
+    node = lst.children[1]
+    assert (node.start, node.end) == (3, len(text) - 1)
+    assert peak <= 3 * sys.getsizeof(text), f"{kind}: peak {peak} for a {sys.getsizeof(text)} byte text"
+
+
+def _parse_error(text: str):
+    try:
+        parse(text)
+    except SexprError as e:
+        return e
+    return None
+
+
+@pytest.mark.parametrize("kind", STRING_KINDS)
+def test_unterminated_long_string_memory_is_linear(kind):
+    text = '(d "' + string_body(kind, _KIB_512)
+    err, peak = traced_peak(lambda: _parse_error(text))
+    assert isinstance(err, SexprError)
+    assert err.code == "sexpr.unterminated"
+    assert (err.line, err.col) == (1, 4)
+    assert peak <= 3 * sys.getsizeof(text), f"{kind}: peak {peak} for a {sys.getsizeof(text)} byte text"
+
+
+# -- CR-03: unquote is linear, and returns what the pre-03-10 implementation returned ----
+#
+# The oracle below is a verbatim copy of the pre-03-10 _ESCAPE_RE, _UNESCAPES, _unescape and
+# unquote (git show <plan base>:kicad_lib_manager/sexpr.py). It imports nothing from sexpr, so it
+# stays independent of the code under test.
+
+_REFERENCE_ESCAPE = re.compile(r"\\(.)", re.S)
+_REFERENCE_UNESCAPES = {"\\": "\\", '"': '"', "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _reference_unescape(m: re.Match) -> str:
+    return _REFERENCE_UNESCAPES.get(m.group(1), m.group(0))
+
+
+def _reference_unquote(token: str) -> str:
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        return _REFERENCE_ESCAPE.sub(_reference_unescape, token[1:-1])
+    return token
+
+
+@pytest.mark.parametrize("kind", STRING_KINDS)
+def test_unquote_memory_is_linear(kind):
+    token = '"' + string_body(kind, _KIB_512) + '"'
+    expected = _reference_unquote(token)
+    result, peak = traced_peak(lambda: unquote(token))
+    assert result == expected
+    assert peak <= 6 * sys.getsizeof(token), f"{kind}: peak {peak} for a {sys.getsizeof(token)} byte token"
+
+
+_UNQUOTE_ALPHABET = ["\\", "\\", "\\", '"', "n", "r", "t", "\n", "\t", "a", "Ω", "\ud800"]
+
+
+def test_unquote_matches_reference():
+    rng = random.Random(1234)
+    for _ in range(200_000):
+        body = "".join(rng.choices(_UNQUOTE_ALPHABET, k=rng.randint(0, 12)))
+        for text in ('"' + body + '"', body):
+            assert unquote(text) == _reference_unquote(text), repr(text)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["\\\\", '\\"', "\\n", "\\r", "\\t", "\\q", "\\\n", "\\"],
+    ids=["backslash", "quote", "n", "r", "t", "unknown", "raw_lf", "trailing"],
+)
+def test_unquote_placeholder_path_matches_reference(extra):
+    for body in ("\ud800" + extra, extra + "\ud800", "a" + extra + "\ud800" + extra + "b", "\ud800\\\\" + extra):
+        token = '"' + body + '"'
+        assert unquote(token) == _reference_unquote(token), repr(token)
+
+
+def test_unquote_placeholder_never_comes_from_file_text():
+    data = b'(a "' + b"\xed\xa0\x80" + b'")'
+    for found in (decode_source(data, "x.kicad_sym"), parse_bytes(data, "x.kicad_sym")):
+        assert isinstance(found, Issue)
+        assert found.code == "fs.bad_encoding"
+
+
+# -- CR-03: behaviour pins against the pre-03-10 tokenizer ---------------------------------
+#
+# _reference_parse is a verbatim copy of the pre-03-10 _TOKEN and parse (git show <plan base>:
+# kicad_lib_manager/sexpr.py). It builds sexpr.Node and raises sexpr.SexprError, both unchanged
+# by 03-10, and uses a private copy of _line_col. Inputs stay small: the oracle backtracks.
+
+_REFERENCE_TOKEN = re.compile(
+    r'(?P<open>\()'
+    r'|(?P<close>\))'
+    r'|(?P<str>"(?:[^"\\]|\\.)*")'
+    r'|(?P<atom>[^ \t\r\n()"]+)'
+    r'|(?P<ws>[ \t\r\n]+)'
+    r'|(?P<bad>.)',
+    re.S,
+)
+
+
+def _reference_line_col(text: str, pos: int) -> tuple[int, int]:
+    line = text.count("\n", 0, pos) + 1
+    col = pos - (text.rfind("\n", 0, pos) + 1) + 1
+    return line, col
+
+
+def _reference_parse(text: str, *, max_nodes: int | None = None) -> Node:
+    root = Node(0, len(text), "root", [])
+    stack = [root]
+    limit = sys.maxsize if max_nodes is None else max_nodes
+    count = 0
+    for m in _REFERENCE_TOKEN.finditer(text):
+        kind = m.lastgroup
+        if kind == "ws":
+            continue
+        if kind == "bad":
+            raise SexprError(
+                "sexpr.unterminated",
+                "unterminated string or stray character",
+                *_reference_line_col(text, m.start()),
+            )
+        if kind != "close":
+            count += 1
+            if count > limit:
+                raise SexprError(
+                    "sexpr.too_many_nodes",
+                    f"more than {max_nodes} nodes",
+                    *_reference_line_col(text, m.start()),
+                )
+        if kind == "open":
+            node = Node(m.start(), -1, "list", [])
+            stack[-1].children.append(node)
+            stack.append(node)
+        elif kind == "close":
+            if len(stack) == 1:
+                raise SexprError(
+                    "sexpr.unbalanced",
+                    "unbalanced ')'",
+                    *_reference_line_col(text, m.start()),
+                )
+            stack.pop().end = m.end()
+        else:
+            stack[-1].children.append(Node(m.start(), m.end(), kind, [], m.group()))
+    if len(stack) != 1:
+        raise SexprError(
+            "sexpr.unclosed",
+            "unclosed '('",
+            *_reference_line_col(text, stack[-1].start),
+        )
+    return root
+
+
+def _outcome(fn, text: str, **kwargs):
+    """Return ("ok", node list) or ("err", code, line, col) for one parse function."""
+    try:
+        return ("ok", _walk(fn(text, **kwargs)))
+    except SexprError as e:
+        return ("err", e.code, e.line, e.col)
+
+
+_TOKEN_PIECES = ['"', "\\", "a", " ", "(", ")", "\n", "\r", '\\"', "\\\\", "x y", "\t", "Ω"]
+
+
+def _custom_texts() -> list[str]:
+    custom = REPO_ROOT / "Custom"
+    if not custom.is_dir():
+        return []
+    paths = sorted(custom.rglob("*.kicad_sym")) + sorted(custom.rglob("*.kicad_mod"))
+    return [p.read_bytes().decode("utf-8-sig") for p in paths]
+
+
+def test_tokenizer_matches_reference_parser():
+    rng = random.Random(1234)
+    forms = [
+        "".join(_random_form(rng) + rng.choice(["", " ", "\n", "\r\n"]) for _ in range(rng.randint(1, 3)))
+        for _ in range(2_000)
+    ]
+    rng = random.Random(99)
+    noise = ["".join(rng.choices(_TOKEN_PIECES, k=rng.randint(0, 14))) for _ in range(20_000)]
+    with zipfile.ZipFile(UL_ZIP) as zf:
+        ul = [zf.read(m).decode("utf-8-sig") for m in (UL_SYMBOL_MEMBER, UL_FOOTPRINT_MEMBER)]
+    texts = forms + noise + [_symbol_library(300)] + ul + _custom_texts()
+    assert len(texts) >= 22_000
+    for text in texts:
+        assert _outcome(parse, text) == _outcome(_reference_parse, text), repr(text[:200])
+    for text in forms:
+        for limit in (0, 1, 5):
+            assert _outcome(parse, text, max_nodes=limit) == _outcome(_reference_parse, text, max_nodes=limit), (
+                limit,
+                repr(text[:200]),
+            )
+
+
+def test_reference_corpus_includes_the_custom_library_files():
+    if not _custom_texts():
+        pytest.skip("Custom submodule not checked out (git submodule update --init Custom)")
+    assert any(text.lstrip().startswith("(kicad_symbol_lib") for text in _custom_texts())
+
+
+@pytest.mark.parametrize("ending", ["close", "trailing", "escaped_close", "edge_escaped_quote"])
+@pytest.mark.parametrize("pairs", [1023, 1024, 1025, 2048, 3072])
+def test_string_window_boundaries(pairs, ending):
+    pair = "\\a"
+    if ending == "close":
+        text = '"' + pair * pairs + '"'
+    elif ending == "trailing":
+        text = '"' + pair * pairs + "\\"
+    elif ending == "escaped_close":
+        text = '"' + pair * pairs + '\\"'
+    else:
+        text = '"' + pair * (pairs - 1) + '\\"' + '"'
+    assert _outcome(parse, text) == _outcome(_reference_parse, text)
+    expected_end = len(text) if ending in ("close", "edge_escaped_quote") else -1
+    assert _string_end(text, 0) == expected_end
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        '""',
+        '"a\\"b"',
+        '"a\\\\"',
+        '"abc\\',
+        '"abc\\"',
+        '"a\nb"',
+        '"a\r\nb"',
+        '"',
+        '(a\n  "abc',
+        '(x "\\\\\\"b" y)',
+    ],
+    ids=[
+        "empty",
+        "escaped_quote",
+        "escaped_backslash",
+        "trailing_backslash",
+        "unterminated_escaped_quote",
+        "raw_lf",
+        "raw_crlf",
+        "lone_quote",
+        "unterminated_on_line_2",
+        "mixed_escapes_in_list",
+    ],
+)
+def test_string_token_edge_cases(text):
+    assert _outcome(parse, text) == _outcome(_reference_parse, text)
+
+
+def test_empty_and_lone_quote_tokens():
+    (node,) = parse('""').children
+    assert (node.kind, node.text, node.start, node.end) == ("str", '""', 0, 2)
+    assert unquote(node.text) == ""
+    with pytest.raises(SexprError) as info:
+        parse('"')
+    assert info.value.code == "sexpr.unterminated"
+    assert (info.value.line, info.value.col) == (1, 1)
+
+
+def test_unterminated_string_is_reported_before_the_node_ceiling():
+    with pytest.raises(SexprError) as info:
+        parse('"abc', max_nodes=0)
+    assert (info.value.code, info.value.line, info.value.col) == ("sexpr.unterminated", 1, 1)
+    with pytest.raises(SexprError) as info:
+        parse('"abc"', max_nodes=0)
+    assert (info.value.code, info.value.line, info.value.col) == ("sexpr.too_many_nodes", 1, 1)
+    assert len(_walk(parse('(a "b")', max_nodes=3))) == 3
+    with pytest.raises(SexprError) as info:
+        parse('(a "b")', max_nodes=2)
+    assert (info.value.code, info.value.line, info.value.col) == ("sexpr.too_many_nodes", 1, 4)
+
+
+def _regex_opcodes(pattern: re.Pattern) -> set[str]:
+    """Return the names of every opcode in a compiled pattern's parse tree, nested groups included."""
+    try:
+        from re import _parser as sre_parse
+    except ImportError:  # Python < 3.11 keeps the parser in sre_parse
+        import sre_parse
+    found: set[str] = set()
+
+    def visit(obj) -> None:
+        if isinstance(obj, sre_parse.SubPattern):
+            for op, av in obj:
+                found.add(str(op))
+                visit(av)
+        elif isinstance(obj, (list, tuple)):
+            for item in obj:
+                visit(item)
+
+    visit(sre_parse.parse(pattern.pattern, pattern.flags))
+    return found
+
+
+def test_sexpr_patterns_have_no_python_3_11_syntax():
+    patterns = {name: obj for name, obj in vars(sexpr_module).items() if isinstance(obj, re.Pattern)}
+    assert {"_TOKEN", "_STRING_BODY", "_ESCAPE_RE"} <= set(patterns)
+    # Possessive repeats and atomic groups are Python 3.11+ syntax: re.error at import on the 3.10 floor
+    assert "MAX_REPEAT" in _regex_opcodes(patterns["_STRING_BODY"])  # proves the walker descends
+    for name, pattern in patterns.items():
+        opcodes = _regex_opcodes(pattern)
+        assert "POSSESSIVE_REPEAT" not in opcodes, name
+        assert "ATOMIC_GROUP" not in opcodes, name
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["(a " + "x" * _KIB_512 + ")", "(a" + " " * _KIB_512 + "b)"],
+    ids=["long_atom", "long_whitespace"],
+)
+def test_long_atom_and_whitespace_runs_parse_linearly(text):
+    # Audit pin: single-character-class repeats keep no per-character backtracking state
+    _, peak = traced_peak(lambda: parse(text))
+    assert peak <= 3 * sys.getsizeof(text)

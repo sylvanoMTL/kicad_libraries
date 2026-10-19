@@ -5,6 +5,7 @@ import io
 import stat
 import struct
 import zipfile
+import zlib
 from pathlib import PurePosixPath
 
 import pytest
@@ -17,6 +18,7 @@ from kicad_lib_manager.kicad_files import (
     footprint_name,
     parse_bytes,
 )
+from kicad_lib_manager.sexpr import parse
 from zipfixtures import (
     CURRENT_CUSTOM_FOOTPRINT_LIBS,
     CURRENT_CUSTOM_SYMBOL_LIBS,
@@ -24,6 +26,7 @@ from zipfixtures import (
     LEGACY_LIB_BYTES,
     LEGACY_MOD_BYTES,
     STEP_BYTES,
+    STRING_KINDS,
     UL_FOOTPRINT_MEMBER,
     UL_MODEL_MEMBER,
     UL_SYMBOL_MEMBER,
@@ -33,8 +36,10 @@ from zipfixtures import (
     footprint,
     lie_about_size,
     mark_encrypted,
+    string_body,
     symbol_lib,
     symlink_info,
+    traced_peak,
     unpack_sample,
     write_custom_layout,
     zip_bytes,
@@ -215,3 +220,56 @@ def test_current_custom_lists():
     assert "IC_IMU_TDK" in CURRENT_CUSTOM_SYMBOL_LIBS
     assert "IC_IMU_TDK" not in CURRENT_CUSTOM_FOOTPRINT_LIBS
     assert set(CURRENT_CUSTOM_FOOTPRINT_LIBS) < set(CURRENT_CUSTOM_SYMBOL_LIBS)
+
+
+# -- hostile string builders (CR-03) -----------------------------------------------
+
+_UNITS = {"plain": 1, "escape": 2, "mixed": 3, "special": 2}
+
+
+def _is_well_formed(body: str) -> bool:
+    """True when every backslash starts a complete pair and no raw quote appears."""
+    i = 0
+    while i < len(body):
+        if body[i] == '"':
+            return False
+        i += 2 if body[i] == "\\" else 1
+    return i == len(body)
+
+
+@pytest.mark.parametrize("size", [0, 1, 2, 3, 5, 600])
+@pytest.mark.parametrize("kind", STRING_KINDS)
+def test_string_body_shapes(kind, size):
+    body = string_body(kind, size)
+    assert len(body) == size
+    assert body.isascii()
+    lead = size % _UNITS[kind]
+    assert '"' not in body[:lead] and "\\" not in body[:lead]
+    if kind == "plain":
+        assert '"' not in body and "\\" not in body
+    assert _is_well_formed(body)
+    root = parse('(d "' + body + '")')
+    (lst,) = root.children
+    assert [c.kind for c in lst.children] == ["atom", "str"]
+    assert lst.children[1].text == '"' + body + '"'
+
+
+def test_string_body_is_seeded_and_low_ratio():
+    assert string_body("mixed", 600) == string_body("mixed", 600)
+    assert string_body("mixed", 600, seed=0) != string_body("mixed", 600, seed=1)
+    for kind in STRING_KINDS:
+        data = string_body(kind, 1024 * 1024).encode("ascii")
+        assert len(data) // len(zlib.compress(data)) < 200, kind
+    with pytest.raises(ValueError):
+        string_body("nope", 4)
+    with pytest.raises(ValueError):
+        string_body("plain", -1)
+
+
+def test_traced_peak_sees_an_allocation():
+    result, peak = traced_peak(lambda: bytearray(1 << 20))
+    assert len(result) == 1 << 20
+    assert peak >= 1 << 20
+    result, peak = traced_peak(lambda: None)
+    assert result is None
+    assert peak < 64 * 1024
