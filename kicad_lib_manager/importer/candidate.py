@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..models import Issue
+from .naming import NameResult, sanitize_filename, sanitize_name
 from .package import PackageFile
 
 
@@ -28,6 +29,11 @@ class SymbolItem:
     meta: PartMeta
     format_version: int | None = None
 
+    @property
+    def name_check(self) -> NameResult:
+        """The vendor name beside its sanitised form (success criterion 5). Phase 4 and the Phase 5 preview use .sanitized as the default target name and show both."""
+        return sanitize_name(self.name)
+
 
 @dataclass(frozen=True)
 class FootprintItem:
@@ -38,11 +44,21 @@ class FootprintItem:
     model_paths: tuple[str, ...] = ()
     has_embedded_files: bool = False
 
+    @property
+    def name_check(self) -> NameResult:
+        """The vendor name beside its sanitised form (success criterion 5). Phase 4 and the Phase 5 preview use .sanitized as the default target name and show both."""
+        return sanitize_name(self.name)
+
 
 @dataclass(frozen=True)
 class ModelItem:
     filename: str
     file: PackageFile
+
+    @property
+    def name_check(self) -> NameResult:
+        """The vendor name beside its sanitised form (success criterion 5). Phase 4 and the Phase 5 preview use .sanitized as the default target name and show both."""
+        return sanitize_filename(self.filename)
 
 
 @dataclass(frozen=True)
