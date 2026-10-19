@@ -24,6 +24,7 @@ GENERIC_CONFIDENCE = 0.1
 
 _BOM = b"\xef\xbb\xbf"
 _ASCII_SPACE = b" \t\r\n\x0b\x0c"
+_LISTED_NAMES = 20
 
 MANUFACTURER_FIELDS = ("Manufacturer", "MF", "MANUFACTURER", "Manufacturer_Name")
 MPN_FIELDS = ("MPN", "MP", "Manufacturer_Part_Number", "MANUFACTURER_PART_NUMBER")
@@ -156,6 +157,67 @@ def _locate_footprint(pf: PackageFile, loaded, issues: list[Issue]) -> Footprint
     )
 
 
+def _name_list(names: list[str]) -> str:
+    """Join up to 20 names with ", " and summarise the rest as "and N more"."""
+    shown = ", ".join(names[:_LISTED_NAMES])
+    extra = len(names) - _LISTED_NAMES
+    return f"{shown}, and {extra} more" if extra > 0 else shown
+
+
+def _legacy_rules(
+    package: Package,
+    symbols: list[SymbolItem],
+    footprints: list[FootprintItem],
+    models: list[ModelItem],
+) -> list[Issue]:
+    """Apply the KiCad 5 decision matrix (D-10, D-11, D-12, A5) to the located v6+ items."""
+    name = package.source.name
+    legacy = list(package.legacy)
+    symbol_side = [n for n in legacy if PurePosixPath(n).suffix.casefold() in (".lib", ".dcm")]
+    footprint_side = [n for n in legacy if PurePosixPath(n).suffix.casefold() == ".mod"]
+    sym6, fp6 = bool(symbols), bool(footprints)
+    if not sym6 and not fp6:
+        if legacy:
+            return [
+                Issue(
+                    Severity.ERROR,
+                    "intake.legacy_only",
+                    f"{name} only holds KiCad 5 files ({_name_list(legacy)}); re-download as KiCad v6+",
+                )
+            ]
+        return [Issue(Severity.ERROR, "intake.nothing_found", f"{name} holds no KiCad v6+ symbol or footprint")]
+    if sym6 and not fp6 and footprint_side:
+        return [
+            Issue(
+                Severity.ERROR,
+                "intake.half_legacy",
+                f"{name} has a KiCad v6+ symbol but its footprint only exists as KiCad 5 files "
+                f"({_name_list(footprint_side)}); re-download as KiCad v6+",
+            )
+        ]
+    if fp6 and not sym6 and symbol_side:
+        return [
+            Issue(
+                Severity.ERROR,
+                "intake.half_legacy",
+                f"{name} has a KiCad v6+ footprint but its symbol only exists as KiCad 5 files "
+                f"({_name_list(symbol_side)}); re-download as KiCad v6+",
+            )
+        ]
+    issues: list[Issue] = []
+    if legacy:
+        issues.append(
+            Issue(Severity.INFO, "intake.legacy_ignored", f"Ignored KiCad 5 files in {name}: {_name_list(legacy)}")
+        )
+    if not fp6:
+        issues.append(Issue(Severity.WARNING, "intake.no_footprint", f"{name} holds a symbol but no footprint"))
+    if not sym6:
+        issues.append(Issue(Severity.WARNING, "intake.no_symbol", f"{name} holds a footprint but no symbol"))
+    if not models:
+        issues.append(Issue(Severity.INFO, "intake.no_model", f"{name} holds no 3D model"))
+    return issues
+
+
 def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | None, list[Issue]]:
     """Find the symbols, footprints and models of a staged package; names come from inside the files."""
     issues: list[Issue] = []
@@ -184,6 +246,9 @@ def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | No
             item = _locate_footprint(pf, loaded, issues)
             if item is not None:
                 footprints.append(item)
+    issues.extend(_legacy_rules(package, symbols, footprints, models))
+    if any(i.severity is Severity.ERROR for i in issues):
+        return None, issues
     candidate = ImportCandidate(
         vendor=detection.vendor,
         confidence=detection.confidence,

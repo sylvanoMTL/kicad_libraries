@@ -10,4 +10,6 @@ class LooseAdapter:
     name = "Loose"
 
     def detect(self, package: Package) -> Detection | None:
-        return None
+        if package.kind != "folder":
+            return None
+        return Detection(self.name, LOOSE_CONFIDENCE, ("folder of loose files",))
