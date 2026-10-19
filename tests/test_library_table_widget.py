@@ -248,3 +248,284 @@ def test_updating_flag_is_clear_after_operations(qtbot):
     w.deselect_all()
 
     assert w._updating is False
+
+
+# ── collision mark and mutual exclusion (D-01, HARD-08) ──
+
+SAME_SYM_C = "Custom/Symbols/Same.kicad_sym"
+SAME_SYM_W = "WurthElektronik/KiCad-Library/symbols/Same.kicad_sym"
+OWN_SYM_C = "Custom/Symbols/Own_C.kicad_sym"
+OWN_SYM_W = "WurthElektronik/KiCad-Library/symbols/Own_W.kicad_sym"
+OWN_FP_C = "Custom/Footprints/Own_C.pretty"
+OWN_FP_W = "WurthElektronik/KiCad-Library/footprints/Own_W.pretty"
+
+
+def _collision_scan():
+    """Symbols and footprints named 'Same' collide between Custom and WurthElektronik.
+
+    The Wurth 'Own_W' symbol references both its own footprint and 'Same', so the Wurth
+    'Same' footprint is wanted by a selected symbol and only the peer rule can hold it back.
+    """
+    return ScanResult(
+        symbol_libs=[
+            SymbolLibrary(
+                "Same", SAME_SYM_C, "Custom",
+                footprint_refs=[FootprintRef("Same", "A", True)],
+                collision_peers=[SAME_SYM_W],
+            ),
+            SymbolLibrary(
+                "Own_C", OWN_SYM_C, "Custom",
+                footprint_refs=[FootprintRef("Own_C", "A", True)],
+            ),
+            SymbolLibrary(
+                "Same", SAME_SYM_W, "WurthElektronik",
+                footprint_refs=[FootprintRef("Same", "A", True)],
+                collision_peers=[SAME_SYM_C],
+            ),
+            SymbolLibrary(
+                "Own_W", OWN_SYM_W, "WurthElektronik",
+                footprint_refs=[FootprintRef("Own_W", "A", True), FootprintRef("Same", "B", True)],
+            ),
+        ],
+        footprint_libs=[
+            FootprintLibrary("Same", SAME_FP_C, "Custom", collision_peers=[SAME_FP_W]),
+            FootprintLibrary("Own_C", OWN_FP_C, "Custom"),
+            FootprintLibrary("Same", SAME_FP_W, "WurthElektronik", collision_peers=[SAME_FP_C]),
+            FootprintLibrary("Own_W", OWN_FP_W, "WurthElektronik"),
+        ],
+    )
+
+
+def _lib(scan, rel_path):
+    for lib in [*scan.symbol_libs, *scan.footprint_libs]:
+        if lib.rel_path == rel_path:
+            return lib
+    raise KeyError(rel_path)
+
+
+def _assert_invariants(w, scan):
+    """At most one selected per collided pair, no stuck guard, nicknames untouched."""
+    assert w._updating is False
+    for libs, items in ((scan.symbol_libs, w._sym_items), (scan.footprint_libs, w._fp_items)):
+        for lib in libs:
+            assert items[lib.rel_path].text(0) == lib.nickname
+            for peer in lib.collision_peers:
+                assert not (lib.selected and _lib(scan, peer).selected)
+            # item state mirrors the model flag
+            expected = Qt.CheckState.Checked if lib.selected else Qt.CheckState.Unchecked
+            assert items[lib.rel_path].checkState(0) == expected
+
+
+def test_collided_symbol_is_marked_with_collision_status_and_tooltip(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    for rel_path, peer in ((SAME_SYM_C, SAME_SYM_W), (SAME_SYM_W, SAME_SYM_C)):
+        item = _sym_item(w, rel_path)
+        assert item.text(0) == "Same"
+        assert item.text(3) == "Collision"
+        assert not item.icon(3).isNull()
+        assert peer in item.toolTip(0)
+        for col in range(item.columnCount()):
+            assert item.foreground(col).color().name().upper() == "#CC7700"
+
+    # A non-collided symbol keeps the normal status
+    assert _sym_item(w, OWN_SYM_C).text(3) == "OK"
+
+
+def test_collided_footprint_is_marked_with_collision_status_and_tooltip(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    for rel_path, peer in ((SAME_FP_C, SAME_FP_W), (SAME_FP_W, SAME_FP_C)):
+        item = _fp_item(w, rel_path)
+        assert item.text(0) == "Same"
+        assert item.text(2) == "Collision"
+        assert not item.icon(2).isNull()
+        assert peer in item.toolTip(0)
+        for col in range(item.columnCount()):
+            assert item.foreground(col).color().name().upper() == "#CC7700"
+
+    assert _fp_item(w, OWN_FP_C).text(2) == "OK"
+
+
+def test_collision_tooltip_also_mentions_missing_footprints(qtbot):
+    scan = ScanResult(symbol_libs=[
+        SymbolLibrary(
+            "Same", SAME_SYM_C, "Custom",
+            footprint_refs=[FootprintRef("Gone", "A", False)],
+            collision_peers=[SAME_SYM_W],
+        ),
+        SymbolLibrary("Same", SAME_SYM_W, "WurthElektronik", collision_peers=[SAME_SYM_C]),
+    ])
+    w = _make_widget(qtbot, scan)
+
+    item = _sym_item(w, SAME_SYM_C)
+    assert item.text(3) == "Collision"
+    assert "Missing FP" in item.toolTip(0)
+
+
+def test_checking_a_collided_symbol_unchecks_its_peer(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+    same_c, same_w = _lib(scan, SAME_SYM_C), _lib(scan, SAME_SYM_W)
+
+    _sym_item(w, SAME_SYM_W).setCheckState(0, Qt.CheckState.Checked)
+    assert (same_c.selected, same_w.selected) == (False, True)
+    _assert_invariants(w, scan)
+
+    _sym_item(w, SAME_SYM_C).setCheckState(0, Qt.CheckState.Checked)
+    assert (same_c.selected, same_w.selected) == (True, False)
+    assert _sym_item(w, SAME_SYM_W).checkState(0) == Qt.CheckState.Unchecked
+    _assert_invariants(w, scan)
+
+    # and the reverse
+    _sym_item(w, SAME_SYM_W).setCheckState(0, Qt.CheckState.Checked)
+    assert (same_c.selected, same_w.selected) == (False, True)
+    _assert_invariants(w, scan)
+
+
+def test_checking_a_collided_footprint_unchecks_its_peer(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+    same_c, same_w = _lib(scan, SAME_FP_C), _lib(scan, SAME_FP_W)
+
+    _fp_item(w, SAME_FP_W).setCheckState(0, Qt.CheckState.Checked)
+    _fp_item(w, SAME_FP_C).setCheckState(0, Qt.CheckState.Checked)
+    assert (same_c.selected, same_w.selected) == (True, False)
+    _assert_invariants(w, scan)
+
+    _fp_item(w, SAME_FP_W).setCheckState(0, Qt.CheckState.Checked)
+    assert (same_c.selected, same_w.selected) == (False, True)
+    _assert_invariants(w, scan)
+
+
+def test_checking_group_header_selects_custom_same_and_unchecks_wurth_same(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+    same_c, same_w = _lib(scan, SAME_SYM_C), _lib(scan, SAME_SYM_W)
+
+    _sym_item(w, SAME_SYM_W).setCheckState(0, Qt.CheckState.Checked)
+    w._sym_tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
+
+    assert (same_c.selected, same_w.selected) == (True, False)
+    _assert_invariants(w, scan)
+
+
+def test_group_header_with_two_same_source_peers_selects_at_most_one(qtbot):
+    a, b = "Custom/A/Same.kicad_sym", "Custom/B/Same.kicad_sym"
+    scan = ScanResult(symbol_libs=[
+        SymbolLibrary("Same", a, "Custom", collision_peers=[b]),
+        SymbolLibrary("Same", b, "Custom", collision_peers=[a]),
+    ])
+    w = _make_widget(qtbot, scan)
+
+    w._sym_tree.topLevelItem(0).setCheckState(0, Qt.CheckState.Checked)
+
+    assert sum(lib.selected for lib in scan.symbol_libs) == 1
+    _assert_invariants(w, scan)
+
+
+def test_unchecking_a_symbol_leaves_a_collided_peer_alone(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    _sym_item(w, SAME_SYM_C).setCheckState(0, Qt.CheckState.Checked)
+    _sym_item(w, SAME_SYM_C).setCheckState(0, Qt.CheckState.Unchecked)
+
+    assert not _lib(scan, SAME_SYM_C).selected
+    assert not _lib(scan, SAME_SYM_W).selected
+    _assert_invariants(w, scan)
+
+
+def test_select_all_prefers_custom_for_collided_pairs(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    w.select_all()
+
+    assert _lib(scan, SAME_SYM_C).selected is True
+    assert _lib(scan, SAME_SYM_W).selected is False
+    assert _lib(scan, SAME_FP_C).selected is True
+    assert _lib(scan, SAME_FP_W).selected is False
+    # every non-collided library is selected
+    for rel_path in (OWN_SYM_C, OWN_SYM_W, OWN_FP_C, OWN_FP_W):
+        assert _lib(scan, rel_path).selected is True
+    _assert_invariants(w, scan)
+
+
+def test_select_all_twice_gives_the_same_selection(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    w.select_all()
+    first = [lib.selected for lib in [*scan.symbol_libs, *scan.footprint_libs]]
+    w.select_all()
+    second = [lib.selected for lib in [*scan.symbol_libs, *scan.footprint_libs]]
+
+    assert first == second
+    _assert_invariants(w, scan)
+
+
+def test_select_all_ignores_a_previously_selected_wurth_peer(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    _sym_item(w, SAME_SYM_W).setCheckState(0, Qt.CheckState.Checked)
+    w.select_all()
+
+    assert _lib(scan, SAME_SYM_C).selected is True
+    assert _lib(scan, SAME_SYM_W).selected is False
+    _assert_invariants(w, scan)
+
+
+def test_deselect_all_clears_everything_after_select_all(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    w.select_all()
+    w.deselect_all()
+
+    assert not any(lib.selected for lib in [*scan.symbol_libs, *scan.footprint_libs])
+    _assert_invariants(w, scan)
+
+
+def test_selected_wurth_symbol_does_not_check_wurth_footprint_when_custom_peer_selected(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    # Custom 'Same' footprint is selected, then a Wurth symbol that references 'Same' is checked
+    _fp_item(w, SAME_FP_C).setCheckState(0, Qt.CheckState.Checked)
+    _sym_item(w, OWN_SYM_W).setCheckState(0, Qt.CheckState.Checked)
+
+    assert _lib(scan, SAME_FP_C).selected is True
+    assert _lib(scan, SAME_FP_W).selected is False
+    assert _lib(scan, OWN_FP_W).selected is True
+    _assert_invariants(w, scan)
+
+
+def test_switching_collided_symbol_moves_its_footprint_too(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    _sym_item(w, SAME_SYM_W).setCheckState(0, Qt.CheckState.Checked)
+    assert _lib(scan, SAME_FP_W).selected is True
+    _sym_item(w, SAME_SYM_C).setCheckState(0, Qt.CheckState.Checked)
+
+    # Wurth symbol dropped, so the Wurth footprint is released and the Custom one taken
+    assert _lib(scan, SAME_FP_W).selected is False
+    assert _lib(scan, SAME_FP_C).selected is True
+    _assert_invariants(w, scan)
+
+
+def test_collision_handling_never_renames_a_library(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    w.select_all()
+    w.deselect_all()
+    _sym_item(w, SAME_SYM_W).setCheckState(0, Qt.CheckState.Checked)
+
+    assert [lib.nickname for lib in scan.symbol_libs] == ["Same", "Own_C", "Same", "Own_W"]
+    assert [lib.nickname for lib in scan.footprint_libs] == ["Same", "Own_C", "Same", "Own_W"]
+    _assert_invariants(w, scan)
