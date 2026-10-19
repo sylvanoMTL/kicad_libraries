@@ -4,7 +4,7 @@ from pathlib import Path
 
 from .fsutil import SourceText, decode_source, read_source
 from .models import Issue, Severity
-from .sexpr import Node, SexprError, parse, unquote
+from .sexpr import Edit, Node, SexprError, parse, quote, unquote
 
 _LIB_FIELDS = ("name", "type", "uri", "options", "descr")
 
@@ -148,6 +148,11 @@ def find_models(footprint_node: Node) -> list[ModelRef]:
         if path_node.kind in ("str", "atom"):
             found.append(ModelRef(unquote(path_node.text), child, path_node))
     return found
+
+
+def retarget_model(ref: ModelRef, new_path: str) -> Edit:
+    """Return the edit that replaces only the model path token."""
+    return Edit(ref.path_node.start, ref.path_node.end, quote(new_path))
 
 
 @dataclass(frozen=True, eq=False)
