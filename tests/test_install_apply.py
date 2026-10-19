@@ -136,8 +136,8 @@ def test_gate_runs_on_planned_bytes(custom_copy, ul_package, tmp_path):
     assert fake.inputs[1] == {footprint_op.path.name: footprint_op.data}
 
 
-def test_gate_blames_merge_or_target_with_the_original_bytes(custom_copy, ul_package, tmp_path):
-    plan = _ul_plan(custom_copy, ul_package)
+def test_gate_blames_merge_or_target_with_the_original_bytes(hand_layout):
+    plan = _hand_plan(hand_layout, new_library=False)
     fake = FakeCli({"sym upgrade": ["reject", "upgrade"]})
 
     issues = applier.run_load_gate(_with_cli(plan, fake))
@@ -145,24 +145,23 @@ def test_gate_blames_merge_or_target_with_the_original_bytes(custom_copy, ul_pac
     (issue,) = _errors(issues)
     assert issue.code == "install.cli_gate_failed"
     assert "the merged part is the cause" in issue.text
-    original = plan.symbol_lib_path.read_bytes()
-    assert fake.inputs[1] == {f"{UL_LIBRARY}.kicad_sym": original}
+    assert fake.inputs[1] == {f"{LIB}.kicad_sym": plan.symbol_lib_path.read_bytes()}
 
 
-def test_gate_standalone_writes_nothing(custom_copy, ul_package, tmp_path, snapshot):
-    plan = _ul_plan(custom_copy, ul_package)
-    before = snapshot(custom_copy.custom_dir)
+def test_gate_standalone_writes_nothing(hand_layout, snapshot):
+    plan = _hand_plan(hand_layout, new_library=False)
+    before = snapshot(hand_layout.custom_dir)
 
     assert applier.run_load_gate(_with_cli(plan, FakeCli())) == []
     assert _errors(applier.run_load_gate(_with_cli(plan, FakeCli({"fp upgrade": "reject"}))))
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(hand_layout.custom_dir) == before
 
 
-def test_gate_skipped_without_cli(custom_copy, ul_package, tmp_path):
-    plan = _ul_plan(custom_copy, ul_package)
+def test_gate_skipped_without_cli(hand_layout):
+    plan = _hand_plan(hand_layout, new_library=False)
     assert plan.tools.kicad_cli is None
 
-    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
 
     assert result.ok, result.issues
     assert _codes(result.issues).count("install.cli_not_found") == 1
@@ -207,17 +206,17 @@ def test_stale_plan_target_changed(custom_copy, ul_package, tmp_path, snapshot):
     assert not (tmp_path / "bk").exists()
 
 
-@pytest.mark.parametrize("name", ["DQK0006B.kicad_mod", "dqk0006b.KICAD_MOD"])
-def test_stale_plan_created_path_exists(custom_copy, ul_package, tmp_path, snapshot, name):
-    plan = _ul_plan(custom_copy, ul_package)
+@pytest.mark.parametrize("name", ["FP.kicad_mod", "fp.KICAD_MOD"])
+def test_stale_plan_created_path_exists(hand_layout, snapshot, name):
+    plan = _hand_plan(hand_layout, new_library=False)
     (plan.pretty_path / name).write_bytes(b"(footprint)")
-    before = snapshot(custom_copy.custom_dir)
+    before = snapshot(hand_layout.custom_dir)
 
-    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
 
     assert not result.ok
     assert "install.stale_plan" in _codes(_errors(result.issues))
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(hand_layout.custom_dir) == before
 
 
 def test_stale_plan_new_library_folder_appeared(hand_layout):
@@ -383,17 +382,17 @@ def _link_dir(link: Path, target: Path) -> None:
 # -- D-19 backups --------------------------------------------------------------------------
 
 
-def test_backup_folder_named_and_contains_preimage(custom_copy, ul_package, tmp_path):
-    plan = _ul_plan(custom_copy, ul_package)
+def test_backup_folder_named_and_contains_preimage(hand_layout):
+    plan = _hand_plan(hand_layout, new_library=False)
     original = plan.symbol_lib_path.read_bytes()
 
-    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
 
     assert result.ok, result.issues
-    assert result.backup_dir.parent == tmp_path / "bk" / "installs"
-    assert re.fullmatch(rf"\d{{8}}-\d{{6}}(-\d+)?_{UL_LIBRARY}", result.backup_dir.name)
-    assert (result.backup_dir / f"{UL_LIBRARY}.kicad_sym_backup_1").read_bytes() == original
-    assert [p.name for p in result.backup_dir.iterdir()] == [f"{UL_LIBRARY}.kicad_sym_backup_1"]
+    assert result.backup_dir.parent == hand_layout.repo_root / "bk" / "installs"
+    assert re.fullmatch(rf"\d{{8}}-\d{{6}}(-\d+)?_{LIB}", result.backup_dir.name)
+    assert (result.backup_dir / f"{LIB}.kicad_sym_backup_1").read_bytes() == original
+    assert [p.name for p in result.backup_dir.iterdir()] == [f"{LIB}.kicad_sym_backup_1"]
 
 
 def test_backup_not_created_for_create_only_plan(hand_layout):
@@ -639,3 +638,177 @@ def test_rollback_on_verify_error(hand_layout, snapshot, monkeypatch):
     assert _codes(_errors(result.issues)) == ["verify.symbol_missing", "install.rolled_back"]
     assert snapshot(hand_layout.custom_dir) == before
     assert result.touched == ()
+
+
+# -- more rollback edges -----------------------------------------------------------------------
+
+
+def test_rollback_restores_each_path_once(hand_layout, snapshot, monkeypatch):
+    plan = _hand_plan(hand_layout, new_library=False)
+    symbol_op = next(op for op in plan.ops if op.kind == "symbol_lib")
+    plan = dataclasses.replace(plan, ops=(*plan.ops, symbol_op))  # the same file written a second time
+    before = snapshot(hand_layout.custom_dir)
+    real = fsutil.atomic_write_bytes
+    writes = []
+
+    def counting(path, data, **kwargs):
+        writes.append(path)
+        return real(path, data, **kwargs)
+
+    monkeypatch.setattr(fsutil, "atomic_write_bytes", counting)
+    monkeypatch.setattr(applier.verify, "verify_install", lambda p: [Issue(Severity.ERROR, "verify.symbol_missing", "forced")])
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    assert not result.ok
+    # two forward writes and one restore, from the pre-image the first write saw
+    assert writes.count(plan.symbol_lib_path) == 3
+    assert snapshot(hand_layout.custom_dir) == before
+
+
+def test_rollback_reports_a_created_file_it_cannot_remove(hand_layout, monkeypatch):
+    plan = _hand_plan(hand_layout, new_library=True)
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self.name == "X.stp":
+            raise PermissionError(13, "in use")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(applier.verify, "verify_install", lambda p: [Issue(Severity.ERROR, "verify.symbol_missing", "forced")])
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    (left,) = [i for i in result.issues if i.code == "install.rollback_failed"]
+    assert str(hand_layout.models_dir / "X.stp") in left.text
+    # the folder and the other files were still undone
+    assert not (hand_layout.footprints_dir / f"{LIB}.pretty").exists()
+    assert not plan.symbol_lib_path.exists()
+
+
+def test_rollback_drops_a_file_written_under_another_spelling(tmp_path, monkeypatch):
+    # Only a case-sensitive filesystem lists both spellings; fake that listing and watch the unlink
+    restore = tmp_path / "foo.STEP"
+    written = tmp_path / "Foo.step"
+    restore.write_bytes(b"x")
+    removed = []
+    monkeypatch.setattr(applier.os, "listdir", lambda folder: ["foo.STEP", "Foo.step"])
+    monkeypatch.setattr(Path, "unlink", lambda self, *a, **k: removed.append(self.name))
+
+    applier._drop_twin(applier._Undo("file", restore, written, b"x"))
+
+    assert removed == ["Foo.step"]
+
+
+def test_rollback_keeps_the_only_spelling_on_a_case_insensitive_listing(tmp_path, monkeypatch):
+    restore = tmp_path / "foo.STEP"
+    written = tmp_path / "Foo.step"
+    removed = []
+    monkeypatch.setattr(applier.os, "listdir", lambda folder: ["foo.STEP"])
+    monkeypatch.setattr(Path, "unlink", lambda self, *a, **k: removed.append(self.name))
+
+    applier._drop_twin(applier._Undo("file", restore, written, b"x"))
+
+    assert removed == []
+
+
+# -- INST-07 fault matrix: a failure at every write of both plan shapes -------------------------
+
+SHAPES = ("existing", "new")
+# Writes (not folders) of each plan shape; test_rollback_matrix_covers_every_write ties this to the plans
+MATRIX_WRITES = 3
+
+
+def _shape_plan(shape: str, request, tmp_path) -> tuple[InstallPlan, RepoLayout]:
+    if shape == "existing":
+        layout = request.getfixturevalue("custom_copy")
+        plan = _ul_plan(layout, request.getfixturevalue("ul_package"))
+    else:
+        write_custom_layout(tmp_path, [], [])
+        layout = RepoLayout.for_repo(tmp_path)
+        plan = _hand_plan(layout, new_library=True)
+    return plan, layout
+
+
+def _writes_of(plan: InstallPlan) -> int:
+    return sum(1 for op in plan.ops if op.kind != "mkdir")
+
+
+@pytest.mark.parametrize(
+    ("shape", "n"),
+    [(shape, n) for shape in SHAPES for n in range(1, MATRIX_WRITES + 1)],
+    ids=[f"{shape}-{n}" for shape in SHAPES for n in range(1, MATRIX_WRITES + 1)],
+)
+def test_rollback_fail_on_nth_write(shape, n, request, tmp_path, snapshot, monkeypatch):
+    plan, layout = _shape_plan(shape, request, tmp_path)
+    assert _writes_of(plan) == MATRIX_WRITES  # the matrix must cover every write of the plan
+    before = snapshot(layout.custom_dir)
+    state = _flaky_writes(monkeypatch, fail_on=n)
+
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+
+    assert state["failed"]
+    assert not result.ok
+    assert _codes(_errors(result.issues)) == ["fs.write_failed", "install.rolled_back"]
+    assert result.touched == ()
+    assert snapshot(layout.custom_dir) == before
+    assert not list(layout.custom_dir.rglob("*.tmp"))
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+def test_rollback_fail_with_locked_target(shape, request, tmp_path, snapshot, monkeypatch):
+    plan, layout = _shape_plan(shape, request, tmp_path)
+    before = snapshot(layout.custom_dir)
+    real_replace = os.replace
+    real_write = fsutil.atomic_write_bytes
+    sym_name = plan.symbol_lib_path.name
+
+    def replace(src, dst):
+        if os.path.basename(dst) == sym_name:
+            raise PermissionError(13, "in use")
+        return real_replace(src, dst)
+
+    def quick_write(path, data, *, retry_delays=(), sleep=None):
+        # the real function with the one-second lock wait removed
+        return real_write(path, data, retry_delays=(0.0,), sleep=lambda seconds: None)
+
+    monkeypatch.setattr(fsutil.os, "replace", replace)
+    monkeypatch.setattr(fsutil, "atomic_write_bytes", quick_write)
+
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+
+    assert not result.ok
+    assert _codes(_errors(result.issues)) == ["fs.locked", "install.rolled_back"]
+    assert snapshot(layout.custom_dir) == before
+    assert not list(layout.custom_dir.rglob("*.tmp"))
+
+
+def test_rollback_backup_failure(custom_copy, ul_package, tmp_path, snapshot, monkeypatch):
+    plan = _ul_plan(custom_copy, ul_package)
+    before = snapshot(custom_copy.custom_dir)
+    failure = Issue(Severity.ERROR, "fs.backup_failed", "Could not back up the library: disk full")
+    monkeypatch.setattr(fsutil, "backup_file", lambda path, backup_dir, **kwargs: failure)
+    state = _flaky_writes(monkeypatch, fail_on=99)
+
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+
+    assert not result.ok
+    assert _errors(result.issues) == [failure]
+    assert state["calls"] == 0
+    assert snapshot(custom_copy.custom_dir) == before
+
+
+def test_success_touched_order(custom_copy, ul_package, tmp_path):
+    plan = _ul_plan(custom_copy, ul_package)
+    pretty = plan.pretty_path
+
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+
+    assert result.ok, result.issues
+    assert result.touched == (
+        custom_copy.models_dir / "CSD85301Q2.stp",
+        pretty / "DQK0006B.kicad_mod",
+        plan.symbol_lib_path,
+    )
+    assert result.issues[-1].severity is Severity.SUCCESS and result.issues[-1].code == "install.done"
