@@ -14,7 +14,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Pinned dependencies, headless pytest harness, atomic writes and a lossless S-expression layer (completed 2026-10-18)
 - [x] **Phase 2: Hardening Existing Code** - Table generation, KiCad detection, scanning and config writes made safe on the new foundation (completed 2026-10-19)
-- [ ] **Phase 3: Package Intake and Naming** - Headless, safe reading of Ultra Librarian and loose-file packages, plus library name suggestion and sanitisation
+- [x] **Phase 3: Package Intake and Naming** - Headless, safe reading of Ultra Librarian and loose-file packages, plus library name suggestion and sanitisation (completed 2026-10-19)
 - [ ] **Phase 4: Plan and Install Core** - Headless, transactional install of a part into `Custom/` with linking, rollback and verification
 - [ ] **Phase 5: Import UI and Post-Install** - Import dialog with an editable preview, per-item conflict resolution, rescan and table refresh
 - [ ] **Phase 6: Git Commit Step** - Confirmed commit of exactly the imported files in `Custom/` plus the parent ref bump, never pushing
@@ -94,7 +94,7 @@ Plans:
   4. For the UL sample, the suggested target library follows `<Type>_<SubCategory>_<Manufacturer>`, ends in `_TI` (from the `ti.com` datasheet host and existing `Custom/` prefixes), and is a default that can be overridden
   5. Names containing `/`, `:`, Windows-reserved names (e.g. `CON`, `NUL`) or traversal are sanitised, with `.` and `-` kept. Both the original and the sanitised name are reported.
 
-**Plans**: 10/10 plans executed (03-08, 03-09 and 03-10 are gap closure)
+**Plans**: 10/10 plans complete (03-08, 03-09 and 03-10 are gap closure)
 
 Plans:
 **Wave 1**
@@ -188,7 +188,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
-| 3. Package Intake and Naming | 10/10 | In Progress | - |
+| 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |

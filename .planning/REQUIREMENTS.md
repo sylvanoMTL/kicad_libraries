@@ -29,20 +29,20 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 
 ### Package Intake
 
-- [ ] **INTK-01**: User can open a vendor package as a `.zip` file or a folder of loose `.kicad_sym` / `.kicad_mod` / `.step` / `.stp` files
-- [ ] **INTK-02**: An Ultra Librarian zip is recognised, and its symbol, footprint and 3D model are found wherever they sit, including a STEP at the zip root whose name differs from the footprint (e.g. `ul_CSD85301Q2.zip`)
+- [x] **INTK-01**: User can open a vendor package as a `.zip` file or a folder of loose `.kicad_sym` / `.kicad_mod` / `.step` / `.stp` files
+- [x] **INTK-02**: An Ultra Librarian zip is recognised, and its symbol, footprint and 3D model are found wherever they sit, including a STEP at the zip root whose name differs from the footprint (e.g. `ul_CSD85301Q2.zip`)
 - [ ] **INTK-03**: A SnapEDA zip is recognised and its symbol, footprint and any 3D model are found, verified against a real SnapEDA download in `downloaded_examples/`
 - [ ] **INTK-04**: A SamacSys / Component Search Engine zip is recognised and its KiCad symbol, footprint and 3D model are found, verified against a real CSE download in `downloaded_examples/`
-- [ ] **INTK-05**: Packages containing only legacy KiCad 5 files (`.lib`, `.dcm`, `.mod`) are rejected with a clear "re-download as KiCad v6+" message
-- [ ] **INTK-06**: Zips are read safely: no extraction into the repo, path traversal, absolute names and symlinks are rejected, and size and count limits stop zip bombs
+- [x] **INTK-05**: Packages containing only legacy KiCad 5 files (`.lib`, `.dcm`, `.mod`) are rejected with a clear "re-download as KiCad v6+" message
+- [x] **INTK-06**: Zips are read safely: no extraction into the repo, path traversal, absolute names and symlinks are rejected, and size and count limits stop zip bombs
 - [ ] **INTK-07**: When a package holds several symbols, footprints or models, the user picks which ones to import
 - [ ] **INTK-08**: A package with no 3D model can still be installed, and the preview and log warn that no model was found
 
 ### Target Library
 
-- [ ] **LIB-01**: User sees a suggested target library name following `<Type>_<SubCategory>_<Manufacturer>`, derived from existing `Custom/` libraries and part info (e.g. datasheet host `ti.com` → `TI`), and can edit it
+- [x] **LIB-01**: User sees a suggested target library name following `<Type>_<SubCategory>_<Manufacturer>`, derived from existing `Custom/` libraries and part info (e.g. datasheet host `ti.com` → `TI`), and can edit it
 - [ ] **LIB-02**: User can choose an existing `Custom/` library from a list or create a new one, and a new library creates a matching `.kicad_sym` + `.pretty/` pair
-- [ ] **LIB-03**: Symbol, footprint and file names are sanitised (no `/`, `:`, Windows-reserved names or traversal; `.` and `-` kept), and the preview shows original vs sanitised names
+- [x] **LIB-03**: Symbol, footprint and file names are sanitised (no `/`, `:`, Windows-reserved names or traversal; `.` and `-` kept), and the preview shows original vs sanitised names
 
 ### Preview & Editing
 
@@ -144,17 +144,17 @@ Which phases cover which requirements. Updated during roadmap creation.
 | HARD-07 | Phase 2 | Complete |
 | HARD-08 | Phase 2 | Complete |
 | HARD-09 | Phase 2 | Complete |
-| INTK-01 | Phase 3 | Pending |
-| INTK-02 | Phase 3 | Pending |
+| INTK-01 | Phase 3 | Complete |
+| INTK-02 | Phase 3 | Complete |
 | INTK-03 | Phase 7 | Pending |
 | INTK-04 | Phase 7 | Pending |
-| INTK-05 | Phase 3 | Pending |
-| INTK-06 | Phase 3 | Gaps Found |
+| INTK-05 | Phase 3 | Complete |
+| INTK-06 | Phase 3 | Complete |
 | INTK-07 | Phase 5 | Pending |
 | INTK-08 | Phase 4 | Pending |
-| LIB-01 | Phase 3 | Pending |
+| LIB-01 | Phase 3 | Complete |
 | LIB-02 | Phase 4 | Pending |
-| LIB-03 | Phase 3 | Pending |
+| LIB-03 | Phase 3 | Complete |
 | PREV-01 | Phase 5 | Pending |
 | PREV-02 | Phase 5 | Pending |
 | PREV-03 | Phase 5 | Pending |
