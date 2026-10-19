@@ -10,7 +10,7 @@ from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
 from .library_scanner import scan_all, find_kicad_footprint_dir, sync_kicad_path_vars
 from .table_generator import write_tables, restore_backup_pair, table_info, TableInfo
-from .models import Issue, ScanResult
+from .models import Issue, ScanResult, Severity
 from .settings import (
     load_kicad_fp_dir, save_kicad_fp_dir,
     load_dest_history, add_dest_to_history,
@@ -301,10 +301,11 @@ class MainWindow(QMainWindow):
 
         self._tree.populate(result)
 
-        for warning in result.warnings:
-            self._log.log(warning, "warning")
+        self._log_issues(result.issues)
 
-        if not result.warnings:
+        if not any(
+            i.severity in (Severity.WARNING, Severity.ERROR) for i in result.issues
+        ):
             self._log.log("No warnings.", "success")
 
         self._worker.wait()
