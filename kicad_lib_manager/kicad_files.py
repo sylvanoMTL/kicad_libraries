@@ -58,19 +58,22 @@ class LibEntry:
     value_nodes: dict[str, Node]
 
 
-def _parse(source: SourceText | Issue, name: str) -> LoadedFile | Issue:
+def _parse(source: SourceText | Issue, name: str, max_nodes: int | None = None) -> LoadedFile | Issue:
     if isinstance(source, Issue):
         return source
     try:
-        root = parse(source.text)
+        root = parse(source.text, max_nodes=max_nodes)
     except SexprError as e:
         return Issue(Severity.ERROR, e.code, f"Could not parse {name}: {e}")
     return LoadedFile(source, root)
 
 
-def parse_bytes(data: bytes, name: str) -> LoadedFile | Issue:
-    """Decode and parse in-memory KiCad file bytes; failures come back as an Issue."""
-    return _parse(decode_source(data, name), name)
+def parse_bytes(data: bytes, name: str, *, max_nodes: int | None = None) -> LoadedFile | Issue:
+    """Decode and parse in-memory KiCad file bytes; failures come back as an Issue.
+
+    max_nodes is the parser's node ceiling (None = unlimited); crossing it is an Issue too.
+    """
+    return _parse(decode_source(data, name), name, max_nodes=max_nodes)
 
 
 def load(path: Path) -> LoadedFile | Issue:

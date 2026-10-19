@@ -1,4 +1,5 @@
 import re
+import sys
 from dataclasses import dataclass
 
 # Separators are ASCII space/tab/CR/LF only, like KiCad's lexer (never the regex \s class)
@@ -58,11 +59,17 @@ class Node:
         return f"Node({self.kind} {self.start}:{self.end}, {len(self.children)} children)"
 
 
-def parse(text: str) -> Node:
-    """Parse text into a span-carrying tree, raising SexprError at the first bad token."""
+def parse(text: str, *, max_nodes: int | None = None) -> Node:
+    """Parse text into a span-carrying tree, raising SexprError at the first bad token.
+
+    max_nodes caps the lists, atoms and strings built (the root is not counted); the token
+    that would cross it raises sexpr.too_many_nodes. None means no limit.
+    """
     root = Node(0, len(text), "root", [])
     # Explicit stack: no recursion limit on deeply nested input
     stack = [root]
+    limit = sys.maxsize if max_nodes is None else max_nodes
+    count = 0
     for m in _TOKEN.finditer(text):
         kind = m.lastgroup
         if kind == "ws":
@@ -73,6 +80,14 @@ def parse(text: str) -> Node:
                 "unterminated string or stray character",
                 *_line_col(text, m.start()),
             )
+        if kind != "close":
+            count += 1
+            if count > limit:
+                raise SexprError(
+                    "sexpr.too_many_nodes",
+                    f"more than {max_nodes} nodes",
+                    *_line_col(text, m.start()),
+                )
         if kind == "open":
             node = Node(m.start(), -1, "list", [])
             stack[-1].children.append(node)

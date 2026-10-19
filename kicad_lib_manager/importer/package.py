@@ -19,6 +19,8 @@ MAX_MEMBER_BYTES = 100 * 1024 * 1024
 MAX_TOTAL_BYTES = 250 * 1024 * 1024
 MAX_RATIO = 200
 RATIO_MIN_SIZE = 1024 * 1024
+# Most parser nodes one symbol or footprint file may produce (CR-01)
+MAX_KICAD_TEXT_NODES = 1_000_000
 MAX_FOLDER_DEPTH = 8
 STAGING_PREFIX = "kicad_import_"
 STAGE_KINDS = {
