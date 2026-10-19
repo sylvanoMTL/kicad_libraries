@@ -68,7 +68,9 @@ class FakeCli:
         code, stdout, stderr = _RESULTS[mode]
         if mode == "upgrade":
             target = Path(args[args.index("-o") + 1])
-            if source.is_dir():
+            if target.exists():
+                code, stdout, stderr = _RESULTS["conflict"]
+            elif source.is_dir():
                 target.mkdir()
                 for item in sorted(source.iterdir()):
                     if item.is_file():

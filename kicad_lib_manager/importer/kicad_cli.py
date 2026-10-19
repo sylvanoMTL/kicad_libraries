@@ -6,6 +6,7 @@ Stdlib only. No shell is used.
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,3 +77,38 @@ def run_cli(
     except OSError as e:
         return Issue(Severity.ERROR, "install.cli_failed", f"Could not run kicad-cli: {e.strerror or e}")
     return CliRun(result.returncode, result.stdout or "", result.stderr or "")
+
+
+@dataclass(frozen=True)
+class SymbolUpgrade:
+    text: str
+    version: int | None
+    changed: bool
+
+
+def clear_cache() -> None:
+    pass
+
+
+def upgrade_symbol_text(
+    exe: Path,
+    text: str,
+    *,
+    name: str | None = None,
+    runner: Callable | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> SymbolUpgrade | Issue:
+    raise NotImplementedError
+
+
+def load_gate(
+    exe: Path,
+    *,
+    library: str,
+    symbol_lib: bytes | None,
+    footprints: Sequence[tuple[str, bytes]],
+    original_symbol_lib: bytes | None = None,
+    runner: Callable | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+) -> list[Issue]:
+    raise NotImplementedError
