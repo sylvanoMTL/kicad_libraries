@@ -1,4 +1,5 @@
 import random
+import re
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -6,6 +7,9 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from zipfixtures import STRING_KINDS, string_body, traced_peak
 
+from kicad_lib_manager.fsutil import decode_source
+from kicad_lib_manager.kicad_files import parse_bytes
+from kicad_lib_manager.models import Issue
 from kicad_lib_manager.sexpr import Edit, Node, SexprError, apply_edits, parse, quote, unquote
 
 
@@ -491,3 +495,61 @@ def test_unterminated_long_string_memory_is_linear(kind):
     assert err.code == "sexpr.unterminated"
     assert (err.line, err.col) == (1, 4)
     assert peak <= 3 * sys.getsizeof(text), f"{kind}: peak {peak} for a {sys.getsizeof(text)} byte text"
+
+
+# -- CR-03: unquote is linear, and returns what the pre-03-10 implementation returned ----
+#
+# The oracle below is a verbatim copy of the pre-03-10 _ESCAPE_RE, _UNESCAPES, _unescape and
+# unquote (git show <plan base>:kicad_lib_manager/sexpr.py). It imports nothing from sexpr, so it
+# stays independent of the code under test.
+
+_REFERENCE_ESCAPE = re.compile(r"\\(.)", re.S)
+_REFERENCE_UNESCAPES = {"\\": "\\", '"': '"', "n": "\n", "r": "\r", "t": "\t"}
+
+
+def _reference_unescape(m: re.Match) -> str:
+    return _REFERENCE_UNESCAPES.get(m.group(1), m.group(0))
+
+
+def _reference_unquote(token: str) -> str:
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        return _REFERENCE_ESCAPE.sub(_reference_unescape, token[1:-1])
+    return token
+
+
+@pytest.mark.parametrize("kind", STRING_KINDS)
+def test_unquote_memory_is_linear(kind):
+    token = '"' + string_body(kind, _KIB_512) + '"'
+    expected = _reference_unquote(token)
+    result, peak = traced_peak(lambda: unquote(token))
+    assert result == expected
+    assert peak <= 6 * sys.getsizeof(token), f"{kind}: peak {peak} for a {sys.getsizeof(token)} byte token"
+
+
+_UNQUOTE_ALPHABET = ["\\", "\\", "\\", '"', "n", "r", "t", "\n", "\t", "a", "Ω", "\ud800"]
+
+
+def test_unquote_matches_reference():
+    rng = random.Random(1234)
+    for _ in range(200_000):
+        body = "".join(rng.choices(_UNQUOTE_ALPHABET, k=rng.randint(0, 12)))
+        for text in ('"' + body + '"', body):
+            assert unquote(text) == _reference_unquote(text), repr(text)
+
+
+@pytest.mark.parametrize(
+    "extra",
+    ["\\\\", '\\"', "\\n", "\\r", "\\t", "\\q", "\\\n", "\\"],
+    ids=["backslash", "quote", "n", "r", "t", "unknown", "raw_lf", "trailing"],
+)
+def test_unquote_placeholder_path_matches_reference(extra):
+    for body in ("\ud800" + extra, extra + "\ud800", "a" + extra + "\ud800" + extra + "b", "\ud800\\\\" + extra):
+        token = '"' + body + '"'
+        assert unquote(token) == _reference_unquote(token), repr(token)
+
+
+def test_unquote_placeholder_never_comes_from_file_text():
+    data = b'(a "' + b"\xed\xa0\x80" + b'")'
+    for found in (decode_source(data, "x.kicad_sym"), parse_bytes(data, "x.kicad_sym")):
+        assert isinstance(found, Issue)
+        assert found.code == "fs.bad_encoding"

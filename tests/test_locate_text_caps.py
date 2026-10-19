@@ -39,7 +39,7 @@ from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.package import Package, PackageFile, open_package
 from kicad_lib_manager.kicad_files import LoadedFile, parse_bytes
 from kicad_lib_manager.models import Issue, Severity
-from kicad_lib_manager.sexpr import parse
+from kicad_lib_manager.sexpr import parse, unquote
 
 _TOKENS = [b"(a)", b"(b 1)", b"()", b"(c d)", b"(e (f))"]
 
@@ -403,6 +403,14 @@ def _require_linear_tokenizer() -> None:
         )
 
 
+def _require_linear_unquote() -> None:
+    """Fail at once when unquote is not linear on one escape-dense token, before any full-size input is built."""
+    token = '"' + string_body("escape", 64 * 1024) + '"'
+    _, peak = traced_peak(lambda: unquote(token))
+    if peak > 6 * sys.getsizeof(token):
+        pytest.fail(f"unquote is not linear on one escape-dense token: peak {peak} bytes for a {sys.getsizeof(token)} byte token")
+
+
 def _measure(path: Path) -> tuple[tuple[bool, ImportCandidate | None, list[Issue]], int, float]:
     """Return (open_and_detect result, tracemalloc peak, seconds) for one full-size call."""
     t0 = time.perf_counter()
@@ -428,6 +436,59 @@ def test_string_heavy_symbol_at_byte_cap_is_read_with_bounded_memory(tmp_path):
     _require_linear_tokenizer()
     data, body = _string_symbol("plain", package_module.MAX_KICAD_TEXT_BYTES)
     assert len(data) == 8 * 1024 * 1024
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+
+
+@pytest.mark.parametrize("kind", ["escape", "mixed"])
+def test_string_heavy_escape_classes_at_byte_cap(tmp_path, kind):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol(kind, package_module.MAX_KICAD_TEXT_BYTES)
+    assert len(data) == 8 * 1024 * 1024
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    # Unknown escapes are kept verbatim, so the decoded Description equals the raw body
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+
+
+def test_string_heavy_property_name_at_byte_cap(tmp_path):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    # find_property unquotes every property name on each of the up to 16 part_meta lookups
+    data, _ = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES, as_name=True)
+    assert len(data) == 8 * 1024 * 1024
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description="")
+
+
+def test_string_heavy_folder_at_byte_cap(tmp_path):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES)
+    folder = tmp_path / "pick"
+    folder.mkdir()
+    (folder / "hostile.kicad_sym").write_bytes(data)
+    (folder / "good.kicad_mod").write_bytes(footprint("GOOD"))
+    before = _snapshot(folder)
+    result, peak, seconds = _measure(folder)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+    assert _snapshot(folder) == before
+
+
+def test_string_heavy_astral_text_bound_is_in_storage_bytes(tmp_path):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES, astral=True)
+    assert len(data) == 8 * 1024 * 1024
+    # CPython stores text holding an astral character at 4 bytes per character, so raw bytes are not the yardstick
+    storage = sys.getsizeof(data.decode("utf-8"))
+    assert storage > 3 * len(data)
     _inside_every_zip_limit(data)
     zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
     result, peak, seconds = _measure(zip_path)
