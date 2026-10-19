@@ -8,6 +8,8 @@ import pytest
 
 from kicad_lib_manager.kicad_files import (
     LoadedFile,
+    file_kind,
+    file_version,
     find_models,
     find_property,
     find_symbol,
@@ -407,3 +409,40 @@ def test_find_property_skips_a_property_with_a_non_token_name_or_value():
     assert find_property(symbol, "Footprint").value == "FP"
     only_bad = parse_bytes(b'(symbol "S" (property "Footprint" (at 0 0)))', "s").root.children[0]
     assert find_property(only_bad, "Footprint") is None
+
+
+# -- file kind and version (INTK-05, PREV-06 inputs) -----------------------------
+
+
+def _kind_version(data: bytes):
+    loaded = parse_bytes(data, "x")
+    assert isinstance(loaded, LoadedFile), loaded
+    return file_kind(loaded.root), file_version(loaded.root)
+
+
+def test_file_kind_and_version():
+    assert (file_kind(_zip_member(UL_SYMBOL).root), file_version(_zip_member(UL_SYMBOL).root)) == (
+        "kicad_symbol_lib",
+        20211014,
+    )
+    assert (file_kind(_zip_member(UL_FOOTPRINT).root), file_version(_zip_member(UL_FOOTPRINT).root)) == (
+        "footprint",
+        20211014,
+    )
+    lf = _fixture("sexpr/lf.kicad_sym").root
+    assert (file_kind(lf), file_version(lf)) == ("kicad_symbol_lib", 20241209)
+    legacy = _fixture("sexpr/legacy_module.kicad_mod").root
+    assert (file_kind(legacy), file_version(legacy)) == ("module", None)
+
+
+def test_file_version_rejects_non_integers_and_nested_versions():
+    assert _kind_version(b'(kicad_symbol_lib (version "abc"))') == ("kicad_symbol_lib", None)
+    assert _kind_version(b'(footprint "x" (version 1.5))') == ("footprint", None)
+    assert _kind_version(b'(footprint "x" (version "20211014"))') == ("footprint", None)
+    # Arabic-Indic digit one: str.isdigit() is True, but it is not an ASCII integer
+    assert _kind_version('(footprint "x" (version ١))'.encode("utf-8")) == ("footprint", None)
+    assert _kind_version(b'(footprint "x" (layer "F.Cu" (version 5)))') == ("footprint", None)
+
+
+def test_file_kind_of_empty_input():
+    assert _kind_version(b"") == (None, None)
