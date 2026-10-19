@@ -1,5 +1,7 @@
+import hashlib
 import os
 import re
+import shutil
 from pathlib import Path
 
 import pytest
@@ -71,3 +73,48 @@ def assert_tiles():
         )
 
     return check
+
+
+@pytest.fixture
+def custom_copy(tmp_path):
+    """A RepoLayout over a tmp_path copy of the real Custom/ libraries; the checkout is never written."""
+    source = REPO_ROOT / "Custom"
+    if not (source / "Symbols").is_dir():
+        pytest.skip("Custom submodule not checked out (git submodule update --init Custom)")
+    from kicad_lib_manager.importer.layout import RepoLayout
+
+    repo = tmp_path / "repo"
+    for name in ("Symbols", "Footprints", "3DModels"):
+        shutil.copytree(source / name, repo / "Custom" / name)
+    return RepoLayout.for_repo(repo)
+
+
+@pytest.fixture
+def ul_package():
+    """Yield (package, candidate) for the Ultra Librarian sample; the package is closed afterwards."""
+    from kicad_lib_manager.importer.detect import detect_candidate
+    from kicad_lib_manager.importer.package import open_package
+
+    package = open_package(REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip", REPO_ROOT)
+    try:
+        candidate, _ = detect_candidate(package)
+        yield package, candidate
+    finally:
+        package.close()
+
+
+@pytest.fixture
+def snapshot():
+    """Return a function mapping a folder to {relative path: sha256} for files and {relative path/: "dir"} for folders."""
+
+    def take(root: Path) -> dict[str, str]:
+        found: dict[str, str] = {}
+        for path in sorted(root.rglob("*")):
+            rel = path.relative_to(root).as_posix()
+            if path.is_dir():
+                found[rel + "/"] = "dir"
+            else:
+                found[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+        return found
+
+    return take

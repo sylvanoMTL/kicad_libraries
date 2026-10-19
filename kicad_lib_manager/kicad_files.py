@@ -1,10 +1,11 @@
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .fsutil import SourceText, decode_source, read_source
+from .fsutil import SourceText, decode_source, normalize_eol, read_source
 from .models import Issue, Severity
-from .sexpr import Edit, Node, SexprError, parse, quote, unquote
+from .sexpr import Edit, Node, SexprError, apply_edits, parse, quote, unquote
 
 _LIB_FIELDS = ("name", "type", "uri", "options", "descr")
 
@@ -176,6 +177,111 @@ def find_models(footprint_node: Node) -> list[ModelRef]:
 def retarget_model(ref: ModelRef, new_path: str) -> Edit:
     """Return the edit that replaces only the model path token."""
     return Edit(ref.path_node.start, ref.path_node.end, quote(new_path))
+
+
+def footprint_name_edit(ref: NameRef, new_name: str) -> Edit:
+    """Return the edit that replaces only the footprint name token."""
+    return Edit(ref.name_node.start, ref.name_node.end, quote(new_name))
+
+
+def footprint_value_edits(footprint_node: Node, value: str) -> list[Edit]:
+    """Return edits that set the footprint's Value text: (fp_text value ...) and (property "Value" ...).
+
+    Both spellings are direct children of the footprint; the token may be an unquoted atom.
+    The list is empty when neither exists.
+    """
+    edits = []
+    for child in footprint_node.children:
+        if child.head == "fp_text" and len(child.children) >= 3:
+            kind, token = child.children[1], child.children[2]
+            if kind.kind == "atom" and kind.text == "value" and _is_token(token):
+                edits.append(Edit(token.start, token.end, quote(value)))
+        elif child.head == "property" and len(child.children) >= 3:
+            name_node, token = child.children[1], child.children[2]
+            if _is_token(name_node) and unquote(name_node.text) == "Value" and _is_token(token):
+                edits.append(Edit(token.start, token.end, quote(value)))
+    return edits
+
+
+def _line_indent(text: str, pos: int) -> str:
+    """Return the blanks at the start of the line that holds pos."""
+    line_start = text.rfind("\n", 0, pos) + 1
+    return re.match(r"[ \t]*", text[line_start:pos]).group()
+
+
+def model_insert_edit(text: str, footprint_node: Node, model_path: str, eol: str) -> Edit:
+    """Return the zero-width insert of a default (model ...) block after the footprint's last direct child."""
+    anchor = footprint_node.children[-1]
+    indent = _line_indent(text, anchor.start)
+    inner = indent + ("\t" if "\t" in indent else "  ")
+    lines = [
+        f"(model {quote(model_path)}",
+        inner + "(offset (xyz 0 0 0))",
+        inner + "(scale (xyz 1 1 1))",
+        inner + "(rotate (xyz 0 0 0))",
+        indent + ")",
+    ]
+    return Edit(anchor.end, anchor.end, eol + indent + eol.join(lines))
+
+
+def set_property_edit(prop: PropertyRef, value: str) -> Edit:
+    """Return the edit that replaces only the property's value token."""
+    return Edit(prop.value_node.start, prop.value_node.end, quote(value))
+
+
+def next_property_id(symbol_node: Node) -> int | None:
+    """Return the highest (id N) among direct property children plus one, or None when none carries an id."""
+    found = []
+    for child in symbol_node.children:
+        if child.head != "property":
+            continue
+        for part in child.children:
+            if part.head == "id" and len(part.children) >= 2:
+                value = part.children[1]
+                if value.kind == "atom" and value.text.isascii() and value.text.isdigit():
+                    found.append(int(value.text))
+    return max(found) + 1 if found else None
+
+
+def new_property_text(
+    text: str, template: PropertyRef, name: str, value: str, next_id: int | None
+) -> str:
+    """Return a copy of the template property with a new name and value (and id when it carries one)."""
+    block = text[template.node.start:template.node.end]
+    node = parse(block).children[0]
+    edits = [
+        Edit(node.children[1].start, node.children[1].end, quote(name)),
+        Edit(node.children[2].start, node.children[2].end, quote(value)),
+    ]
+    if next_id is not None:
+        for part in node.children:
+            if part.head == "id" and len(part.children) >= 2:
+                edits.append(Edit(part.children[1].start, part.children[1].end, str(next_id)))
+    return apply_edits(block, edits)
+
+
+def property_insert_edit(text: str, symbol_node: Node, block: str, eol: str) -> Edit:
+    """Return the zero-width insert of a property block after the symbol's last direct property."""
+    props = [c for c in symbol_node.children if c.head == "property"]
+    anchor = props[-1] if props else symbol_node.children[-1]
+    indent = _line_indent(text, anchor.start)
+    return Edit(anchor.end, anchor.end, eol + indent + normalize_eol(block, eol))
+
+
+def symbol_insert_edit(target: LoadedFile, block: str) -> Edit:
+    """Return the zero-width insert of a symbol block after the library's last top-level symbol."""
+    lib = next((c for c in target.root.children if c.head == "kicad_symbol_lib"), None)
+    if lib is None:
+        raise ValueError("target is not a kicad_symbol_lib")
+    text, eol = target.source.text, target.source.eol
+    symbols = find_symbols(target.root)
+    if symbols:
+        anchor = symbols[-1].node
+        indent = _line_indent(text, anchor.start)
+    else:
+        anchor = lib.children[-1]
+        indent = "  "
+    return Edit(anchor.end, anchor.end, eol + indent + normalize_eol(block, eol))
 
 
 @dataclass(frozen=True, eq=False)

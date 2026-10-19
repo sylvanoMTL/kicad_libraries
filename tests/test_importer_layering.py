@@ -63,6 +63,35 @@ ALLOWED: dict[str, set[str]] = {
         "importer.adapters.ultralibrarian",
         "importer.adapters.loose",
     },
+    # Phase 4 install modules. importer.kicad_cli is a forward registration (plan 04-03 creates it);
+    # layering_errors only checks modules found on disk, so an unused key raises no error
+    "importer.plan": {"models", "importer.package", "importer.layout"},
+    "importer.kicad_cli": {"models", "kicad_files"},
+    "importer.verify": {"models", "fsutil", "kicad_files", "sexpr", "importer.plan", "importer.layout"},
+    "importer.planner": {
+        "models",
+        "fsutil",
+        "kicad_files",
+        "sexpr",
+        "importer.plan",
+        "importer.candidate",
+        "importer.package",
+        "importer.naming",
+        "importer.layout",
+        "importer.suggest",
+        "importer.adapters.base",
+        "importer.kicad_cli",
+        "importer.verify",
+    },
+    "importer.applier": {
+        "models",
+        "fsutil",
+        "kicad_files",
+        "importer.plan",
+        "importer.kicad_cli",
+        "importer.verify",
+        "importer.layout",
+    },
 }
 
 CORE_MODULES = (
@@ -72,6 +101,10 @@ CORE_MODULES = (
     "importer.suggest",
     "importer.adapters.base",
     "importer.adapters.ultralibrarian",
+    "importer.plan",
+    "importer.planner",
+    "importer.applier",
+    "importer.verify",
 )
 
 FORBIDDEN_TOP = ("PySide6", "shiboken6", "kicad_lib_manager")
