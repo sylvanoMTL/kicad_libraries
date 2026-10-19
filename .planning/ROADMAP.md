@@ -98,8 +98,8 @@ Plans:
 
 Plans:
 **Wave 1**
-- [ ] 03-01-PLAN.md — Tracer: UL zip -> staging outside the repo -> UL adapter -> candidate (with-block and explicit `close()`), then `IC_SubCategory_TI`; importer layering guard (wave 1)
-- [ ] 03-02-PLAN.md — Shared test builders: hostile/lying/encrypted zip builders, `unpack_sample` (UL zip unpacked into `tmp_path` as the real loose-files case, D-17), KiCad/3D/legacy bytes, synthetic `Custom/` layout, `downloaded_examples/** -text` (wave 1)
+- [ ] 03-01-PLAN.md — Tracer: UL zip -> staging outside the repo -> UL adapter -> candidate (with-block and explicit `close()`), then `IC_SubCategory_TI`; Qt-free and no-bulk-extraction checks on its modules (wave 1)
+- [ ] 03-02-PLAN.md — Shared test infrastructure: hostile/lying/encrypted zip builders, `unpack_sample` (UL zip unpacked into `tmp_path` as the real loose-files case, D-17), KiCad/3D/legacy bytes, synthetic `Custom/` layout, `downloaded_examples/** -text`, importer layering guard with synthetic self-tests (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 03-03-PLAN.md — Zip safety: whole-package refusal of hostile, duplicate and encrypted members (D-05, D-19), size/count/ratio caps on declared and real bytes, one-level nested zips, staging and cleanup checks (wave 2)
