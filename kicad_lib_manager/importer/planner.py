@@ -46,28 +46,36 @@ from .plan import (
     InstallPlan,
     ToolContext,
 )
-from .suggest import manufacturer_choice
+from .suggest import manufacturer_choice, placeholder_tokens
 
 # Hidden vendor properties to clone when a new property has to be added (D-13)
 _TEMPLATE_PROPERTIES = ("Datasheet", "Footprint", "ki_fp_filters", "ki_keywords")
+_LISTED_NAMES = 20
 
 
 def _err(code: str, text: str) -> Issue:
     return Issue(Severity.ERROR, code, text)
 
 
+def _name_list(names: list[str]) -> str:
+    shown = ", ".join(names[:_LISTED_NAMES])
+    extra = len(names) - _LISTED_NAMES
+    return f"{shown}, and {extra} more" if extra > 0 else shown
+
+
 def _read_vendor(pf: PackageFile) -> bytes | Issue:
-    """Read a staged symbol or footprint file under the text cap and check it still matches its intake hash."""
+    """Read a staged symbol or footprint file under the text cap and check it still matches its intake hash (WR-04)."""
     cap = min(_package.MAX_KICAD_TEXT_BYTES, _package.MAX_MEMBER_BYTES)
     try:
         with open(pf.path, "rb") as handle:
             data = handle.read(cap + 1)
     except OSError as e:
-        return _err("install.source_unreadable", f"Could not read {pf.member}: {e.strerror or e}")
+        # The staged copy is gone, usually because the Package was closed
+        return _err("install.source_gone", f"{pf.member} is no longer available ({e.strerror or e}); open the package again")
     if len(data) > cap:
         return _err("install.source_unreadable", f"{pf.member} is larger than {cap} bytes, the limit for one KiCad file")
     if hashlib.sha256(data).hexdigest() != pf.sha256:
-        return _err("install.source_unreadable", f"{pf.member} changed after the package was opened")
+        return _err("install.source_changed", f"{pf.member} changed after the package was opened; open the package again")
     return data
 
 
@@ -142,6 +150,56 @@ def _listing(folder: Path) -> list[str]:
         return []
 
 
+def _select(
+    candidate: ImportCandidate, options: InstallOptions
+) -> tuple[SymbolItem | None, list[FootprintItem], ModelItem | None, list[Issue]]:
+    """Apply D-17: one symbol, one or more footprints, zero or one model; the caller decides among several."""
+    problems: list[Issue] = []
+
+    symbol: SymbolItem | None = None
+    if not candidate.symbols:
+        problems.append(_err("install.no_symbol", "The package holds no symbol to install"))
+    elif options.symbol is not None:
+        symbol = next((s for s in candidate.symbols if s.name == options.symbol), None)
+        if symbol is None:
+            problems.append(_err("install.unknown_item", f"The package has no symbol named {options.symbol}"))
+    elif len(candidate.symbols) == 1:
+        symbol = candidate.symbols[0]
+    else:
+        names = _name_list([s.name for s in candidate.symbols])
+        problems.append(_err("install.choice_required", f"The package holds several symbols; choose one of: {names}"))
+
+    footprints: list[FootprintItem] = []
+    if not candidate.footprints:
+        problems.append(_err("install.no_footprint", "The package holds no footprint to install"))
+    elif options.footprints:
+        for wanted in dict.fromkeys(options.footprints):
+            found = next((f for f in candidate.footprints if f.name == wanted), None)
+            if found is None:
+                problems.append(_err("install.unknown_item", f"The package has no footprint named {wanted}"))
+            else:
+                footprints.append(found)
+    elif len(candidate.footprints) == 1:
+        footprints = [candidate.footprints[0]]
+    else:
+        names = _name_list([f.name for f in candidate.footprints])
+        problems.append(_err("install.choice_required", f"The package holds several footprints; choose from: {names}"))
+
+    model: ModelItem | None = None
+    if options.no_model:
+        pass
+    elif options.model is not None:
+        model = next((m for m in candidate.models if m.filename == options.model), None)
+        if model is None:
+            problems.append(_err("install.unknown_item", f"The package has no 3D model named {options.model}"))
+    elif len(candidate.models) == 1:
+        model = candidate.models[0]
+    elif len(candidate.models) > 1:
+        names = _name_list([m.filename for m in candidate.models])
+        problems.append(_err("install.choice_required", f"The package holds several 3D models; choose one of: {names}, or none"))
+    return symbol, footprints, model, problems
+
+
 def _refused(
     candidate: ImportCandidate,
     options: InstallOptions,
@@ -183,10 +241,12 @@ def build_plan(
 ) -> InstallPlan:
     """Plan installing one candidate into the library options.library; never raises for expected failures.
 
-    The Package that produced the candidate must stay open until apply_plan returns: the model
-    copy reads its bytes from the staged file at apply time.
+    Every refusal is an ERROR Issue on a blocked plan with no operations. The Package that
+    produced the candidate must stay open until apply_plan returns: the vendor files are read
+    here and the model is read again when the plan is applied (WR-04).
     """
-    issues: list[Issue] = [*package_issues, *candidate.issues]
+    # WR-05: package and candidate Issues lead the plan's Issues, an exact duplicate appearing once
+    issues: list[Issue] = list(dict.fromkeys([*package_issues, *candidate.issues]))
 
     def refuse(*problems: Issue) -> InstallPlan:
         return _refused(candidate, options, layout, tools, [*issues, *problems])
@@ -196,21 +256,29 @@ def build_plan(
             progress(message, current, 5)
 
     library = options.library
+    # Phase 3 D-04: a library name that still holds a placeholder token is never installed into
+    tokens = placeholder_tokens(library)
+    if tokens:
+        return refuse(_err(
+            "install.placeholder_library",
+            f"Library name {library} still contains the placeholder token(s) {', '.join(tokens)}; edit it before installing",
+        ))
     if sanitize_name(library).sanitized != library:
         return refuse(_err("install.bad_library_name", f"{library!r} is not a valid library name"))
-    if len(candidate.symbols) != 1 or len(candidate.footprints) != 1 or len(candidate.models) > 1:
-        return refuse(_err("install.unsupported_candidate", "Only one symbol, one footprint and at most one model can be installed"))
-    sym_item: SymbolItem = candidate.symbols[0]
-    fp_item: FootprintItem = candidate.footprints[0]
-    model_item: ModelItem | None = candidate.models[0] if candidate.models else None
+    sym_item, fp_items, model_item, problems = _select(candidate, options)
+    if problems or sym_item is None:
+        return refuse(*problems)
 
     step("Reading the package", 1)
     vendor_sym = _parse_vendor(sym_item.file)
     if isinstance(vendor_sym, Issue):
         return refuse(vendor_sym)
-    vendor_fp = _parse_vendor(fp_item.file)
-    if isinstance(vendor_fp, Issue):
-        return refuse(vendor_fp)
+    vendor_fps: list[LoadedFile] = []
+    for fp_item in fp_items:
+        loaded_fp = _parse_vendor(fp_item.file)
+        if isinstance(loaded_fp, Issue):
+            return refuse(loaded_fp)
+        vendor_fps.append(loaded_fp)
 
     step("Reading the target library", 2)
     sym_path = layout.symbols_dir / f"{library}.kicad_sym"
@@ -245,7 +313,9 @@ def build_plan(
     sym_name = sym_item.name_check.sanitized
     if sym_name != sym_item.name:
         return refuse(_err("install.rename_unsupported", f"The symbol name {sym_item.name!r} would be renamed to {sym_name!r}, which cannot be installed yet"))
-    fp_name = fp_item.name_check.sanitized
+    fp_names = tuple(item.name_check.sanitized for item in fp_items)
+    if len({name.casefold() for name in fp_names}) != len(fp_names):
+        return refuse(_err("install.duplicate_name", f"Two chosen footprints would both be installed under one name: {_name_list(list(fp_names))}"))
     meta = sym_item.meta
     mpn = meta.mpn or sym_item.name
     manufacturer = meta.manufacturer
@@ -259,36 +329,42 @@ def build_plan(
     if model_item is not None:
         suffix = PurePosixPath(model_item.filename).suffix
         model_file = sanitize_filename(mpn + suffix).sanitized
+    else:
+        issues.append(Issue(Severity.WARNING, "install.no_model", "No 3D model will be installed"))
 
     step("Editing the symbol", 4)
     eol = vendor_sym.source.eol
     block = vendor_sym.source.text[vendor_ref.node.start:vendor_ref.node.end]
     editor = _SymbolEditor(block, parse(block).children[0], eol)
-    problems = [
-        editor.set_or_add("Footprint", f"{library}:{fp_name}"),
-        editor.set_or_add("ki_fp_filters", fp_name),
+    edit_problems = [
+        # D-17: the first footprint is linked; D-15: every installed footprint is a filter
+        editor.set_or_add("Footprint", f"{library}:{fp_names[0]}"),
+        editor.set_or_add("ki_fp_filters", " ".join(fp_names)),
         editor.role("Manufacturer", MANUFACTURER_FIELDS, manufacturer),
         editor.role("MPN", MPN_FIELDS, mpn),
     ]
-    failed = [p for p in problems if p is not None]
+    failed = [p for p in edit_problems if p is not None]
     if failed:
         return refuse(*failed)
     new_block = editor.result()
     sym_text = apply_edits(target.source.text, [symbol_insert_edit(target, new_block)])
     sym_bytes = fsutil.encode_source(sym_text, target.source.bom)
 
-    fp_ref = footprint_name(vendor_fp.root)
-    if fp_ref is None:
-        return refuse(_err("install.source_unreadable", f"{fp_item.file.member} is not a KiCad footprint"))
-    fp_edits = [footprint_name_edit(fp_ref, fp_name), *footprint_value_edits(fp_ref.node, fp_name)]
-    if model_file is not None:
-        model_path = f"{MODEL_DIR_VAR}/{model_file}"
-        existing = find_models(fp_ref.node)
-        if existing:
-            fp_edits.append(retarget_model(existing[0], model_path))
-        else:
-            fp_edits.append(model_insert_edit(vendor_fp.source.text, fp_ref.node, model_path, vendor_fp.source.eol))
-    fp_bytes = fsutil.encode_source(apply_edits(vendor_fp.source.text, fp_edits), vendor_fp.source.bom)
+    fp_bytes: list[bytes] = []
+    for index, (fp_item, vendor_fp, fp_name) in enumerate(zip(fp_items, vendor_fps, fp_names)):
+        fp_ref = footprint_name(vendor_fp.root)
+        if fp_ref is None:
+            return refuse(_err("install.source_unreadable", f"{fp_item.file.member} is not a KiCad footprint"))
+        fp_edits = [footprint_name_edit(fp_ref, fp_name), *footprint_value_edits(fp_ref.node, fp_name)]
+        # The model belongs to the linked (first) footprint
+        if model_file is not None and index == 0:
+            model_path = f"{MODEL_DIR_VAR}/{model_file}"
+            existing = find_models(fp_ref.node)
+            if existing:
+                fp_edits.append(retarget_model(existing[0], model_path))
+            else:
+                fp_edits.append(model_insert_edit(vendor_fp.source.text, fp_ref.node, model_path, vendor_fp.source.eol))
+        fp_bytes.append(fsutil.encode_source(apply_edits(vendor_fp.source.text, fp_edits), vendor_fp.source.bom))
 
     step("Checking for conflicts", 5)
     conflicts: list[Conflict] = []
@@ -299,14 +375,15 @@ def build_plan(
             name=sym_name,
             existing=f"{sym_path.name} already holds a symbol named {sym_name}",
         ))
-    fp_file = f"{fp_name}.kicad_mod"
-    if any(name.casefold() == fp_file.casefold() for name in _listing(pretty)):
-        conflicts.append(Conflict(
-            key=f"footprint:{library}:{fp_name.casefold()}",
-            kind="footprint",
-            name=fp_name,
-            existing=f"{pretty.name} already holds {fp_file}",
-        ))
+    listed = [name.casefold() for name in _listing(pretty)]
+    for fp_name in fp_names:
+        if f"{fp_name}.kicad_mod".casefold() in listed:
+            conflicts.append(Conflict(
+                key=f"footprint:{library}:{fp_name.casefold()}",
+                kind="footprint",
+                name=fp_name,
+                existing=f"{pretty.name} already holds {fp_name}.kicad_mod",
+            ))
     if model_file is not None:
         if any(name.casefold() == model_file.casefold() for name in _listing(layout.models_dir)):
             conflicts.append(Conflict(
@@ -321,7 +398,8 @@ def build_plan(
         if not layout.models_dir.is_dir():
             ops.append(FileOp("mkdir", layout.models_dir))
         ops.append(FileOp("model", layout.models_dir / model_file, source=model_item.file))
-    ops.append(FileOp("footprint", pretty / fp_file, data=fp_bytes))
+    for fp_name, data in zip(fp_names, fp_bytes):
+        ops.append(FileOp("footprint", pretty / f"{fp_name}.kicad_mod", data=data))
     ops.append(FileOp("symbol_lib", sym_path, data=sym_bytes, base_sha256=hashlib.sha256(target_bytes).hexdigest()))
 
     return InstallPlan(
@@ -333,8 +411,8 @@ def build_plan(
         new_symbol_lib=False,
         new_footprint_lib=False,
         symbol_names=(sym_name,),
-        footprint_names=(fp_name,),
-        linked_footprint=fp_name,
+        footprint_names=fp_names,
+        linked_footprint=fp_names[0],
         model_file=model_file,
         source_version=source_version,
         target_version=target_version,

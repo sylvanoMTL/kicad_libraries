@@ -15,11 +15,14 @@ from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.kicad_files import (
     find_property,
     find_symbol,
+    find_symbols,
     footprint_name,
+    model_insert_edit,
     parse_bytes,
+    symbol_insert_edit,
 )
 from kicad_lib_manager.models import Issue, Severity
-from kicad_lib_manager.sexpr import unquote
+from kicad_lib_manager.sexpr import apply_edits, unquote
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UL_LIBRARY = "IC_Battery_Charger_TI"
@@ -295,3 +298,29 @@ def test_blocked_plan_is_never_applied_even_when_ops_exist(layout, tmp_path, sna
         result = apply_plan(plan, backup_root=tmp_path / "bk")
     assert not result.ok and not result.touched
     assert snapshot(layout.custom_dir) == before
+
+
+# -- write helpers of kicad_files on shapes the UL sample does not have ---------
+
+
+def test_model_block_follows_tab_indentation():
+    text = '(footprint "FP"\n\t(layer "F.Cu")\n)\n'
+    loaded = parse_bytes(text.encode(), "fp")
+    node = footprint_name(loaded.root).node
+    edit = model_insert_edit(text, node, "${CUSTOM_3DMODEL_DIR}/X.step", "\n")
+    result = apply_edits(text, [edit])
+    assert result == (
+        '(footprint "FP"\n\t(layer "F.Cu")\n'
+        '\t(model "${CUSTOM_3DMODEL_DIR}/X.step"\n'
+        "\t\t(offset (xyz 0 0 0))\n\t\t(scale (xyz 1 1 1))\n\t\t(rotate (xyz 0 0 0))\n\t)\n)\n"
+    )
+    assert parse_bytes(result.encode(), "fp").root is not None
+
+
+def test_symbol_goes_into_a_library_without_symbols():
+    text = "(kicad_symbol_lib (version 20211014) (generator test)\n)\n"
+    target = parse_bytes(text.encode(), "lib")
+    edit = symbol_insert_edit(target, '(symbol "A"\n)')
+    result = apply_edits(text, [edit])
+    loaded = parse_bytes(result.encode(), "lib")
+    assert [s.name for s in find_symbols(loaded.root)] == ["A"]
