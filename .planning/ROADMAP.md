@@ -60,12 +60,12 @@ Plans:
   4. After Rescan, the user's symbol and footprint selection is unchanged. Two libraries with the same nickname in different sources are reported as a collision and stay distinct in the UI, so neither overwrites the other.
   5. The existing footprints that used `${KIPRJMOD}/Custom/3DModels/...` reference `${CUSTOM_3DMODEL_DIR}/...` after one dedicated cleanup commit in `Custom`. A scan warns about any model path that still doesn't use `${CUSTOM_3DMODEL_DIR}`.
 
-**Plans**: 9 plans
+**Plans**: 2/9 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 02-01-PLAN.md — Tracer: Generate splices a table and logs Issues end to end; restore and table reads on the lossless reader, rel_path pre-selection, one destination logger (wave 1)
-- [ ] 02-08-PLAN.md — fsutil review fixes (numbered backups, best-effort copystat, encodable-text guard, folder/read-only error mapping, honest mixed-EOL text) and legacy CLI deleted with its docs (wave 1)
+- [x] 02-01-PLAN.md — Tracer: Generate splices a table and logs Issues end to end; restore and table reads on the lossless reader, rel_path pre-selection, one destination logger (wave 1)
+- [x] 02-08-PLAN.md — fsutil review fixes (numbered backups, best-effort copystat, encodable-text guard, folder/read-only error mapping, honest mixed-EOL text) and legacy CLI deleted with its docs (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 02-03-PLAN.md — Table merge hardening: child classification, D-03/D-07/D-08/D-09 handling, per-file failures with one shared backup number (wave 2)
@@ -162,7 +162,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
-| 2. Hardening Existing Code | 0/TBD | Not started | - |
+| 2. Hardening Existing Code | 2/9 | In Progress | - |
 | 3. Package Intake and Naming | 0/TBD | Not started | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
