@@ -230,7 +230,9 @@ def test_unclassifiable_children_are_kept_byte_identical_and_each_warned():
 
 
 def test_version_child_is_not_warned_about_and_not_counted():
-    result = tg.generate_sym_lib_table([_sym("Fixture_A")], _load("basic.sym-lib-table"))
+    result = tg.generate_sym_lib_table(
+        [_sym("Fixture_A"), _sym("Fixture_B")], _load("basic.sym-lib-table")
+    )
     assert result.issues == []
     assert result.preserved == 0
 

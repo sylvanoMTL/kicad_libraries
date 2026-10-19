@@ -6,7 +6,7 @@ from pathlib import Path
 from . import fsutil, kicad_files
 from .kicad_files import LoadedFile
 from .models import FootprintLibrary, Issue, Severity, SymbolLibrary
-from .sexpr import Edit, apply_edits, quote
+from .sexpr import Edit, Node, apply_edits, quote
 
 ENV_VAR = "KICAD_LIB_GITHUB"
 _MANAGED_MARKER = f"${{{ENV_VAR}}}/"
@@ -57,6 +57,15 @@ def _is_managed(entry: kicad_files.LibEntry) -> bool:
     return entry.uri is not None and _MANAGED_MARKER in entry.uri
 
 
+def _tail(entry: kicad_files.LibEntry) -> str:
+    """Repo-relative path of a managed entry: the URI text after the marker."""
+    return entry.uri.split(_MANAGED_MARKER, 1)[1]
+
+
+def _line_of(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
+
+
 def _merge_table(tag: str, existing: LoadedFile | None,
                  libs: list) -> MergeResult | Issue:
     """Splice the selected libraries into an existing table.
@@ -66,13 +75,26 @@ def _merge_table(tag: str, existing: LoadedFile | None,
     """
     filename = _TABLE_FILES[tag]
     selected = [lib for lib in libs if lib.selected]
-    entries = [
-        _entry_text(lib.nickname, f"{_MANAGED_MARKER}{lib.rel_path}")
-        for lib in selected
-    ]
+
+    seen: dict[str, SymbolLibrary | FootprintLibrary] = {}
+    for lib in selected:
+        prior = seen.get(lib.nickname)
+        if prior is not None:
+            return Issue(
+                Severity.ERROR,
+                "table.duplicate_nickname",
+                f"Did not write {filename}: '{lib.nickname}' is selected twice "
+                f"({prior.rel_path}, {lib.rel_path}); keep only one selected",
+            )
+        seen[lib.nickname] = lib
 
     if existing is None or not existing.source.text.strip(" \t\r\n"):
-        lines = [f"({tag}\n"] + [f"  {e}\n" for e in entries] + [")\n"]
+        lines = [f"({tag}\n"]
+        lines += [
+            f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}')}\n"
+            for lib in selected
+        ]
+        lines.append(")\n")
         return MergeResult("".join(lines), 0, len(selected))
 
     table = kicad_files.lib_table(existing.root)
@@ -86,9 +108,71 @@ def _merge_table(tag: str, existing: LoadedFile | None,
 
     text = existing.source.text
     eol = existing.source.eol
-    block = "".join(f"  {e}{eol}" for e in entries)
-    managed = [e for e in table.entries if _is_managed(e)]
-    selected_paths = {lib.rel_path for lib in selected}
+    issues: list[Issue] = []
+
+    # Classify every child: managed ones are regenerated, all others are kept as they are
+    managed: list[kicad_files.LibEntry] = []
+    externals: dict[str, kicad_files.LibEntry] = {}
+    external_count = 0
+    unclassified: list[Node] = []
+    for entry in table.entries:
+        if entry.name is None or entry.uri is None:
+            unclassified.append(entry.node)
+        elif _is_managed(entry):
+            managed.append(entry)
+        else:
+            external_count += 1
+            externals.setdefault(entry.name, entry)
+    unclassified += [n for n in table.others if n.head != "version"]
+    unclassified.sort(key=lambda n: n.start)
+    for node in unclassified:
+        issues.append(Issue(
+            Severity.WARNING,
+            "table.unclassified",
+            f"{filename}: kept an unrecognised item at line "
+            f"{_line_of(text, node.start)} as it is",
+        ))
+
+    # An external entry owns its nickname; the repo library of that name is not added
+    generated = []
+    for lib in selected:
+        clash = externals.get(lib.nickname)
+        if clash is None:
+            generated.append(lib)
+            continue
+        issues.append(Issue(
+            Severity.WARNING,
+            "table.external_clash",
+            f"{filename}: '{lib.nickname}' is already defined by an external entry "
+            f"({clash.uri}); kept it and did not add {_MANAGED_MARKER}{lib.rel_path}",
+        ))
+    block = "".join(
+        f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}')}{eol}"
+        for lib in generated
+    )
+
+    scanned_paths = {lib.rel_path for lib in libs}
+    generated_paths = {lib.rel_path for lib in generated}
+    removed: list[str] = []
+    for entry in managed:
+        tail = _tail(entry)
+        if tail not in scanned_paths:
+            issues.append(Issue(
+                Severity.WARNING,
+                "table.stale_managed",
+                f"{filename}: removed stale entry '{entry.name}' ({entry.uri}); "
+                "that library no longer exists in the repo (the backup still has it)",
+            ))
+        elif tail not in generated_paths:
+            removed.append(entry.name)
+        elif entry.flags or entry.extras:
+            settings = [*entry.flags, *(x.head for x in entry.extras)]
+            issues.append(Issue(
+                Severity.WARNING,
+                "table.managed_flags_dropped",
+                f"{filename}: '{entry.name}' was regenerated without its "
+                f"{', '.join(settings)} setting(s)",
+            ))
 
     edits: list[Edit] = []
     placed = False
@@ -111,16 +195,12 @@ def _merge_table(tag: str, existing: LoadedFile | None,
         else:
             edits.append(Edit(p, p, eol + block))
 
-    removed = [
-        e.name or e.uri
-        for e in managed
-        if e.uri.split(_MANAGED_MARKER, 1)[1] not in selected_paths
-    ]
     return MergeResult(
         apply_edits(text, edits),
-        sum(1 for e in table.entries if not _is_managed(e)),
-        len(selected),
+        external_count + len(unclassified),
+        len(generated),
         removed,
+        issues,
     )
 
 
@@ -287,6 +367,6 @@ def table_info(path: Path) -> TableInfo | Issue | None:
         return Issue(Severity.ERROR, "table.unrecognised",
                      f"Could not read {path.name}: no lib table found")
     managed = frozenset(
-        e.uri.split(_MANAGED_MARKER, 1)[1] for e in table.entries if _is_managed(e)
+        _tail(e) for e in table.entries if _is_managed(e)
     )
     return TableInfo(len(table.entries), managed)
