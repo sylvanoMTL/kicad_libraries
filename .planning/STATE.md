@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 04
 current_phase_name: Plan and Install Core
 status: executing
-stopped_at: Completed 04-01-PLAN.md
-last_updated: "2026-10-19T22:39:24.557Z"
+stopped_at: Completed 04-06-PLAN.md
+last_updated: "2026-10-19T23:02:43.314Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 04 execution started
-state_head: 3483d0d6132e819cf2562ae8ec3a4bbf63b05f0e
+state_head: 43095356d36df53161143d2c1a80b0ecfab7203e
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 35
-  completed_plans: 26
+  completed_plans: 31
   percent: 43
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 ## Current Position
 
 Phase: 04 (Plan and Install Core) — EXECUTING
-Plan: 2 of 10
+Plan: 3 of 10
 Status: Ready to execute
 Last activity: 2026-10-19 — Phase 04 execution started
 
@@ -60,6 +60,7 @@ Progress: [████░░░░░░] 43%
 |------|----------|-------|-------|
 | Phase 02 P07 | 20 min | 3 tasks | 7 files |
 | Phase 04 P01 | 20 min | 2 tasks | 9 files |
+| Phase 04 P06 | 10 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -82,6 +83,8 @@ Recent decisions affecting current work:
 - [Phase 03]: Intake never extracts into the repo: zips are staged member-by-member outside it, folders are read in place.
 - [Phase 04]: 04-01: Manufacturer/MPN follow D-12 (keep exact, rename vendor alias in place, else clone a hidden property); several chosen footprints link the first and list all in ki_fp_filters
 - [Phase 04]: 04-01: Unsupported install cases refuse with dedicated codes (library_not_found, version_unsupported, rename_unsupported, extends_unsupported) that later plans remove one by one
+- [Phase 04]: 04-06: kicad-cli output is used only when its version equals the target header; otherwise vendor text is merged with install.version_mismatch
+- [Phase 04]: 04-06: library names must be non-empty, equal their sanitize_name form and not be a case twin (install.invalid_library, install.library_case_clash); a half pair is completed with install.pair_completed
 
 ### Pending Todos
 
@@ -106,6 +109,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-19T22:39:23.622Z
-Stopped at: Completed 04-01-PLAN.md
+Last session: 2026-10-19T23:02:42.086Z
+Stopped at: Completed 04-06-PLAN.md
 Resume file: None
