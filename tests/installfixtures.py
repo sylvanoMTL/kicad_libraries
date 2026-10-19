@@ -156,3 +156,52 @@ def target_lib(
         )
         return (newline.join(_tree(library)) + newline).encode("utf-8")
     raise ValueError(f"no target library style for format version {version}")
+
+
+# -- vendor builders -----------------------------------------------------------
+
+
+def vendor_symbol_lib(
+    name: str = "PART",
+    *,
+    version: int = V6_VERSION,
+    units: int = 1,
+    pins: tuple[tuple[str, ...], ...] | None = None,
+    value: str | None = None,
+    keywords: str = "",
+    footprint_field: str = "FP",
+    fp_filters: str = "FP",
+    datasheet: str = "https://www.ti.com/lit/gpn/part",
+    props: dict[str, str] | None = None,
+    eol: str = "\r\n",
+) -> bytes:
+    """Build a vendor .kicad_sym holding one symbol in the Ultra Librarian shape."""
+    return b""
+
+
+def extends_pair(
+    parent: str = "PARENT_X",
+    child: str = "CHILD_Y",
+    *,
+    version: int = V6_VERSION,
+    child_first: bool = False,
+    eol: str = "\r\n",
+) -> bytes:
+    """Build a .kicad_sym holding a parent symbol and a child that (extends "<parent>")."""
+    return b""
+
+
+def vendor_footprint(
+    name: str = "FP",
+    *,
+    version: int = V6_VERSION,
+    pads: tuple[str, ...] = ("1", "2"),
+    value_form: str = "fp_text",
+    model: str | None = None,
+    models: tuple[str, ...] = (),
+    npth: bool = False,
+    embedded: bool = False,
+    eol: str = "\r\n",
+) -> bytes:
+    """Build a vendor .kicad_mod in the Ultra Librarian shape."""
+    return b""
