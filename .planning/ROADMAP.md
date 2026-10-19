@@ -94,7 +94,7 @@ Plans:
   4. For the UL sample, the suggested target library follows `<Type>_<SubCategory>_<Manufacturer>`, ends in `_TI` (from the `ti.com` datasheet host and existing `Custom/` prefixes), and is a default that can be overridden
   5. Names containing `/`, `:`, Windows-reserved names (e.g. `CON`, `NUL`) or traversal are sanitised, with `.` and `-` kept. Both the original and the sanitised name are reported.
 
-**Plans**: 9/9 plans executed (03-08 and 03-09 are gap closure)
+**Plans**: 9/10 plans executed (03-08, 03-09 and 03-10 are gap closure)
 
 Plans:
 **Wave 1**
@@ -115,6 +115,9 @@ Plans:
 
 **Wave 5 (gap closure)** *(blocked on Wave 4 completion)*
 - [x] 03-09-PLAN.md — CR-02: corrupt LZMA / zstd members return `intake.corrupt` with the staging folder removed before `open_package` returns; guarded temp-folder creation (`intake.staging_failed`); codec tripwire and never-raises contract tests; WR-03 left open (wave 5)
+
+**Wave 6 (gap closure)** *(blocked on Wave 5 completion)*
+- [ ] 03-10-PLAN.md — CR-03: one large quoted string no longer costs gigabytes. String ends are found by a linear bounded-window scan in `sexpr` (`_string_end`, 1024 escape pairs per regex call, one code path that runs on Python 3.10), and `unquote` is made linear. Results are proven identical to the old tokenizer and `unquote`. String-heavy hostile tests at the 8 MiB cap cover plain, escape-dense and mixed strings, a property name, folder intake and astral text. T-03-35 is re-closed and CR-03 set to fixed (wave 6)
 
 ### Phase 4: Plan and Install Core
 
@@ -185,7 +188,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
-| 3. Package Intake and Naming | 9/9 | In Progress | - |
+| 3. Package Intake and Naming | 9/10 | In Progress | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
