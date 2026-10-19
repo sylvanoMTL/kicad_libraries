@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 04
 current_phase_name: Plan and Install Core
 status: executing
-stopped_at: Phase 4 context gathered
-last_updated: "2026-10-19T21:49:12.924Z"
+stopped_at: Completed 04-01-PLAN.md
+last_updated: "2026-10-19T22:39:24.557Z"
 last_activity: 2026-10-19
-last_activity_desc: Phase 03 complete, transitioned to Phase 4
-state_head: e831215933c6dad589a29f23e8aa88dd72938696
+last_activity_desc: Phase 04 execution started
+state_head: 3483d0d6132e819cf2562ae8ec3a4bbf63b05f0e
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 35
-  completed_plans: 25
+  completed_plans: 26
   percent: 43
 ---
 
@@ -23,14 +23,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 4 — Plan and Install Core
+**Current focus:** Phase 04 — Plan and Install Core
 
 ## Current Position
 
-Phase: 04 (Plan and Install Core) — READY TO EXECUTE
-Plan: Not started
+Phase: 04 (Plan and Install Core) — EXECUTING
+Plan: 2 of 10
 Status: Ready to execute
-Last activity: 2026-10-19 — Phase 03 complete, transitioned to Phase 4
+Last activity: 2026-10-19 — Phase 04 execution started
 
 Progress: [████░░░░░░] 43%
 
@@ -59,6 +59,7 @@ Progress: [████░░░░░░] 43%
 | Plan | Duration | Tasks | Files |
 |------|----------|-------|-------|
 | Phase 02 P07 | 20 min | 3 tasks | 7 files |
+| Phase 04 P01 | 20 min | 2 tasks | 9 files |
 
 ## Accumulated Context
 
@@ -79,6 +80,8 @@ Recent decisions affecting current work:
 - [Phase 02]: 02-07: owner approved Custom cleanup commit 485d530 (five D-16 footprints to ${CUSTOM_3DMODEL_DIR}); parent gitlink bumped; nothing pushed - owner must push Custom main before removing the worktree
 - [Phase 03]: Untrusted KiCad text is bounded by an 8 MiB raw-byte cap, a 1,000,000-node ceiling and a linear windowed string scan (`sexpr._string_end`); an over-cap file is skipped with a WARNING, never a whole-package refusal.
 - [Phase 03]: Intake never extracts into the repo: zips are staged member-by-member outside it, folders are read in place.
+- [Phase 04]: 04-01: Manufacturer/MPN follow D-12 (keep exact, rename vendor alias in place, else clone a hidden property); several chosen footprints link the first and list all in ki_fp_filters
+- [Phase 04]: 04-01: Unsupported install cases refuse with dedicated codes (library_not_found, version_unsupported, rename_unsupported, extends_unsupported) that later plans remove one by one
 
 ### Pending Todos
 
@@ -103,6 +106,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-19T20:10:55.801Z
-Stopped at: Phase 4 context gathered
-Resume file: .planning/phases/04-plan-and-install-core/04-CONTEXT.md
+Last session: 2026-10-19T22:39:23.622Z
+Stopped at: Completed 04-01-PLAN.md
+Resume file: None
