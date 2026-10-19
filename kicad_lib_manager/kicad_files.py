@@ -87,6 +87,16 @@ def _top_level(root: Node, match: Callable[[str], bool]) -> Node | None:
     return None
 
 
+def file_kind(root: Node) -> str | None:
+    """Return the head of the first top-level list, such as kicad_symbol_lib or footprint."""
+    return None
+
+
+def file_version(root: Node) -> int | None:
+    """Return the integer (version N) of the first top-level list, or None."""
+    return None
+
+
 def _is_token(node: Node) -> bool:
     """True for a string or atom; a list has no text value to unquote."""
     return node.kind in ("str", "atom")
