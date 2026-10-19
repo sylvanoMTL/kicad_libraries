@@ -6,4 +6,5 @@ qt_api = "pyside6"
 markers = [
     "wurth: needs the WurthElektronik submodule checked out (stress/perf corpus)",
     "local_kicad: reads the user's real KiCad config tables under the OS config dir (opt-in, read-only)",
+    "kicad_cli: needs the real kicad-cli binary (skipped when absent)",
 ]
