@@ -94,7 +94,7 @@ Plans:
   4. For the UL sample, the suggested target library follows `<Type>_<SubCategory>_<Manufacturer>`, ends in `_TI` (from the `ti.com` datasheet host and existing `Custom/` prefixes), and is a default that can be overridden
   5. Names containing `/`, `:`, Windows-reserved names (e.g. `CON`, `NUL`) or traversal are sanitised, with `.` and `-` kept. Both the original and the sanitised name are reported.
 
-**Plans**: 5/7 plans executed
+**Plans**: 7/7 plans executed
 
 Plans:
 **Wave 1**
@@ -107,8 +107,8 @@ Plans:
 - [x] 03-05-PLAN.md — Name sanitiser: `sanitize_name`, `sanitize_filename`, `case_clash`; every existing `Custom/` name unchanged; `name_check` on every candidate symbol, footprint and model (original beside sanitised) (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 03-06-PLAN.md — Library suggestion: fresh `Custom/` listing, manufacturer alias/host/aggregator chain, SubCategory vocabulary with an explicit spelling rule, ranked alternatives, D-04 placeholder contract (wave 3)
-- [ ] 03-07-PLAN.md — Folder intake: read-only walk, links and junctions skipped, depth and size caps, real loose UL files and unzipped UL parity with zips (D-17) (wave 3)
+- [x] 03-06-PLAN.md — Library suggestion: fresh `Custom/` listing, manufacturer alias/host/aggregator chain, SubCategory vocabulary with an explicit spelling rule, ranked alternatives, D-04 placeholder contract (wave 3)
+- [x] 03-07-PLAN.md — Folder intake: read-only walk, links and junctions skipped, depth and size caps, real loose UL files and unzipped UL parity with zips (D-17) (wave 3)
 
 ### Phase 4: Plan and Install Core
 
@@ -179,7 +179,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
-| 3. Package Intake and Naming | 5/7 | In Progress | - |
+| 3. Package Intake and Naming | 7/7 | In Progress | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
