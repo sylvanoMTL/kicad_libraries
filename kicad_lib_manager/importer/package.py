@@ -1,6 +1,7 @@
 """Open a vendor package (zip or folder) for intake; staged copies live in a temp folder outside the repo."""
 
 import hashlib
+import stat
 import tempfile
 import zipfile
 import zlib
@@ -28,6 +29,8 @@ LEGACY_EXTENSIONS = (".lib", ".dcm", ".mod")
 _COPY_CHUNK = 65536
 _STAGED_PREFIX = {"symbol": "sym", "footprint": "fp", "model": "model"}
 _IGNORED_LISTED = 20
+_WINDOWS_REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+_SHOWN_MAX = 200
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,68 @@ class Package:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
         return None
+
+
+@dataclass
+class _Budget:
+    """Running totals shared by the outer zip and any nested zip (D-08)."""
+
+    members: int = 0
+    declared: int = 0
+    actual: int = 0
+
+
+def _shown(name: str) -> str:
+    """repr(name) for an Issue text, cut so a hostile 500-character name stays readable."""
+    text = repr(name)
+    return text if len(text) <= _SHOWN_MAX else text[:_SHOWN_MAX] + "..."
+
+
+def _hostile_reason(name: str, info: zipfile.ZipInfo) -> str | None:
+    """Why a member must refuse the whole package, or None when the member is acceptable (D-05, D-19, A8)."""
+    n = name.replace("\\", "/")
+    if not n:
+        return "an empty name"
+    if n.startswith("/"):
+        return "an absolute or UNC path"
+    if len(n) >= 2 and n[1] == ":" and n[0].isalpha():
+        return "a drive-letter path"
+    if any(ord(c) < 32 or ord(c) == 127 for c in n):
+        return "a name with a control character"
+    if ":" in n:
+        return "a name containing ':' (drive or alternate data stream)"
+    for segment in n.split("/"):
+        if segment.strip(" .") == "" and segment.count(".") >= 2:
+            return "a path traversal ('..')"
+    mode = info.external_attr >> 16
+    if mode and stat.S_ISLNK(mode):
+        return "a symbolic link"
+    if info.external_attr & _WINDOWS_REPARSE:
+        return "a Windows reparse point"
+    return None
+
+
+def _prescan(infos: list[zipfile.ZipInfo], label: str, budget: _Budget) -> Issue | None:
+    """Return the first reason to refuse the whole archive, judged on headers alone, before any byte is read."""
+    seen: set[str] = set()
+    for info in infos:
+        name = info.filename
+        shown = _shown(name)
+        reason = _hostile_reason(name, info)
+        if reason is not None:
+            return Issue(Severity.ERROR, "intake.hostile_member", f"Refused {label}: member {shown} is {reason}")
+        if not info.is_dir():
+            key = name.replace("\\", "/").casefold()
+            if key in seen:
+                return Issue(
+                    Severity.ERROR,
+                    "intake.duplicate_member",
+                    f"Refused {label}: member {shown} appears more than once (names compared ignoring case)",
+                )
+            seen.add(key)
+        if info.flag_bits & 0x1:
+            return Issue(Severity.ERROR, "intake.encrypted", f"Refused {label}: member {shown} is encrypted")
+    return None
 
 
 def _refuse(package: Package, issue: Issue) -> Package:
@@ -135,6 +200,10 @@ def _open_zip(path: Path, repo_root: Path, progress: Callable | None) -> Package
             package, Issue(Severity.ERROR, "intake.corrupt", f"Could not read {path.name}: {e}")
         )
     with zf:
+        budget = _Budget()
+        refusal = _prescan(zf.infolist(), path.name, budget)
+        if refusal is not None:
+            return _refuse(package, refusal)
         staged_members: list[tuple[zipfile.ZipInfo, str, str]] = []
         try:
             for info in zf.infolist():
