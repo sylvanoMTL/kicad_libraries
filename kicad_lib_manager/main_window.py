@@ -25,6 +25,13 @@ APP_TITLE = "KiCad External Lib Manager"
 REPO_ROOT = Path(__file__).parent.parent.resolve()
 
 
+def _selected_count(result: ScanResult) -> int:
+    return (
+        sum(1 for lib in result.symbol_libs if lib.selected)
+        + sum(1 for lib in result.footprint_libs if lib.selected)
+    )
+
+
 class ScanWorker(QThread):
     progress = Signal(str, int)  # message, percentage
     finished = Signal(object)    # ScanResult
@@ -61,6 +68,9 @@ class MainWindow(QMainWindow):
 
         self._scan_result: ScanResult | None = None
         self._worker: ScanWorker | None = None
+        # Armed once here; _finish_scan consumes it after the first scan ends,
+        # however that scan ended. Only that scan pre-selects from the tables.
+        self._startup_pending = True
         self._kicad_fp_dir: Path | None = None
         self._build_menu()
         self._build_ui()
@@ -76,33 +86,34 @@ class MainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("&File")
 
-        gen_action = QAction("&Generate Tables", self)
-        gen_action.setShortcut(QKeySequence("Ctrl+G"))
-        gen_action.setToolTip("Generate sym-lib-table and fp-lib-table from selected libraries")
-        gen_action.setStatusTip("Generate sym-lib-table and fp-lib-table from selected libraries")
-        gen_action.triggered.connect(self._on_generate)
-        file_menu.addAction(gen_action)
+        # Kept as attributes: _set_scan_running toggles them while a scan runs
+        self._act_generate = QAction("&Generate Tables", self)
+        self._act_generate.setShortcut(QKeySequence("Ctrl+G"))
+        self._act_generate.setToolTip("Generate sym-lib-table and fp-lib-table from selected libraries")
+        self._act_generate.setStatusTip("Generate sym-lib-table and fp-lib-table from selected libraries")
+        self._act_generate.triggered.connect(self._on_generate)
+        file_menu.addAction(self._act_generate)
 
-        restore_action = QAction("&Restore Backup...", self)
-        restore_action.setShortcut(QKeySequence("Ctrl+R"))
-        restore_action.setToolTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
-        restore_action.setStatusTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
-        restore_action.triggered.connect(self._on_restore_backup)
-        file_menu.addAction(restore_action)
+        self._act_restore = QAction("&Restore Backup...", self)
+        self._act_restore.setShortcut(QKeySequence("Ctrl+R"))
+        self._act_restore.setToolTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
+        self._act_restore.setStatusTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
+        self._act_restore.triggered.connect(self._on_restore_backup)
+        file_menu.addAction(self._act_restore)
 
-        rescan_action = QAction("Re&scan Libraries", self)
-        rescan_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
-        rescan_action.setToolTip("Rescan the repository for symbol and footprint libraries")
-        rescan_action.setStatusTip("Rescan the repository for symbol and footprint libraries")
-        rescan_action.triggered.connect(self._on_rescan)
-        file_menu.addAction(rescan_action)
+        self._act_rescan = QAction("Re&scan Libraries", self)
+        self._act_rescan.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        self._act_rescan.setToolTip("Rescan the repository for symbol and footprint libraries")
+        self._act_rescan.setStatusTip("Rescan the repository for symbol and footprint libraries")
+        self._act_rescan.triggered.connect(self._on_rescan)
+        file_menu.addAction(self._act_rescan)
 
-        kicad_action = QAction("Set KiCad &Footprint Path...", self)
-        kicad_action.setShortcut(QKeySequence("Ctrl+K"))
-        kicad_action.setToolTip("Set KiCad default footprint library folder for cross-referencing")
-        kicad_action.setStatusTip("Set KiCad default footprint library folder for cross-referencing")
-        kicad_action.triggered.connect(self._on_set_kicad_path)
-        file_menu.addAction(kicad_action)
+        self._act_set_kicad_path = QAction("Set KiCad &Footprint Path...", self)
+        self._act_set_kicad_path.setShortcut(QKeySequence("Ctrl+K"))
+        self._act_set_kicad_path.setToolTip("Set KiCad default footprint library folder for cross-referencing")
+        self._act_set_kicad_path.setStatusTip("Set KiCad default footprint library folder for cross-referencing")
+        self._act_set_kicad_path.triggered.connect(self._on_set_kicad_path)
+        file_menu.addAction(self._act_set_kicad_path)
 
         file_menu.addSeparator()
 
@@ -166,10 +177,10 @@ class MainWindow(QMainWindow):
         browse_btn.clicked.connect(self._on_browse_dest)
         toolbar.addWidget(browse_btn)
 
-        rescan_btn = QPushButton("Rescan")
-        rescan_btn.setToolTip("Rescan repository for libraries (Ctrl+Shift+R)")
-        rescan_btn.clicked.connect(self._on_rescan)
-        toolbar.addWidget(rescan_btn)
+        self._rescan_btn = QPushButton("Rescan")
+        self._rescan_btn.setToolTip("Rescan repository for libraries (Ctrl+Shift+R)")
+        self._rescan_btn.clicked.connect(self._on_rescan)
+        toolbar.addWidget(self._rescan_btn)
 
         self._generate_btn = QPushButton("Generate Tables")
         self._generate_btn.setStyleSheet(
@@ -260,7 +271,27 @@ class MainWindow(QMainWindow):
                 "info",
             )
 
+    def _set_scan_running(self, running: bool):
+        """Disable the controls that must not act while a scan is in flight."""
+        for control in (
+            self._rescan_btn, self._act_rescan, self._act_set_kicad_path,
+            self._act_generate, self._generate_btn,
+        ):
+            control.setEnabled(not running)
+
     def _start_scan(self):
+        """Start a scan; every scan request must go through here.
+
+        Refuses while a worker exists, because a disabled control does not stop a
+        programmatic caller (the post-import rescan included). The guard keys on
+        the worker reference, not on the thread's running state: the custom
+        finished signal fires while run() has not returned yet.
+        """
+        if self._worker is not None:
+            self._log.log("A scan is already running; request ignored.", "info")
+            return
+
+        self._set_scan_running(True)
         self._progress = QProgressDialog(
             "Scanning libraries...", None, 0, 100, self
         )
@@ -285,34 +316,145 @@ class MainWindow(QMainWindow):
         self._progress.setLabelText(message)
         self._progress.setValue(min(percentage, 99))
 
+    def _finish_scan(self):
+        """Release the worker and re-enable the controls; always runs after a scan."""
+        self._startup_pending = False
+        if self._worker is not None:
+            self._worker.wait()
+            self._worker = None
+        self._set_scan_running(False)
+
     def _on_scan_finished(self, result: ScanResult):
-        self._progress.setValue(100)
-        self._scan_result = result
+        try:
+            self._progress.setValue(100)
+            startup = self._startup_pending
+            previous = self._scan_result
+            self._scan_result = result
 
-        sym_count = len(result.symbol_libs)
-        fp_count = len(result.footprint_libs)
-        self._log.log(
-            f"Found {sym_count} symbol libraries, {fp_count} footprint libraries.",
-            "success",
+            sym_count = len(result.symbol_libs)
+            fp_count = len(result.footprint_libs)
+            self._log.log(
+                f"Found {sym_count} symbol libraries, {fp_count} footprint libraries.",
+                "success",
+            )
+
+            if startup:
+                # Only the first scan reads the tables (D-05)
+                self._apply_existing_selection(result)
+            else:
+                self._reapply_selection(previous, result)
+            self._log_issues(self._trim_collided_selection(result))
+            if startup:
+                # Peers are settled, so linked footprints can be added safely
+                self._select_linked_footprints(result)
+
+            self._tree.populate(result)
+
+            self._log_issues(result.issues)
+
+            if not any(
+                i.severity in (Severity.WARNING, Severity.ERROR) for i in result.issues
+            ):
+                self._log.log("No warnings.", "success")
+        finally:
+            self._finish_scan()
+
+    def _reapply_selection(self, previous: ScanResult | None, result: ScanResult):
+        """Carry the user's selection over to a fresh scan, keyed by rel_path.
+
+        New libraries start unchecked and vanished ones drop out. Without a
+        previous result (rescan after a failed startup scan) nothing is kept.
+        """
+        keep_sym: set[str] = set()
+        keep_fp: set[str] = set()
+        if previous is not None:
+            keep_sym = {lib.rel_path for lib in previous.symbol_libs if lib.selected}
+            keep_fp = {lib.rel_path for lib in previous.footprint_libs if lib.selected}
+
+        for lib in result.symbol_libs:
+            lib.selected = lib.rel_path in keep_sym
+        for lib in result.footprint_libs:
+            lib.selected = lib.rel_path in keep_fp
+
+        kept = _selected_count(result)
+        self._log.log(f"Kept {kept} selections after rescan", "info")
+        missing = (
+            (keep_sym - {lib.rel_path for lib in result.symbol_libs})
+            | (keep_fp - {lib.rel_path for lib in result.footprint_libs})
         )
+        if missing:
+            self._log.log(
+                f"Dropped {len(missing)} selections for libraries no longer found: "
+                f"{', '.join(sorted(missing))}",
+                "info",
+            )
 
-        # Pre-select libraries that exist in the current table files
-        self._apply_existing_selection(result)
+    def _trim_collided_selection(self, result: ScanResult) -> list[Issue]:
+        """Keep at most one selected library per nickname (D-01).
 
-        self._tree.populate(result)
-
-        self._log_issues(result.issues)
-
-        if not any(
-            i.severity in (Severity.WARNING, Severity.ERROR) for i in result.issues
+        The selected peer whose rel_path sorts first stays, the others are
+        unchecked. Never changes a nickname and never selects anything.
+        """
+        issues: list[Issue] = []
+        for kind, libs in (
+            ("Symbol", result.symbol_libs), ("Footprint", result.footprint_libs),
         ):
-            self._log.log("No warnings.", "success")
+            by_path = {lib.rel_path: lib for lib in libs}
+            ordered = sorted(libs, key=lambda item: item.rel_path)
+            was_selected: dict[str, list[str]] = {}
+            for lib in ordered:
+                if lib.selected and lib.collision_peers:
+                    was_selected.setdefault(lib.nickname, []).append(lib.rel_path)
+            for lib in ordered:
+                if lib.selected and any(
+                    by_path[peer].selected and peer < lib.rel_path
+                    for peer in lib.collision_peers if peer in by_path
+                ):
+                    lib.selected = False
+            for nickname, paths in sorted(was_selected.items()):
+                if len(paths) > 1:
+                    issues.append(Issue(
+                        Severity.WARNING,
+                        "selection.collision_trimmed",
+                        f"[{nickname}] {kind} libraries {', '.join(paths)} were all "
+                        f"selected; kept {paths[0]} and unchecked the rest "
+                        "(only one library per nickname can be selected)",
+                    ))
+        return issues
 
-        self._worker.wait()
-        self._worker = None
+    def _select_linked_footprints(self, result: ScanResult) -> int:
+        """Select the footprint libraries referenced by selected symbols, per source.
+
+        Startup only, and additive: a footprint the tables selected stays selected.
+        """
+        fp_by_path = {lib.rel_path: lib for lib in result.footprint_libs}
+        added = 0
+        for source in sorted({lib.source for lib in result.symbol_libs}):
+            needed = {
+                ref.library_name
+                for sym in result.symbol_libs
+                if sym.source == source and sym.selected
+                for ref in sym.footprint_refs
+            }
+            for fp in sorted(result.footprint_libs, key=lambda item: item.rel_path):
+                if fp.source != source or fp.selected or fp.nickname not in needed:
+                    continue
+                if any(
+                    fp_by_path[peer].selected
+                    for peer in fp.collision_peers if peer in fp_by_path
+                ):
+                    continue
+                fp.selected = True
+                added += 1
+        if added:
+            self._log.log(
+                f"Selected {added} footprint libraries linked to the pre-selected symbols",
+                "info",
+            )
+        return added
 
     def _apply_existing_selection(self, result: ScanResult):
-        """Pre-select libraries that are already present in the destination tables."""
+        """Pre-select libraries already in the destination tables; first scan only (D-05)."""
         dest = Path(self._dest_combo.currentText())
         if not dest.is_dir():
             return
@@ -350,10 +492,18 @@ class MainWindow(QMainWindow):
         )
 
     def _on_scan_error(self, error_msg: str):
-        self._progress.close()
-        self._log.log(f"Scan error: {error_msg}", "error")
-        self._worker.wait()
-        self._worker = None
+        try:
+            self._progress.close()
+            self._log.log(f"Scan error: {error_msg}", "error")
+            if self._startup_pending:
+                self._log.log(
+                    "Startup scan failed, so nothing was pre-selected from the "
+                    "destination tables; a Rescan starts with every library unchecked "
+                    "(restart the app to pre-select from the tables).",
+                    "info",
+                )
+        finally:
+            self._finish_scan()
 
     def _log_issues(self, issues: list[Issue]):
         for issue in issues:
@@ -410,6 +560,9 @@ class MainWindow(QMainWindow):
             ))
 
     def _on_set_kicad_path(self):
+        if self._worker is not None:
+            self._log.log("A scan is already running; request ignored.", "info")
+            return
         current = str(self._kicad_fp_dir) if self._kicad_fp_dir else "C:/Program Files"
         folder = QFileDialog.getExistingDirectory(
             self,
@@ -465,5 +618,8 @@ class MainWindow(QMainWindow):
         about.exec()
 
     def closeEvent(self, event: QCloseEvent):
+        # Never destroy a running QThread
+        if self._worker is not None:
+            self._worker.wait()
         save_window_geometry(self.saveGeometry())
         super().closeEvent(event)
