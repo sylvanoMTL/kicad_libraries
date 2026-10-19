@@ -6,6 +6,7 @@ from pathlib import Path
 
 from kicad_lib_manager.importer.detect import ADAPTERS, detect_candidate
 from kicad_lib_manager.importer.package import open_package
+from kicad_lib_manager.importer.suggest import TokenChoice, placeholder_tokens, suggest_library
 from kicad_lib_manager.models import Severity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -124,3 +125,29 @@ def test_ultra_unsupported_and_missing(tmp_path):
     assert [(i.severity, i.code) for i in corrupt.issues] == [(Severity.ERROR, "intake.corrupt")]
     for package in (missing, unsupported, corrupt):
         package.close()
+
+
+def test_ultra_suggestion():
+    with open_package(UL_ZIP, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+        meta = candidate.symbols[0].meta
+    suggestion = suggest_library(meta)
+    assert suggestion.name == "IC_SubCategory_TI"
+    assert suggestion.confidence == "low"
+    assert suggestion.placeholders == ("SubCategory",)
+    assert suggestion.type == TokenChoice("IC", "reference", True)
+    assert suggestion.manufacturer == TokenChoice("TI", "host_table", True)
+    assert suggestion.subcategory.source == "placeholder"
+    assert suggestion.alternatives == ()
+    assert suggestion.matches_existing is False
+    codes = {(i.severity, i.code) for i in suggestion.issues}
+    assert (Severity.WARNING, "naming.low_confidence") in codes
+    assert (Severity.WARNING, "naming.placeholder") in codes
+
+
+def test_ultra_placeholder_tokens():
+    assert placeholder_tokens("IC_SubCategory_TI") == ["SubCategory"]
+    assert placeholder_tokens("Type_SubCategory_Manufacturer") == ["Type", "SubCategory", "Manufacturer"]
+    assert placeholder_tokens("Transistor_MOSFET_TI") == []
+    assert placeholder_tokens("IC_subcategory_TI") == ["SubCategory"]
+    assert placeholder_tokens("Connector_USB_TypeC_GCT") == []
