@@ -215,6 +215,39 @@ def _parse_footprint_refs(sym_file: Path) -> list[FootprintRef]:
     return refs
 
 
+def _collide(libs: list, kind: str) -> list[Issue]:
+    """Fill collision_peers for one library kind and return one Issue per shared nickname."""
+    for lib in libs:
+        lib.collision_peers = []
+    groups: dict[str, list] = {}
+    for lib in libs:
+        groups.setdefault(lib.nickname, []).append(lib)
+
+    issues = []
+    for nickname, group in groups.items():
+        if len(group) < 2:
+            continue
+        rel_paths = sorted(lib.rel_path for lib in group)
+        for lib in group:
+            lib.collision_peers = [p for p in rel_paths if p != lib.rel_path]
+        issues.append(Issue(
+            Severity.WARNING,
+            "scan.nickname_collision",
+            f"[{nickname}] {kind} library nickname is used by "
+            f"{', '.join(rel_paths)}; only one of them can be selected",
+        ))
+    return issues
+
+
+def find_nickname_collisions(sym_libs: list[SymbolLibrary],
+                             fp_libs: list[FootprintLibrary]) -> list[Issue]:
+    """Report nicknames shared within symbols or within footprints and record peers.
+
+    Symbols and footprints are checked separately. Nicknames are never changed.
+    """
+    return _collide(sym_libs, "Symbol") + _collide(fp_libs, "Footprint")
+
+
 def cross_reference(sym_libs: list[SymbolLibrary],
                     fp_libs: list[FootprintLibrary],
                     kicad_fp_dir: Path | None = None) -> list[Issue]:
@@ -275,7 +308,8 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
 
     if progress:
         progress("Cross-referencing...", 95, 100)
-    issues = cross_reference(sym_libs, fp_libs, kicad_fp_dir)
+    issues = find_nickname_collisions(sym_libs, fp_libs)
+    issues.extend(cross_reference(sym_libs, fp_libs, kicad_fp_dir))
     issues.extend(check_3d_model_paths(repo_root, progress))
 
     if progress:
