@@ -1,18 +1,23 @@
-"""Refusals and contract edges of build_plan / apply_plan (Phase 4, plan 01, task 2)."""
+"""Refusals and contract edges of build_plan / apply_plan, the D-01 version table and the LIB-02 library rules (Phase 4)."""
 
+import sys
 from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from fakecli import FakeCli
+from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
 from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib, unpack_sample, write_custom_layout
 
+from kicad_lib_manager.importer import kicad_cli, planner
 from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
-from kicad_lib_manager.importer.plan import InstallOptions
+from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.kicad_files import (
+    file_version,
     find_property,
     find_symbol,
     find_symbols,
@@ -20,7 +25,9 @@ from kicad_lib_manager.kicad_files import (
     model_insert_edit,
     parse_bytes,
     symbol_insert_edit,
+    unit_library_text,
 )
+from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.sexpr import apply_edits, unquote
 
@@ -324,3 +331,242 @@ def test_symbol_goes_into_a_library_without_symbols():
     result = apply_edits(text, [edit])
     loaded = parse_bytes(result.encode(), "lib")
     assert [s.name for s in find_symbols(loaded.root)] == ["A"]
+
+
+# -- D-01 version table (plan 04-06, task 1) ------------------------------------
+
+VENDOR = "PART"
+V6, V8, V9 = 20211014, 20231120, 20241209
+
+
+@pytest.fixture(autouse=True)
+def _fresh_cli_cache():
+    kicad_cli.clear_cache()
+    yield
+    kicad_cli.clear_cache()
+
+
+class _MarkingCli(FakeCli):
+    """A FakeCli whose output differs from its input in the block, not only in the header."""
+
+    def _bump(self, data):
+        return super()._bump(data).replace(b'"Reference" "U"', b'"Reference" "U_FROM_CLI"')
+
+
+def _tools(fake):
+    return ToolContext(kicad_cli=Path("kicad-cli-for-tests.exe"), cli_runner=fake)
+
+
+def _target_layout(tmp_path, version, names=("EXISTING_A",), *, library=LIBRARY, eol=None):
+    """A synthetic Custom/ holding library as a symbol/footprint pair whose symbol file has the given format version."""
+    write_custom_layout(tmp_path, [library], [library])
+    layout = RepoLayout.for_repo(tmp_path)
+    (layout.symbols_dir / f"{library}.kicad_sym").write_bytes(target_lib(version, names, eol=eol))
+    return layout
+
+
+def _vendor(symbol=None, *, model=True):
+    """Package members: one vendor symbol (default PART at 20211014), footprint FP and optionally a STEP file."""
+    members = [
+        ("part.kicad_sym", vendor_symbol_lib(VENDOR) if symbol is None else symbol),
+        ("FP.kicad_mod", vendor_footprint("FP")),
+    ]
+    if model:
+        members.append(("part.step", STEP_BYTES))
+    return members
+
+
+def _plan(tmp_path, layout, tools, symbol=None, options=None):
+    with _open(tmp_path, _vendor(symbol)) as (_, candidate):
+        return build_plan(candidate, options or InstallOptions(library=LIBRARY), layout, tools)
+
+
+def _op(plan, kind):
+    return next(op for op in plan.ops if op.kind == kind)
+
+
+def _block(data, name=VENDOR):
+    loaded = parse_bytes(data, "lib")
+    ref = find_symbol(loaded.root, name)
+    return loaded.source.text[ref.node.start : ref.node.end].replace("\r\n", "\n")
+
+
+def _sub_symbol(data, name=VENDOR):
+    """Text of the first unit sub-symbol of a symbol (the part no field edit touches)."""
+    loaded = parse_bytes(data, "lib")
+    ref = find_symbol(loaded.root, name)
+    sub = next(c for c in ref.node.children if c.head == "symbol")
+    return loaded.source.text[sub.start : sub.end].replace("\r\n", "\n")
+
+
+def _codes_of(plan, severity):
+    return [i.code for i in plan.issues if i.severity is severity]
+
+
+def test_version_equal_as_is(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    fake = FakeCli()
+    vendor = vendor_symbol_lib(VENDOR, version=V6)
+    plan = _plan(tmp_path, layout, _tools(fake), vendor)
+    assert not plan.blocked, plan.issues
+    assert (plan.normalised, plan.source_version, plan.target_version) == (False, V6, V6)
+    assert fake.calls == []
+    planned = _op(plan, "symbol_lib").data
+    assert _sub_symbol(planned) == _sub_symbol(vendor)
+    assert "(id " in _block(planned)  # untouched vendor text keeps its KiCad 6 ids
+    assert not [i for i in plan.issues if i.code.startswith("install.version")]
+
+
+def test_version_older_cli_match(tmp_path):
+    layout = _target_layout(tmp_path, V9)
+    fake = _MarkingCli(output_version=V9)
+    plan = _plan(tmp_path, layout, _tools(fake))
+    assert not plan.blocked, plan.issues
+    assert (plan.normalised, plan.source_version, plan.target_version) == (True, V6, V9)
+    assert [" ".join(call[1:3]) for call in fake.calls] == ["sym upgrade"]
+    assert "U_FROM_CLI" in _block(_op(plan, "symbol_lib").data)
+    assert "install.version_mismatch" not in _codes_of(plan, Severity.WARNING)
+
+
+def test_version_older_cli_mismatch(tmp_path):
+    layout = _target_layout(tmp_path, V8)
+    fake = _MarkingCli(output_version=V9)
+    plan = _plan(tmp_path, layout, _tools(fake))
+    assert not plan.blocked, plan.issues
+    assert plan.normalised is False
+    block = _block(_op(plan, "symbol_lib").data)
+    assert "U_FROM_CLI" not in block and "(id " in block  # the vendor text is merged unchanged
+    mismatch = [i for i in plan.issues if i.code == "install.version_mismatch"]
+    assert [i.severity for i in mismatch] == [Severity.WARNING]
+    for number in ("20211014", "20231120", "20241209"):
+        assert number in mismatch[0].text
+
+
+def test_version_older_no_cli(tmp_path):
+    layout = _target_layout(tmp_path, V9)
+    plan = _plan(tmp_path, layout, ToolContext(kicad_cli=None))
+    assert not plan.blocked, plan.issues
+    assert plan.normalised is False
+    assert (plan.source_version, plan.target_version) == (V6, V9)
+    assert "(id " in _block(_op(plan, "symbol_lib").data)
+    assert [i.severity for i in plan.issues if i.code == "install.version_mismatch"] == [Severity.WARNING]
+    assert [i.severity for i in plan.issues if i.code == "install.cli_not_found"] == [Severity.INFO]
+
+
+def test_version_newer_refused(tmp_path, snapshot):
+    layout = _target_layout(tmp_path, V6)
+    before = snapshot(layout.custom_dir)
+    fake = FakeCli()
+    plan = _plan(tmp_path, layout, _tools(fake), vendor_symbol_lib(VENDOR, version=V9))
+    assert plan.blocked and not plan.ops
+    assert _codes(plan) == ["install.version_newer_than_target"]
+    text = _error(plan, "install.version_newer_than_target").text
+    assert LIBRARY in text and "save" in text
+    assert fake.calls == []
+    assert apply_plan(plan).ok is False
+    assert snapshot(layout.custom_dir) == before
+
+
+def test_version_unknown(tmp_path):
+    layout = _target_layout(tmp_path, V9)
+    path = layout.symbols_dir / f"{LIBRARY}.kicad_sym"
+    path.write_bytes(path.read_bytes().replace(b"\t(version 20241209)\n", b""))
+    assert file_version(parse_bytes(path.read_bytes(), "lib").root) is None
+    fake = FakeCli()
+    plan = _plan(tmp_path, layout, _tools(fake))
+    assert not plan.blocked, plan.issues
+    assert plan.normalised is False and plan.target_version is None
+    assert [i.severity for i in plan.issues if i.code == "install.version_unknown"] == [Severity.WARNING]
+    assert fake.calls == []
+
+
+def test_version_cli_rejects(tmp_path):
+    layout = _target_layout(tmp_path, V9)
+    plan = _plan(tmp_path, layout, _tools(FakeCli(modes={"sym upgrade": "reject"})))
+    assert plan.blocked and not plan.ops
+    assert "install.cli_gate_failed" in _codes(plan)
+
+
+def test_version_memoised(tmp_path):
+    layout = _target_layout(tmp_path, V9)
+    fake = FakeCli(output_version=V9)
+    with _open(tmp_path, _vendor()) as (_, candidate):
+        first = build_plan(candidate, InstallOptions(library=LIBRARY, value="ONE"), layout, _tools(fake))
+        second = build_plan(candidate, InstallOptions(library=LIBRARY, value="TWO"), layout, _tools(fake))
+    assert not first.blocked and not second.blocked
+    assert [call[1:3] for call in fake.calls] == [["sym", "upgrade"]]
+    assert _op(first, "symbol_lib").data == _op(second, "symbol_lib").data
+
+
+def test_version_cli_sees_the_chosen_unit_only(tmp_path):
+    layout = _target_layout(tmp_path, V9)
+    other = vendor_symbol_lib("OTHER").decode()
+    mine = vendor_symbol_lib(VENDOR).decode()
+    # One file holding both symbols: the first file's body, then the second file's body
+    both = (other[: other.rindex(")")] + mine.split("\r\n", 1)[1]).encode()
+    fake = FakeCli(output_version=V9)
+    plan = _plan(tmp_path, layout, _tools(fake), both, InstallOptions(library=LIBRARY, symbol=VENDOR))
+    assert not plan.blocked, plan.issues
+    sent = next(iter(fake.inputs[0].values())).decode()
+    assert f'(symbol "{VENDOR}"' in sent and '(symbol "OTHER"' not in sent
+
+
+def test_version_extends_parent_missing(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    pair = parse_bytes(extends_pair("PARENT_X", "CHILD_Y"), "lib")
+    child_only = unit_library_text(pair, keep={"CHILD_Y"}).encode()
+    fake = FakeCli()
+    plan = _plan(tmp_path, layout, _tools(fake), child_only)
+    assert plan.blocked and not plan.ops
+    assert _codes(plan) == ["install.extends_parent_missing"]
+    assert "PARENT_X" in _error(plan, "install.extends_parent_missing").text
+    assert fake.calls == []
+
+
+def _real_tools():
+    tools = planner.detect_tools(find_kicad_footprint_dir())
+    if tools.kicad_cli is None:
+        pytest.skip("kicad-cli not found")
+    return tools
+
+
+@pytest.mark.kicad_cli
+def test_version_real_cli_into_20241209(tmp_path, ul_package):
+    tools = _real_tools()
+    layout = _target_layout(tmp_path, V9, ("EXISTING_A",))
+    original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, tools)
+    assert not plan.blocked, plan.issues
+    assert plan.normalised and plan.target_version == V9
+    sym_op = _op(plan, "symbol_lib")
+    block = _block(sym_op.data, "CSD85301Q2")
+    assert "(hide yes)" in block and "(id " not in block
+    footprints = [(op.path.stem, op.data) for op in plan.ops if op.kind == "footprint"]
+    issues = kicad_cli.load_gate(
+        tools.kicad_cli, library=LIBRARY, symbol_lib=sym_op.data, footprints=footprints, original_symbol_lib=original
+    )
+    assert issues == []
+
+
+def test_version_detect_tools_finds_the_install_next_to_the_footprints(tmp_path):
+    root = tmp_path / "9.0"
+    exe = root / "bin" / ("kicad-cli.exe" if sys.platform == "win32" else "kicad-cli")
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    fp_dir = root / "share" / "kicad" / "footprints"
+    fp_dir.mkdir(parents=True)
+    (root / "share" / "kicad" / "symbols").mkdir()
+    runner = FakeCli()
+    tools = planner.detect_tools(fp_dir, runner=runner)
+    assert tools.kicad_cli == exe
+    assert tools.kicad_symbols_dir == root / "share" / "kicad" / "symbols"
+    assert tools.cli_runner is runner
+
+
+def test_version_detect_tools_explicit_cli_wins(tmp_path):
+    explicit = tmp_path / "my-kicad-cli.exe"
+    explicit.write_bytes(b"")
+    tools = planner.detect_tools(None, explicit_cli=explicit)
+    assert tools.kicad_cli == explicit
+    assert tools.kicad_symbols_dir is None
