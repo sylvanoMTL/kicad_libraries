@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import stat
 import sys
 import time
 import uuid
@@ -46,10 +47,18 @@ def decode_source(data: bytes, name: str) -> SourceText | Issue:
     mixed = (crlf > 0 and lf > 0) or cr > 0
     issues = ()
     if mixed:
+        kinds = [
+            label for label, count in (("CRLF", crlf), ("LF", lf), ("CR", cr)) if count
+        ]
+        if kinds == ["CR"]:
+            detail = "has bare CR line endings"
+        else:
+            listed = kinds[0] if len(kinds) == 1 else ", ".join(kinds[:-1]) + " and " + kinds[-1]
+            detail = f"has mixed line endings ({listed})"
         issues = (Issue(
             Severity.WARNING,
             "fs.mixed_eol",
-            f"{name} has mixed line endings (CRLF and LF); they are kept as they are",
+            f"{name} {detail}; they are kept as they are",
         ),)
     return SourceText(text, bom, eol, mixed, issues)
 
@@ -81,6 +90,13 @@ def atomic_write_bytes(
     sleep: Callable[[float], None] = time.sleep,
 ) -> Issue | None:
     """Replace path with data via a same-directory temp file; return an Issue on failure."""
+    # A folder can never be replaced by a file; say so before any temp file or retry
+    if path.is_dir():
+        return Issue(
+            Severity.ERROR,
+            "fs.not_a_file",
+            f"Could not write {path.name}: it is a folder, not a file",
+        )
     # A read-only target never becomes writable by waiting, so fail before any retry
     if path.exists() and not os.access(path, os.W_OK):
         return Issue(
@@ -108,6 +124,13 @@ def atomic_write_bytes(
             os.replace(tmp, path)
             return None
         except PermissionError:
+            # The target may have turned read-only while we waited; that is not a lock
+            if path.exists() and not os.access(path, os.W_OK):
+                return Issue(
+                    Severity.ERROR,
+                    "fs.read_only",
+                    f"Could not write {path.name}: file is read-only",
+                )
             return Issue(
                 Severity.ERROR,
                 "fs.locked",
@@ -136,22 +159,35 @@ def atomic_write_text(
     sleep: Callable[[float], None] = time.sleep,
 ) -> Issue | None:
     """Encode text with encode_source and write it atomically."""
-    return atomic_write_bytes(
-        path, encode_source(text, bom), retry_delays=retry_delays, sleep=sleep
-    )
+    try:
+        data = encode_source(text, bom)
+    except UnicodeEncodeError as e:
+        return Issue(
+            Severity.ERROR,
+            "fs.bad_encoding",
+            f"Could not write {path.name}: text is not encodable as UTF-8 ({e.reason})",
+        )
+    return atomic_write_bytes(path, data, retry_delays=retry_delays, sleep=sleep)
 
 
-def backup_file(path: Path, backup_dir: Path) -> Path | Issue:
-    """Copy path to backup_dir as <name>_backup_<N>, the scheme the Restore dialog lists."""
+def backup_file(
+    path: Path, backup_dir: Path, *, number: int | None = None
+) -> Path | Issue:
+    """Copy path to backup_dir as <name>_backup_<N>, the scheme the Restore dialog lists.
+
+    N is the highest existing number plus one, or starts at number when given
+    (so two tables can share one backup number); a taken name moves on to the next.
+    """
     pattern = re.compile(re.escape(path.name) + r"_backup_(\d+)$")
     try:
         backup_dir.mkdir(parents=True, exist_ok=True)
-        max_num = 0
-        for name in os.listdir(backup_dir):
-            m = pattern.match(name)
-            if m:
-                max_num = max(max_num, int(m.group(1)))
-        number = max_num + 1
+        if number is None:
+            max_num = 0
+            for name in os.listdir(backup_dir):
+                m = pattern.match(name)
+                if m:
+                    max_num = max(max_num, int(m.group(1)))
+            number = max_num + 1
         with open(path, "rb") as src:
             while True:
                 # Exclusive create so a concurrent backup never overwrites another one
@@ -169,7 +205,16 @@ def backup_file(path: Path, backup_dir: Path) -> Path | Issue:
                 # Never leave a truncated backup that the Restore dialog would offer
                 backup_path.unlink(missing_ok=True)
                 raise
-        shutil.copystat(path, backup_path)
+        # The bytes are already complete; metadata is best-effort so a backup is never reported failed
+        try:
+            shutil.copystat(path, backup_path)
+        except OSError:
+            pass
+        # copystat copies the read-only flag; keep backups deletable on Windows
+        try:
+            os.chmod(backup_path, stat.S_IREAD | stat.S_IWRITE)
+        except OSError:
+            pass
         return backup_path
     except OSError as e:
         return Issue(
