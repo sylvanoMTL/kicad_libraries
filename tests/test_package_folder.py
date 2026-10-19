@@ -102,6 +102,30 @@ def test_folder_symlink_skipped(tmp_path):
         assert "linked.step" in notes[0].text
 
 
+def test_is_link_detects_symlink_and_reparse_bit():
+    """Covers both link signals without needing symlink privileges."""
+
+    class Stat:
+        def __init__(self, attributes):
+            self.st_file_attributes = attributes
+
+    class Entry:
+        def __init__(self, symlink, attributes):
+            self._symlink = symlink
+            self._attributes = attributes
+
+        def is_symlink(self):
+            return self._symlink
+
+        def stat(self, follow_symlinks=True):
+            assert follow_symlinks is False
+            return Stat(self._attributes)
+
+    assert pkg._is_link(Entry(True, 0))
+    assert pkg._is_link(Entry(False, pkg._WINDOWS_REPARSE))
+    assert not pkg._is_link(Entry(False, 0x20))
+
+
 @pytest.mark.skipif(sys.platform != "win32", reason="junctions are a Windows feature")
 def test_folder_junction_skipped(tmp_path):
     folder = _make_folder(tmp_path)

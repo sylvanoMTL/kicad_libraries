@@ -1,10 +1,12 @@
 """Open a vendor package (zip or folder) for intake; staged copies live in a temp folder outside the repo."""
 
 import hashlib
+import os
 import stat
 import tempfile
 import zipfile
 import zlib
+from collections import deque
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, field
@@ -17,6 +19,7 @@ MAX_MEMBER_BYTES = 100 * 1024 * 1024
 MAX_TOTAL_BYTES = 250 * 1024 * 1024
 MAX_RATIO = 200
 RATIO_MIN_SIZE = 1024 * 1024
+MAX_FOLDER_DEPTH = 8
 STAGING_PREFIX = "kicad_import_"
 STAGE_KINDS = {
     ".kicad_sym": "symbol",
@@ -203,8 +206,20 @@ def _copy_capped(src, dst, limit: int, sha=None) -> int | None:
     return total
 
 
+def _ignored_issue(label: str, ignored: list[str]) -> Issue | None:
+    """The one INFO Issue listing members that are not imported, or None when there are none."""
+    if not ignored:
+        return None
+    shown = ignored[:_IGNORED_LISTED]
+    listed = ", ".join(shown)
+    extra = len(ignored) - len(shown)
+    if extra > 0:
+        listed += f", and {extra} more"
+    return Issue(Severity.INFO, "intake.ignored_members", f"Not imported from {label}: {listed}")
+
+
 def open_package(path: Path, repo_root: Path, progress: Callable | None = None) -> Package:
-    """Open a vendor zip for intake; expected failures come back as ERROR Issues, never raised."""
+    """Open a vendor zip or a folder of loose files for intake; expected failures come back as ERROR Issues, never raised."""
     path = Path(path)
     if not path.exists():
         package = Package(path, "zip")
@@ -212,6 +227,8 @@ def open_package(path: Path, repo_root: Path, progress: Callable | None = None) 
             Issue(Severity.ERROR, "intake.not_found", f"Could not open {path}: no such file or folder")
         )
         return package
+    if path.is_dir():
+        return _open_folder(path, repo_root, progress)
     if path.is_file() and path.suffix.casefold() == ".zip":
         return _open_zip(path, repo_root, progress)
     package = Package(path, "zip")
@@ -363,13 +380,153 @@ def _open_zip(path: Path, repo_root: Path, progress: Callable | None) -> Package
         # Every zip handle is closed by now, so the staging folder can be removed on Windows too.
         return _refuse(package, issue)
 
-    if package.ignored:
-        shown = package.ignored[:_IGNORED_LISTED]
-        listed = ", ".join(shown)
-        extra = len(package.ignored) - len(shown)
-        if extra > 0:
-            listed += f", and {extra} more"
+    note = _ignored_issue(path.name, package.ignored)
+    if note is not None:
+        package.issues.append(note)
+    return package
+
+
+def _hash_file(path: Path, limit: int) -> tuple[int, str] | None:
+    """Read path (mode "rb" only) counting real bytes; return (size, sha256 hex), or None once more than limit were read."""
+    sha = hashlib.sha256()
+    total = 0
+    with open(path, "rb") as handle:
+        while chunk := handle.read(_COPY_CHUNK):
+            total += len(chunk)
+            if total > limit:
+                return None
+            sha.update(chunk)
+    return total, sha.hexdigest()
+
+
+def _is_link(entry: os.DirEntry) -> bool:
+    """True for a symlink or a Windows reparse point (junction); never follows the link."""
+    if entry.is_symlink():
+        return True
+    return bool(getattr(entry.stat(follow_symlinks=False), "st_file_attributes", 0) & _WINDOWS_REPARSE)
+
+
+def _open_folder(path: Path, repo_root: Path, progress: Callable | None) -> Package:
+    """Read a user-picked folder in place and read-only (INTK-01, A9).
+
+    Nothing is staged or written: every PackageFile points into the folder. Links and junctions are
+    never followed, folders deeper than MAX_FOLDER_DEPTH are not read, and the zip caps apply.
+    Caps are read from the module globals at call time.
+    """
+    package = Package(path, "folder")
+    budget = _Budget()
+    queue: deque[tuple[Path, int]] = deque([(path, 0)])
+    # (rel, kind, file path, listed size) of whitelisted files, in walk order
+    wanted: list[tuple[str, str, Path, int]] = []
+    links: list[str] = []
+    too_deep: list[str] = []
+    while queue:
+        folder, depth = queue.popleft()
+        try:
+            with os.scandir(folder) as it:
+                entries = sorted(it, key=lambda e: (e.name.casefold(), e.name))
+        except OSError as e:
+            rel = folder.relative_to(path).as_posix()
+            package.issues.append(
+                Issue(Severity.WARNING, "intake.unreadable_folder", f"Could not read folder {rel}: {e.strerror or e}")
+            )
+            continue
+        for entry in entries:
+            budget.members += 1
+            if budget.members > MAX_MEMBERS:
+                return _refuse(
+                    package,
+                    Issue(Severity.ERROR, "intake.too_many_members", f"Refused {path.name}: more than {MAX_MEMBERS} files and folders"),
+                )
+            rel = Path(entry.path).relative_to(path).as_posix()
+            try:
+                if _is_link(entry):
+                    links.append(rel)
+                    continue
+                is_dir = entry.is_dir(follow_symlinks=False)
+                is_file = entry.is_file(follow_symlinks=False)
+                size = entry.stat(follow_symlinks=False).st_size if is_file else 0
+            except OSError as e:
+                package.issues.append(
+                    Issue(Severity.WARNING, "intake.unreadable_file", f"Could not read {rel}: {e.strerror or e}")
+                )
+                continue
+            if is_dir:
+                if depth + 1 <= MAX_FOLDER_DEPTH:
+                    queue.append((Path(entry.path), depth + 1))
+                else:
+                    too_deep.append(rel)
+                continue
+            if not is_file:
+                continue  # a socket, device or other special file
+            package.names.append(rel)
+            what, ext = _classify(rel)
+            if what == "legacy":
+                package.legacy.append(rel)
+            elif what != "stage":
+                package.ignored.append(rel)  # junk, a nested .zip (never opened here) or any other file
+            else:
+                if size > MAX_MEMBER_BYTES:
+                    return _refuse(
+                        package,
+                        Issue(
+                            Severity.ERROR,
+                            "intake.too_large",
+                            f"Refused {path.name}: {_shown(rel)} is {size} bytes, over the {MAX_MEMBER_BYTES} byte limit",
+                        ),
+                    )
+                budget.declared += size
+                if budget.declared > MAX_TOTAL_BYTES:
+                    return _refuse(
+                        package,
+                        Issue(
+                            Severity.ERROR,
+                            "intake.too_large",
+                            f"Refused {path.name}: files total {budget.declared} bytes, over the {MAX_TOTAL_BYTES} byte limit",
+                        ),
+                    )
+                wanted.append((rel, STAGE_KINDS[ext], Path(entry.path), size))
+
+    total = len(wanted)
+    for i, (rel, kind, file_path, _size) in enumerate(wanted):
+        if progress:
+            progress(f"Reading {rel}", i, total)
+        limit = min(MAX_MEMBER_BYTES, MAX_TOTAL_BYTES - budget.actual)
+        try:
+            counted = _hash_file(file_path, limit)
+        except OSError as e:
+            package.issues.append(
+                Issue(Severity.WARNING, "intake.unreadable_file", f"Could not read {rel}: {e.strerror or e}")
+            )
+            continue
+        if counted is None:
+            return _refuse(
+                package,
+                Issue(Severity.ERROR, "intake.too_large", f"Refused {path.name}: {_shown(rel)} is larger than it was listed"),
+            )
+        size, digest = counted
+        budget.actual += size
+        package.files.append(PackageFile(rel, file_path, kind, size, digest, False))
+
+    if links:
         package.issues.append(
-            Issue(Severity.INFO, "intake.ignored_members", f"Not imported from {path.name}: {listed}")
+            Issue(
+                Severity.INFO,
+                "intake.link_skipped",
+                f"Skipped links and junctions (not followed): {', '.join(links[:_IGNORED_LISTED])}"
+                + (f", and {len(links) - _IGNORED_LISTED} more" if len(links) > _IGNORED_LISTED else ""),
+            )
         )
+    if too_deep:
+        package.issues.append(
+            Issue(
+                Severity.WARNING,
+                "intake.depth_limit",
+                f"Did not read folders more than {MAX_FOLDER_DEPTH} levels deep: {', '.join(too_deep[:_IGNORED_LISTED])}"
+                + (f", and {len(too_deep) - _IGNORED_LISTED} more" if len(too_deep) > _IGNORED_LISTED else ""),
+            )
+        )
+    note = _ignored_issue(path.name, package.ignored)
+    if note is not None:
+        package.issues.append(note)
     return package
