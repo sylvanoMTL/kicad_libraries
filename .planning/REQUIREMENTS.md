@@ -122,7 +122,7 @@ Explicitly excluded. Documented to prevent scope creep.
 | Keeping source zips in the repo | Repo holds libraries, not downloads |
 | Built-in undo manager | Git is the undo; transactional install covers failures |
 | Upgrading a whole target library's format | Noisy diffs; only the incoming part is normalised |
-| Legacy CLI `generate_lib_tables.py` parity | GUI is the supported path; CLI left as-is |
+| Legacy CLI table generator | Deleted in Phase 2 (D-11); the GUI is the only table-generation path |
 
 ## Traceability
 

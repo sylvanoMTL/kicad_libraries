@@ -15,7 +15,6 @@ KiCad library management repo that aggregates open-source and custom libraries v
   - `widgets/library_table.py` — two-column QTreeWidget (Symbols | Footprints), per-source sync
   - `widgets/log_panel.py` — color-coded log panel (info, warning, error, success)
   - `widgets/backup_dialog.py` — paired backup restore dialog
-- `generate_lib_tables.py` — CLI script for table generation (legacy, GUI preferred)
 
 ## KiCad Path Variables
 These must be set in KiCad: Preferences > Configure Paths:
