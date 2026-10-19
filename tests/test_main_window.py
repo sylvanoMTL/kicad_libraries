@@ -522,7 +522,7 @@ def _collision_scan():
     ])
 
 
-def test_rescan_keeps_the_collided_library_the_user_chose(make_window, qtbot):
+def test_rescan_keeps_the_chosen_collision_peer(make_window, qtbot):
     w = make_window([_collision_scan])
     wurth_path = WURTH_SYM.format("Same")
     assert _selected(w._scan_result.symbol_libs) == set()
@@ -537,7 +537,7 @@ def test_rescan_keeps_the_collided_library_the_user_chose(make_window, qtbot):
     _assert_one_selected_per_nickname(w)
 
 
-def test_set_kicad_path_rescans_with_the_same_reapply_behaviour(
+def test_set_kicad_path_rescan_reapplies_selection(
     make_window, qtbot, monkeypatch, tmp_path
 ):
     repo = tmp_path / "repo"
