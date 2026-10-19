@@ -17,14 +17,14 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 
 ### Hardening
 
-- [ ] **HARD-01**: Regenerating tables keeps every existing external entry in `sym-lib-table` / `fp-lib-table`, whatever its formatting or field order. Entries that can't be classified are kept verbatim and a warning is logged.
-- [ ] **HARD-02**: Generate on a locked or read-only table logs an error per file and leaves the UI consistent, with no unhandled exception
-- [ ] **HARD-03**: `kicad_common.json` is backed up before modification and written atomically, and only `environment.vars` is changed
-- [ ] **HARD-04**: With multiple KiCad versions installed, the newest is chosen by numeric comparison (`10.0` over `9.0`)
-- [ ] **HARD-05**: User cannot start a second scan while one is running (Rescan, Set KiCad Path, post-import rescan)
-- [ ] **HARD-06**: Generated table values containing `"` or `\` are escaped so KiCad loads the table
-- [ ] **HARD-07**: Rescan keeps the user's current symbol/footprint selection instead of resetting it from the tables
-- [ ] **HARD-08**: Libraries with the same nickname in different sources are reported as a collision and no longer overwrite each other in the UI
+- [x] **HARD-01**: Regenerating tables keeps every existing external entry in `sym-lib-table` / `fp-lib-table`, whatever its formatting or field order. Entries that can't be classified are kept verbatim and a warning is logged.
+- [x] **HARD-02**: Generate on a locked or read-only table logs an error per file and leaves the UI consistent, with no unhandled exception
+- [x] **HARD-03**: `kicad_common.json` is backed up before modification and written atomically, and only `environment.vars` is changed
+- [x] **HARD-04**: With multiple KiCad versions installed, the newest is chosen by numeric comparison (`10.0` over `9.0`)
+- [x] **HARD-05**: User cannot start a second scan while one is running (Rescan, Set KiCad Path, post-import rescan)
+- [x] **HARD-06**: Generated table values containing `"` or `\` are escaped so KiCad loads the table
+- [x] **HARD-07**: Rescan keeps the user's current symbol/footprint selection instead of resetting it from the tables
+- [x] **HARD-08**: Libraries with the same nickname in different sources are reported as a collision and no longer overwrite each other in the UI
 - [x] **HARD-09**: Existing footprints using `${KIPRJMOD}/Custom/3DModels/...` are rewritten to `${CUSTOM_3DMODEL_DIR}/...` in one explicit cleanup commit, and the scanner warns about any non-`${CUSTOM_3DMODEL_DIR}` model path that remains
 
 ### Package Intake
@@ -135,14 +135,14 @@ Which phases cover which requirements. Updated during roadmap creation.
 | FOUND-03 | Phase 1 | Complete |
 | FOUND-04 | Phase 1 | Complete |
 | FOUND-05 | Phase 1 | Complete |
-| HARD-01 | Phase 2 | Pending |
-| HARD-02 | Phase 2 | Pending |
-| HARD-03 | Phase 2 | Pending |
-| HARD-04 | Phase 2 | Pending |
-| HARD-05 | Phase 2 | Pending |
-| HARD-06 | Phase 2 | Pending |
-| HARD-07 | Phase 2 | Pending |
-| HARD-08 | Phase 2 | Pending |
+| HARD-01 | Phase 2 | Complete |
+| HARD-02 | Phase 2 | Complete |
+| HARD-03 | Phase 2 | Complete |
+| HARD-04 | Phase 2 | Complete |
+| HARD-05 | Phase 2 | Complete |
+| HARD-06 | Phase 2 | Complete |
+| HARD-07 | Phase 2 | Complete |
+| HARD-08 | Phase 2 | Complete |
 | HARD-09 | Phase 2 | Complete |
 | INTK-01 | Phase 3 | Pending |
 | INTK-02 | Phase 3 | Pending |

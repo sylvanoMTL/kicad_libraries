@@ -1,43 +1,43 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 02
-current_phase_name: Hardening Existing Code
-status: executing
-stopped_at: Completed 02-07-PLAN.md
-last_updated: "2026-10-19T09:26:54.402Z"
+current_phase: 3
+current_phase_name: Package Intake and Naming
+status: planning
+stopped_at: Phase 02 complete, ready to plan Phase 3
+last_updated: "2026-10-19T11:44:59.573Z"
 last_activity: 2026-10-19
-last_activity_desc: Phase 02 execution started
-state_head: 1d8942a224ca50c501001c845fe22133f8be6568
+last_activity_desc: Phase 02 complete, transitioned to Phase 3
+state_head: e4ec89a9fa1ea29aa883ace097f260e4cd9468d1
 progress:
   total_phases: 7
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 15
   completed_plans: 15
-  percent: 14
+  percent: 29
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-18)
+See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 02 — Hardening Existing Code
+**Current focus:** Phase 3 — Package Intake and Naming
 
 ## Current Position
 
-Phase: 02 (Hardening Existing Code) — EXECUTING
-Plan: 2 of 9
-Status: Ready to execute
-Last activity: 2026-10-19 — Phase 02 execution started
+Phase: 3 — Package Intake and Naming
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-19 — Phase 02 complete, transitioned to Phase 3
 
-Progress: [█░░░░░░░░░] 14%
+Progress: [███░░░░░░░] 29%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 6
+- Total plans completed: 15
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -46,6 +46,7 @@ Progress: [█░░░░░░░░░] 14%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 6 | - | - |
+| 02 | 9 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -72,6 +73,8 @@ Recent decisions affecting current work:
 - [Phase 1]: `atomic_write_bytes` pre-checks read-only targets, retries `os.replace` on PermissionError for about 1 s, and reports `fs.locked` / `fs.write_failed` as Issues instead of raising.
 - [Phase 1]: `tests/` is in the scanner's `SKIP_DIRS`, so fixture libraries never reach Select All + Generate.
 - [Requirements]: Detached `Custom` HEAD: switch to `main` is offered only if HEAD is on `main`'s history, otherwise the commit is refused. Legacy `${KIPRJMOD}` model paths are fixed in one explicit cleanup commit (HARD-09).
+- [Phase 02]: Managed table entries are identified by URI tail after `${KICAD_LIB_GITHUB}/`, not by nickname. Issues are routed by `Severity`, not message substrings.
+- [Phase 02]: Scan busy guard = disabled controls + refusing `_start_scan`. Phase 5's post-import rescan must go through `_start_scan`.
 - [Phase 02]: 02-07: owner approved Custom cleanup commit 485d530 (five D-16 footprints to ${CUSTOM_3DMODEL_DIR}); parent gitlink bumped; nothing pushed - owner must push Custom main before removing the worktree
 
 ### Pending Todos
@@ -80,8 +83,8 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 2]: `Severity(str, Enum)` hashes by member name, so `LogPanel.COLORS[Severity.WARNING]` raises KeyError. Index COLORS with `.value` when wiring Issues into the log panel.
-- [Phase 2]: The HARD-09 cleanup commit lands in `Custom`, which is on a detached HEAD with a worktree-private gitdir. Decide the branch state before committing (the same issue Phase 6 automates).
+- [Phase 2]: `Custom` `main` is 1 commit ahead of `origin/main` (485d530, HARD-09 cleanup). Owner must push it before removing this worktree.
+- [Phase 2, UI review]: Non-blocking UI fixes in `02-UI-REVIEW.md`: `populate()` `_updating` needs try/finally, the Symbols Status column is off-screen at default size, help text lacks Collision and Ctrl+Shift+R, Select All/Deselect All stay enabled during a scan. Fold into Phase 5 (Import UI).
 - [Phase 4]: Research flag. Verify that KiCad 9/10 loads a `20211014` symbol spliced into a `20241209` library, and check `kicad-cli` normalisation on a staging copy.
 - [Phase 6]: Research flag. Spike git in this worktree early: detached HEAD, worktree-private module gitdir, and the owner's hooks on `commit -- Custom`.
 - [Phase 7]: Blocked until real SnapEDA and SamacSys/CSE downloads are added to `downloaded_examples/`. Check redistribution terms before committing fixtures.
@@ -96,6 +99,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-19T09:26:54.117Z
-Stopped at: Completed 02-07-PLAN.md
+Last session: 2026-10-19T11:50:00Z
+Stopped at: Phase 02 complete, ready to plan Phase 3
 Resume file: None

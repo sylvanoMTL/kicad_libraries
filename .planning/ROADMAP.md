@@ -13,7 +13,7 @@ The importer is built bottom-up on a shared foundation. First comes a headless t
 Decimal phases appear between their surrounding integers in numeric order.
 
 - [x] **Phase 1: Foundation** - Pinned dependencies, headless pytest harness, atomic writes and a lossless S-expression layer (completed 2026-10-18)
-- [ ] **Phase 2: Hardening Existing Code** - Table generation, KiCad detection, scanning and config writes made safe on the new foundation
+- [x] **Phase 2: Hardening Existing Code** - Table generation, KiCad detection, scanning and config writes made safe on the new foundation (completed 2026-10-19)
 - [ ] **Phase 3: Package Intake and Naming** - Headless, safe reading of Ultra Librarian and loose-file packages, plus library name suggestion and sanitisation
 - [ ] **Phase 4: Plan and Install Core** - Headless, transactional install of a part into `Custom/` with linking, rollback and verification
 - [ ] **Phase 5: Import UI and Post-Install** - Import dialog with an editable preview, per-item conflict resolution, rescan and table refresh
@@ -60,7 +60,7 @@ Plans:
   4. After Rescan, the user's symbol and footprint selection is unchanged. Two libraries with the same nickname in different sources are reported as a collision and stay distinct in the UI, so neither overwrites the other.
   5. The existing footprints that used `${KIPRJMOD}/Custom/3DModels/...` reference `${CUSTOM_3DMODEL_DIR}/...` after one dedicated cleanup commit in `Custom`. A scan warns about any model path that still doesn't use `${CUSTOM_3DMODEL_DIR}`.
 
-**Plans**: 9/9 plans executed
+**Plans**: 9/9 plans complete
 
 Plans:
 **Wave 1**
@@ -162,7 +162,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
-| 2. Hardening Existing Code | 9/9 | In Progress | - |
+| 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
 | 3. Package Intake and Naming | 0/TBD | Not started | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |

@@ -26,6 +26,16 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ Headless pytest harness (offscreen Qt, strict markers), run bare from the repo root — Phase 1
 - ✓ Lossless S-expression layer: every repo `.kicad_sym`, `.kicad_mod` and lib table round-trips byte-identically; edits change only the targeted span and keep CRLF/LF — Phase 1
 - ✓ Atomic write helper (temp file + `os.replace`, read-only pre-check, locked-file retry) and `<name>_backup_<N>` backup helper in `fsutil.py` — Phase 1
+- ✓ Table merge keeps every external entry whatever its layout; entries it can't classify are kept verbatim with a warning (HARD-01) — Phase 2
+- ✓ Locked or read-only tables during Generate log one error per file and leave the UI consistent (HARD-02) — Phase 2
+- ✓ `kicad_common.json` is backed up, written atomically, and only `environment.vars` changes (HARD-03) — Phase 2
+- ✓ KiCad version directories sorted numerically, so `10.0` wins over `9.0` (HARD-04) — Phase 2
+- ✓ No overlapping scans: one guarded `_start_scan`, with controls disabled while a scan runs (HARD-05) — Phase 2
+- ✓ Generated S-expression values are escaped (HARD-06) — Phase 2
+- ✓ Rescan keeps the current selection; pre-selection from the tables happens only at startup (HARD-07) — Phase 2
+- ✓ Same-nickname libraries in different sources are reported as a collision and kept distinct in the UI (HARD-08) — Phase 2
+- ✓ Legacy `${KIPRJMOD}/Custom/3DModels` paths rewritten to `${CUSTOM_3DMODEL_DIR}` in one Custom commit; the scanner warns about any other model path (HARD-09) — Phase 2
+- ✓ Legacy `generate_lib_tables.py` CLI removed; issues routed by severity instead of message substrings — Phase 2
 
 ### Active
 
@@ -52,16 +62,8 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - [ ] After install: rescan and regenerate `sym-lib-table` / `fp-lib-table`
 - [ ] After install: ask for confirmation, then commit the new part in the `Custom` submodule and bump the parent repo's submodule ref. Commit only, never push.
 
-**Hardening of existing code (all High / Medium-High concerns from `.planning/codebase/CONCERNS.md`)**
-- [ ] Table merge no longer silently drops external entries that don't match the strict regex. Use a proper S-expression parse, and warn about entries that can't be classified.
-- [ ] File-system errors during Generate (locked or read-only tables) are caught and logged instead of raising inside a Qt slot
-- [ ] Atomic writes (temp file + `os.replace`) for the library tables and `kicad_common.json`, with a backup of `kicad_common.json` before it is modified (helpers exist since Phase 1; wiring into table generation and config writes is Phase 2)
-- [ ] KiCad version directories sorted numerically, so `10.0` is chosen over `9.0`
-- [ ] No overlapping scans: Rescan and Set KiCad Path can't start a scan while one is running
-- [ ] Generated S-expression values are escaped
-
 **Quality**
-- [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code (harness and parser tests done in Phase 1; importer and hardened-table tests still to come)
+- [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code (harness and parser tests done in Phase 1, hardened-table/config/scan tests done in Phase 2; importer tests still to come)
 
 ### Out of Scope
 
@@ -103,7 +105,11 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | No 3D model → install without it and warn | Keep the flow simple; models can be added later | — Pending |
 | One package per import | Simpler review; batch not needed | — Pending |
 | Commit in `Custom` + bump parent ref after confirmation; never push | Matches the CLAUDE.md git workflow; pushing stays a deliberate act | — Pending |
-| Fix all High/Medium-High concerns from the codebase map | Importer builds on table/scan/write code that has known data-loss risks | — Pending |
+| Fix all High/Medium-High concerns from the codebase map | Importer builds on table/scan/write code that has known data-loss risks | ✓ Good — HARD-01..09 verified and UAT passed (Phase 2) |
+| Managed table entries identified by URI tail after `${KICAD_LIB_GITHUB}/`, not by nickname | Nicknames can collide across sources; the path cannot | ✓ Good (Phase 2) |
+| Scan busy guard is both disabled controls and a refusing `_start_scan` | A disabled control doesn't stop a programmatic caller (e.g. post-import rescan) | ✓ Good (Phase 2) |
+| On a nickname collision, the peer whose rel_path sorts first (Custom before WurthElektronik) stays selected | Deterministic, and personal parts win | ✓ Good (Phase 2) |
+| A running KiCad only warns; the `kicad_common.json` write still proceeds | Blocking would make Generate unusable while KiCad is open | — Pending |
 | Headless pytest for importer and hardened logic | No tests today; parsers and merges are regression-prone | ✓ Good — harness in place, 290+ tests at Phase 1 close |
 | Replace regex parsing with an S-expression tokenizer | Needed for safe symbol merge and fixes the table-merge bug | ✓ Good — span-splicing layer round-trips the whole corpus byte-identically (Phase 1) |
 
@@ -125,4 +131,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-18 after Phase 1*
+*Last updated: 2026-10-19 after Phase 2*
