@@ -5,12 +5,23 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from .models import FootprintLibrary, FootprintRef, ScanResult, SymbolLibrary
+from .models import (
+    FootprintLibrary,
+    FootprintRef,
+    Issue,
+    ScanResult,
+    Severity,
+    SymbolLibrary,
+)
 
 FOOTPRINT_RE = re.compile(r'\(property\s+"Footprint"\s+"([^"]*)"')
 MODEL_RE = re.compile(r'\(model\s+"([^"]*)"')
 
-SKIP_DIRS = {"env", "venv", ".venv", ".git", ".claude", "__pycache__", "tests"}
+# downloaded_examples holds vendor packages kept for the importer; never a library source
+SKIP_DIRS = {
+    "env", "venv", ".venv", ".git", ".claude", "__pycache__", "tests",
+    "downloaded_examples",
+}
 
 
 def find_kicad_config_dir() -> Path | None:
@@ -204,12 +215,45 @@ def _parse_footprint_refs(sym_file: Path) -> list[FootprintRef]:
     return refs
 
 
+def _collide(libs: list, kind: str) -> list[Issue]:
+    """Fill collision_peers for one library kind and return one Issue per shared nickname."""
+    for lib in libs:
+        lib.collision_peers = []
+    groups: dict[str, list] = {}
+    for lib in libs:
+        groups.setdefault(lib.nickname, []).append(lib)
+
+    issues = []
+    for nickname, group in groups.items():
+        if len(group) < 2:
+            continue
+        rel_paths = sorted(lib.rel_path for lib in group)
+        for lib in group:
+            lib.collision_peers = [p for p in rel_paths if p != lib.rel_path]
+        issues.append(Issue(
+            Severity.WARNING,
+            "scan.nickname_collision",
+            f"[{nickname}] {kind} library nickname is used by "
+            f"{', '.join(rel_paths)}; only one of them can be selected",
+        ))
+    return issues
+
+
+def find_nickname_collisions(sym_libs: list[SymbolLibrary],
+                             fp_libs: list[FootprintLibrary]) -> list[Issue]:
+    """Report nicknames shared within symbols or within footprints and record peers.
+
+    Symbols and footprints are checked separately. Nicknames are never changed.
+    """
+    return _collide(sym_libs, "Symbol") + _collide(fp_libs, "Footprint")
+
+
 def cross_reference(sym_libs: list[SymbolLibrary],
                     fp_libs: list[FootprintLibrary],
-                    kicad_fp_dir: Path | None = None) -> list[str]:
+                    kicad_fp_dir: Path | None = None) -> list[Issue]:
     fp_nicknames = {lib.nickname for lib in fp_libs}
     kicad_defaults = get_kicad_default_fp_nicknames(kicad_fp_dir)
-    warnings = []
+    issues = []
 
     for sym in sym_libs:
         for ref in sym.footprint_refs:
@@ -219,17 +263,19 @@ def cross_reference(sym_libs: list[SymbolLibrary],
                 ref.found_in_repo = True  # Available in KiCad's default libraries
             else:
                 ref.found_in_repo = False
-                warnings.append(
+                issues.append(Issue(
+                    Severity.WARNING,
+                    "scan.footprint_lib_missing",
                     f"[{sym.nickname}] Footprint library '{ref.library_name}' "
                     f"not found in repo or KiCad defaults "
-                    f"(referenced by {ref.footprint_name})"
-                )
-    return warnings
+                    f"(referenced by {ref.footprint_name})",
+                ))
+    return issues
 
 
-def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[str]:
+def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[Issue]:
     mod_files = _collect_files(root, "*.kicad_mod")
-    warnings = []
+    issues = []
     for i, mod_file in enumerate(mod_files):
         if progress:
             progress(f"Checking 3D paths: {mod_file.stem}", i, len(mod_files))
@@ -244,10 +290,12 @@ def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[s
             if path.startswith("${"):
                 continue
             if "/" in path or "\\" in path:
-                warnings.append(
-                    f"[{rel}] Absolute/non-variable 3D model path: {path}"
-                )
-    return warnings
+                issues.append(Issue(
+                    Severity.WARNING,
+                    "scan.model_absolute",
+                    f"[{rel}] Absolute/non-variable 3D model path: {path}",
+                ))
+    return issues
 
 
 def scan_all(repo_root: Path, progress: Callable | None = None,
@@ -260,10 +308,9 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
 
     if progress:
         progress("Cross-referencing...", 95, 100)
-    warnings = cross_reference(sym_libs, fp_libs, kicad_fp_dir)
-
-    model_warnings = check_3d_model_paths(repo_root, progress)
-    warnings.extend(model_warnings)
+    issues = find_nickname_collisions(sym_libs, fp_libs)
+    issues.extend(cross_reference(sym_libs, fp_libs, kicad_fp_dir))
+    issues.extend(check_3d_model_paths(repo_root, progress))
 
     if progress:
         progress("Done", 100, 100)
@@ -271,5 +318,5 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
     return ScanResult(
         symbol_libs=sym_libs,
         footprint_libs=fp_libs,
-        warnings=warnings,
+        issues=issues,
     )
