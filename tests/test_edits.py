@@ -19,6 +19,7 @@ from kicad_lib_manager.kicad_files import (
     footprint_name,
     lib_table_entries,
 )
+from kicad_lib_manager import kicad_files
 from kicad_lib_manager.models import Issue
 from kicad_lib_manager.sexpr import Edit, apply_edits, parse, quote
 
@@ -396,3 +397,77 @@ def test_interrupted_write_leaves_original_intact(tmp_path, monkeypatch):
     assert result.code == "fs.locked"
     assert target.read_bytes() == original
     assert os.listdir(tmp_path) == [target.name]
+
+
+def _apply_edit_on_disk(target: Path, edit: Edit):
+    """Apply one Edit to target on disk; return (old text, new text, written bytes)."""
+    src = read_source(target)
+    assert not isinstance(src, Issue)
+    new_text = apply_edits(src.text, [edit])
+    assert atomic_write_bytes(target, encode_source(new_text, src.bom)) is None
+    return src.text, new_text, target.read_bytes()
+
+
+def test_retarget_model_second_of_two_crlf(tmp_path):
+    target, original = _copy_fixture(tmp_path, "sexpr/two_models.kicad_mod")
+    src = read_source(target)
+    models = find_models(footprint_name(parse(src.text)).node)
+    new_path = "${CUSTOM_3DMODEL_DIR}/FIX_NEW.step"
+
+    edit = kicad_files.retarget_model(models[1], new_path)
+    assert (edit.start, edit.end) == (models[1].path_node.start, models[1].path_node.end)
+    assert edit.text == quote(new_path)
+
+    old_text, new_text, written = _apply_edit_on_disk(target, edit)
+    _assert_only_span_changed(old_text, new_text, edit.start, edit.end, quote(new_path))
+    assert _eol_counts(new_text) == _eol_counts(old_text)
+    assert written.count(b"\n") == written.count(b"\r\n")
+    after = find_models(footprint_name(parse(read_source(target).text)).node)
+    assert [m.path for m in after] == ["${CUSTOM_3DMODEL_DIR}/FIX_A.step", new_path]
+
+
+def test_retarget_model_bare_atom_becomes_quoted_string():
+    text = "(footprint F\n  (model C:/abs/x.step\n    (scale (xyz 1 1 1))\n  )\n)\n"
+    models = find_models(footprint_name(parse(text)).node)
+    assert models[0].path == "C:/abs/x.step"
+
+    edit = kicad_files.retarget_model(models[0], "${CUSTOM_3DMODEL_DIR}/x.step")
+    new_text = apply_edits(text, [edit])
+
+    assert '(model "${CUSTOM_3DMODEL_DIR}/x.step"' in new_text
+    assert new_text.endswith("(scale (xyz 1 1 1))\n  )\n)\n")
+    reparsed = find_models(footprint_name(parse(new_text)).node)
+    assert reparsed[0].path == "${CUSTOM_3DMODEL_DIR}/x.step"
+
+
+def test_retarget_model_keeps_bom(tmp_path):
+    target = tmp_path / "bom.kicad_mod"
+    target.write_bytes(b'\xef\xbb\xbf(footprint "b"\n  (model "C:/abs/b.step")\n)\n')
+    src = read_source(target)
+    assert src.bom
+    models = find_models(footprint_name(parse(src.text)).node)
+
+    edit = kicad_files.retarget_model(models[0], "${CUSTOM_3DMODEL_DIR}/b.step")
+    _apply_edit_on_disk(target, edit)
+
+    assert target.read_bytes() == (
+        b'\xef\xbb\xbf(footprint "b"\n  (model "${CUSTOM_3DMODEL_DIR}/b.step")\n)\n'
+    )
+
+
+def test_retarget_model_does_not_mutate_input_text():
+    text = '(footprint "m"\n  (model "C:/abs/m.step")\n)\n'
+    snapshot = str(text)
+    models = find_models(footprint_name(parse(text)).node)
+    kicad_files.retarget_model(models[0], "${CUSTOM_3DMODEL_DIR}/m.step")
+    assert text == snapshot
+
+
+def test_retarget_model_path_with_double_quote_round_trips():
+    text = '(footprint "m"\n  (model "C:/abs/m.step")\n)\n'
+    models = find_models(footprint_name(parse(text)).node)
+    awkward = 'dir/we"ird.step'
+
+    new_text = apply_edits(text, [kicad_files.retarget_model(models[0], awkward)])
+
+    assert find_models(footprint_name(parse(new_text)).node)[0].path == awkward
