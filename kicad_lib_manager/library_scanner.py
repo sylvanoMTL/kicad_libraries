@@ -24,25 +24,44 @@ SKIP_DIRS = {
 }
 
 
-def find_kicad_config_dir() -> Path | None:
-    """Find the latest KiCad user config directory."""
-    if sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        if not appdata:
-            return None
-        base = Path(appdata) / "kicad"
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library" / "Preferences" / "kicad"
-    else:
-        base = Path.home() / ".config" / "kicad"
+_VERSION_RE = re.compile(r"[0-9]+(?:\.[0-9]+)*")
 
-    if not base.is_dir():
+
+def parse_version(name: str) -> tuple[int, ...] | None:
+    """Parse a dotted-integer folder name such as "10.0"; anything else gives None."""
+    if not _VERSION_RE.fullmatch(name):
         return None
+    return tuple(int(part) for part in name.split("."))
 
-    versions = sorted(
-        (d for d in base.iterdir() if d.is_dir()),
-        reverse=True,
-    )
+
+def newest_version_dirs(parent: Path) -> list[Path]:
+    """Version-named subfolders of parent, newest first by numeric order."""
+    try:
+        found = [
+            (version, d.name, d)
+            for d in parent.iterdir()
+            if (version := parse_version(d.name)) is not None and d.is_dir()
+        ]
+    except OSError:
+        return []
+    found.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [d for _, _, d in found]
+
+
+def find_kicad_config_dir(base: Path | None = None) -> Path | None:
+    """Find the newest KiCad user config directory (numeric version order)."""
+    if base is None:
+        if sys.platform == "win32":
+            appdata = os.environ.get("APPDATA")
+            if not appdata:
+                return None
+            base = Path(appdata) / "kicad"
+        elif sys.platform == "darwin":
+            base = Path.home() / "Library" / "Preferences" / "kicad"
+        else:
+            base = Path.home() / ".config" / "kicad"
+
+    versions = newest_version_dirs(base)
     return versions[0] if versions else None
 
 
@@ -98,25 +117,24 @@ def sync_kicad_path_vars(repo_root: Path) -> list[str]:
     return messages
 
 
-def find_kicad_footprint_dir() -> Path | None:
+def find_kicad_footprint_dir(base: Path | None = None, *,
+                             platform: str | None = None) -> Path | None:
     """Auto-detect KiCad's default footprint library directory."""
-    if sys.platform == "win32":
-        base = Path("C:/Program Files/KiCad")
-    elif sys.platform == "darwin":
-        base = Path("/Applications/KiCad")
-    else:
-        base = Path("/usr/share/kicad")
+    platform = sys.platform if platform is None else platform
+    if base is None:
+        if platform == "win32":
+            base = Path("C:/Program Files/KiCad")
+        elif platform == "darwin":
+            base = Path("/Applications/KiCad")
+        else:
+            base = Path("/usr/share/kicad")
 
     if not base.exists():
         return None
 
-    # Find the latest version directory (e.g., 9.0, 8.0)
-    if sys.platform == "win32":
-        versions = sorted(
-            (d for d in base.iterdir() if d.is_dir()),
-            reverse=True,
-        )
-        for v in versions:
+    # Newest version first (e.g., 10.0 before 9.0)
+    if platform == "win32":
+        for v in newest_version_dirs(base):
             fp_dir = v / "share" / "kicad" / "footprints"
             if fp_dir.is_dir():
                 return fp_dir
