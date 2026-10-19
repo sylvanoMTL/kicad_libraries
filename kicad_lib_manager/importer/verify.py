@@ -7,6 +7,7 @@ Every check re-reads its files; nothing is taken from the bytes the plan carries
 
 import os
 import re
+from collections.abc import Sequence
 from pathlib import Path
 
 from ..kicad_files import (
@@ -18,10 +19,12 @@ from ..kicad_files import (
     load,
 )
 from ..models import Issue, Severity
-from ..sexpr import Node, unquote
-from .plan import MODEL_DIR_VAR, InstallPlan
+from ..sexpr import Node, quote, unquote
+from .layout import RepoLayout
+from .plan import MODEL_DIR_VAR, InstallPlan, ToolContext
 
 _DIGITS = re.compile(r"(\d+)")
+_WURTH_PREFIX = "WurthElektronik:"
 
 
 def _err(code: str, text: str) -> Issue:
@@ -130,6 +133,7 @@ def verify_install(plan: InstallPlan) -> list[Issue]:
                     footprint_pad_numbers(ref.node),
                 )
             )
+    issues.extend(find_name_elsewhere(plan.symbol_names, plan.layout, exclude_library=plan.library, tools=plan.tools))
     return _unique(issues)
 
 
@@ -205,6 +209,84 @@ def pin_pad_issues(symbol_name: str, footprint: str, pins: set[str], pads: set[s
     if no_pin:
         parts.append(f"pads with no pin: {', '.join(no_pin)}")
     return [Issue(Severity.WARNING, "verify.pin_pad_mismatch", f"{symbol_name} does not match {footprint}; " + "; ".join(parts))]
+
+
+# -- the same part name in another library (POST-03, D-21) ------------------------
+
+
+def symbol_search_dirs(layout: RepoLayout, tools: ToolContext) -> list[tuple[str, Path]]:
+    """(label prefix, folder) pairs searched for an existing part name, most local first."""
+    dirs: list[tuple[str, Path]] = [("", layout.symbols_dir)]
+    wurth = layout.repo_root / "WurthElektronik"
+    if wurth.is_dir():
+        dirs.append((_WURTH_PREFIX, wurth))
+    if tools.kicad_symbols_dir is not None and tools.kicad_symbols_dir.is_dir():
+        dirs.append(("KiCad:", tools.kicad_symbols_dir))
+    dirs.extend(("", d) for d in tools.extra_symbol_dirs)
+    return dirs
+
+
+def _symbol_files(prefix: str, folder: Path) -> list[Path]:
+    """The .kicad_sym files of one search folder; WurthElektronik is searched recursively, the rest are flat."""
+    found: list[Path] = []
+    try:
+        if prefix == _WURTH_PREFIX:
+            for here, _, files in os.walk(folder):
+                found.extend(Path(here) / f for f in files if f.casefold().endswith(".kicad_sym"))
+        else:
+            found.extend(folder / f for f in os.listdir(folder) if f.casefold().endswith(".kicad_sym"))
+    except OSError:
+        pass
+    return sorted(found)
+
+
+def _declaration_pattern(needle: bytes) -> re.Pattern:
+    """Match needle as a top-level symbol: one tab or one to two spaces of indent, or right after a one-line header."""
+    return re.compile(
+        rb"(?:^(?:\t| {1,2})|\(kicad_symbol_lib\b[^\n]*?[ \t)])" + re.escape(needle) + rb"(?=[\s)]|\Z)",
+        re.MULTILINE,
+    )
+
+
+def find_name_elsewhere(
+    names: Sequence[str], layout: RepoLayout, *, exclude_library: str, tools: ToolContext
+) -> list[Issue]:
+    """One WARNING per name that another library already declares; never blocks.
+
+    A bytes-substring prefilter rejects almost every file, and a depth-1 regex confirms the
+    rest. Libraries are never parsed: parsing KiCad's stock symbols costs about a minute.
+    """
+    wanted: dict[str, bytes] = {}
+    for name in names:
+        wanted.setdefault(name, ("(symbol " + quote(name)).encode("utf-8"))
+    if not wanted:
+        return []
+    patterns: dict[str, re.Pattern] = {}
+    labels: dict[str, list[str]] = {name: [] for name in wanted}
+    for prefix, folder in symbol_search_dirs(layout, tools):
+        for path in _symbol_files(prefix, folder):
+            if not prefix and folder == layout.symbols_dir and path.stem == exclude_library:
+                continue
+            try:
+                data = path.read_bytes()
+            except OSError:
+                continue
+            label = f"{prefix}{path.stem}"
+            for name, needle in wanted.items():
+                if needle not in data or label in labels[name]:
+                    continue
+                pattern = patterns.get(name) or patterns.setdefault(name, _declaration_pattern(needle))
+                if pattern.search(data):
+                    labels[name].append(label)
+    return [
+        Issue(
+            Severity.WARNING,
+            "verify.name_elsewhere",
+            f"{name} already exists in: {', '.join(found)}; KiCad allows this, check it is intended",
+        )
+        for name, found in labels.items()
+        if found
+    ]
 
 
 def _unique(issues: list[Issue]) -> list[Issue]:
