@@ -9,11 +9,8 @@ from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
 from .library_scanner import scan_all, find_kicad_footprint_dir, sync_kicad_path_vars
-from .table_generator import (
-    write_tables, restore_backup_pair, count_table_entries, parse_lib_table,
-    _MANAGED_MARKER,
-)
-from .models import ScanResult
+from .table_generator import write_tables, restore_backup_pair, table_info, TableInfo
+from .models import Issue, ScanResult
 from .settings import (
     load_kicad_fp_dir, save_kicad_fp_dir,
     load_dest_history, add_dest_to_history,
@@ -71,7 +68,7 @@ class MainWindow(QMainWindow):
 
         # Detect KiCad installation, then start scan
         self._detect_kicad()
-        self._check_existing_tables()
+        self._log_existing_tables(Path(self._dest_combo.currentText()))
         self._start_scan()
 
     def _build_menu(self):
@@ -160,7 +157,9 @@ class MainWindow(QMainWindow):
         self._dest_combo.setEditable(True)
         self._dest_combo.setMinimumWidth(300)
         self._populate_dest_combo()
-        self._dest_combo.currentTextChanged.connect(self._on_dest_changed)
+        # Not currentTextChanged: that fires on every keystroke of a typed path
+        self._dest_combo.textActivated.connect(self._on_dest_changed)
+        self._dest_combo.lineEdit().editingFinished.connect(self._on_dest_changed)
         toolbar.addWidget(self._dest_combo)
 
         browse_btn = QPushButton("Browse...")
@@ -243,20 +242,23 @@ class MainWindow(QMainWindow):
                     "warning",
                 )
 
-    def _check_existing_tables(self):
-        """Log a message if the current destination already has table files."""
-        dest = Path(self._dest_combo.currentText())
+    def _log_existing_tables(self, dest: Path):
+        """Log which table files exist at the destination; never touches selection."""
         if not dest.is_dir():
             return
         for name in ("sym-lib-table", "fp-lib-table"):
-            table_path = dest / name
-            if table_path.exists():
-                n = count_table_entries(table_path)
-                self._log.log(
-                    f"Existing {name} found at {dest} ({n} entries) "
-                    "— external entries will be preserved on generate",
-                    "info",
-                )
+            info = table_info(dest / name)
+            if info is None:
+                continue
+            if isinstance(info, Issue):
+                self._log.log_issue(info)
+                continue
+            self._log.log(
+                f"Existing {name} found at {dest} ({info.entry_count} entries, "
+                f"{len(info.managed)} managed) - external entries will be "
+                "preserved on generate",
+                "info",
+            )
 
     def _start_scan(self):
         self._progress = QProgressDialog(
@@ -314,32 +316,29 @@ class MainWindow(QMainWindow):
         if not dest.is_dir():
             return
 
-        # Parse existing tables and collect managed nicknames
-        sym_path = dest / "sym-lib-table"
-        fp_path = dest / "fp-lib-table"
+        # Collect the repo-relative paths of managed entries (identity is rel_path)
+        managed: dict[str, frozenset[str]] = {}
+        for name in ("sym-lib-table", "fp-lib-table"):
+            info = table_info(dest / name)
+            if isinstance(info, Issue):
+                self._log.log_issue(info)
+            elif isinstance(info, TableInfo):
+                managed[name] = info.managed
+        sym_paths = managed.get("sym-lib-table", frozenset())
+        fp_paths = managed.get("fp-lib-table", frozenset())
 
-        sym_nicknames: set[str] = set()
-        fp_nicknames: set[str] = set()
-
-        for entry in parse_lib_table(sym_path):
-            if _MANAGED_MARKER in entry["uri"]:
-                sym_nicknames.add(entry["name"])
-        for entry in parse_lib_table(fp_path):
-            if _MANAGED_MARKER in entry["uri"]:
-                fp_nicknames.add(entry["name"])
-
-        if not sym_nicknames and not fp_nicknames:
+        if not sym_paths and not fp_paths:
             return
 
         selected_sym = 0
         for lib in result.symbol_libs:
-            if lib.nickname in sym_nicknames:
+            if lib.rel_path in sym_paths:
                 lib.selected = True
                 selected_sym += 1
 
         selected_fp = 0
         for lib in result.footprint_libs:
-            if lib.nickname in fp_nicknames:
+            if lib.rel_path in fp_paths:
                 lib.selected = True
                 selected_fp += 1
 
@@ -354,6 +353,10 @@ class MainWindow(QMainWindow):
         self._log.log(f"Scan error: {error_msg}", "error")
         self._worker.wait()
         self._worker = None
+
+    def _log_issues(self, issues: list[Issue]):
+        for issue in issues:
+            self._log.log_issue(issue)
 
     def _on_generate(self):
         if not self._scan_result:
@@ -378,15 +381,9 @@ class MainWindow(QMainWindow):
             "info",
         )
 
-        messages = write_tables(
+        self._log_issues(write_tables(
             dest, self._scan_result.symbol_libs, self._scan_result.footprint_libs
-        )
-        for msg in messages:
-            if msg.startswith("Warning:") or "removed" in msg:
-                level = "warning"
-            else:
-                level = "success"
-            self._log.log(msg, level)
+        ))
 
         # Sync KiCad path variables
         path_msgs = sync_kicad_path_vars(REPO_ROOT)
@@ -406,17 +403,15 @@ class MainWindow(QMainWindow):
 
     def _on_rescan(self):
         self._log.log("Rescanning repository...", "info")
-        self._check_existing_tables()
+        self._log_existing_tables(Path(self._dest_combo.currentText()))
         self._start_scan()
 
     def _on_restore_backup(self):
         dialog = BackupDialog(self._dest_combo.currentText(), parent=self)
         if dialog.exec() and dialog.selected_backup_num is not None:
-            messages = restore_backup_pair(
+            self._log_issues(restore_backup_pair(
                 dialog.selected_folder, dialog.selected_backup_num
-            )
-            for msg in messages:
-                self._log.log(msg, "success")
+            ))
 
     def _on_set_kicad_path(self):
         current = str(self._kicad_fp_dir) if self._kicad_fp_dir else "C:/Program Files"
@@ -445,22 +440,11 @@ class MainWindow(QMainWindow):
             self._dest_combo.addItems(history)
             self._dest_combo.setCurrentIndex(0)
             self._dest_combo.blockSignals(False)
-            self._check_existing_tables()
+            self._log_existing_tables(Path(self._dest_combo.currentText()))
 
-    def _on_dest_changed(self, text: str):
-        """Called when the user selects a different destination from the combo."""
-        dest = Path(text)
-        if not dest.is_dir():
-            return
-        for name in ("sym-lib-table", "fp-lib-table"):
-            table_path = dest / name
-            if table_path.exists():
-                n = count_table_entries(table_path)
-                self._log.log(
-                    f"Existing {name} found at {dest} ({n} entries) "
-                    "— external entries will be preserved on generate",
-                    "info",
-                )
+    def _on_dest_changed(self, *_args):
+        """Destination picked or typed: only report which tables exist there."""
+        self._log_existing_tables(Path(self._dest_combo.currentText()))
 
     def _on_select_all(self):
         self._tree.select_all()
