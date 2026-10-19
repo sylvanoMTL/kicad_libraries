@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import pytest
-from installfixtures import extends_pair, vendor_footprint, vendor_symbol_lib
+from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
 from zipfixtures import symbol_lib, write_custom_layout
 
 from kicad_lib_manager import library_scanner
@@ -325,3 +325,181 @@ def test_pin_pad_not_checked_without_a_link(tmp_path):
     fp = vendor_footprint("FP", pads=("1", "2", "3"))
     plan = make_plan(tmp_path, sym=sym, footprints={"FP.kicad_mod": fp}, linked_footprint=None, model_file=None)
     assert _mismatch(verify.verify_install(plan)) is None
+
+
+# -- name elsewhere (POST-03, D-21) ---------------------------------------------
+
+NAME = "CSD85301Q2"
+
+
+def _search(layout, *names, tools=None, exclude=LIB):
+    return verify.find_name_elsewhere(
+        names or (NAME,), layout, exclude_library=exclude, tools=tools if tools is not None else ToolContext()
+    )
+
+
+def _names_in(layout, library, *names, lib_dir=None):
+    folder = lib_dir if lib_dir is not None else layout.symbols_dir
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{library}.kicad_sym").write_bytes(symbol_lib(names))
+
+
+def test_elsewhere_other_custom_lib(tmp_path):
+    layout = _layout(tmp_path)
+    _names_in(layout, LIB, NAME)
+    _names_in(layout, "IC_Other_TI", NAME)
+    issues = _search(layout)
+    assert len(issues) == 1
+    assert issues[0].severity is Severity.WARNING
+    assert issues[0].code == "verify.name_elsewhere"
+    assert NAME in issues[0].text and "IC_Other_TI" in issues[0].text
+    assert LIB not in issues[0].text
+
+
+def test_elsewhere_target_excluded(tmp_path):
+    layout = _layout(tmp_path)
+    _names_in(layout, LIB, NAME)
+    _names_in(layout, "IC_Other_TI", "SOMETHING_ELSE")
+    assert _search(layout) == []
+
+
+def test_elsewhere_sub_symbol_not_counted(tmp_path):
+    layout = _layout(tmp_path)
+    (layout.symbols_dir / "IC_Other_TI.kicad_sym").write_bytes(
+        f'(kicad_symbol_lib (version 20211014)\n  (symbol "PARENT"\n    (symbol "{NAME}_1_1"\n    )\n  )\n)\n'.encode()
+    )
+    (layout.symbols_dir / "IC_Third_TI.kicad_sym").write_bytes(
+        f'(kicad_symbol_lib (version 20211014)\n  (symbol "PARENT"\n    (symbol "{NAME}"\n    )\n  )\n)\n'.encode()
+    )
+    (layout.symbols_dir / "IC_Fourth_TI.kicad_sym").write_bytes(
+        f'(kicad_symbol_lib\n\t(symbol "PARENT"\n\t\t(symbol "{NAME}"\n\t\t)\n\t)\n)\n'.encode()
+    )
+    assert _search(layout) == []
+
+
+def test_elsewhere_tab_indent_and_crlf(tmp_path):
+    layout = _layout(tmp_path)
+    (layout.symbols_dir / "IC_Tabs_TI.kicad_sym").write_bytes(target_lib(20231120, (NAME,)))
+    (layout.symbols_dir / "IC_Crlf_TI.kicad_sym").write_bytes(target_lib(20211014, (NAME,)))
+    text = _search(layout)[0].text
+    assert "IC_Tabs_TI" in text and "IC_Crlf_TI" in text
+
+
+def test_elsewhere_one_line_header(tmp_path):
+    layout = _layout(tmp_path)
+    (layout.symbols_dir / "IC_Flat_TI.kicad_sym").write_bytes(
+        f'(kicad_symbol_lib (version 20211014) (symbol "{NAME}" (in_bom yes)))\n'.encode()
+    )
+    assert "IC_Flat_TI" in _search(layout)[0].text
+
+
+def test_elsewhere_stock_dir(tmp_path):
+    layout = _layout(tmp_path)
+    stock = tmp_path / "stock"
+    _names_in(layout, "Device", NAME, lib_dir=stock)
+    issues = _search(layout, tools=ToolContext(kicad_symbols_dir=stock))
+    assert len(issues) == 1
+    assert "KiCad:Device" in issues[0].text
+
+
+def test_elsewhere_wurth(tmp_path):
+    layout = _layout(tmp_path)
+    assert _search(layout) == []
+    nested = tmp_path / "WurthElektronik" / "KiCad-Library" / "symbols"
+    _names_in(layout, "WE-Connector", NAME, lib_dir=nested)
+    issues = _search(layout)
+    assert len(issues) == 1
+    assert "WurthElektronik:WE-Connector" in issues[0].text
+
+
+def test_elsewhere_extra_dirs(tmp_path):
+    layout = _layout(tmp_path)
+    extra = tmp_path / "extra"
+    _names_in(layout, "Mine", NAME, lib_dir=extra)
+    issues = _search(layout, tools=ToolContext(extra_symbol_dirs=(extra,)))
+    assert len(issues) == 1 and "Mine" in issues[0].text
+
+
+def test_elsewhere_none(tmp_path):
+    layout = _layout(tmp_path)
+    assert _search(layout) == []
+    missing = ToolContext(kicad_symbols_dir=tmp_path / "no_such_folder", extra_symbol_dirs=(tmp_path / "none",))
+    assert _search(layout, tools=missing) == []
+    assert verify.find_name_elsewhere((), layout, exclude_library=LIB, tools=ToolContext()) == []
+
+
+def test_elsewhere_labels_each_library_once_per_name(tmp_path):
+    layout = _layout(tmp_path)
+    _names_in(layout, "IC_A_TI", NAME, "OTHER_PART")
+    _names_in(layout, "IC_B_TI", NAME)
+    issues = _search(layout, NAME, "OTHER_PART", "ABSENT")
+    assert [i.text.split(" ")[0] for i in issues] == [NAME, "OTHER_PART"]
+    assert "IC_A_TI" in issues[0].text and "IC_B_TI" in issues[0].text
+    assert "IC_B_TI" not in issues[1].text
+
+
+def test_elsewhere_case_and_quotes(tmp_path):
+    layout = _layout(tmp_path)
+    _names_in(layout, "IC_Other_TI", NAME, 'A"B', "C\\D")
+    assert _search(layout, NAME.lower()) == []
+    assert len(_search(layout, 'A"B')) == 1
+    assert len(_search(layout, "C\\D")) == 1
+    assert _search(layout, "A") == []
+
+
+def test_elsewhere_no_full_parse(tmp_path, monkeypatch):
+    from kicad_lib_manager import kicad_files, sexpr
+
+    layout = _layout(tmp_path)
+    filler = "".join(f'  (symbol "FILLER_{i}"\n  )\n' for i in range(80000))
+    big = f"(kicad_symbol_lib (version 20211014)\n{filler})\n".encode()
+    assert len(big) > 2_000_000
+    (layout.symbols_dir / "IC_Big_TI.kicad_sym").write_bytes(big)
+    _names_in(layout, "IC_Other_TI", NAME)
+
+    def boom(*args, **kwargs):
+        raise AssertionError("a library was fully parsed")
+
+    for owner, attr in ((kicad_files, "parse_bytes"), (kicad_files, "load"), (kicad_files, "parse"), (sexpr, "parse"), (verify, "load")):
+        monkeypatch.setattr(owner, attr, boom)
+    issues = _search(layout)
+    assert len(issues) == 1 and "IC_Other_TI" in issues[0].text and "IC_Big_TI" not in issues[0].text
+
+
+def test_elsewhere_search_dirs_order(tmp_path):
+    layout = _layout(tmp_path)
+    assert verify.symbol_search_dirs(layout, ToolContext()) == [("", layout.symbols_dir)]
+    stock, extra = tmp_path / "stock", tmp_path / "extra"
+    stock.mkdir()
+    extra.mkdir()
+    (tmp_path / "WurthElektronik").mkdir()
+    dirs = verify.symbol_search_dirs(layout, ToolContext(kicad_symbols_dir=stock, extra_symbol_dirs=(extra,)))
+    assert dirs == [
+        ("", layout.symbols_dir),
+        ("WurthElektronik:", tmp_path / "WurthElektronik"),
+        ("KiCad:", stock),
+        ("", extra),
+    ]
+
+
+def test_elsewhere_verify_install_appends_warning_without_blocking(tmp_path):
+    plan = make_plan(tmp_path)
+    _names_in(plan.layout, "IC_Other_TI", "PART")
+    issues = verify.verify_install(plan)
+    assert _errors(issues) == []
+    found = _by_code(issues, "verify.name_elsewhere")
+    assert len(found) == 1 and "IC_Other_TI" in found[0].text
+
+
+def test_elsewhere_real_stock():
+    fp_dir = library_scanner.find_kicad_footprint_dir()
+    stock = fp_dir.parent / "symbols" if fp_dir is not None else None
+    if stock is None or not stock.is_dir():
+        pytest.skip("no KiCad install with a stock symbols folder")
+    layout = RepoLayout.for_repo(Path("no_such_repo_for_stock_search"))
+    started = time.perf_counter()
+    issues = _search(layout, "R", tools=ToolContext(kicad_symbols_dir=stock))
+    elapsed = time.perf_counter() - started
+    assert elapsed < 5, elapsed
+    assert len(issues) == 1
+    assert "KiCad:Device" in issues[0].text
