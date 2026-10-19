@@ -386,13 +386,8 @@ class MainWindow(QMainWindow):
             dest, self._scan_result.symbol_libs, self._scan_result.footprint_libs
         ))
 
-        # Sync KiCad path variables
-        path_msgs = sync_kicad_path_vars(REPO_ROOT)
-        for msg in path_msgs:
-            if "Failed" in msg or "Could not" in msg or "not found" in msg:
-                self._log.log(msg, "warning")
-            else:
-                self._log.log(msg, "success")
+        # Sync KiCad path variables, independent of how the table writes went
+        self._log_issues(sync_kicad_path_vars(REPO_ROOT))
 
         # Save destination to history
         history = add_dest_to_history(str(dest))
