@@ -25,7 +25,7 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 - [ ] **HARD-06**: Generated table values containing `"` or `\` are escaped so KiCad loads the table
 - [ ] **HARD-07**: Rescan keeps the user's current symbol/footprint selection instead of resetting it from the tables
 - [ ] **HARD-08**: Libraries with the same nickname in different sources are reported as a collision and no longer overwrite each other in the UI
-- [ ] **HARD-09**: Existing footprints using `${KIPRJMOD}/Custom/3DModels/...` are rewritten to `${CUSTOM_3DMODEL_DIR}/...` in one explicit cleanup commit, and the scanner warns about any non-`${CUSTOM_3DMODEL_DIR}` model path that remains
+- [x] **HARD-09**: Existing footprints using `${KIPRJMOD}/Custom/3DModels/...` are rewritten to `${CUSTOM_3DMODEL_DIR}/...` in one explicit cleanup commit, and the scanner warns about any non-`${CUSTOM_3DMODEL_DIR}` model path that remains
 
 ### Package Intake
 
@@ -143,7 +143,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | HARD-06 | Phase 2 | Pending |
 | HARD-07 | Phase 2 | Pending |
 | HARD-08 | Phase 2 | Pending |
-| HARD-09 | Phase 2 | Pending |
+| HARD-09 | Phase 2 | Complete |
 | INTK-01 | Phase 3 | Pending |
 | INTK-02 | Phase 3 | Pending |
 | INTK-03 | Phase 7 | Pending |

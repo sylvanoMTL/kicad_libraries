@@ -60,7 +60,7 @@ Plans:
   4. After Rescan, the user's symbol and footprint selection is unchanged. Two libraries with the same nickname in different sources are reported as a collision and stay distinct in the UI, so neither overwrites the other.
   5. The existing footprints that used `${KIPRJMOD}/Custom/3DModels/...` reference `${CUSTOM_3DMODEL_DIR}/...` after one dedicated cleanup commit in `Custom`. A scan warns about any model path that still doesn't use `${CUSTOM_3DMODEL_DIR}`.
 
-**Plans**: 8/9 plans executed
+**Plans**: 9/9 plans executed
 
 Plans:
 **Wave 1**
@@ -80,7 +80,7 @@ Plans:
 - [x] 02-06-PLAN.md — Main window: one guarded scan funnel, startup-only table pre-selection with collision trim and linked footprints, rel_path re-apply on rescan (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 02-07-PLAN.md — HARD-09 one-off: rewrite the five legacy model paths, owner-approved Custom commit and parent ref bump, never pushed (wave 5)
+- [x] 02-07-PLAN.md — HARD-09 one-off: rewrite the five legacy model paths, owner-approved Custom commit and parent ref bump, never pushed (wave 5)
 
 ### Phase 3: Package Intake and Naming
 
@@ -162,7 +162,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
-| 2. Hardening Existing Code | 8/9 | In Progress | - |
+| 2. Hardening Existing Code | 9/9 | In Progress | - |
 | 3. Package Intake and Naming | 0/TBD | Not started | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
