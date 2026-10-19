@@ -481,6 +481,34 @@ def test_string_heavy_folder_at_byte_cap(tmp_path):
     assert _snapshot(folder) == before
 
 
+def test_string_heavy_byte_cap_boundary(tmp_path, monkeypatch):
+    # (a) one byte over the cap is skipped with one WARNING and never reaches the parser
+    over, _ = _string_symbol("plain", package_module.MAX_KICAD_TEXT_BYTES + 1)
+    assert len(over) == package_module.MAX_KICAD_TEXT_BYTES + 1
+    zip_path = make_zip(tmp_path / "over.zip", [("big.kicad_sym", over), ("good.kicad_mod", footprint("GOOD"))])
+    seen = _spy_parse(monkeypatch)
+    refused, candidate, issues = _open_and_detect(zip_path)
+    assert refused is False
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert "big.kicad_sym" in skipped[0].text
+    assert "8388608" in skipped[0].text
+    assert "big.kicad_sym" not in seen
+    assert candidate.symbols == ()
+    assert [f.name for f in candidate.footprints] == ["GOOD"]
+    monkeypatch.undo()
+
+    # (b) one byte under the cap is read, with the same memory bound as the cap itself
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES - 1)
+    assert len(data) == package_module.MAX_KICAD_TEXT_BYTES - 1
+    zip_path = make_zip(tmp_path / "under.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+
+
 def test_string_heavy_astral_text_bound_is_in_storage_bytes(tmp_path):
     _require_linear_tokenizer()
     _require_linear_unquote()
