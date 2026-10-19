@@ -7,12 +7,14 @@ to create or change, so apply_plan only has to write them.
 import hashlib
 import os
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from .. import fsutil
 from ..kicad_files import (
     LoadedFile,
     PropertyRef,
+    extends_name,
     file_kind,
     file_version,
     find_models,
@@ -29,13 +31,16 @@ from ..kicad_files import (
     retarget_model,
     set_property_edit,
     symbol_insert_edit,
+    symbol_unit,
+    unit_library_text,
 )
 from ..models import Issue, Severity
 from ..sexpr import Edit, Node, apply_edits, parse, quote
+from . import kicad_cli
 from . import package as _package
 from .adapters.base import MANUFACTURER_FIELDS, MPN_FIELDS
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
-from .layout import RepoLayout
+from .layout import RepoLayout, list_footprint_libs, list_symbol_libs
 from .naming import sanitize_filename, sanitize_name
 from .package import PackageFile
 from .plan import (
@@ -148,6 +153,114 @@ def _listing(folder: Path) -> list[str]:
         return os.listdir(folder)
     except OSError:
         return []
+
+
+def detect_tools(
+    kicad_fp_dir: Path | None,
+    *,
+    explicit_cli: Path | None = None,
+    runner: Callable | None = None,
+) -> ToolContext:
+    """Find kicad-cli and KiCad's stock symbols folder from the footprints folder the app detected."""
+    return ToolContext(
+        kicad_cli=kicad_cli.locate_kicad_cli(explicit_cli, kicad_fp_dir),
+        cli_runner=runner,
+        kicad_symbols_dir=kicad_cli.stock_symbols_dir(kicad_fp_dir),
+    )
+
+
+@dataclass(frozen=True)
+class _SymbolSource:
+    """The file the chosen symbol's block is taken from, and the format version of that text (D-01)."""
+
+    loaded: LoadedFile
+    normalised: bool
+    version: int | None
+
+
+def _loaded_text(text: str, bom: bool, name: str) -> LoadedFile | Issue:
+    """Parse symbol text that was derived from a vendor file or produced by kicad-cli."""
+    loaded = parse_bytes(fsutil.encode_source(text, bom), name, max_nodes=_package.MAX_KICAD_TEXT_NODES)
+    if isinstance(loaded, Issue):
+        return _err("install.cli_gate_failed", loaded.text)
+    return loaded
+
+
+def _broken_parent(root: Node, name: str) -> str:
+    """The first symbol of name's extends chain that is missing from the file (or repeats, for a loop)."""
+    seen: set[str] = set()
+    current = name
+    while current not in seen:
+        seen.add(current)
+        ref = find_symbol(root, current)
+        if ref is None:
+            return current
+        parent = extends_name(ref.node)
+        if parent is None:
+            break
+        current = parent
+    return current
+
+
+def _existing_source(
+    vendor: LoadedFile,
+    unit_text: str,
+    name: str,
+    library: str,
+    target_version: int | None,
+    tools: ToolContext,
+) -> tuple[_SymbolSource | None, list[Issue]]:
+    """Apply the D-01 table for a symbol going into an existing library.
+
+    Returns the source of the block to splice, or None with an ERROR in the issues.
+    """
+    incoming = file_version(vendor.root)
+    as_is = _SymbolSource(vendor, False, incoming)
+    if incoming is None or target_version is None:
+        unread = "the incoming symbol" if incoming is None else library
+        return as_is, [Issue(
+            Severity.WARNING,
+            "install.version_unknown",
+            f"The format version of {unread} could not be read, so {name} is merged unchanged",
+        )]
+    if incoming == target_version:
+        return as_is, []
+    if incoming > target_version:
+        return None, [_err(
+            "install.version_newer_than_target",
+            f"{name} is format {incoming} but {library} is {target_version}; "
+            f"open {library} in KiCad's Symbol Editor and save it, then import again",
+        )]
+    both = f"{name} is format {incoming} but {library} is {target_version}"
+    if tools.kicad_cli is None:
+        return as_is, [
+            Issue(Severity.WARNING, "install.version_mismatch", f"{both}; kicad-cli was not found, so {name} is merged unchanged"),
+            _cli_not_found(),
+        ]
+    result = kicad_cli.upgrade_symbol_text(
+        tools.kicad_cli, unit_text, name=name, runner=tools.cli_runner, timeout=tools.cli_timeout
+    )
+    if isinstance(result, Issue):
+        return None, [result]
+    if result.version == target_version:
+        loaded = _loaded_text(result.text, False, "the kicad-cli output")
+        if isinstance(loaded, Issue):
+            return None, [loaded]
+        return _SymbolSource(loaded, True, target_version), []
+    written = "an unreadable format" if result.version is None else f"format {result.version}"
+    return as_is, [Issue(
+        Severity.WARNING,
+        "install.version_mismatch",
+        f"{both}; kicad-cli would write {written}, so {name} is merged unchanged",
+    )]
+
+
+def _cli_not_found() -> Issue:
+    return Issue(
+        Severity.INFO,
+        "install.cli_not_found",
+        "kicad-cli not found; the incoming symbol is merged without normalisation and the KiCad load check is skipped",
+    )
 
 
 def _select(
@@ -295,24 +408,36 @@ def build_plan(
     if file_kind(target.root) != "kicad_symbol_lib":
         return refuse(_err("install.target_unreadable", f"{sym_path.name} is not a KiCad symbol library"))
 
-    source_version = file_version(vendor_sym.root)
-    target_version = file_version(target.root)
-    if source_version is None or target_version is None or source_version != target_version:
-        return refuse(_err(
-            "install.version_unsupported",
-            f"The symbol has format version {source_version} but {sym_path.name} has {target_version}; only equal versions can be installed yet",
-        ))
-
     vendor_ref = find_symbol(vendor_sym.root, sym_item.name)
     if vendor_ref is None:
         return refuse(_err("install.source_unreadable", f"{sym_item.file.member} no longer holds the symbol {sym_item.name}"))
-    if any(child.head == "extends" for child in vendor_ref.node.children):
+    unit = symbol_unit(vendor_sym.root, sym_item.name)
+    if unit is None:
+        missing = _broken_parent(vendor_sym.root, sym_item.name)
+        return refuse(_err(
+            "install.extends_parent_missing",
+            f"{sym_item.name} extends {missing}, which {sym_item.file.member} does not hold; the parent symbol must be in the same file",
+        ))
+    if len(unit) > 1:
         return refuse(_err("install.extends_unsupported", f"{sym_item.name} extends another symbol, which cannot be installed yet"))
 
     step("Planning names", 3)
     sym_name = sym_item.name_check.sanitized
     if sym_name != sym_item.name:
         return refuse(_err("install.rename_unsupported", f"The symbol name {sym_item.name!r} would be renamed to {sym_name!r}, which cannot be installed yet"))
+
+    # D-01: the vendor text is normalised once, on the unrenamed unit, so later edits never re-run kicad-cli
+    unit_text = unit_library_text(vendor_sym, keep={ref.name for ref in unit})
+    source, version_issues = _existing_source(vendor_sym, unit_text, sym_item.name, library, file_version(target.root), tools)
+    issues.extend(version_issues)
+    if source is None:
+        return refuse()
+    source_ref = find_symbol(source.loaded.root, sym_item.name)
+    if source_ref is None:
+        return refuse(_err("install.cli_gate_failed", f"kicad-cli output no longer holds the symbol {sym_item.name}"))
+    source_version = file_version(vendor_sym.root)
+    target_version = file_version(target.root)
+
     fp_names = tuple(item.name_check.sanitized for item in fp_items)
     if len({name.casefold() for name in fp_names}) != len(fp_names):
         return refuse(_err("install.duplicate_name", f"Two chosen footprints would both be installed under one name: {_name_list(list(fp_names))}"))
@@ -333,8 +458,8 @@ def build_plan(
         issues.append(Issue(Severity.WARNING, "install.no_model", "No 3D model will be installed"))
 
     step("Editing the symbol", 4)
-    eol = vendor_sym.source.eol
-    block = vendor_sym.source.text[vendor_ref.node.start:vendor_ref.node.end]
+    eol = source.loaded.source.eol
+    block = source.loaded.source.text[source_ref.node.start:source_ref.node.end]
     editor = _SymbolEditor(block, parse(block).children[0], eol)
     edit_problems = [
         # D-17: the first footprint is linked; D-15: every installed footprint is a filter
@@ -416,7 +541,7 @@ def build_plan(
         model_file=model_file,
         source_version=source_version,
         target_version=target_version,
-        normalised=False,
+        normalised=source.normalised,
         ops=tuple(ops),
         conflicts=tuple(conflicts),
         renames=(),
