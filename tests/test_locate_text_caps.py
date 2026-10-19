@@ -153,7 +153,7 @@ def test_text_byte_cap_boundary(tmp_path, monkeypatch):
     assert skipped[0].severity is Severity.WARNING
     assert "edge.kicad_sym" in skipped[0].text
     assert candidate.symbols == ()
-    assert seen == []
+    assert seen == ["f.kicad_mod"]  # the skipped symbol never reached the parser
 
     monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_BYTES", len(data) + 1)
     candidate, issues = locate(package, detection)

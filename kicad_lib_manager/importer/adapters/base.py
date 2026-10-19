@@ -74,15 +74,22 @@ def part_meta(symbol: SymbolRef) -> PartMeta:
 
 
 def _read_limited(pf: PackageFile) -> bytes | Issue:
-    """Read a package file, refusing anything over the member cap; failures come back as a WARNING Issue."""
-    cap = _package.MAX_MEMBER_BYTES
+    """Read a symbol or footprint file, refusing anything over the text cap; failures come back as a WARNING Issue.
+
+    The cap counts raw bytes as stored, before any decoding. 3D models never come through here.
+    """
+    cap = min(_package.MAX_KICAD_TEXT_BYTES, _package.MAX_MEMBER_BYTES)
     try:
         with open(pf.path, "rb") as handle:
             data = handle.read(cap + 1)
     except OSError as e:
         return Issue(Severity.WARNING, "intake.unreadable_file", f"Could not read {pf.member}: {e.strerror or e}")
     if len(data) > cap:
-        return Issue(Severity.WARNING, "intake.unreadable_file", f"Skipped {pf.member}: larger than {cap} bytes")
+        return Issue(
+            Severity.WARNING,
+            "intake.unreadable_file",
+            f"Skipped {pf.member}: larger than {cap} bytes, the limit for one KiCad symbol or footprint file",
+        )
     return data
 
 
