@@ -618,7 +618,7 @@ MEMBERS = {   # name: (file_size, compress_size); all external_attr == 0x0, no d
 | A1 | Reference-prefix -> Type table beyond the D-01 literal list (`FB`, `LED`, `SW`, `K`, `TP`, `BT`, `F`, ...) | Pattern 5 | Cosmetic: wrong default Type, the user edits the name |
 | A2 | `AGGREGATOR_HOSTS` list and the registered-domain heuristic (2-letter TLD + `co/com/org/net/ac/gov/edu`) | Pattern 5, Pitfall 10 | A distributor host could still yield a bogus low-confidence manufacturer; user edits the name |
 | A3 | Extra host/alias entries (`invensense.com`, `maximintegrated.com`, `linear.com`, `analogdevices`) map to `TDK`/`ADI` | Pattern 5 | Wrong token suggested; mitigated because confidence is shown and the name is editable. Repo evidence exists for the MAX/LTC -> ADI filing |
-| A4 | A `.kicad_mod` with a `(module ...)` head should be accepted with a WARNING rather than treated as legacy | Pitfall 7, Open Question 1 | If KiCad 6+ cannot load such a file, Phase 4 would install a footprint KiCad cannot read. Needs user confirmation |
+| A4 | A `.kicad_mod` with a `(module ...)` head should be accepted with a WARNING rather than treated as legacy | Pitfall 7, Open Question 1 | If KiCad 6+ cannot load such a file, Phase 4 would install a footprint KiCad cannot read. Confirmed by owner 2026-10-19 (CONTEXT.md D-18) |
 | A5 | A package with no v6+ symbol, no v6+ footprint and no legacy files (e.g. STEP only) is an ERROR `intake.nothing_found` | Pattern 4 | A user wanting to attach only a model gets refused; that case is FMT2-02 (v2) anyway |
 | A6 | Refusing `:` anywhere in a member name, duplicates (casefolded) and encrypted members goes beyond the D-05 list | Pattern 1 | Slightly stricter than CONTEXT; a legitimate vendor zip with such names would be refused (none seen) |
 | A7 | Windows reserved-device behaviour applies to the segment before the first dot, and `COM¹` style names are reserved | Pattern 6 | Under-protection of an exotic name; the NFKD step already turns `¹` into `1` |
@@ -627,15 +627,19 @@ MEMBERS = {   # name: (file_size, compress_size); all external_attr == 0x0, no d
 | A10 | Mapping to ASVS V12 (file/resource handling) and V5 (input validation) | Security Domain | Documentation label only |
 | A11 | UL `KiCADv5` is the UL layout for KiCad 5 downloads, with `.lib`/`.dcm` | Pattern 3 | Only one UL sample exists; a v5 zip is rejected through the legacy matrix either way |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Are `(module ...)` `.kicad_mod` files "v6+"?**
+1. **Are `(module ...)` `.kicad_mod` files "v6+"?** (RESOLVED)
    - What we know: KiCad 5 wrote `.kicad_mod` files with a `(module` head; `kicad_files.footprint_name` already accepts both heads.
    - What's unclear: whether the owner wants a SamacSys KiCad-5-era `.kicad_mod` accepted (KiCad 6+ reads and rewrites them) or refused under INTK-05.
-   - Recommendation: accept with WARNING `intake.legacy_footprint_syntax` and record `format_version=None`; Phase 4's normalisation step (kicad-cli when available) handles it. Ask the owner during planning review (A4).
-2. **Should a Reference of `U` for a discrete MOSFET really suggest `IC`?** Locked by D-01/D-04 and the expected `IC_SubCategory_TI`; no action, only a reminder that the owner expects to edit it.
-3. **Where does `Package` live when Phase 5 runs intake in a worker thread?** The `with` block must span intake and the later plan/install, or the dialog must hold the `Package` and call `close()`. Provide both `__enter__/__exit__` and an idempotent `close()`; Phase 5 decides.
-4. **Should `kicad_files.py` gain `file_kind` / `file_version` read helpers now?** Recommended (tiny, tested) so the importer does not touch `Node` internals; this is an additive change to a Phase 1 module and the layering test's `ALLOWED` map is unaffected.
+   - Recommendation: accept with WARNING `intake.legacy_footprint_syntax` and record `format_version=None`; Phase 4's normalisation step (kicad-cli when available) handles it.
+   - **Resolution (owner, 2026-10-19):** accepted with WARNING `intake.legacy_footprint_syntax`, `format_version=None`. Recorded as CONTEXT.md D-18.
+2. **Should a Reference of `U` for a discrete MOSFET really suggest `IC`?** (RESOLVED) Locked by D-01/D-04 and the expected `IC_SubCategory_TI`; no action, only a reminder that the owner expects to edit it.
+3. **Where does `Package` live when Phase 5 runs intake in a worker thread?** (RESOLVED) The `with` block must span intake and the later plan/install, or the dialog must hold the `Package` and call `close()`.
+   - **Resolution:** Phase 3 provides both `__enter__/__exit__` and an idempotent `close()` on `Package`. Choosing which one the Phase 5 dialog uses is Phase 5's design decision and is out of Phase 3 scope.
+4. **Should `kicad_files.py` gain `file_kind` / `file_version` read helpers now?** (RESOLVED) Yes: tiny, tested, additive helpers so the importer does not touch `Node` internals; the layering test's `ALLOWED` map is unaffected. Planned in 03-03.
+
+Related owner answers: A6's extra refusals are kept (CONTEXT.md D-19). The real loose-files case is the UL zip unzipped into `tmp_path` (CONTEXT.md D-17).
 
 ## Environment Availability
 

@@ -66,6 +66,11 @@ Requirements: INTK-01, INTK-02, INTK-05, INTK-06, LIB-01, LIB-03 (see `.planning
   Already-valid names, including every existing `Custom/` name such as `MEM2085-00-115-00-A_REV0.2` and `TSOT-23_TS8`, pass through unchanged. The result always carries both the original and the sanitised name (success criterion 5).
 - **D-16:** A separate naming helper reports a **case-only clash** with an existing `Custom/` name (e.g. new `ic_ldo_ti` vs existing `IC_LDO_TI`) as a warning Issue, because Windows treats them as the same file. Resolving real conflicts (overwrite, rename or skip) stays in Phase 5 (PREV-05).
 
+### Planning review answers (owner, 2026-10-19)
+- **D-17:** The real loose-files case for this phase is the committed `downloaded_examples/ul_CSD85301Q2.zip` **unzipped into `tmp_path`** by the test. This is the owner's waiver of the `.claude/CLAUDE.md` "real loose-files sample in `downloaded_examples/`" constraint for Phase 3: no separate loose sample is committed. Synthetic folders built in `tmp_path` still cover the edge cases. The constraint still applies to SnapEDA and SamacSys/CSE in Phase 7.
+- **D-18:** A `.kicad_mod` with a KiCad 5 `(module ...)` root is **accepted as a v6+ footprint** with WARNING `intake.legacy_footprint_syntax` and `format_version=None` (research A4 / Open Question 1). It does not trigger the INTK-05 "re-download" rejection.
+- **D-19:** Three refusals beyond D-05 are kept (research A6). A `:` in a member name, two members whose names are equal after casefolding, and an encrypted member each refuse the whole package with an error Issue naming the member.
+
 ### Claude's Discretion
 - Module layout under `kicad_lib_manager/importer/` (research suggests `package.py`, `candidate.py`, `adapters/{base,ultralibrarian,loose}.py`, `naming.py`, `layout.py`). Also the dataclass shapes for the package, candidate and suggestion, and the `Issue.code` names (e.g. `intake.hostile_member`, `intake.too_large`, `intake.legacy_only`, `intake.unknown_vendor`, `naming.low_confidence`, `naming.reserved`).
 - Ultra Librarian recognition markers (e.g. `KiCADv6/` folder, `ImportGuides.html`, `ul_` filename prefix) and confidence scoring between adapters.
