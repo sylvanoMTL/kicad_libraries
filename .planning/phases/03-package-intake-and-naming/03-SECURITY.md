@@ -72,6 +72,10 @@ created: "2026-10-19"
 | T-03-39 | Denial of service | missing / unwritable temp folder | low | mitigate | `TemporaryDirectory` and `resolve()` guarded, ERROR `intake.staging_failed`; tests for both paths | closed |
 | T-03-40 | Information disclosure | partially staged files left after interrupted staging | medium | mitigate | `_refuse` closes and removes the staging folder before returning; concurrent-package byte-identical test | closed |
 | T-03-41 | Denial of service | future codec error class missing from `_READ_ERRORS` | low | mitigate | tripwire test over `zipfile.compressor_names` | closed |
+| T-03-42 | Denial of service | one large quoted string inside every cap driving the backtracking string pattern (CR-03; residual of T-03-35 / T-03-15) | medium | mitigate | `sexpr._string_end` over the bounded `_STRING_BODY` window (`_STRING_WINDOW = 1024`), one code path on all Pythons; `test_one_string_token_parse_memory_is_linear`, `test_unterminated_long_string_memory_is_linear`, 8 MiB end-to-end cases and folder case in `tests/test_locate_text_caps.py` | closed |
+| T-03-43 | Denial of service | `unquote` per-escape callback multiplied by up to 16 `find_property` lookups on a hostile property name | medium | mitigate | linear replace chain with `_BACKSLASH_PLACEHOLDER` and exact regex fallback; `test_unquote_memory_is_linear`, `test_unquote_matches_reference`, `test_string_heavy_property_name_at_byte_cap` | closed |
+| T-03-44 | Tampering | tokenizer / `unquote` rewrite changing token boundaries, error positions or decoded values for repo files | medium | mitigate | `_reference_parse` / `_reference_unquote` differential tests (`test_tokenizer_matches_reference_parser`, `test_reference_corpus_includes_the_custom_library_files`, `test_string_window_boundaries`); `tests/test_roundtrip_corpus.py` unchanged (empty diff since 4744a7d) and green with `Custom/` checked out | closed |
+| T-03-45 | Denial of service | Python 3.11+ regex syntax raising `re.error` at import on the 3.10 floor | low | mitigate | `test_sexpr_patterns_have_no_python_3_11_syntax` (parse-tree opcode walk); no interpreter-version branch in `sexpr.py` (grep) | closed |
 | T-03-SC | Tampering | package installs | high | mitigate | stdlib only; no dependency files changed in Phase 3 | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -110,3 +114,11 @@ created: "2026-10-19"
 - [x] `status: verified` set in frontmatter
 
 **Approval:** verified 2026-10-19
+
+## Security Audit 2026-10-19
+
+| Metric | Count |
+|---|---|
+| Threats found | 46 |
+| Closed | 46 |
+| Open | 0 |
