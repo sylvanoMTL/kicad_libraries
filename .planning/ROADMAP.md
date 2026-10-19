@@ -94,7 +94,7 @@ Plans:
   4. For the UL sample, the suggested target library follows `<Type>_<SubCategory>_<Manufacturer>`, ends in `_TI` (from the `ti.com` datasheet host and existing `Custom/` prefixes), and is a default that can be overridden
   5. Names containing `/`, `:`, Windows-reserved names (e.g. `CON`, `NUL`) or traversal are sanitised, with `.` and `-` kept. Both the original and the sanitised name are reported.
 
-**Plans**: 7/7 plans executed
+**Plans**: 7/9 plans executed (03-08 and 03-09 are gap closure)
 
 Plans:
 **Wave 1**
@@ -109,6 +109,12 @@ Plans:
 **Wave 3** *(blocked on Wave 2 completion)*
 - [x] 03-06-PLAN.md — Library suggestion: fresh `Custom/` listing, manufacturer alias/host/aggregator chain, SubCategory vocabulary with an explicit spelling rule, ranked alternatives, D-04 placeholder contract (wave 3)
 - [x] 03-07-PLAN.md — Folder intake: read-only walk, links and junctions skipped, depth and size caps, real loose UL files and unzipped UL parity with zips (D-17) (wave 3)
+
+**Wave 4 (gap closure)** *(blocked on Wave 3 completion)*
+- [ ] 03-08-PLAN.md — CR-01: parsed KiCad text capped at 8 MiB (`MAX_KICAD_TEXT_BYTES`) and 1,000,000 parser nodes (`MAX_KICAD_TEXT_NODES`, additive `max_nodes` on `sexpr.parse` / `parse_bytes`); over-cap symbol or footprint files skipped with a WARNING, MemoryError guard (wave 4)
+
+**Wave 5 (gap closure)** *(blocked on Wave 4 completion)*
+- [ ] 03-09-PLAN.md — CR-02: corrupt LZMA / zstd members return `intake.corrupt` with the staging folder removed before `open_package` returns; guarded temp-folder creation (`intake.staging_failed`); codec tripwire and never-raises contract tests; WR-03 left open (wave 5)
 
 ### Phase 4: Plan and Install Core
 
@@ -179,7 +185,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
-| 3. Package Intake and Naming | 7/7 | In Progress | - |
+| 3. Package Intake and Naming | 7/9 | In Progress | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |

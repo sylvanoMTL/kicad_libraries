@@ -41,7 +41,9 @@ Requirements: INTK-01, INTK-02, INTK-05, INTK-06, LIB-01, LIB-03 (see `.planning
   - 250 MB uncompressed in total;
   - a compression-ratio limit of 200:1, applied only to members larger than 1 MB.
 
-  Check declared sizes up front, and also enforce them while reading, because a zip can lie about its sizes. The read cap counts actual bytes. Exceeding any cap refuses the package with an error Issue.
+  Check declared sizes up front, and also enforce them while reading, because a zip can lie about its sizes. The read cap counts actual bytes. Exceeding any of these zip-level caps refuses the package with an error Issue.
+
+  **Amended 2026-10-19 (gap closure CR-01, plan 03-08):** symbol and footprint text gets two tighter per-file caps on top of the zip-level ones: `MAX_KICAD_TEXT_BYTES` (8 MiB) and `MAX_KICAD_TEXT_NODES` (1,000,000 parser nodes). Exceeding either one **skips that file with a WARNING** (`intake.unreadable_file`). It does not refuse the package. The zip-level caps above still refuse. The owner accepted that a multi-part vendor library over 8 MiB is skipped at intake. Single-part downloads are far smaller, and the largest file in `Custom/` is 48 KiB.
 - **D-07:** Stage **only** `.kicad_sym`, `.kicad_mod`, `.step`, `.stp`, `.wrl` members (case-insensitive extension) into a `tempfile.mkdtemp()` directory under generated, safe names. Every other member (HTML guides, `readme.txt`, Altium/Eagle folders, `__MACOSX`) is listed for the log and never written to disk. The size and count caps apply to the whole zip, not just the staged members. Never use `extractall`. The staging dir must be verified to be outside the repo root, and is cleaned up by the context manager that owns it.
 - **D-08:** A zip inside the zip is opened **one level deep**, with the same name checks. Its bytes count against the same total budget. A zip nested deeper is refused with an error Issue.
 
