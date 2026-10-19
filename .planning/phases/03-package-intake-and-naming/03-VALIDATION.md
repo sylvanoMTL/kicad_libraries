@@ -24,7 +24,7 @@ validated: "2026-10-19"
 | **Config file** | `pyproject.toml` `[tool.pytest.ini_options]` (`testpaths = ["tests"]`, `pythonpath = ["."]`, `addopts = "-ra --strict-markers"`) |
 | **Quick run command** | `./env/Scripts/python.exe -m pytest tests/test_package_zip.py tests/test_adapters.py tests/test_naming_sanitize.py tests/test_naming_suggest.py -q` |
 | **Full suite command** | `./env/Scripts/python.exe -m pytest -q` |
-| **Estimated runtime** | ~18 seconds (773 passed / 4 skipped after Phase 3) |
+| **Estimated runtime** | ~18 seconds (817 passed / 4 skipped after Phase 3 gap closure) |
 
 ---
 
@@ -57,6 +57,11 @@ validated: "2026-10-19"
 | 03-06-T2 | 03-06 | 3 | LIB-01 | — | Sanitise and case-clash pass, D-04 placeholders | unit (synthetic + live `Custom/`) | `./env/Scripts/python.exe -m pytest tests/test_naming_suggest.py tests/test_naming_sanitize.py tests/test_adapters.py tests/test_importer_layering.py -x -q` | ✅ | ✅ green |
 | 03-07-T1 | 03-07 | 3 | INTK-01 | symlink / junction / depth | Folder read in place, read-only, links skipped, caps | unit | `./env/Scripts/python.exe -m pytest tests/test_package_folder.py tests/test_package_zip.py tests/test_importer_layering.py -x -q -rs` | ✅ | ✅ green |
 | 03-07-T2 | 03-07 | 3 | INTK-01, INTK-02 | — | Folder and unzipped UL give the same candidate as the zip | unit (real UL files) | `./env/Scripts/python.exe -m pytest tests/test_package_folder.py tests/test_package_zip.py tests/test_adapters.py tests/test_legacy_rules.py tests/test_importer_layering.py -x -q` | ✅ | ✅ green |
+| 03-08-T1 | 03-08 | 4 | INTK-06, INTK-01 | CR-01 low-ratio text bomb | Parser stops at `MAX_KICAD_TEXT_NODES`; file skipped with WARNING, rest of package read | unit (real-scale hostile file) | `./env/Scripts/python.exe -m pytest tests/test_locate_text_caps.py tests/test_adapters.py tests/test_sexpr.py tests/test_kicad_files.py -x -q` | ✅ | ✅ green |
+| 03-08-T2 | 03-08 | 4 | INTK-06, INTK-01 | CR-01 oversized text | `MAX_KICAD_TEXT_BYTES` on raw bytes before parsing; boundaries, folder path, models exempt | unit | `./env/Scripts/python.exe -m pytest tests/test_locate_text_caps.py tests/test_adapters.py tests/test_package_folder.py tests/test_legacy_rules.py -x -q` | ✅ | ✅ green |
+| 03-08-T3 | 03-08 | 4 | INTK-06 | CR-01 memory exhaustion | Ceiling contract pinned, defaults unchanged, `MemoryError` becomes WARNING, real files under both caps | unit (synthetic + live `Custom/`) | `./env/Scripts/python.exe -m pytest tests/test_sexpr.py tests/test_kicad_files.py tests/test_locate_text_caps.py tests/test_adapters.py tests/test_importer_layering.py tests/test_layering.py -x -q -rs` | ✅ | ✅ green |
+| 03-09-T1 | 03-09 | 5 | INTK-06, INTK-01 | CR-02 corrupt member | Corrupt LZMA member returns ERROR `intake.corrupt`, staging removed | unit (synthetic) | `./env/Scripts/python.exe -m pytest tests/test_package_zip.py tests/test_zipfixtures.py -x -q -k corrupt` | ✅ | ✅ green |
+| 03-09-T2 | 03-09 | 5 | INTK-06, INTK-01 | CR-02 never-raises | Every codec, nested and mid-staging corruption, `intake.staging_failed`, never-raises contract | unit (synthetic) | `./env/Scripts/python.exe -m pytest tests/test_package_zip.py tests/test_zipfixtures.py tests/test_adapters.py tests/test_package_folder.py tests/test_importer_layering.py -x -q -rs` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
