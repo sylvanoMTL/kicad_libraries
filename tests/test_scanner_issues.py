@@ -132,15 +132,6 @@ WURTH_SKIP = (
 _CUSTOM_FP = "Custom/Footprints/F.pretty"
 _WURTH_FP = "WurthElektronik/KiCad-Library/fp/W.pretty"
 
-# The five footprints D-16 lists; plan 02-07 rewrites them, so the live check allows a subset
-_D16_FILES = {
-    "Custom/Footprints/Connector_USB_GCT.pretty/GCT_USB4730-GF-A_REVA.kicad_mod",
-    "Custom/Footprints/IC_Battery_Fuel_Gauge_ADI.pretty/BGA8N40P2X4_93X167X69N.kicad_mod",
-    "Custom/Footprints/IC_Battery_Fuel_Gauge_ADI.pretty/SON50P200X200X80-9N.kicad_mod",
-    "Custom/Footprints/IC_Button_Controller_ADI.pretty/DFN-8_DDB.kicad_mod",
-    "Custom/Footprints/IC_Button_Controller_ADI.pretty/TSOT-23_TS8.kicad_mod",
-}
-
 
 def _write_mod(root: Path, folder: str, name: str, *model_paths: str) -> str:
     """Write a footprint with the given model paths; return its repo-relative path."""
@@ -275,15 +266,15 @@ def test_scanner_no_longer_exposes_model_regex():
     assert library_scanner.CUSTOM_MODEL_PREFIX == "${CUSTOM_3DMODEL_DIR}/"
 
 
-def test_live_custom_model_findings_are_only_the_d16_var_warnings():
+def test_live_custom_model_findings_are_zero():
     if not (REPO_ROOT / "Custom" / "Footprints").is_dir():
         pytest.skip(CUSTOM_SKIP)
     issues = library_scanner.check_3d_model_paths(REPO_ROOT)
-    custom = [i for i in issues if i.text.startswith("[Custom/")]
-    assert {i.code for i in custom} <= {"scan.model_var"}
-    assert not [i for i in issues if i.code == "scan.model_missing"]
-    files = {i.text[1:i.text.index("] ")] for i in custom}
-    assert files <= _D16_FILES
+    custom = [
+        i for i in issues
+        if i.code.startswith("scan.model_") and i.text.startswith("[Custom/")
+    ]
+    assert custom == []
 
 
 @pytest.mark.wurth
