@@ -188,6 +188,47 @@ def test_atomic_write_text_matches_encode_source(tmp_path):
     _only(tmp_path, path.name)
 
 
+def test_atomic_write_text_unencodable_returns_bad_encoding(tmp_path):
+    path = tmp_path / "out.kicad_sym"
+    result = fsutil.atomic_write_text(path, "bad \udcff", sleep=_no_sleep)
+    assert isinstance(result, Issue)
+    assert result.severity is Severity.ERROR
+    assert result.code == "fs.bad_encoding"
+    assert result.text.startswith(f"Could not write {path.name}")
+    _only(tmp_path)
+
+
+def test_atomic_write_bytes_folder_target_is_not_a_file(tmp_path):
+    folder = tmp_path / "d"
+    folder.mkdir()
+    recorder = _SleepRecorder()
+    result = atomic_write_bytes(folder, b"x", sleep=recorder)
+    assert isinstance(result, Issue)
+    assert result.severity is Severity.ERROR
+    assert result.code == "fs.not_a_file"
+    assert result.text.startswith(f"Could not write {folder.name}")
+    assert recorder.calls == []
+    _only(tmp_path, "d")
+
+
+def test_atomic_write_bytes_read_only_after_retries_is_read_only(tmp_path, target, monkeypatch):
+    def deny_and_lock_down(src, dst):
+        os.chmod(dst, stat.S_IREAD)
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(fsutil.os, "replace", deny_and_lock_down)
+    try:
+        result = atomic_write_bytes(target, b"new", retry_delays=(0.0,), sleep=_no_sleep)
+        assert isinstance(result, Issue)
+        assert result.severity is Severity.ERROR
+        assert result.code == "fs.read_only"
+        assert result.text == f"Could not write {target.name}: file is read-only"
+        assert target.read_bytes() == b"original\r\n"
+        _only(tmp_path, target.name)
+    finally:
+        os.chmod(target, stat.S_IREAD | stat.S_IWRITE)
+
+
 # -- Task 2: backups, default dir, EOL/BOM/encoding (D-06, D-09, D-10, D-11) ----
 
 
@@ -200,20 +241,56 @@ def test_backup_file_numbers_like_table_generator(tmp_path):
     assert second == tmp_path / "sym-lib-table_backup_2"
 
 
-def test_backup_file_name_matches_backup_existing_with_gaps(tmp_path):
-    from kicad_lib_manager.table_generator import backup_existing
+def test_backup_file_gaps_continue_after_highest(tmp_path):
+    (tmp_path / "fp-lib-table").write_bytes(b"data")
+    (tmp_path / "fp-lib-table_backup_1").write_bytes(b"old")
+    (tmp_path / "fp-lib-table_backup_3").write_bytes(b"old")
+    result = fsutil.backup_file(tmp_path / "fp-lib-table", tmp_path)
+    assert result.name == "fp-lib-table_backup_4"
 
-    dirs = []
-    for label in ("mine", "theirs"):
-        d = tmp_path / label
-        d.mkdir()
-        (d / "fp-lib-table").write_bytes(b"data")
-        (d / "fp-lib-table_backup_1").write_bytes(b"old")
-        (d / "fp-lib-table_backup_3").write_bytes(b"old")
-        dirs.append(d)
-    mine = fsutil.backup_file(dirs[0] / "fp-lib-table", dirs[0])
-    theirs = backup_existing(dirs[1] / "fp-lib-table")
-    assert mine.name == theirs.name == "fp-lib-table_backup_4"
+
+def test_backup_file_number_starts_at_given_n(tmp_path):
+    src = tmp_path / "sym-lib-table"
+    src.write_bytes(b"data")
+    (tmp_path / "sym-lib-table_backup_1").write_bytes(b"old")
+    result = fsutil.backup_file(src, tmp_path, number=5)
+    assert result == tmp_path / "sym-lib-table_backup_5"
+    assert result.read_bytes() == b"data"
+
+
+def test_backup_file_number_skips_existing(tmp_path):
+    src = tmp_path / "sym-lib-table"
+    src.write_bytes(b"new")
+    (tmp_path / "sym-lib-table_backup_5").write_bytes(b"taken")
+    result = fsutil.backup_file(src, tmp_path, number=5)
+    assert result == tmp_path / "sym-lib-table_backup_6"
+    assert (tmp_path / "sym-lib-table_backup_5").read_bytes() == b"taken"
+
+
+def test_backup_file_copystat_failure_still_returns_backup(tmp_path, monkeypatch):
+    src = tmp_path / "sym-lib-table"
+    src.write_bytes(b"payload")
+
+    def broken_copystat(a, b):
+        raise OSError(1, "metadata not supported")
+
+    monkeypatch.setattr(fsutil.shutil, "copystat", broken_copystat)
+    result = fsutil.backup_file(src, tmp_path / "backups")
+    assert not isinstance(result, Issue)
+    assert result.read_bytes() == b"payload"
+
+
+def test_backup_file_of_read_only_source_is_writable(tmp_path):
+    src = tmp_path / "sym-lib-table"
+    src.write_bytes(b"payload")
+    os.chmod(src, stat.S_IREAD)
+    try:
+        result = fsutil.backup_file(src, tmp_path / "backups")
+        assert not isinstance(result, Issue)
+        assert os.access(result, os.W_OK)
+        assert result.read_bytes() == b"payload"
+    finally:
+        os.chmod(src, stat.S_IREAD | stat.S_IWRITE)
 
 
 def test_backup_file_copies_bytes_and_creates_backup_dir(tmp_path):
@@ -327,6 +404,27 @@ def test_mixed_file_yields_exactly_one_warning_naming_the_file():
     assert "my_lib.kicad_sym" in warnings[0].text
     clean = fsutil.decode_source(b"a\r\nb\r\n", "my_lib.kicad_sym")
     assert clean.issues == ()
+
+
+@pytest.mark.parametrize(
+    ("data", "present", "absent", "phrase"),
+    [
+        (b"a\rb\rc\n", ("LF", "CR"), ("CRLF",), "LF and CR"),
+        (b"a\r\nb\n", ("CRLF", "LF"), (), "CRLF and LF"),
+        (b"(a)\r(b)\r", ("bare CR",), ("CRLF", "mixed"), "bare CR"),
+        (b"a\r\nb\nc\rd", ("CRLF", "LF", "CR"), (), "CRLF, LF and CR"),
+    ],
+    ids=["lf_and_cr", "crlf_and_lf", "only_cr", "all_three"],
+)
+def test_mixed_eol_text_names_present_endings(data, present, absent, phrase):
+    decoded = fsutil.decode_source(data, "x.kicad_sym")
+    (warning,) = [i for i in decoded.issues if i.code == "fs.mixed_eol"]
+    assert warning.severity is Severity.WARNING
+    assert phrase in warning.text
+    for word in present:
+        assert word in warning.text
+    for word in absent:
+        assert word not in warning.text
 
 
 def test_invalid_utf8_yields_only_an_issue():
