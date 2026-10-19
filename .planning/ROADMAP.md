@@ -65,11 +65,11 @@ Plans:
 Plans:
 **Wave 1**
 - [ ] 02-01-PLAN.md — Tracer: Generate splices a table and logs Issues end to end; restore and table reads on the lossless reader, rel_path pre-selection, one destination logger (wave 1)
-- [ ] 02-08-PLAN.md — fsutil review fixes (numbered backups, best-effort copystat, encodable-text guard) and legacy CLI deleted with its docs (wave 1)
+- [ ] 02-08-PLAN.md — fsutil review fixes (numbered backups, best-effort copystat, encodable-text guard, folder/read-only error mapping, honest mixed-EOL text) and legacy CLI deleted with its docs (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 02-03-PLAN.md — Table merge hardening: child classification, D-03/D-07/D-08/D-09 handling, per-file failures with one shared backup number (wave 2)
-- [ ] 02-09-PLAN.md — Scan output as Issues, collision_peers field and nickname collision pass (wave 2)
+- [ ] 02-09-PLAN.md — Scan output as Issues, collision_peers field and nickname collision pass; Severity formats as its value, downloaded_examples/ skipped (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 02-02-PLAN.md — Library tree: rel_path-keyed items, populate without footprint re-sync, collision mark and mutual exclusion (wave 3)
@@ -77,7 +77,7 @@ Plans:
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 02-05-PLAN.md — Scanner: per-source model-path rules on the parser, retarget_model helper (wave 4)
-- [ ] 02-06-PLAN.md — Main window: one guarded scan funnel, startup-only table pre-selection, rel_path re-apply on rescan (wave 4)
+- [ ] 02-06-PLAN.md — Main window: one guarded scan funnel, startup-only table pre-selection with collision trim and linked footprints, rel_path re-apply on rescan (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 02-07-PLAN.md — HARD-09 one-off: rewrite the five legacy model paths, owner-approved Custom commit and parent ref bump, never pushed (wave 5)

@@ -643,27 +643,29 @@ monkeypatch.setattr(fsutil.os, "replace", always_denied)
 | A6 | The owner is fine with `kicad_common` backups in `default_backup_dir()/kicad_common/<N.M>` (a subfolder) rather than the flat folder | Pattern 3 | Low: path detail only |
 | A7 | Existing boards keep their embedded model path until the footprint is updated from the library | Runtime State Inventory | Low: informational |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **Managed-entry flags and descriptions (A5).**
+All five questions are resolved in the Phase 2 plans; each item names the resolving plan.
+
+1. **Managed-entry flags and descriptions (A5).** RESOLVED in plan 02-03 (Task 1): D-06 is applied literally and a `table.managed_flags_dropped` WARNING names the library and the dropped settings.
    - What we know: D-06 removes and regenerates all managed entries; the `flags.fp-lib-table` fixture shows `(disabled)`, `(hidden)` and unknown fields would be dropped. D-07 and the "Specifics" section stress never silently losing hand-made entries.
    - What's unclear: whether re-enabling a library the owner disabled in KiCad is acceptable.
    - Recommendation: keep D-06 literally and emit a WARNING Issue `table.managed_flags_dropped` naming the library. If the owner prefers preservation, the change is local: reuse `entry.flags` and `extras` source text for entries with the same `rel_path`. Raise at plan review; do not block the plan.
 
-2. **"Preserved N external" count and `(version ...)`.**
+2. **"Preserved N external" count and `(version ...)`.** RESOLVED in plan 02-03 (Task 1): the count is external `(lib ...)` entries plus unclassifiable children, `(version ...)` excluded, pinned by a test.
    - What we know: D-07 says the count includes unclassifiable children.
    - What's unclear: whether `(version 7)` counts.
    - Recommendation: exclude `(version ...)`; count external `(lib ...)` plus unclassifiable children. Pin it in a test so the number in the log is stable.
 
-3. **Wurth scan time (A4).**
+3. **Wurth scan time (A4).** RESOLVED in plan 02-05 (Task 2): a `wurth`-marked functional test, wall time recorded in the SUMMARY when Wurth is present, no pre-filter unless a regression is measured.
    - What we know: parser is about 20x slower than the old regex on `Custom/`; Wurth is absent here.
    - Recommendation: add the `wurth`-marked informational timing test; include a contingency task (pre-filter) only if the owner reports a regression.
 
-4. **Rescan interplay with in-progress toggles.**
+4. **Rescan interplay with in-progress toggles.** RESOLVED in plan 02-06 ("Open questions resolved here"): no extra work, because the progress dialog is window-modal and the snapshot comes from the previous `ScanResult`.
    - What we know: the progress dialog is `WindowModal`, so the user cannot toggle during a scan; snapshotting from the old result at `finished` time is safe.
    - Recommendation: no extra work; document in the plan.
 
-5. **Restore confirmation dialog.**
+5. **Restore confirmation dialog.** RESOLVED in plan 02-03 ("Open questions resolved here"): not added; restore makes a safety copy before overwriting.
    - Recommendation: skip (CONVENTIONS limits `QMessageBox` to About; not required by any HARD-*). Converting `restore_backup_pair` to Issues is enough.
 
 ## Environment Availability

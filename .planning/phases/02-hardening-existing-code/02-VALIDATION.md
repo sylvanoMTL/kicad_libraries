@@ -49,7 +49,7 @@ created: "2026-10-18"
 ## Wave 0 Requirements
 
 - [ ] `tests/test_table_merge.py`, `tests/test_write_tables.py` (HARD-01, HARD-02, HARD-06)
-- [ ] `tests/test_kicad_config.py` + `tests/fixtures/kicad/` synthetic `kicad_common.json` files: `vars` null, populated, CRLF, BOM (generate with `json.dumps(indent=2)`; the fixtures dir is already `-text` in `.gitattributes`)
+- [ ] `tests/test_kicad_config.py` with the synthetic `kicad_common.json` variants (`vars` null, populated, CRLF, BOM) generated inside the tests with `json.dumps(obj, indent=2, ensure_ascii=False) + "\n"` and written to `tmp_path` (plan 02-04). No committed `tests/fixtures/kicad/` directory: the frozen-fixture checks in `tests/test_fixtures.py` parse every fixture as an S-expression, which JSON is not.
 - [ ] `tests/test_kicad_process.py` (monkeypatch `subprocess.run`)
 - [ ] `tests/test_scanner_issues.py` (nickname collisions, model path rules, live `Custom/` check)
 - [ ] `tests/test_main_window.py` + conftest fixtures: autouse `QSettings.setPath` redirect, window factory with patched `load_kicad_fp_dir`, `REPO_ROOT` and `scan_all`
