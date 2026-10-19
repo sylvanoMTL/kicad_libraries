@@ -23,7 +23,7 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-19)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 03 — Package Intake and Naming
+**Current focus:** Phase 4 — Plan and Install Core
 
 ## Current Position
 
@@ -77,6 +77,8 @@ Recent decisions affecting current work:
 - [Phase 02]: Managed table entries are identified by URI tail after `${KICAD_LIB_GITHUB}/`, not by nickname. Issues are routed by `Severity`, not message substrings.
 - [Phase 02]: Scan busy guard = disabled controls + refusing `_start_scan`. Phase 5's post-import rescan must go through `_start_scan`.
 - [Phase 02]: 02-07: owner approved Custom cleanup commit 485d530 (five D-16 footprints to ${CUSTOM_3DMODEL_DIR}); parent gitlink bumped; nothing pushed - owner must push Custom main before removing the worktree
+- [Phase 03]: Untrusted KiCad text is bounded by an 8 MiB raw-byte cap, a 1,000,000-node ceiling and a linear windowed string scan (`sexpr._string_end`); an over-cap file is skipped with a WARNING, never a whole-package refusal.
+- [Phase 03]: Intake never extracts into the repo: zips are staged member-by-member outside it, folders are read in place.
 
 ### Pending Todos
 
@@ -86,6 +88,7 @@ None yet.
 
 - [Phase 2]: `Custom` `main` is 1 commit ahead of `origin/main` (485d530, HARD-09 cleanup). Owner must push it before removing this worktree.
 - [Phase 2, UI review]: Non-blocking UI fixes in `02-UI-REVIEW.md`: `populate()` `_updating` needs try/finally, the Symbols Status column is off-screen at default size, help text lacks Collision and Ctrl+Shift+R, Select All/Deselect All stay enabled during a scan. Fold into Phase 5 (Import UI).
+- [Phase 3, review]: Open review findings carried into Phase 4: `ImportCandidate` outlives its staged files, and package-level warnings never reach the candidate (03-REVIEW-DISPOSITION.md WR-04 / WR-05). Phase 4 must handle both when it consumes `ImportCandidate`.
 - [Phase 4]: Research flag. Verify that KiCad 9/10 loads a `20211014` symbol spliced into a `20241209` library, and check `kicad-cli` normalisation on a staging copy.
 - [Phase 6]: Research flag. Spike git in this worktree early: detached HEAD, worktree-private module gitdir, and the owner's hooks on `commit -- Custom`.
 - [Phase 7]: Blocked until real SnapEDA and SamacSys/CSE downloads are added to `downloaded_examples/`. Check redistribution terms before committing fixtures.
@@ -100,6 +103,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-19T12:03:39.111Z
+Last session: 2026-10-19T19:50:00Z
 Stopped at: Phase 03 complete, ready to plan Phase 4
-Resume file: .planning/phases/03-package-intake-and-naming/03-CONTEXT.md
+Resume file: None

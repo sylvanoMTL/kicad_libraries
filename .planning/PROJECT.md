@@ -36,6 +36,12 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ Same-nickname libraries in different sources are reported as a collision and kept distinct in the UI (HARD-08) — Phase 2
 - ✓ Legacy `${KIPRJMOD}/Custom/3DModels` paths rewritten to `${CUSTOM_3DMODEL_DIR}` in one Custom commit; the scanner warns about any other model path (HARD-09) — Phase 2
 - ✓ Legacy `generate_lib_tables.py` CLI removed; issues routed by severity instead of message substrings — Phase 2
+- ✓ A vendor package opens as a `.zip` or a folder of loose KiCad files, read in place or staged outside the repo, never written into it (INTK-01) — Phase 3
+- ✓ Ultra Librarian zips are recognised and their symbol, footprint and 3D model found at any depth, including a root-level STEP with an unrelated name (INTK-02) — Phase 3
+- ✓ KiCad 5-only packages are rejected with a "re-download as KiCad v6+" message (INTK-05) — Phase 3
+- ✓ Hostile packages are refused or skipped safely: zip slip, absolute names, symlinks, zip bombs, corrupt members, and oversized or string-heavy KiCad text bounded in memory (INTK-06) — Phase 3
+- ✓ A `<Type>_<SubCategory>_<Manufacturer>` library name is suggested from existing `Custom/` libraries and part info (LIB-01; editing arrives with the Phase 5 preview) — Phase 3
+- ✓ Symbol, footprint and file names are sanitised, with original and sanitised names both reported (LIB-03) — Phase 3
 
 ### Active
 
@@ -112,6 +118,8 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | A running KiCad only warns; the `kicad_common.json` write still proceeds | Blocking would make Generate unusable while KiCad is open | — Pending |
 | Headless pytest for importer and hardened logic | No tests today; parsers and merges are regression-prone | ✓ Good — harness in place, 290+ tests at Phase 1 close |
 | Replace regex parsing with an S-expression tokenizer | Needed for safe symbol merge and fixes the table-merge bug | ✓ Good — span-splicing layer round-trips the whole corpus byte-identically (Phase 1) |
+| Untrusted KiCad text is bounded before and during parsing: 8 MiB raw-byte cap, 1,000,000-node ceiling, and a linear windowed string scan; an over-cap file is skipped with a WARNING, never a whole-package refusal | Vendor packages are untrusted input; a single hostile file must not exhaust memory or hide the rest of the package | ✓ Good — CR-01/CR-03 closed, 8 MiB hostile strings read within 10× decoded size (Phase 3) |
+| Intake never extracts into the repo: zips are staged member-by-member into a temp folder outside the repo, folders are read in place | Keeps the "no write without preview" guarantee for the whole intake step | ✓ Good (Phase 3) |
 
 ## Evolution
 
@@ -131,4 +139,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-19 after Phase 2*
+*Last updated: 2026-10-19 after Phase 3*
