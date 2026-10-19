@@ -4,7 +4,7 @@ import pytest
 
 from kicad_lib_manager import kicad_files as kf
 from kicad_lib_manager.kicad_files import LoadedFile, find_symbol, find_symbols, parse_bytes
-from kicad_lib_manager.sexpr import Edit, apply_edits
+from kicad_lib_manager.sexpr import Edit, apply_edits, unquote
 from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
 
 V6 = 20211014
@@ -31,8 +31,6 @@ def _names(loaded: LoadedFile) -> list[str]:
 
 
 def _sub_names(loaded: LoadedFile, name: str) -> list[str]:
-    from kicad_lib_manager.sexpr import unquote
-
     ref = find_symbol(loaded.root, name)
     return [unquote(c.children[1].text) for c in ref.node.children if c.head == "symbol"]
 
@@ -275,3 +273,215 @@ def test_insert_before_in_tab_indented_lf_library():
     assert '(symbol "NEW"\n\t(in_bom yes)\n)\n\t(symbol "EXISTING_A"' in out
     assert "\r" not in out
     assert _names(_reparse(out)) == ["NEW", "EXISTING_A", "EXISTING_B"]
+
+
+# -- property primitives -----------------------------------------------------------
+
+
+def _symbol(loaded: LoadedFile, name: str):
+    ref = find_symbol(loaded.root, name)
+    assert ref is not None
+    return ref
+
+
+def _prop(loaded: LoadedFile, symbol: str, prop: str):
+    found = kf.find_property(_symbol(loaded, symbol).node, prop)
+    assert found is not None, prop
+    return found
+
+
+def _prop_names(loaded: LoadedFile, symbol: str) -> list[str]:
+    return [unquote(c.children[1].text) for c in _symbol(loaded, symbol).node.children if c.head == "property"]
+
+
+def _parsed_property(text: str):
+    """Parse one property block and return it as a PropertyRef."""
+    root = _load(f'(symbol "S" {text})'.encode()).root
+    name = unquote(root.children[0].children[2].children[1].text)
+    return kf.find_property(root.children[0], name)
+
+
+def _bare_symbol(*props: str) -> LoadedFile:
+    body = "\n".join(props)
+    return _load(f'(kicad_symbol_lib (version 20211014) (generator x)\n  (symbol "S"\n{body}\n  )\n)\n'.encode())
+
+
+def _visible(name: str) -> str:
+    return f'    (property "{name}" "v" (at 0 0 0) (effects (font (size 1 1))))'
+
+
+def _hidden(name: str) -> str:
+    return f'    (property "{name}" "v" (at 0 0 0) (effects (font (size 1 1)) hide))'
+
+
+def test_property_rename_changes_only_name_token():
+    loaded = _load(vendor_symbol_lib("PART", props={"MF": "Texas Instruments"}))
+    prop = _prop(loaded, "PART", "MF")
+    out = _apply(loaded, [kf.rename_property_edit(prop, "Manufacturer")])
+    assert out == loaded.source.text.replace('(property "MF"', '(property "Manufacturer"')
+    renamed = _prop(_reparse(out), "PART", "Manufacturer")
+    assert renamed.value == "Texas Instruments"
+
+
+def test_property_rename_quotes_the_new_name():
+    loaded = _load(vendor_symbol_lib("PART", props={"MF": "x"}))
+    out = _apply(loaded, [kf.rename_property_edit(_prop(loaded, "PART", "MF"), 'A"B)')])
+    assert _prop(_reparse(out), "PART", 'A"B)').value == "x"
+
+
+@pytest.mark.parametrize("version", [V6, V8, V9])
+def test_property_is_hidden_follows_target_style(version):
+    loaded = _load(target_lib(version))
+    assert kf.property_is_hidden(_prop(loaded, "EXISTING_A", "Footprint")) is True
+    assert kf.property_is_hidden(_prop(loaded, "EXISTING_A", "Reference")) is False
+
+
+def test_property_is_hidden_false_for_hide_no_and_no_effects():
+    loaded = _bare_symbol(
+        '    (property "A" "v" (at 0 0 0) (effects (font (size 1 1)) (hide no)))',
+        '    (property "B" "v" (at 0 0 0))',
+        '    (property "C" "v" (at 0 0 0) (effects (font (size 1 1)) (hide yes)))',
+    )
+    assert kf.property_is_hidden(_prop(loaded, "S", "A")) is False
+    assert kf.property_is_hidden(_prop(loaded, "S", "B")) is False
+    assert kf.property_is_hidden(_prop(loaded, "S", "C")) is True
+
+
+def test_hidden_template_prefers_datasheet_then_footprint():
+    loaded = _bare_symbol(_visible("Reference"), _hidden("Footprint"), _hidden("Datasheet"), _hidden("zzz"))
+    assert kf.hidden_template(_symbol(loaded, "S").node).name == "Datasheet"
+    loaded = _bare_symbol(_visible("Datasheet"), _hidden("ki_keywords"), _hidden("Footprint"), _hidden("zzz"))
+    assert kf.hidden_template(_symbol(loaded, "S").node).name == "Footprint"
+    loaded = _bare_symbol(_hidden("zzz"), _hidden("ki_keywords"), _hidden("ki_fp_filters"))
+    assert kf.hidden_template(_symbol(loaded, "S").node).name == "ki_fp_filters"
+    loaded = _bare_symbol(_hidden("zzz"), _hidden("ki_keywords"))
+    assert kf.hidden_template(_symbol(loaded, "S").node).name == "ki_keywords"
+
+
+def test_hidden_template_falls_back_to_any_hidden_property():
+    loaded = _bare_symbol(_visible("Reference"), _hidden("Other"), _hidden("Another"))
+    assert kf.hidden_template(_symbol(loaded, "S").node).name == "Other"
+
+
+def test_hidden_template_none_when_nothing_is_hidden():
+    loaded = _bare_symbol(_visible("Reference"), _visible("Value"))
+    assert kf.hidden_template(_symbol(loaded, "S").node) is None
+
+
+def test_property_new_text_from_v6_template_has_next_id_and_bare_hide():
+    loaded = _load(target_lib(V6))
+    template = _prop(loaded, "EXISTING_A", "Footprint")
+    block = kf.new_property_text(loaded.source.text, template, "MPN", "X1", 4, version=V6)
+    assert "(id 4)" in block
+    assert "(id 2)" not in block
+    new = _parsed_property(block)
+    assert (new.name, new.value) == ("MPN", "X1")
+    assert kf.property_is_hidden(new)
+    assert "(hide yes)" not in block
+
+
+def test_property_new_text_from_v9_template_has_no_id_and_hide_yes():
+    loaded = _load(target_lib(V9))
+    template = _prop(loaded, "EXISTING_A", "Footprint")
+    block = kf.new_property_text(loaded.source.text, template, "MPN", "X1", None, version=V9)
+    assert "(id" not in block
+    assert "(hide yes)" in block
+    assert kf.property_is_hidden(_parsed_property(block))
+
+
+@pytest.mark.parametrize("version,marker", [(V6, " hide)"), (V8, "(hide yes)"), (V9, "(hide yes)")])
+def test_property_new_text_always_hidden_from_visible_template(version, marker):
+    loaded = _load(target_lib(version))
+    template = _prop(loaded, "EXISTING_A", "Reference")
+    assert not kf.property_is_hidden(template)
+    block = kf.new_property_text(loaded.source.text, template, "MPN", "X1", 7 if version == V6 else None, version=version)
+    new = _parsed_property(block)
+    assert kf.property_is_hidden(new)
+    assert marker in block
+    assert block.count("hide") == 1
+
+
+def test_property_new_text_without_version_keeps_template_style():
+    loaded = _load(target_lib(V6))
+    template = _prop(loaded, "EXISTING_A", "Footprint")
+    plain = kf.new_property_text(loaded.source.text, template, "MPN", "X1", 4)
+    assert "(id 4)" in plain and kf.property_is_hidden(_parsed_property(plain))
+    visible = kf.new_property_text(loaded.source.text, _prop(loaded, "EXISTING_A", "Value"), "MPN", "X1", 4)
+    assert kf.property_is_hidden(_parsed_property(visible))
+    assert "(hide yes)" not in visible
+
+
+def test_property_new_text_turns_hide_no_into_hidden():
+    loaded = _bare_symbol('    (property "A" "v" (at 0 0 0) (effects (font (size 1 1)) (hide no)))')
+    block = kf.new_property_text(loaded.source.text, _prop(loaded, "S", "A"), "MPN", "X", None, version=V9)
+    assert kf.property_is_hidden(_parsed_property(block))
+    assert block.count("hide") == 1
+
+
+def test_property_synth_v6_has_id_and_bare_hide():
+    text = kf.synth_property_text("MPN", "X", version=V6, next_id=7)
+    assert "(id 7)" in text
+    assert " hide)" in text
+    assert "(hide yes)" not in text
+    new = _parsed_property(text)
+    assert (new.name, new.value) == ("MPN", "X")
+    assert kf.property_is_hidden(new)
+
+
+def test_property_synth_v9_has_hide_yes_and_no_id():
+    text = kf.synth_property_text("MPN", "X", version=V9, next_id=7)
+    assert "(hide yes)" in text
+    assert "(id" not in text
+    assert kf.property_is_hidden(_parsed_property(text))
+
+
+def test_property_synth_boundary_versions():
+    assert "hide yes" not in kf.synth_property_text("N", "v", version=20231119, next_id=None)
+    assert "(hide yes)" in kf.synth_property_text("N", "v", version=20231120, next_id=None)
+    assert "(id 3)" in kf.synth_property_text("N", "v", version=20220913, next_id=3)
+    assert "(id" not in kf.synth_property_text("N", "v", version=20220914, next_id=3)
+    assert "(id" not in kf.synth_property_text("N", "v", version=V6, next_id=None)
+
+
+def test_property_synth_escapes_quotes_in_name_and_value():
+    text = kf.synth_property_text('N"x', 'a"b)\\(c', version=V9, next_id=None)
+    new = _parsed_property(text)
+    assert (new.name, new.value) == ('N"x', 'a"b)\\(c')
+
+
+def test_description_name_keeps_existing_property():
+    loaded = _load(target_lib(V8))
+    assert kf.description_field_name(_symbol(loaded, "EXISTING_A").node, V6) == "Description"
+    loaded = _bare_symbol(_hidden("ki_description"))
+    assert kf.description_field_name(_symbol(loaded, "S").node, V9) == "ki_description"
+
+
+@pytest.mark.parametrize(
+    "version,expected",
+    [(V6, "ki_description"), (20230619, "ki_description"), (20230620, "Description"), (V8, "Description"), (None, "Description")],
+)
+def test_description_name_by_version_when_absent(version, expected):
+    loaded = _bare_symbol(_hidden("Footprint"))
+    assert kf.description_field_name(_symbol(loaded, "S").node, version) == expected
+
+
+@pytest.mark.parametrize("version", [V6, V8])
+def test_property_two_inserts_in_one_apply_keep_order(version):
+    target = _load(target_lib(version))
+    symbol = _symbol(target, "EXISTING_A")
+    template = kf.hidden_template(symbol.node)
+    next_id = kf.next_property_id(symbol.node)
+    text, eol = target.source.text, target.source.eol
+    first = kf.new_property_text(text, template, "Manufacturer", "TI", next_id, version=version)
+    second = kf.new_property_text(text, template, "MPN", "X1", None if next_id is None else next_id + 1, version=version)
+    edits = [
+        kf.property_insert_edit(text, symbol.node, first, eol),
+        kf.property_insert_edit(text, symbol.node, second, eol),
+    ]
+    out = _apply(target, edits)
+    after = _reparse(out)
+    names = _prop_names(after, "EXISTING_A")
+    assert names[-2:] == ["Manufacturer", "MPN"]
+    assert names[-3] in ("Datasheet", "Description")
+    assert _prop_names(after, "EXISTING_B") == _prop_names(target, "EXISTING_B")
+    assert _prop(after, "EXISTING_A", "MPN").value == "X1"
