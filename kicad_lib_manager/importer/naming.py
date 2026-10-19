@@ -94,10 +94,32 @@ def sanitize_name(name: str, *, max_len: int | None = None) -> NameResult:
 
 
 def sanitize_filename(filename: str, *, extensions: Sequence[str] | None = None) -> NameResult:
-    """Sanitise a file name's stem (stub)."""
-    return NameResult(filename, filename, ())
+    """Sanitise a file name's stem and keep its listed extension exactly, case included."""
+    listed = KNOWN_EXTENSIONS if extensions is None else extensions
+    folded = filename.casefold()
+    for ext in sorted(listed, key=len, reverse=True):
+        if ext and folded.endswith(ext.casefold()):
+            cut = len(filename) - len(ext)
+            stem, kept = filename[:cut], filename[cut:]
+            stem_result = sanitize_name(stem)
+            issues = [i for i in stem_result.issues if i.code != "naming.changed"]
+            result = stem_result.sanitized + kept
+            if result != filename:
+                issues.append(Issue(Severity.INFO, "naming.changed", f"{filename!r} -> {result!r}"))
+            return NameResult(filename, result, tuple(issues))
+    return sanitize_name(filename)
 
 
 def case_clash(name: str, existing: Iterable[str]) -> list[Issue]:
-    """Report existing names that differ from name only by letter case (stub)."""
-    return []
+    """Report existing names that differ from name only by letter case."""
+    folded = name.casefold()
+    return [
+        Issue(
+            Severity.WARNING,
+            "naming.case_clash",
+            f"{name!r} differs from existing {other!r} only by letter case; "
+            "Windows treats them as the same file",
+        )
+        for other in existing
+        if other != name and other.casefold() == folded
+    ]
