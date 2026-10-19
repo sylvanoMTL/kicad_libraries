@@ -6,6 +6,7 @@ import tempfile
 import zipfile
 import zlib
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
@@ -119,12 +120,21 @@ def _hostile_reason(name: str, info: zipfile.ZipInfo) -> str | None:
     return None
 
 
-def _prescan(infos: list[zipfile.ZipInfo], label: str, budget: _Budget) -> Issue | None:
-    """Return the first reason to refuse the whole archive, judged on headers alone, before any byte is read."""
+def _ratio_exceeded(file_size: int, compress_size: int) -> bool:
+    """True for a member above RATIO_MIN_SIZE that expands past MAX_RATIO:1; integer maths, safe for size 0."""
+    return file_size > RATIO_MIN_SIZE and file_size > MAX_RATIO * max(compress_size, 1)
+
+
+def _prescan(infos: list[zipfile.ZipInfo], label: str, budget: _Budget, prefix: str = "") -> Issue | None:
+    """Return the first reason to refuse the whole archive, judged on headers alone, before any byte is read.
+
+    Caps are read from the module globals at call time and cover every member, ignored ones included
+    (D-06, D-07). prefix is the nested zip's member name, so an inner member is shown as 'inner.zip/x'.
+    """
     seen: set[str] = set()
     for info in infos:
         name = info.filename
-        shown = _shown(name)
+        shown = _shown(prefix + name)
         reason = _hostile_reason(name, info)
         if reason is not None:
             return Issue(Severity.ERROR, "intake.hostile_member", f"Refused {label}: member {shown} is {reason}")
@@ -139,7 +149,38 @@ def _prescan(infos: list[zipfile.ZipInfo], label: str, budget: _Budget) -> Issue
             seen.add(key)
         if info.flag_bits & 0x1:
             return Issue(Severity.ERROR, "intake.encrypted", f"Refused {label}: member {shown} is encrypted")
+        budget.members += 1
+        if budget.members > MAX_MEMBERS:
+            return Issue(Severity.ERROR, "intake.too_many_members", f"Refused {label}: more than {MAX_MEMBERS} members")
+        if info.is_dir():
+            continue
+        if info.file_size > MAX_MEMBER_BYTES:
+            return Issue(
+                Severity.ERROR,
+                "intake.too_large",
+                f"Refused {label}: member {shown} declares {info.file_size} bytes, over the {MAX_MEMBER_BYTES} byte limit",
+            )
+        budget.declared += info.file_size
+        if budget.declared > MAX_TOTAL_BYTES:
+            return Issue(
+                Severity.ERROR,
+                "intake.too_large",
+                f"Refused {label}: members declare {budget.declared} bytes in total, over the {MAX_TOTAL_BYTES} byte limit",
+            )
+        if _ratio_exceeded(info.file_size, info.compress_size):
+            ratio = info.file_size // max(info.compress_size, 1)
+            return Issue(
+                Severity.ERROR,
+                "intake.high_ratio",
+                f"Refused {label}: member {shown} expands about {ratio}:1, over the {MAX_RATIO}:1 limit",
+            )
     return None
+
+
+def _is_junk_name(name: str) -> bool:
+    """True for macOS resource-fork debris: anything under __MACOSX/ or a last segment starting with '._'."""
+    parts = name.replace("\\", "/").split("/")
+    return any(p.casefold() == "__macosx" for p in parts) or parts[-1].startswith("._")
 
 
 def _refuse(package: Package, issue: Issue) -> Package:
@@ -181,14 +222,131 @@ def open_package(path: Path, repo_root: Path, progress: Callable | None = None) 
 
 
 def _classify(name: str) -> tuple[str, str]:
-    """Return (class, lowercase extension) for a member name: stage, legacy or ignored."""
+    """Return (class, lowercase extension) for a member name: stage, nested, legacy or ignored."""
     last = PurePosixPath(name).name
     ext = PurePosixPath(last).suffix.casefold()
+    if _is_junk_name(name):
+        return "ignored", ext
+    if ext == ".zip":
+        return "nested", ext
     if ext in STAGE_KINDS:
         return "stage", ext
     if ext in LEGACY_EXTENSIONS:
         return "legacy", ext
     return "ignored", ext
+
+
+def _copy_member(
+    zf: zipfile.ZipFile, info: zipfile.ZipInfo, name: str, target: Path, label: str, budget: _Budget, sha=None
+) -> tuple[int | None, Issue | None]:
+    """Copy one member to target counting real bytes against the remaining budget (D-06).
+
+    Returns (size, None), or (None, refusal Issue). Caps are read from the module globals at call time.
+    """
+    limit = min(MAX_MEMBER_BYTES, MAX_TOTAL_BYTES - budget.actual)
+    try:
+        with zf.open(info) as src, open(target, "xb") as dst:
+            copied = _copy_capped(src, dst, limit, sha)
+    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError, OSError) as e:
+        return None, Issue(Severity.ERROR, "intake.corrupt", f"Could not read member {_shown(name)} of {label}: {e}")
+    if copied is None:
+        return None, Issue(
+            Severity.ERROR, "intake.too_large", f"Refused {label}: member {_shown(name)} is larger than it declared"
+        )
+    budget.actual += copied
+    return copied, None
+
+
+def _stage_zip(
+    zf: zipfile.ZipFile, path: Path, repo_root: Path, progress: Callable | None, package: Package
+) -> Issue | None:
+    """Pre-scan, classify and stage an opened zip into package; return the refusal Issue, or None on success."""
+    budget = _Budget()
+    refusal = _prescan(zf.infolist(), path.name, budget)
+    if refusal is not None:
+        return refusal
+
+    # (archive, header, member name shown to callers, lowercase extension)
+    staged: list[tuple[zipfile.ZipFile, zipfile.ZipInfo, str, str]] = []
+    nested: list[tuple[zipfile.ZipInfo, str]] = []
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        name = info.filename.replace("\\", "/")
+        package.names.append(name)
+        what, ext = _classify(name)
+        if what == "stage":
+            staged.append((zf, info, name, ext))
+        elif what == "nested":
+            nested.append((info, name))
+        elif what == "legacy":
+            package.legacy.append(name)
+        else:
+            package.ignored.append(name)
+
+    tmp = tempfile.TemporaryDirectory(prefix=STAGING_PREFIX, ignore_cleanup_errors=True)
+    package._tmp = tmp
+    staging = Path(tmp.name).resolve()
+    if staging.is_relative_to(Path(repo_root).resolve()):
+        return Issue(
+            Severity.ERROR,
+            "intake.staging_in_repo",
+            f"Could not stage {path.name}: the temp folder {staging} is inside the repository",
+        )
+    package.staging_dir = staging
+
+    with ExitStack() as stack:
+        for j, (info, member) in enumerate(nested):
+            label = f"{path.name}/{member}"
+            copy = staging / f"nested_{j:03d}.zip"
+            _, issue = _copy_member(zf, info, member, copy, path.name, budget)
+            if issue is not None:
+                return issue
+            try:
+                inner = stack.enter_context(zipfile.ZipFile(copy))
+            except (zipfile.BadZipFile, OSError, EOFError, NotImplementedError, ValueError) as e:
+                return Issue(Severity.ERROR, "intake.corrupt", f"Could not read {label}: {e}")
+            issue = _prescan(inner.infolist(), label, budget, prefix=f"{member}/")
+            if issue is not None:
+                return issue
+            for inner_info in inner.infolist():
+                if inner_info.is_dir():
+                    continue
+                inner_name = inner_info.filename.replace("\\", "/")
+                full = f"{member}/{inner_name}"
+                package.names.append(full)
+                what, ext = _classify(inner_name)
+                if what == "nested":
+                    return Issue(
+                        Severity.ERROR,
+                        "intake.nested_too_deep",
+                        f"Refused {path.name}: {full} is a zip inside a nested zip; only one level is opened",
+                    )
+                if what == "stage":
+                    staged.append((inner, inner_info, full, ext))
+                elif what == "legacy":
+                    package.legacy.append(full)
+                else:
+                    package.ignored.append(full)
+
+        total = len(staged)
+        for i, (source, info, name, ext) in enumerate(staged):
+            if progress:
+                progress(f"Staging {name}", i, total)
+            kind = STAGE_KINDS[ext]
+            target = staging / f"{_STAGED_PREFIX[kind]}_{i:03d}{ext}"
+            sha = hashlib.sha256()
+            copied, issue = _copy_member(source, info, name, target, path.name, budget, sha)
+            if issue is not None:
+                return issue
+            package.files.append(PackageFile(name, target, kind, copied, sha.hexdigest(), True))
+
+    for j in range(len(nested)):
+        try:
+            (staging / f"nested_{j:03d}.zip").unlink()
+        except OSError:
+            pass  # removed with the staging folder anyway
+    return None
 
 
 def _open_zip(path: Path, repo_root: Path, progress: Callable | None) -> Package:
@@ -200,71 +358,10 @@ def _open_zip(path: Path, repo_root: Path, progress: Callable | None) -> Package
             package, Issue(Severity.ERROR, "intake.corrupt", f"Could not read {path.name}: {e}")
         )
     with zf:
-        budget = _Budget()
-        refusal = _prescan(zf.infolist(), path.name, budget)
-        if refusal is not None:
-            return _refuse(package, refusal)
-        staged_members: list[tuple[zipfile.ZipInfo, str, str]] = []
-        try:
-            for info in zf.infolist():
-                if info.is_dir():
-                    continue
-                name = info.filename.replace("\\", "/")
-                package.names.append(name)
-                what, ext = _classify(name)
-                if what == "stage":
-                    staged_members.append((info, name, ext))
-                elif what == "legacy":
-                    package.legacy.append(name)
-                else:
-                    package.ignored.append(name)
-        except (zipfile.BadZipFile, OSError, EOFError, NotImplementedError, ValueError) as e:
-            return _refuse(
-                package, Issue(Severity.ERROR, "intake.corrupt", f"Could not read {path.name}: {e}")
-            )
-
-        tmp = tempfile.TemporaryDirectory(prefix=STAGING_PREFIX, ignore_cleanup_errors=True)
-        package._tmp = tmp
-        staging = Path(tmp.name).resolve()
-        if staging.is_relative_to(Path(repo_root).resolve()):
-            return _refuse(
-                package,
-                Issue(
-                    Severity.ERROR,
-                    "intake.staging_in_repo",
-                    f"Could not stage {path.name}: the temp folder {staging} is inside the repository",
-                ),
-            )
-        package.staging_dir = staging
-
-        total_so_far = 0
-        total = len(staged_members)
-        for i, (info, name, ext) in enumerate(staged_members):
-            if progress:
-                progress(f"Staging {name}", i, total)
-            kind = STAGE_KINDS[ext]
-            target = staging / f"{_STAGED_PREFIX[kind]}_{i:03d}{ext}"
-            limit = min(MAX_MEMBER_BYTES, MAX_TOTAL_BYTES - total_so_far)
-            sha = hashlib.sha256()
-            try:
-                with zf.open(info) as src, open(target, "xb") as dst:
-                    copied = _copy_capped(src, dst, limit, sha)
-            except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError, OSError) as e:
-                return _refuse(
-                    package,
-                    Issue(Severity.ERROR, "intake.corrupt", f"Could not read member {name!r} of {path.name}: {e}"),
-                )
-            if copied is None:
-                return _refuse(
-                    package,
-                    Issue(
-                        Severity.ERROR,
-                        "intake.too_large",
-                        f"Could not stage member {name!r} of {path.name}: it is larger than the size limit",
-                    ),
-                )
-            total_so_far += copied
-            package.files.append(PackageFile(name, target, kind, copied, sha.hexdigest(), True))
+        issue = _stage_zip(zf, path, repo_root, progress, package)
+    if issue is not None:
+        # Every zip handle is closed by now, so the staging folder can be removed on Windows too.
+        return _refuse(package, issue)
 
     if package.ignored:
         shown = package.ignored[:_IGNORED_LISTED]
