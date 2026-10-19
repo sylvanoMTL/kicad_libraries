@@ -34,7 +34,7 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 - [ ] **INTK-03**: A SnapEDA zip is recognised and its symbol, footprint and any 3D model are found, verified against a real SnapEDA download in `downloaded_examples/`
 - [ ] **INTK-04**: A SamacSys / Component Search Engine zip is recognised and its KiCad symbol, footprint and 3D model are found, verified against a real CSE download in `downloaded_examples/`
 - [ ] **INTK-05**: Packages containing only legacy KiCad 5 files (`.lib`, `.dcm`, `.mod`) are rejected with a clear "re-download as KiCad v6+" message
-- [ ] **INTK-06**: Zips are read safely: no extraction into the repo, path traversal, absolute names and symlinks are rejected, and size and count limits stop zip bombs
+- [x] **INTK-06**: Zips are read safely: no extraction into the repo, path traversal, absolute names and symlinks are rejected, and size and count limits stop zip bombs
 - [ ] **INTK-07**: When a package holds several symbols, footprints or models, the user picks which ones to import
 - [ ] **INTK-08**: A package with no 3D model can still be installed, and the preview and log warn that no model was found
 
@@ -149,7 +149,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INTK-03 | Phase 7 | Pending |
 | INTK-04 | Phase 7 | Pending |
 | INTK-05 | Phase 3 | Pending |
-| INTK-06 | Phase 3 | Pending |
+| INTK-06 | Phase 3 | Complete |
 | INTK-07 | Phase 5 | Pending |
 | INTK-08 | Phase 4 | Pending |
 | LIB-01 | Phase 3 | Pending |
