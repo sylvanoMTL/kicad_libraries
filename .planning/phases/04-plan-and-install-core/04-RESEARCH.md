@@ -493,7 +493,7 @@ Not tested: KiCad 10 (not installed). [CITED: gitlab.com/kicad/code/kicad `10.0`
 
 ### Pitfall 14: Empty `.pretty` is invisible to git and fails the CLI footprint gate
 **What goes wrong:** A symbol-only install into a new library creates an empty `.pretty`; git will not track it and `fp upgrade` rejects an empty directory [VERIFIED: S5].
-**How to avoid:** Skip the footprint gate when no footprints are installed; WARN that the empty folder will not be committed (Open Question 5).
+**How to avoid:** Skip the footprint gate when no footprints are installed; WARN that the empty folder will not be committed (Open Question 5). Superseded by the Open Question 5 resolution: D-17 refuses a package with no footprint, so no install creates an empty `.pretty`.
 
 ## Code Examples
 
@@ -615,28 +615,40 @@ Omitted. This is a new feature phase, not a rename/refactor/migration. The one r
 | A6 | Renamed (not newly added) vendor Manufacturer/MPN fields keep the vendor's own visibility | Pattern 3 | If the owner expects them hidden, one extra edit per renamed property is needed (Open Question 7) |
 | A7 | Applying the Footprint link and `ki_fp_filters` to the `extends` parent as well as the child is wanted | Open Question 8 | A parent left with a bare `DQK0006B` Footprint value would be an unresolved link for anyone placing the parent |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All ten questions were resolved during planning. Each item keeps the research recommendation and adds the decision taken and the plan that implements it.
 
 1. **Where does the CLI load gate (D-03) run: planner or applier?**
    - What we know: it needs the fully rendered merged library, takes about 0.8 s per call (two calls plus an optional blame call), and D-03 says it runs before anything is written. PREV-07 wants the plan cheap to rebuild.
    - What's unclear: whether Phase 5 wants gate results visible in the preview.
    - Recommendation: make it a separate function `run_load_gate(plan, cli) -> list[Issue]` called by `apply_plan` as precondition step 0 (so apply is always protected), and expose it to Phase 5 as an optional explicit "Check with KiCad" action. Keep `build_plan` free of gate calls; it only calls the memoised symbol normalisation.
+   - **RESOLVED:** adopted. The gate runs in the applier: `run_load_gate(plan) -> list[Issue]` (the CLI comes from `plan.tools`) is the last `apply_plan` precondition, after the blocked, no-op, containment, freshness and model-source checks and before any write; any ERROR refuses the install. `build_plan` makes no gate call. Phase 5 may call `run_load_gate` on its own as a "Check with KiCad" action; whether the preview shows it is a Phase 5 choice. (04-07 Task 1; `kicad_cli.load_gate` itself is 04-03 Task 2.)
 2. **How should Phase 5 pass KiCad context?**
    - Recommendation: a small frozen `ToolContext(kicad_cli: Path | None, kicad_symbols_dir: Path | None, extra_symbol_dirs: tuple[Path, ...])` argument to `build_plan`/`apply_plan`, defaulting to "none found". Tests inject a fake runner; no globals.
+   - **RESOLVED:** adopted, with two extra fields so tests and callers inject the runner and timeout instead of using globals: `ToolContext(kicad_cli, cli_runner, cli_timeout=60.0, kicad_symbols_dir, extra_symbol_dirs)`, defaulting to "none found". `build_plan` takes it as `tools` and stores it on the plan, so `apply_plan` reads `plan.tools`. (04-01 Task 1 defines it; 04-06 Task 1 adds `detect_tools(kicad_fp_dir)`, which builds it from the detected KiCad install.)
 3. **Version `None` (header or incoming file lacks a parseable `(version N)`).**
    - Recommendation: treat as unknown, splice as-is, WARNING `install.version_unknown`; never refuse on `None`.
+   - **RESOLVED:** adopted. Either version `None` gives WARNING `install.version_unknown` and an as-is splice; `None` never refuses. (04-06 Task 1, `test_version_unknown`.)
 4. **Multiple `(model ...)` blocks in the vendor footprint (D-17 allows zero or one linked model).**
    - Recommendation: retarget the first, leave the rest, WARN `install.extra_models` (their paths are vendor-relative and will not resolve). Removing them would be a destructive edit nobody asked for.
+   - **RESOLVED:** adopted. The first model block is retargeted to `${CUSTOM_3DMODEL_DIR}/<file>`, the others are left untouched, and WARNING `install.extra_models` is raised. (04-08 Task 2, `test_model_extra_blocks_warn`.)
 5. **Symbol-only package into a NEW library (no footprint to place).**
    - Recommendation: still create the empty `.pretty` (LIB-02 says a pair), WARN that git does not track empty folders, skip the footprint gate.
+   - **RESOLVED:** recommendation not taken, because locked decision D-17 requires one or more footprints per install. A package with no footprint gives ERROR `install.no_footprint` and a blocked plan, so an empty `.pretty` is never created and Pitfall 14 cannot arise from an install. (04-01 Task 2.)
 6. **Footprint-only package (no symbol).**
    - D-17 says "exactly one symbol". Recommendation: ERROR `install.no_symbol`; Phase 3 already emits `intake.no_symbol` as a WARNING at intake.
+   - **RESOLVED:** adopted. Zero symbols gives ERROR `install.no_symbol` and a blocked plan; several symbols without `options.symbol` give ERROR `install.choice_required`. (04-01 Task 2.)
 7. **Visibility of renamed Manufacturer/MPN (D-12 vs D-13).**
    - D-13 speaks of the NEW properties being hidden. Recommendation: leave a renamed vendor property's visibility alone (fewest edits); only newly added ones are hidden. Confirm with the owner if they want renamed ones forced hidden.
+   - **RESOLVED:** adopted under Claude's discretion. A vendor field renamed in place to `Manufacturer` or `MPN` keeps the vendor's own visibility; only newly added properties are hidden (D-13). Implemented in 04-08 Task 1 and recorded there as flagged assumption A6. The owner confirms or changes it in the D-22 manual UAT check of 04-10 Task 2, step 5.
 8. **`extends` chain field edits.**
    - Recommendation: Footprint link and `ki_fp_filters` apply to every symbol of the chain; `Manufacturer` the same value for all; `MPN` defaults to each symbol's own vendor name unless the caller overrides. The model name uses the chosen (child) symbol's MPN.
+   - **RESOLVED:** adopted. Footprint, `ki_fp_filters` and `Manufacturer` are the same on every symbol of the unit. Each symbol's `MPN` defaults to its own vendor name, the caller's `mpn` override applies only to the chosen symbol, and the model file is named after the chosen symbol's MPN. (04-08 Task 2, `test_unit_fields_on_every_symbol`; recorded as flagged assumption A7, which the owner confirms in the same 04-10 UAT step.)
 9. **INST-06 and ROADMAP criterion 3 text amendment (D-02).** Must be edited when the phase closes: "the incoming symbol is normalised ... footprints are copied as-is". Put it in the closing plan's tasks.
+   - **RESOLVED:** scheduled in the closing plan. 04-10 Task 2 step 4 rewrites the INST-06 line in REQUIREMENTS.md and ROADMAP Phase 4 success criterion 3 with scoped edits, and its acceptance criteria check for "footprints are copied as-is".
 10. **Package-level Issues (WR-05).** Choose `package_issues` parameter vs fixing `detect_candidate`; see Pitfall 7. Either is acceptable; do not leave it silent.
+   - **RESOLVED:** the `package_issues` parameter was chosen; `detect_candidate` is unchanged. `build_plan(..., *, package_issues=())` puts the package Issues first in `plan.issues`, then `candidate.issues`, dropping exact duplicates. (04-01 Task 1 signature; 04-01 Task 2 behaviour and test.)
 
 ## Environment Availability
 
