@@ -65,7 +65,7 @@ created: "2026-10-19"
 | T-03-32 | Tampering | hostile or unpacked fixtures committed | low | mitigate | hostile zips built in memory / `tmp_path`; `downloaded_examples/** -text` | closed |
 | T-03-33 | Tampering | hostile item names reaching Phase 4 as file names | high | mitigate | `name_check` on every symbol, footprint and model; hostile-name test in `tests/test_candidate_names.py` | closed |
 | T-03-34 | Tampering | layering guard passing vacuously | medium | mitigate | `test_guard_*` self-tests on synthetic trees; real-module tests ran after merge; unregistered module is an error | closed |
-| T-03-35 | Denial of service | hostile low-ratio `.kicad_sym` / `.kicad_mod` parsed whole (CR-01) | medium | mitigate | `_read_limited` caps parsed text at 8 MiB; `parse_bytes(..., max_nodes=MAX_KICAD_TEXT_NODES)` stops at 1,000,000 nodes (`sexpr.too_many_nodes`); WARNING `intake.unreadable_file`, rest of package read (`importer/adapters/base.py`, `tests/test_locate_text_caps.py`) | closed |
+| T-03-35 | Denial of service | hostile low-ratio `.kicad_sym` / `.kicad_mod` parsed whole (CR-01) | medium | mitigate | `_read_limited` caps parsed text at 8 MiB; `parse_bytes(..., max_nodes=MAX_KICAD_TEXT_NODES)` stops at 1,000,000 nodes (`sexpr.too_many_nodes`); WARNING `intake.unreadable_file`, rest of package read (`importer/adapters/base.py`, `tests/test_locate_text_caps.py`). Gap (re-review CR-03, reproduced): one ~8 MB quoted string is a single node and the backtracking string regex in `sexpr.py` peaks at ~1.7-2.8 GiB | open — below high threshold (non-blocking) |
 | T-03-36 | Denial of service | `MemoryError` while parsing one file | low | mitigate | `locate` catches `MemoryError` around `parse_bytes` only, WARNING `intake.unreadable_file`; `test_memory_error_is_a_warning` | closed |
 | T-03-37 | Tampering | `max_nodes` changing parse results for repo files | low | mitigate | keyword-only, default None; only `importer/adapters/base.py` passes it (grep); existing sexpr / kicad_files / round-trip tests unchanged | closed |
 | T-03-38 | Denial of service | corrupt LZMA or zstd member raising out of `open_package` (CR-02) | medium | mitigate | `_READ_ERRORS` adds `lzma.LZMAError` and `compression.zstd.ZstdError`; `_copy_member` maps to ERROR `intake.corrupt`; per-codec tests | closed |
@@ -97,6 +97,7 @@ created: "2026-10-19"
 | 2026-10-19 | 35 | 35 | 0 | secure-phase (L1 grep-depth, orchestrator; auditor skipped per ASVS L1 short-circuit) |
 | 2026-10-19 | 35 | 33 | 2 (both medium, below `high` block threshold; threats_open stays 0) | orchestrator, from code review 03-REVIEW.md CR-01 / CR-02 |
 | 2026-10-19 | 42 | 42 | 0 | secure-phase after gap closure 03-08 / 03-09 (L1 grep-depth, orchestrator; auditor skipped per ASVS L1 short-circuit) |
+| 2026-10-19 | 42 | 41 | 1 (T-03-35, medium, below `high` block threshold; threats_open stays 0) | orchestrator, from re-review 03-REVIEW.md CR-03 and 03-VERIFICATION.md |
 
 ---
 
