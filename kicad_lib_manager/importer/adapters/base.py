@@ -243,7 +243,13 @@ def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | No
         if isinstance(data, Issue):
             issues.append(data)
             continue
-        loaded = parse_bytes(data, pf.member, max_nodes=_package.MAX_KICAD_TEXT_NODES)
+        try:
+            loaded = parse_bytes(data, pf.member, max_nodes=_package.MAX_KICAD_TEXT_NODES)
+        except MemoryError:
+            issues.append(
+                Issue(Severity.WARNING, "intake.unreadable_file", f"Skipped {pf.member}: not enough memory to read it")
+            )
+            continue
         if isinstance(loaded, Issue):
             issues.append(Issue(Severity.WARNING, "intake.unreadable_file", loaded.text))
             continue
