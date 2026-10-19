@@ -4,13 +4,26 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Protocol
 
-from ...kicad_files import SymbolRef, find_models, find_property, find_symbols, footprint_name, parse_bytes
+from ...kicad_files import (
+    SymbolRef,
+    file_kind,
+    file_version,
+    find_models,
+    find_property,
+    find_symbols,
+    footprint_name,
+    parse_bytes,
+)
 from ...models import Issue, Severity
+from .. import package as _package
 from ..candidate import FootprintItem, ImportCandidate, ModelItem, PartMeta, SymbolItem
-from ..package import Package
+from ..package import Package, PackageFile
 
 GENERIC_VENDOR = "Unknown"
 GENERIC_CONFIDENCE = 0.1
+
+_BOM = b"\xef\xbb\xbf"
+_ASCII_SPACE = b" \t\r\n\x0b\x0c"
 
 MANUFACTURER_FIELDS = ("Manufacturer", "MF", "MANUFACTURER", "Manufacturer_Name")
 MPN_FIELDS = ("MPN", "MP", "Manufacturer_Part_Number", "MANUFACTURER_PART_NUMBER")
@@ -59,6 +72,90 @@ def part_meta(symbol: SymbolRef) -> PartMeta:
     )
 
 
+def _read_limited(pf: PackageFile) -> bytes | Issue:
+    """Read a package file, refusing anything over the member cap; failures come back as a WARNING Issue."""
+    cap = _package.MAX_MEMBER_BYTES
+    try:
+        with open(pf.path, "rb") as handle:
+            data = handle.read(cap + 1)
+    except OSError as e:
+        return Issue(Severity.WARNING, "intake.unreadable_file", f"Could not read {pf.member}: {e.strerror or e}")
+    if len(data) > cap:
+        return Issue(Severity.WARNING, "intake.unreadable_file", f"Skipped {pf.member}: larger than {cap} bytes")
+    return data
+
+
+def _model_magic(member: str) -> tuple[bytes, str] | None:
+    """Return the leading bytes and label a 3D model of this name must carry, or None for other suffixes."""
+    suffix = PurePosixPath(member).suffix.casefold()
+    if suffix in (".step", ".stp"):
+        return b"ISO-10303-21;", "a STEP file"
+    if suffix == ".wrl":
+        return b"#VRML", "a VRML file"
+    return None
+
+
+def _check_model(pf: PackageFile) -> Issue | None:
+    """Return a WARNING when a 3D model file does not start with its format's magic text."""
+    magic = _model_magic(pf.member)
+    if magic is None:
+        return None
+    try:
+        with open(pf.path, "rb") as handle:
+            head = handle.read(256)
+    except OSError as e:
+        return Issue(Severity.WARNING, "intake.unreadable_file", f"Could not read {pf.member}: {e.strerror or e}")
+    if head.startswith(_BOM):
+        head = head[len(_BOM):]
+    head = head.lstrip(_ASCII_SPACE)
+    if head.startswith(magic[0]):
+        return None
+    return Issue(Severity.WARNING, "intake.content_mismatch", f"{pf.member} does not look like {magic[1]}")
+
+
+def _locate_symbols(pf: PackageFile, loaded, issues: list[Issue]) -> list[SymbolItem]:
+    kind = file_kind(loaded.root)
+    if kind != "kicad_symbol_lib":
+        issues.append(
+            Issue(Severity.WARNING, "intake.content_mismatch", f"{pf.member} is not a KiCad symbol library (found {kind})")
+        )
+        return []
+    refs = find_symbols(loaded.root)
+    if not refs:
+        issues.append(Issue(Severity.WARNING, "intake.content_mismatch", f"{pf.member} holds no symbols"))
+        return []
+    version = file_version(loaded.root)
+    return [SymbolItem(ref.name, pf, part_meta(ref), format_version=version) for ref in refs]
+
+
+def _locate_footprint(pf: PackageFile, loaded, issues: list[Issue]) -> FootprintItem | None:
+    kind = file_kind(loaded.root)
+    ref = footprint_name(loaded.root) if kind in ("footprint", "module") else None
+    if ref is None:
+        issues.append(
+            Issue(Severity.WARNING, "intake.content_mismatch", f"{pf.member} is not a KiCad footprint (found {kind})")
+        )
+        return None
+    head = ref.node.head or "footprint"
+    if head == "module":
+        # D-18: the KiCad 5 spelling is read by KiCad 6+, so it is a footprint, not a legacy file
+        issues.append(
+            Issue(
+                Severity.WARNING,
+                "intake.legacy_footprint_syntax",
+                f"{pf.member} uses the KiCad 5 (module ...) syntax; it is accepted and KiCad 6+ upgrades it on save",
+            )
+        )
+    return FootprintItem(
+        ref.name,
+        pf,
+        root_head=head,
+        format_version=file_version(loaded.root) if head == "footprint" else None,
+        model_paths=tuple(m.path for m in find_models(ref.node)),
+        has_embedded_files=any(child.head == "embedded_files" for child in ref.node.children),
+    )
+
+
 def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | None, list[Issue]]:
     """Find the symbols, footprints and models of a staged package; names come from inside the files."""
     issues: list[Issue] = []
@@ -67,37 +164,26 @@ def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | No
     models: list[ModelItem] = []
     for pf in package.files:
         if pf.kind == "model":
-            models.append(ModelItem(PurePosixPath(pf.member).name, pf))
+            problem = _check_model(pf)
+            if problem is None:
+                models.append(ModelItem(PurePosixPath(pf.member).name, pf))
+            else:
+                issues.append(problem)
             continue
-        try:
-            data = pf.path.read_bytes()
-        except OSError as e:
-            issues.append(
-                Issue(Severity.WARNING, "intake.unreadable_file", f"Could not read {pf.member}: {e.strerror or e}")
-            )
+        data = _read_limited(pf)
+        if isinstance(data, Issue):
+            issues.append(data)
             continue
         loaded = parse_bytes(data, pf.member)
         if isinstance(loaded, Issue):
             issues.append(Issue(Severity.WARNING, "intake.unreadable_file", loaded.text))
             continue
         if pf.kind == "symbol":
-            for ref in find_symbols(loaded.root):
-                symbols.append(SymbolItem(ref.name, pf, part_meta(ref)))
+            symbols.extend(_locate_symbols(pf, loaded, issues))
         else:
-            ref = footprint_name(loaded.root)
-            if ref is None:
-                issues.append(
-                    Issue(Severity.WARNING, "intake.content_mismatch", f"{pf.member} holds no footprint")
-                )
-                continue
-            footprints.append(
-                FootprintItem(
-                    ref.name,
-                    pf,
-                    root_head=ref.node.head or "footprint",
-                    model_paths=tuple(m.path for m in find_models(ref.node)),
-                )
-            )
+            item = _locate_footprint(pf, loaded, issues)
+            if item is not None:
+                footprints.append(item)
     candidate = ImportCandidate(
         vendor=detection.vendor,
         confidence=detection.confidence,
