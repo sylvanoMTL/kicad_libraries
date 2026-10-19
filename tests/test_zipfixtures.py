@@ -3,8 +3,11 @@
 import hashlib
 import io
 import stat
+import struct
 import zipfile
 from pathlib import PurePosixPath
+
+import pytest
 
 from kicad_lib_manager.kicad_files import (
     LoadedFile,
@@ -26,6 +29,7 @@ from zipfixtures import (
     UL_SYMBOL_MEMBER,
     UL_ZIP,
     VRML_BYTES,
+    corrupt_member,
     footprint,
     lie_about_size,
     mark_encrypted,
@@ -80,6 +84,43 @@ def test_mark_encrypted():
     assert all(i.flag_bits & 0x1 for i in infos)
     # Untouched zips stay unencrypted
     assert not any(i.flag_bits & 0x1 for i in _open(data).infolist())
+
+
+def _payload_start(data: bytes, index: int) -> int:
+    """Start of member index's compressed payload, found independently of corrupt_member."""
+    info = _open(data).infolist()[index]
+    name_len, extra_len = struct.unpack_from("<HH", data, info.header_offset + 26)
+    return info.header_offset + 30 + name_len + extra_len
+
+
+def test_corrupt_member_flips_only_payload_bytes():
+    data = zip_bytes(
+        [("a.step", STEP_BYTES), ("p.kicad_sym", symbol_lib(("PART",)))],
+        compression=zipfile.ZIP_LZMA,
+    )
+    out = corrupt_member(data, 1, 10)
+    assert len(out) == len(data)
+    p = _payload_start(data, 1) + 10
+    assert [i for i in range(len(data)) if out[i] != data[i]] == [p, p + 1]
+    assert out[p] == data[p] ^ 0xFF
+    before = [(i.filename, i.file_size) for i in _open(data).infolist()]
+    after = [(i.filename, i.file_size) for i in _open(out).infolist()]
+    assert after == before
+
+
+def test_corrupt_member_rejects_offset_past_payload():
+    data = zip_bytes(
+        [("a.step", STEP_BYTES), ("p.kicad_sym", symbol_lib(("PART",)))],
+        compression=zipfile.ZIP_LZMA,
+    )
+    size = _open(data).infolist()[1].compress_size
+    with pytest.raises(ValueError):
+        corrupt_member(data, 1, size - 1)  # offset 1 + length 2 runs past the payload
+    with pytest.raises(ValueError):
+        corrupt_member(data, 2, 0)  # only members 0 and 1 exist
+    with pytest.raises(ValueError):
+        corrupt_member(data, 1, -1)
+    assert len(corrupt_member(data, 1, size - 2)) == len(data)  # the last two bytes still fit
 
 
 def test_unpack_sample_full_layout(tmp_path):

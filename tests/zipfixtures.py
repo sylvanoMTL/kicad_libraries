@@ -107,6 +107,32 @@ def mark_encrypted(data: bytes) -> bytes:
     return bytes(out)
 
 
+def corrupt_member(data: bytes, index: int, offset: int, length: int = 2) -> bytes:
+    """Flip length bytes of member index's compressed payload, leaving every header intact."""
+    pos, count = _central_directory(data)
+    if index < 0 or index >= count:
+        raise ValueError(f"member index {index} is not below the entry count {count}")
+    for _ in range(index):
+        if data[pos:pos + 4] != _CENTRAL_SIG:
+            raise ValueError("unexpected zip layout")
+        name_len, extra_len, comment_len = struct.unpack_from("<HHH", data, pos + 28)
+        pos += 46 + name_len + extra_len + comment_len
+    if data[pos:pos + 4] != _CENTRAL_SIG:
+        raise ValueError("unexpected zip layout")
+    compressed = struct.unpack_from("<I", data, pos + 20)[0]
+    local = struct.unpack_from("<I", data, pos + 42)[0]
+    if data[local:local + 4] != _LOCAL_SIG:
+        raise ValueError("unexpected zip layout")
+    local_name_len, local_extra_len = struct.unpack_from("<HH", data, local + 26)
+    start = local + 30 + local_name_len + local_extra_len
+    if offset < 0 or offset + length > compressed:
+        raise ValueError(f"cannot flip {length} bytes at offset {offset} of a {compressed} byte payload")
+    out = bytearray(data)
+    for i in range(start + offset, start + offset + length):
+        out[i] ^= 0xFF
+    return bytes(out)
+
+
 def unpack_sample(dest: Path, *, flat: bool = False, kicad_only: bool = False) -> Path:
     """Write members of the committed UL sample under dest: the real loose-files case for Phase 3 (CONTEXT.md D-17)."""
     dest.mkdir(parents=True, exist_ok=True)

@@ -21,6 +21,7 @@ from zipfixtures import (
     REPO_ROOT,
     STEP_BYTES,
     UL_ZIP,
+    corrupt_member,
     footprint,
     lie_about_size,
     make_zip,
@@ -34,6 +35,10 @@ from kicad_lib_manager.importer import package as pkg
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.package import open_package
 from kicad_lib_manager.models import Severity
+
+# A 2-byte flip at this payload offset raises the codec's own error (LZMAError, ZstdError, zlib.error,
+# OSError or BadZipFile), measured on Python 3.14.4; the two fixture pin tests re-check it on every run.
+_FLIP_OFFSET = 10
 
 
 @pytest.fixture
@@ -448,4 +453,38 @@ def test_cleanup_on_exception_and_concurrent(_tmpdir):
         assert second.staging_dir.is_dir()
         both = [first.staging_dir, second.staging_dir]
     assert not any(p.exists() for p in both)
+    assert list(_tmpdir.iterdir()) == []
+
+
+# -- CR-02: damaged members and unusable temp folders ----------------------------
+
+
+def _lzma_part_zip(path: Path) -> Path:
+    data = zip_bytes([("p.kicad_sym", symbol_lib(("PART",)))], compression=zipfile.ZIP_LZMA)
+    path.write_bytes(corrupt_member(data, 0, _FLIP_OFFSET))
+    return path
+
+
+def test_corrupt_lzma_fixture_raises_lzma_error(tmp_path):
+    import lzma
+
+    path = _lzma_part_zip(tmp_path / "bad.zip")
+    with zipfile.ZipFile(path) as zf:
+        info = zf.infolist()[0]
+        with pytest.raises(lzma.LZMAError):
+            with zf.open(info) as src:
+                while src.read(65536):
+                    pass
+
+
+def test_corrupt_lzma_member_refused_and_cleaned_up(tmp_path, _tmpdir):
+    path = _lzma_part_zip(tmp_path / "bad.zip")
+    package = open_package(path, REPO_ROOT)
+    assert package.refused is True
+    assert _codes(package) == ["intake.corrupt"]
+    text = _errors(package)[0].text
+    assert "p.kicad_sym" in text
+    assert "bad.zip" in text
+    assert package.files == []
+    assert package.staging_dir is None
     assert list(_tmpdir.iterdir()) == []
