@@ -11,11 +11,21 @@ is still read. The hostile files are generated in memory or tmp_path; none is co
 import hashlib
 import os
 import random
+import zipfile
 import zlib
 from pathlib import Path
 
 import pytest
-from zipfixtures import REPO_ROOT, STEP_BYTES, UL_ZIP, footprint, make_zip, symbol_lib
+from zipfixtures import (
+    REPO_ROOT,
+    STEP_BYTES,
+    UL_FOOTPRINT_MEMBER,
+    UL_SYMBOL_MEMBER,
+    UL_ZIP,
+    footprint,
+    make_zip,
+    symbol_lib,
+)
 
 from kicad_lib_manager.importer import package as package_module
 from kicad_lib_manager.importer.adapters import base
@@ -248,3 +258,86 @@ def test_models_skip_the_text_caps(tmp_path, monkeypatch):
     assert [s.name for s in candidate.symbols] == ["S"]
     assert [f.name for f in candidate.footprints] == ["F"]
     assert not [i for i in issues if "m.step" in i.text]
+
+
+# -- task 3: node ceiling boundary, MemoryError guard, real files ------------------
+
+
+def _node_count(root) -> int:
+    """Count every list, atom and string below the root (the root itself is not counted)."""
+    total = 0
+    stack = list(root.children)
+    while stack:
+        node = stack.pop()
+        total += 1
+        stack.extend(node.children)
+    return total
+
+
+def test_node_ceiling_boundary_in_locate(tmp_path, monkeypatch):
+    data = symbol_lib(("EDGE",))
+    loaded = parse_bytes(data, "e")
+    assert isinstance(loaded, LoadedFile)
+    n = _node_count(loaded.root)
+    package = _folder_package(tmp_path, {"edge.kicad_sym": data, "f.kicad_mod": footprint("F")})
+    detection = Detection("Loose", 0.3)
+
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_NODES", n)
+    candidate, issues = locate(package, detection)
+    assert [s.name for s in candidate.symbols] == ["EDGE"]
+    assert not _codes(issues, "intake.unreadable_file")
+
+    # The small footprint has fewer nodes than the symbol file, so only the symbol is cut
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_NODES", n - 1)
+    candidate, issues = locate(package, detection)
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert f"more than {n - 1} nodes" in skipped[0].text
+    assert candidate.symbols == ()
+
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_NODES", n + 1)
+    candidate, _ = locate(package, detection)
+    assert [s.name for s in candidate.symbols] == ["EDGE"]
+
+
+def test_memory_error_is_a_warning(tmp_path, monkeypatch):
+    real = base.parse_bytes
+
+    def flaky(data, name, **kwargs):
+        if name == "a.kicad_sym":
+            raise MemoryError
+        return real(data, name, **kwargs)
+
+    monkeypatch.setattr(base, "parse_bytes", flaky)
+    members = [
+        ("a.kicad_sym", symbol_lib(("A",))),
+        ("b.kicad_sym", symbol_lib(("B",))),
+        ("f.kicad_mod", footprint("F")),
+    ]
+    refused, candidate, issues = _detect(tmp_path, members)
+    assert refused is False
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert "a.kicad_sym" in skipped[0].text
+    assert "not enough memory" in skipped[0].text
+    assert [s.name for s in candidate.symbols] == ["B"]
+    assert [f.name for f in candidate.footprints] == ["F"]
+
+
+def test_real_files_are_below_both_caps():
+    custom = REPO_ROOT / "Custom"
+    paths = []
+    if custom.is_dir():
+        paths = sorted(custom.rglob("*.kicad_sym")) + sorted(custom.rglob("*.kicad_mod"))
+    if not paths:
+        pytest.skip("Custom submodule not checked out (git submodule update --init Custom)")
+    named = [(p.name, p.read_bytes()) for p in paths]
+    with zipfile.ZipFile(UL_ZIP) as zf:
+        for member in (UL_SYMBOL_MEMBER, UL_FOOTPRINT_MEMBER):
+            named.append((member, zf.read(member)))
+    for name, data in named:
+        assert len(data) <= package_module.MAX_KICAD_TEXT_BYTES, name
+        loaded = parse_bytes(data, name, max_nodes=package_module.MAX_KICAD_TEXT_NODES)
+        assert isinstance(loaded, LoadedFile), f"{name}: {loaded}"

@@ -305,6 +305,22 @@ def test_parse_bytes_other_sexpr_errors(data, code):
     assert isinstance(result, Issue) and result.code == code
 
 
+def test_parse_bytes_max_nodes_is_issue():
+    result = parse_bytes(b"(a b)", "x.kicad_sym", max_nodes=2)
+    assert isinstance(result, Issue)
+    assert result.severity is Severity.ERROR
+    assert result.code == "sexpr.too_many_nodes"
+    assert result.text.startswith("Could not parse x.kicad_sym")
+    assert isinstance(parse_bytes(b"(a b)", "x.kicad_sym", max_nodes=3), LoadedFile)
+
+
+def test_parse_bytes_max_nodes_default_unchanged(tmp_path):
+    assert isinstance(parse_bytes(b"(a b)", "x"), LoadedFile)
+    path = tmp_path / "x.kicad_sym"
+    path.write_bytes(b"(a b)")
+    assert isinstance(load(path), LoadedFile)
+
+
 def test_parse_bytes_bad_encoding_is_issue():
     result = parse_bytes(b"\xff(a)", "y")
     assert isinstance(result, Issue)

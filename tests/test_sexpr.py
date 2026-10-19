@@ -219,6 +219,63 @@ def test_large_library_parses_within_budget():
     assert len(root.children[0].children) > 2_000
 
 
+# -- max_nodes ceiling (CR-01); these pin the contract and pass as soon as parse has it -----
+
+
+def _walk(root: Node) -> list[tuple[str, int, int, str]]:
+    """Return (kind, start, end, text) for every node in document order, iteratively."""
+    out = []
+    stack = [iter(root.children)]
+    while stack:
+        node = next(stack[-1], None)
+        if node is None:
+            stack.pop()
+            continue
+        out.append((node.kind, node.start, node.end, node.text))
+        if node.children:
+            stack.append(iter(node.children))
+    return out
+
+
+def test_max_nodes_default_is_unlimited():
+    for text in ('(a (b "c") d)', _symbol_library(50)):
+        assert _walk(parse(text)) == _walk(parse(text, max_nodes=None))
+
+
+def test_max_nodes_boundary():
+    for limit in (3, 4):
+        assert len(_walk(parse("(a b)", max_nodes=limit))) == 3
+    with pytest.raises(SexprError) as info:
+        parse("(a b)", max_nodes=2)
+    assert info.value.code == "sexpr.too_many_nodes"
+    assert "more than 2 nodes" in str(info.value)
+    assert (info.value.line, info.value.col) == (1, 4)
+
+
+def test_max_nodes_counts_lists_atoms_and_strings():
+    text = '(a "s" (b))'
+    assert len(_walk(parse(text, max_nodes=5))) == 5
+    with pytest.raises(SexprError) as info:
+        parse(text, max_nodes=4)
+    assert info.value.code == "sexpr.too_many_nodes"
+
+
+def test_max_nodes_zero_allows_empty_input():
+    for text in ("", " \r\n\t"):
+        assert parse(text, max_nodes=0).children == []
+    with pytest.raises(SexprError) as info:
+        parse("(a)", max_nodes=0)
+    assert info.value.code == "sexpr.too_many_nodes"
+    assert (info.value.line, info.value.col) == (1, 1)
+
+
+def test_max_nodes_stops_at_the_ceiling():
+    with pytest.raises(SexprError) as info:
+        parse("(a)" * 200_000, max_nodes=1_000)
+    assert info.value.code == "sexpr.too_many_nodes"
+    assert info.value.col <= 3 * 1_000
+
+
 def _random_form(rng: random.Random, depth: int = 0) -> str:
     ws = [" ", "  ", "\t", "\n", "\r\n", " \r\n  "]
     atoms = ["a", "F.Cu", "-12.7", "1e-3", "${VAR}/x", "µ", "*.Cu"]
