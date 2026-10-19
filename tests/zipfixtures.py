@@ -16,6 +16,7 @@ import io
 import struct
 import warnings
 import zipfile
+from collections.abc import Iterable
 from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -128,3 +129,110 @@ def unpack_sample(dest: Path, *, flat: bool = False, kicad_only: bool = False) -
             with open(target, "xb") as handle:
                 handle.write(zf.read(info))
     return dest
+
+
+# -- KiCad and 3D byte builders ------------------------------------------------
+
+
+def _quote(text: str) -> str:
+    """Return text as a double-quoted S-expression string."""
+    return '"' + text.replace(BS, BS + BS).replace('"', BS + '"') + '"'
+
+
+def symbol_lib(
+    names: tuple[str, ...] = ("PART",),
+    *,
+    version: int | None = 20211014,
+    props: dict[str, str] | None = None,
+) -> bytes:
+    """Build a KiCad 6+ .kicad_sym with one symbol per name, each carrying props."""
+    lines = ["(kicad_symbol_lib"]
+    if version is not None:
+        lines.append(f"  (version {version})")
+    lines.append('  (generator "test")')
+    for name in names:
+        lines.append(f"  (symbol {_quote(name)}")
+        lines.append('    (property "Reference" "U" (at 0 0 0))')
+        lines.append(f"    (property \"Value\" {_quote(name)} (at 0 0 0))")
+        for key, value in (props or {}).items():
+            lines.append(f"    (property {_quote(key)} {_quote(value)} (at 0 0 0))")
+        lines.append("  )")
+    lines.append(")")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def footprint(
+    name: str = "FP",
+    *,
+    head: str = "footprint",
+    version: int | None = 20211014,
+    model: str | None = None,
+) -> bytes:
+    """Build a .kicad_mod; head "module" gives the legacy KiCad 5 spelling."""
+    lines = [f"({head} {_quote(name)}"]
+    if version is not None:
+        lines.append(f"  (version {version})")
+    lines.append('  (layer "F.Cu")')
+    if model is not None:
+        lines.append(f"  (model {_quote(model)}")
+        lines.append("    (offset (xyz 0 0 0))")
+        lines.append("    (scale (xyz 1 1 1))")
+        lines.append("    (rotate (xyz 0 0 0))")
+        lines.append("  )")
+    lines.append(")")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+STEP_BYTES = (
+    b"ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('test'),'2;1');\nENDSEC;\n"
+    b"DATA;\nENDSEC;\nEND-ISO-10303-21;\n"
+)
+VRML_BYTES = b"#VRML V2.0 utf8\nShape { geometry Box { size 1 1 1 } }\n"
+LEGACY_LIB_BYTES = (
+    b"EESchema-LIBRARY Version 2.4\n#encoding utf-8\n#\n# PART\n#\n"
+    b"DEF PART U 0 40 Y Y 1 F N\nF0 \"U\" 0 0 50 H V C CNN\n"
+    b"F1 \"PART\" 0 0 50 H V C CNN\nDRAW\nENDDRAW\nENDDEF\n#\n#End Library\n"
+)
+LEGACY_DCM_BYTES = (
+    b"EESchema-DOCLIB  Version 2.0\n#\n$CMP PART\nD Test part\nK test\n$ENDCMP\n"
+    b"#\n#End Doc Library\n"
+)
+LEGACY_MOD_BYTES = (
+    b"PCBNEW-LibModule-V1  2020-01-01 00:00:00\n$INDEX\nFP\n$EndINDEX\n"
+    b"$MODULE FP\nPo 0 0 0 15 00000000 00000000 ~~\nLi FP\n$EndMODULE FP\n$EndLIBRARY\n"
+)
+
+
+# -- synthetic Custom/ layout --------------------------------------------------
+
+CURRENT_CUSTOM_SYMBOL_LIBS = (
+    "Connector_FFC_GCT",
+    "Connector_MicroSD_GCT",
+    "Connector_USB_GCT",
+    "IC_Battery_Charger_TI",
+    "IC_Battery_Fuel_Gauge_ADI",
+    "IC_Button_Controller_ADI",
+    "IC_IMU_TDK",
+    "IC_Magnetometer_Memsic",
+    "IC_Wireless_BLE_uBlox",
+    "Oscillator_TCXO_Abracon",
+)
+# IC_IMU_TDK has a symbol library but no footprint library today
+CURRENT_CUSTOM_FOOTPRINT_LIBS = tuple(
+    name for name in CURRENT_CUSTOM_SYMBOL_LIBS if name != "IC_IMU_TDK"
+)
+
+
+def write_custom_layout(
+    root: Path, symbol_libs: Iterable[str], footprint_libs: Iterable[str]
+) -> Path:
+    """Create Custom/Symbols, Custom/Footprints and Custom/3DModels under root only."""
+    custom = root / "Custom"
+    (custom / "3DModels").mkdir(parents=True, exist_ok=True)
+    (custom / "Symbols").mkdir(parents=True, exist_ok=True)
+    (custom / "Footprints").mkdir(parents=True, exist_ok=True)
+    for name in symbol_libs:
+        (custom / "Symbols" / f"{name}.kicad_sym").write_bytes(symbol_lib((name,)))
+    for name in footprint_libs:
+        (custom / "Footprints" / f"{name}.pretty").mkdir(parents=True, exist_ok=True)
+    return root

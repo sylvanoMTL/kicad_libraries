@@ -6,15 +6,33 @@ import stat
 import zipfile
 from pathlib import PurePosixPath
 
+from kicad_lib_manager.kicad_files import (
+    LoadedFile,
+    find_models,
+    find_property,
+    find_symbols,
+    footprint_name,
+    parse_bytes,
+)
 from zipfixtures import (
+    CURRENT_CUSTOM_FOOTPRINT_LIBS,
+    CURRENT_CUSTOM_SYMBOL_LIBS,
+    LEGACY_DCM_BYTES,
+    LEGACY_LIB_BYTES,
+    LEGACY_MOD_BYTES,
+    STEP_BYTES,
     UL_FOOTPRINT_MEMBER,
     UL_MODEL_MEMBER,
     UL_SYMBOL_MEMBER,
     UL_ZIP,
+    VRML_BYTES,
+    footprint,
     lie_about_size,
     mark_encrypted,
+    symbol_lib,
     symlink_info,
     unpack_sample,
+    write_custom_layout,
     zip_bytes,
 )
 
@@ -97,3 +115,62 @@ def test_unpack_sample_writes_only_in_dest(tmp_path):
     for path in tmp_path.rglob("*"):
         assert path.relative_to(tmp_path).parts[0] in {"ul", "loose"}
     assert hashlib.sha256(UL_ZIP.read_bytes()).hexdigest() == before
+
+
+def _loaded(data: bytes, name: str) -> LoadedFile:
+    loaded = parse_bytes(data, name)
+    assert isinstance(loaded, LoadedFile), loaded
+    return loaded
+
+
+def test_symbol_lib_round_trip():
+    loaded = _loaded(symbol_lib(("A", "B"), props={"MF": "X"}), "x.kicad_sym")
+    symbols = find_symbols(loaded.root)
+    assert [s.name for s in symbols] == ["A", "B"]
+    for ref in symbols:
+        assert find_property(ref.node, "Reference").value == "U"
+        assert find_property(ref.node, "MF").value == "X"
+
+
+def test_footprint_round_trip():
+    ref = footprint_name(_loaded(footprint("X"), "x.kicad_mod").root)
+    assert ref.name == "X"
+    assert ref.node.head == "footprint"
+
+    legacy = footprint_name(_loaded(footprint("X", head="module", version=None), "x.kicad_mod").root)
+    assert legacy.name == "X"
+    assert legacy.node.head == "module"
+    assert not [c for c in legacy.node.children if c.head == "version"]
+
+    path = "${CUSTOM_3DMODEL_DIR}/x.step"
+    modelled = footprint_name(_loaded(footprint("X", model=path), "x.kicad_mod").root)
+    assert [m.path for m in find_models(modelled.node)] == [path]
+
+
+def test_format_magic_bytes():
+    assert STEP_BYTES.startswith(b"ISO-10303-21;")
+    assert VRML_BYTES.startswith(b"#VRML V2.0 utf8")
+    assert LEGACY_LIB_BYTES.startswith(b"EESchema-LIBRARY Version 2.4")
+    assert LEGACY_DCM_BYTES.startswith(b"EESchema-DOCLIB  Version 2.0")
+    assert LEGACY_MOD_BYTES.startswith(b"PCBNEW-LibModule-V1")
+
+
+def test_write_custom_layout(tmp_path):
+    assert write_custom_layout(tmp_path, ["IC_LDO_TI"], ["IC_LDO_TI"]) == tmp_path
+    found = {p.relative_to(tmp_path).as_posix() for p in tmp_path.rglob("*")}
+    assert found == {
+        "Custom",
+        "Custom/3DModels",
+        "Custom/Symbols",
+        "Custom/Symbols/IC_LDO_TI.kicad_sym",
+        "Custom/Footprints",
+        "Custom/Footprints/IC_LDO_TI.pretty",
+    }
+
+
+def test_current_custom_lists():
+    assert len(CURRENT_CUSTOM_SYMBOL_LIBS) == 10
+    assert len(CURRENT_CUSTOM_FOOTPRINT_LIBS) == 9
+    assert "IC_IMU_TDK" in CURRENT_CUSTOM_SYMBOL_LIBS
+    assert "IC_IMU_TDK" not in CURRENT_CUSTOM_FOOTPRINT_LIBS
+    assert set(CURRENT_CUSTOM_FOOTPRINT_LIBS) < set(CURRENT_CUSTOM_SYMBOL_LIBS)
