@@ -112,13 +112,16 @@ def test_libraries_default_to_no_collision_peers():
 
 
 def test_model_absolute_issue_shape(tmp_path):
-    (tmp_path / "Custom" / "F.pretty").mkdir(parents=True)
-    (tmp_path / "Custom" / "F.pretty" / "m.kicad_mod").write_bytes(_MOD_WITH_ABSOLUTE_MODEL)
+    # Outside Custom/ only absolute paths warn; Custom/ uses scan.model_var (D-18)
+    (tmp_path / "WurthElektronik" / "F.pretty").mkdir(parents=True)
+    (tmp_path / "WurthElektronik" / "F.pretty" / "m.kicad_mod").write_bytes(
+        _MOD_WITH_ABSOLUTE_MODEL
+    )
     issues = check_3d_model_paths(tmp_path)
     assert len(issues) == 1
     assert issues[0].severity is Severity.WARNING
     assert issues[0].code == "scan.model_absolute"
-    assert issues[0].text.startswith("[Custom/F.pretty/m.kicad_mod] ")
+    assert issues[0].text.startswith("[WurthElektronik/F.pretty/m.kicad_mod] ")
 
 
 def test_scan_all_cross_reference_issue(tmp_path):

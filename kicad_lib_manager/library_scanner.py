@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from . import fsutil
+from . import fsutil, kicad_files
 from .kicad_process import kicad_running
 from .models import (
     FootprintLibrary,
@@ -19,7 +19,7 @@ from .models import (
 )
 
 FOOTPRINT_RE = re.compile(r'\(property\s+"Footprint"\s+"([^"]*)"')
-MODEL_RE = re.compile(r'\(model\s+"([^"]*)"')
+CUSTOM_MODEL_PREFIX = "${CUSTOM_3DMODEL_DIR}/"
 
 # downloaded_examples holds vendor packages kept for the importer; never a library source
 SKIP_DIRS = {
@@ -412,23 +412,52 @@ def cross_reference(sym_libs: list[SymbolLibrary],
     return issues
 
 
+def _custom_model_names(root: Path) -> set[str]:
+    """Exact relative names of every file under Custom/3DModels, case included."""
+    # Compare against a set of names: a filesystem existence probe ignores case on Windows
+    model_dir = root / "Custom" / "3DModels"
+    return {
+        p.relative_to(model_dir).as_posix()
+        for p in model_dir.rglob("*") if p.is_file()
+    }
+
+
 def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[Issue]:
+    """Check footprint model paths: Custom/ must use ${CUSTOM_3DMODEL_DIR} and point at a real file."""
+    custom_names = _custom_model_names(root)
     mod_files = _collect_files(root, "*.kicad_mod")
     issues = []
     for i, mod_file in enumerate(mod_files):
         if progress:
             progress(f"Checking 3D paths: {mod_file.stem}", i, len(mod_files))
-        try:
-            text = mod_file.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        rel = mod_file.relative_to(root).as_posix()
+
+        loaded = kicad_files.load(mod_file)
+        if isinstance(loaded, Issue):
+            issues.append(Issue(Severity.WARNING, "scan.unreadable", f"[{rel}] {loaded.text}"))
+            continue
+        name = kicad_files.footprint_name(loaded.root)
+        if name is None:
             continue
 
-        rel = mod_file.relative_to(root).as_posix()
-        for match in MODEL_RE.finditer(text):
-            path = match.group(1)
-            if path.startswith("${"):
-                continue
-            if "/" in path or "\\" in path:
+        is_custom = _determine_source(rel) == "Custom"
+        for model in kicad_files.find_models(name.node):
+            path = model.path
+            if is_custom:
+                if not path.startswith(CUSTOM_MODEL_PREFIX):
+                    issues.append(Issue(
+                        Severity.WARNING,
+                        "scan.model_var",
+                        f"[{rel}] 3D model path does not use {CUSTOM_MODEL_PREFIX}: {path}",
+                    ))
+                elif path[len(CUSTOM_MODEL_PREFIX):] not in custom_names:
+                    issues.append(Issue(
+                        Severity.WARNING,
+                        "scan.model_missing",
+                        f"[{rel}] 3D model not found in Custom/3DModels "
+                        f"(names are case-sensitive): {path}",
+                    ))
+            elif not path.startswith("${") and ("/" in path or "\\" in path):
                 issues.append(Issue(
                     Severity.WARNING,
                     "scan.model_absolute",
