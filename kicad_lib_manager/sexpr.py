@@ -30,6 +30,9 @@ _QUOTE_TABLE = str.maketrans({
 
 _UNESCAPES = {"\\": "\\", '"': '"', "n": "\n", "r": "\r", "t": "\t"}
 _ESCAPE_RE = re.compile(r"\\(.)", re.S)
+# A lone surrogate, which strict UTF-8 decoding never produces, so it never occurs in file text
+_BACKSLASH_PLACEHOLDER = "\ud800"
+_PAIR_ESCAPES = ((r'\"', '"'), (r"\n", "\n"), (r"\r", "\r"), (r"\t", "\t"))
 
 
 class SexprError(ValueError):
@@ -182,5 +185,16 @@ def _unescape(m: re.Match) -> str:
 def unquote(token: str) -> str:
     """Return the decoded value of a quoted token, or an atom unchanged."""
     if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
-        return _ESCAPE_RE.sub(_unescape, token[1:-1])
+        body = token[1:-1]
+        if "\\" not in body:
+            return body
+        if _BACKSLASH_PLACEHOLDER in body:
+            return _ESCAPE_RE.sub(_unescape, body)
+        # str.replace pairs each run of backslashes from its left end, exactly as the regex does, so
+        # after the first pass every remaining backslash is the last of an odd run and escapes the
+        # next character. No replacement emits a backslash, so the passes cannot interact.
+        body = body.replace("\\\\", _BACKSLASH_PLACEHOLDER)
+        for escape, char in _PAIR_ESCAPES:
+            body = body.replace(escape, char)
+        return body.replace(_BACKSLASH_PLACEHOLDER, "\\")
     return token
