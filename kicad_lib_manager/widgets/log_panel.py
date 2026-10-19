@@ -1,7 +1,10 @@
+import html
 from datetime import datetime
 
 from PySide6.QtWidgets import QVBoxLayout, QWidget, QTextEdit, QLabel
 from PySide6.QtGui import QFont
+
+from ..models import Issue
 
 
 COLORS = {
@@ -32,8 +35,12 @@ class LogPanel(QWidget):
         color = COLORS.get(level, COLORS["info"])
         timestamp = datetime.now().strftime("%H:%M:%S")
         self._text.append(
-            f'<span style="color:{color}">[{timestamp}] {message}</span>'
+            f'<span style="color:{color}">[{timestamp}] {html.escape(message)}</span>'
         )
+
+    def log_issue(self, issue: Issue):
+        # Severity.value is the COLORS key; the enum itself is not
+        self.log(issue.text, issue.severity.value)
 
     def clear(self):
         self._text.clear()

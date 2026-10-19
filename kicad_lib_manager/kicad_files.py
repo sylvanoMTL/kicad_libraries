@@ -143,38 +143,59 @@ def find_models(footprint_node: Node) -> list[ModelRef]:
     return found
 
 
-def lib_table_entries(root: Node) -> list[LibEntry]:
-    """Return the (lib ...) entries of a sym/fp/design-block lib table, fields in any order."""
+@dataclass(frozen=True, eq=False)
+class LibTable:
+    node: Node
+    tag: str
+    entries: tuple[LibEntry, ...]
+    others: tuple[Node, ...]
+
+
+def _lib_entry(lib: Node) -> LibEntry:
+    value_nodes: dict[str, Node] = {}
+    flags: list[str] = []
+    extras: list[Node] = []
+    for field in lib.children[1:]:
+        head = field.head
+        if head is None:
+            continue
+        if head in _LIB_FIELDS and len(field.children) >= 2 and head not in value_nodes:
+            value_nodes[head] = field.children[1]
+        elif len(field.children) == 1:
+            flags.append(head)
+        else:
+            extras.append(field)
+    values = {k: unquote(v.text) for k, v in value_nodes.items()}
+    return LibEntry(
+        node=lib,
+        name=values.get("name"),
+        type=values.get("type"),
+        uri=values.get("uri"),
+        options=values.get("options"),
+        descr=values.get("descr"),
+        flags=tuple(flags),
+        extras=tuple(extras),
+        value_nodes=value_nodes,
+    )
+
+
+def lib_table(root: Node) -> LibTable | None:
+    """Return the table node of a sym/fp/design-block lib table with its entries and other children."""
     table = _top_level(root, lambda head: head.endswith("_lib_table"))
     if table is None:
-        return []
+        return None
     entries = []
-    for lib in table.children:
-        if lib.head != "lib":
-            continue
-        value_nodes: dict[str, Node] = {}
-        flags: list[str] = []
-        extras: list[Node] = []
-        for field in lib.children[1:]:
-            head = field.head
-            if head is None:
-                continue
-            if head in _LIB_FIELDS and len(field.children) >= 2 and head not in value_nodes:
-                value_nodes[head] = field.children[1]
-            elif len(field.children) == 1:
-                flags.append(head)
-            else:
-                extras.append(field)
-        values = {k: unquote(v.text) for k, v in value_nodes.items()}
-        entries.append(LibEntry(
-            node=lib,
-            name=values.get("name"),
-            type=values.get("type"),
-            uri=values.get("uri"),
-            options=values.get("options"),
-            descr=values.get("descr"),
-            flags=tuple(flags),
-            extras=tuple(extras),
-            value_nodes=value_nodes,
-        ))
-    return entries
+    others = []
+    # children[0] is the head atom
+    for child in table.children[1:]:
+        if child.head == "lib":
+            entries.append(_lib_entry(child))
+        else:
+            others.append(child)
+    return LibTable(table, table.head, tuple(entries), tuple(others))
+
+
+def lib_table_entries(root: Node) -> list[LibEntry]:
+    """Return the (lib ...) entries of a sym/fp/design-block lib table, fields in any order."""
+    table = lib_table(root)
+    return list(table.entries) if table is not None else []

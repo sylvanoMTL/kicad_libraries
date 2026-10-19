@@ -13,7 +13,7 @@ from .table_generator import (
     write_tables, restore_backup_pair, count_table_entries, parse_lib_table,
     _MANAGED_MARKER,
 )
-from .models import ScanResult
+from .models import Issue, ScanResult
 from .settings import (
     load_kicad_fp_dir, save_kicad_fp_dir,
     load_dest_history, add_dest_to_history,
@@ -355,6 +355,10 @@ class MainWindow(QMainWindow):
         self._worker.wait()
         self._worker = None
 
+    def _log_issues(self, issues: list[Issue]):
+        for issue in issues:
+            self._log.log_issue(issue)
+
     def _on_generate(self):
         if not self._scan_result:
             self._log.log("No scan results available. Please wait for scan.", "error")
@@ -378,15 +382,9 @@ class MainWindow(QMainWindow):
             "info",
         )
 
-        messages = write_tables(
+        self._log_issues(write_tables(
             dest, self._scan_result.symbol_libs, self._scan_result.footprint_libs
-        )
-        for msg in messages:
-            if msg.startswith("Warning:") or "removed" in msg:
-                level = "warning"
-            else:
-                level = "success"
-            self._log.log(msg, level)
+        ))
 
         # Sync KiCad path variables
         path_msgs = sync_kicad_path_vars(REPO_ROOT)
