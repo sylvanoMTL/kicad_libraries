@@ -178,11 +178,11 @@ class _SymbolSource:
     version: int | None
 
 
-def _loaded_text(text: str, bom: bool, name: str) -> LoadedFile | Issue:
+def _loaded_text(text: str, bom: bool, name: str, code: str) -> LoadedFile | Issue:
     """Parse symbol text that was derived from a vendor file or produced by kicad-cli."""
     loaded = parse_bytes(fsutil.encode_source(text, bom), name, max_nodes=_package.MAX_KICAD_TEXT_NODES)
     if isinstance(loaded, Issue):
-        return _err("install.cli_gate_failed", loaded.text)
+        return _err(code, loaded.text)
     return loaded
 
 
@@ -243,7 +243,7 @@ def _existing_source(
     if isinstance(result, Issue):
         return None, [result]
     if result.version == target_version:
-        loaded = _loaded_text(result.text, False, "the kicad-cli output")
+        loaded = _loaded_text(result.text, False, "the kicad-cli output", "install.cli_gate_failed")
         if isinstance(loaded, Issue):
             return None, [loaded]
         return _SymbolSource(loaded, True, target_version), []
@@ -253,6 +253,33 @@ def _existing_source(
         "install.version_mismatch",
         f"{both}; kicad-cli would write {written}, so {name} is merged unchanged",
     )]
+
+
+def _new_source(
+    vendor: LoadedFile,
+    unit_text: str,
+    name: str,
+    tools: ToolContext,
+) -> tuple[_SymbolSource | None, list[Issue]]:
+    """The whole new .kicad_sym of a library that does not exist yet, holding only the chosen unit (D-04).
+
+    With kicad-cli the header is the installed KiCad's own; without it the vendor file's header is
+    kept so the version and the content agree.
+    """
+    if tools.kicad_cli is None:
+        loaded = _loaded_text(unit_text, vendor.source.bom, "the incoming symbol", "install.source_unreadable")
+        if isinstance(loaded, Issue):
+            return None, [loaded]
+        return _SymbolSource(loaded, False, file_version(vendor.root)), [_cli_not_found()]
+    result = kicad_cli.upgrade_symbol_text(
+        tools.kicad_cli, unit_text, name=name, runner=tools.cli_runner, timeout=tools.cli_timeout
+    )
+    if isinstance(result, Issue):
+        return None, [result]
+    loaded = _loaded_text(result.text, False, "the kicad-cli output", "install.cli_gate_failed")
+    if isinstance(loaded, Issue):
+        return None, [loaded]
+    return _SymbolSource(loaded, result.changed, result.version), []
 
 
 def _cli_not_found() -> Issue:
@@ -376,8 +403,19 @@ def build_plan(
             "install.placeholder_library",
             f"Library name {library} still contains the placeholder token(s) {', '.join(tokens)}; edit it before installing",
         ))
-    if sanitize_name(library).sanitized != library:
-        return refuse(_err("install.bad_library_name", f"{library!r} is not a valid library name"))
+    clean = sanitize_name(library).sanitized
+    if not library or clean != library:
+        hint = "enter a library name such as Type_SubCategory_Manufacturer" if not library else f"use {clean!r}"
+        return refuse(_err("install.invalid_library", f"{library!r} is not a valid library name; {hint}"))
+    # D-10: a name that differs from a library on disk only by letter case is a second library on Linux and the same one on Windows
+    sym_libs = list_symbol_libs(layout)
+    pretty_libs = list_footprint_libs(layout)
+    twins = [name for name in dict.fromkeys([*sym_libs, *pretty_libs]) if name != library and name.casefold() == library.casefold()]
+    if twins:
+        return refuse(_err(
+            "install.library_case_clash",
+            f"{library} differs from the existing library {twins[0]} only by letter case; use {twins[0]} or pick another name",
+        ))
     sym_item, fp_items, model_item, problems = _select(candidate, options)
     if problems or sym_item is None:
         return refuse(*problems)
@@ -396,17 +434,29 @@ def build_plan(
     step("Reading the target library", 2)
     sym_path = layout.symbols_dir / f"{library}.kicad_sym"
     pretty = layout.footprints_dir / f"{library}.pretty"
-    if not sym_path.is_file() or not pretty.is_dir():
-        return refuse(_err("install.library_not_found", f"{library} does not exist in Custom/ as a symbol and footprint library pair"))
-    try:
-        target_bytes = sym_path.read_bytes()
-    except OSError as e:
-        return refuse(_err("install.target_unreadable", f"Could not read {sym_path.name}: {e.strerror or e}"))
-    target = parse_bytes(target_bytes, sym_path.name)
-    if isinstance(target, Issue):
-        return refuse(target)
-    if file_kind(target.root) != "kicad_symbol_lib":
-        return refuse(_err("install.target_unreadable", f"{sym_path.name} is not a KiCad symbol library"))
+    sym_exists = library in sym_libs
+    pretty_exists = library in pretty_libs
+    target: LoadedFile | None = None
+    target_bytes = b""
+    if sym_exists:
+        try:
+            target_bytes = sym_path.read_bytes()
+        except OSError as e:
+            return refuse(_err("install.target_unreadable", f"Could not read {sym_path.name}: {e.strerror or e}"))
+        parsed = parse_bytes(target_bytes, sym_path.name)
+        if isinstance(parsed, Issue):
+            return refuse(parsed)
+        if file_kind(parsed.root) != "kicad_symbol_lib":
+            return refuse(_err("install.target_unreadable", f"{sym_path.name} is not a KiCad symbol library"))
+        target = parsed
+    if sym_exists != pretty_exists:
+        # LIB-02: a library is always a symbol and footprint pair, so the missing half is created by this install
+        created = f"{library}.pretty" if sym_exists else f"{library}.kicad_sym"
+        issues.append(Issue(
+            Severity.WARNING,
+            "install.pair_completed",
+            f"{created} does not exist yet and is created with this install, so {library} becomes a complete symbol and footprint pair",
+        ))
 
     vendor_ref = find_symbol(vendor_sym.root, sym_item.name)
     if vendor_ref is None:
@@ -428,7 +478,10 @@ def build_plan(
 
     # D-01: the vendor text is normalised once, on the unrenamed unit, so later edits never re-run kicad-cli
     unit_text = unit_library_text(vendor_sym, keep={ref.name for ref in unit})
-    source, version_issues = _existing_source(vendor_sym, unit_text, sym_item.name, library, file_version(target.root), tools)
+    if target is not None:
+        source, version_issues = _existing_source(vendor_sym, unit_text, sym_item.name, library, file_version(target.root), tools)
+    else:
+        source, version_issues = _new_source(vendor_sym, unit_text, sym_item.name, tools)
     issues.extend(version_issues)
     if source is None:
         return refuse()
@@ -436,7 +489,7 @@ def build_plan(
     if source_ref is None:
         return refuse(_err("install.cli_gate_failed", f"kicad-cli output no longer holds the symbol {sym_item.name}"))
     source_version = file_version(vendor_sym.root)
-    target_version = file_version(target.root)
+    target_version = file_version(target.root) if target is not None else source.version
 
     fp_names = tuple(item.name_check.sanitized for item in fp_items)
     if len({name.casefold() for name in fp_names}) != len(fp_names):
@@ -472,8 +525,15 @@ def build_plan(
     if failed:
         return refuse(*failed)
     new_block = editor.result()
-    sym_text = apply_edits(target.source.text, [symbol_insert_edit(target, new_block)])
-    sym_bytes = fsutil.encode_source(sym_text, target.source.bom)
+    if target is not None:
+        # The only change to an existing library is the inserted symbol: its header is never edited
+        sym_text = apply_edits(target.source.text, [symbol_insert_edit(target, new_block)])
+        sym_bytes = fsutil.encode_source(sym_text, target.source.bom)
+    else:
+        # A new library is the normalised unit file with the edited block in place of the original
+        whole = source.loaded.source
+        sym_text = apply_edits(whole.text, [Edit(source_ref.node.start, source_ref.node.end, new_block)])
+        sym_bytes = fsutil.encode_source(sym_text, whole.bom)
 
     fp_bytes: list[bytes] = []
     for index, (fp_item, vendor_fp, fp_name) in enumerate(zip(fp_items, vendor_fps, fp_names)):
@@ -493,7 +553,7 @@ def build_plan(
 
     step("Checking for conflicts", 5)
     conflicts: list[Conflict] = []
-    if find_symbol(target.root, sym_name) is not None:
+    if target is not None and find_symbol(target.root, sym_name) is not None:
         conflicts.append(Conflict(
             key=f"symbol:{library}:{sym_name}",
             kind="symbol",
@@ -519,13 +579,16 @@ def build_plan(
             ))
 
     ops: list[FileOp] = []
+    if not pretty_exists:
+        ops.append(FileOp("mkdir", pretty))
     if model_item is not None and model_file is not None:
         if not layout.models_dir.is_dir():
             ops.append(FileOp("mkdir", layout.models_dir))
         ops.append(FileOp("model", layout.models_dir / model_file, source=model_item.file))
     for fp_name, data in zip(fp_names, fp_bytes):
         ops.append(FileOp("footprint", pretty / f"{fp_name}.kicad_mod", data=data))
-    ops.append(FileOp("symbol_lib", sym_path, data=sym_bytes, base_sha256=hashlib.sha256(target_bytes).hexdigest()))
+    base = hashlib.sha256(target_bytes).hexdigest() if target is not None else None
+    ops.append(FileOp("symbol_lib", sym_path, data=sym_bytes, base_sha256=base))
 
     return InstallPlan(
         vendor=candidate.vendor,
@@ -533,8 +596,8 @@ def build_plan(
         layout=layout,
         tools=tools,
         library=library,
-        new_symbol_lib=False,
-        new_footprint_lib=False,
+        new_symbol_lib=not sym_exists,
+        new_footprint_lib=not pretty_exists,
         symbol_names=(sym_name,),
         footprint_names=fp_names,
         linked_footprint=fp_names[0],
