@@ -1,5 +1,8 @@
 """Write-side helpers of kicad_files: every KiCad change is one exact span edit (INST-01, INST-02, INST-03, INST-05)."""
 
+import re
+from pathlib import Path
+
 import pytest
 
 from kicad_lib_manager import kicad_files as kf
@@ -485,3 +488,219 @@ def test_property_two_inserts_in_one_apply_keep_order(version):
     assert names[-3] in ("Datasheet", "Description")
     assert _prop_names(after, "EXISTING_B") == _prop_names(target, "EXISTING_B")
     assert _prop(after, "EXISTING_A", "MPN").value == "X1"
+
+
+# -- footprint name, value and model edits -------------------------------------------
+
+MODEL_PATH = "${CUSTOM_3DMODEL_DIR}/X.stp"
+
+
+def _fp_edits(loaded: LoadedFile, name: str) -> list[Edit]:
+    ref = kf.footprint_name(loaded.root)
+    return [kf.footprint_name_edit(ref, name), *kf.footprint_value_edits(ref.node, name)]
+
+
+def _tab_indented(data: bytes) -> bytes:
+    """Return a vendor footprint rewritten with tab indents and LF line ends."""
+    text = data.decode("utf-8").replace("\r\n", "\n")
+    return re.sub(r"(?m)^( {2})+", lambda m: "\t" * (len(m[0]) // 2), text).encode("utf-8")
+
+
+def test_footprint_name_and_fp_text_value_edits():
+    loaded = _load(vendor_footprint("FP"))
+    out = _apply(loaded, _fp_edits(loaded, "NEW"))
+    expected = loaded.source.text.replace('(footprint "FP"', '(footprint "NEW"').replace(
+        "(fp_text value FP ", '(fp_text value "NEW" '
+    )
+    assert out == expected
+    assert kf.footprint_name(_reparse(out).root).name == "NEW"
+
+
+def test_footprint_value_property_form():
+    loaded = _load(vendor_footprint("FP", value_form="property"))
+    out = _apply(loaded, _fp_edits(loaded, "NEW"))
+    expected = loaded.source.text.replace('(footprint "FP"', '(footprint "NEW"').replace(
+        '(property "Value" "FP"', '(property "Value" "NEW"'
+    )
+    assert out == expected
+
+
+def test_footprint_value_no_edit_when_neither_form_exists():
+    text = (
+        '(footprint "FP" (version 20211014) (generator pcbnew)\n'
+        '  (fp_text reference "REF**" (at 0 0) (layer F.SilkS))\n'
+        '  (fp_text user "value" (at 0 0) (layer F.Fab))\n'
+        '  (property "Value2" "keep" (at 0 0))\n'
+        ')\n'
+    )
+    loaded = _load(text.encode())
+    assert kf.footprint_value_edits(kf.footprint_name(loaded.root).node, "NEW") == []
+
+
+def test_footprint_value_text_is_quoted():
+    loaded = _load(vendor_footprint("FP"))
+    out = _apply(loaded, kf.footprint_value_edits(kf.footprint_name(loaded.root).node, 'A "B" \\C'))
+    assert '(fp_text value "A \\"B\\" \\\\C" ' in out
+    assert _reparse(out)
+
+
+def test_footprint_value_edits_both_forms_in_one_footprint():
+    text = (
+        '(footprint "FP" (version 20240108) (generator pcbnew)\n'
+        '  (property "Value" "FP" (at 0 0))\n'
+        '  (fp_text value FP (at 0 0) (layer F.Fab))\n'
+        ')\n'
+    )
+    loaded = _load(text.encode())
+    out = _apply(loaded, kf.footprint_value_edits(kf.footprint_name(loaded.root).node, "NEW"))
+    assert out == text.replace('"Value" "FP"', '"Value" "NEW"').replace("value FP ", 'value "NEW" ')
+
+
+def test_model_insert_crlf_space_indent():
+    loaded = _load(vendor_footprint("FP", eol="\r\n"))
+    ref = kf.footprint_name(loaded.root)
+    edit = kf.model_insert_edit(loaded.source.text, ref.node, MODEL_PATH, "\r\n")
+    out = _apply(loaded, [edit])
+    inserted = (
+        '\r\n  (model "${CUSTOM_3DMODEL_DIR}/X.stp"'
+        "\r\n    (offset (xyz 0 0 0))"
+        "\r\n    (scale (xyz 1 1 1))"
+        "\r\n    (rotate (xyz 0 0 0))"
+        "\r\n  )"
+    )
+    text = loaded.source.text
+    cut = text.rindex("\r\n)")
+    assert out == text[:cut] + inserted + text[cut:]
+    models = kf.find_models(kf.footprint_name(_reparse(out).root).node)
+    assert [m.path for m in models] == [MODEL_PATH]
+
+
+def test_model_insert_lf_tab_indent():
+    loaded = _load(_tab_indented(vendor_footprint("FP")))
+    assert loaded.source.eol == "\n"
+    ref = kf.footprint_name(loaded.root)
+    out = _apply(loaded, [kf.model_insert_edit(loaded.source.text, ref.node, MODEL_PATH, "\n")])
+    inserted = (
+        '\n\t(model "${CUSTOM_3DMODEL_DIR}/X.stp"'
+        "\n\t\t(offset (xyz 0 0 0))"
+        "\n\t\t(scale (xyz 1 1 1))"
+        "\n\t\t(rotate (xyz 0 0 0))"
+        "\n\t)"
+    )
+    text = loaded.source.text
+    cut = text.rindex("\n)")
+    assert out == text[:cut] + inserted + text[cut:]
+    assert "\r" not in out
+    assert len(kf.find_models(kf.footprint_name(_reparse(out).root).node)) == 1
+
+
+def test_model_insert_goes_after_the_last_child_not_before_it():
+    loaded = _load(vendor_footprint("FP", embedded=True))
+    ref = kf.footprint_name(loaded.root)
+    out = _apply(loaded, [kf.model_insert_edit(loaded.source.text, ref.node, MODEL_PATH, "\r\n")])
+    assert out.index("(embedded_files)") < out.index("(model ")
+    assert out.count("(embedded_files)") == 1
+
+
+def test_model_insert_into_single_line_footprint():
+    text = '(footprint "FP" (version 20211014) (generator pcbnew) (layer "F.Cu") (attr smd))\n'
+    loaded = _load(text.encode())
+    ref = kf.footprint_name(loaded.root)
+    out = _apply(loaded, [kf.model_insert_edit(loaded.source.text, ref.node, MODEL_PATH, "\n")])
+    assert [m.path for m in kf.find_models(kf.footprint_name(_reparse(out).root).node)] == [MODEL_PATH]
+    assert out.startswith(text[: text.index("(attr smd)") + len("(attr smd)")])
+
+
+def test_model_insert_path_is_quoted():
+    loaded = _load(vendor_footprint("FP"))
+    ref = kf.footprint_name(loaded.root)
+    path = 'dir/we"ird)name.stp'
+    out = _apply(loaded, [kf.model_insert_edit(loaded.source.text, ref.node, path, "\r\n")])
+    assert [m.path for m in kf.find_models(kf.footprint_name(_reparse(out).root).node)] == [path]
+
+
+def test_model_retarget_keeps_offsets():
+    loaded = _load(vendor_footprint("FP", model="${KIPRJMOD}/x.step"))
+    model = kf.find_models(kf.footprint_name(loaded.root).node)[0]
+    out = _apply(loaded, [kf.retarget_model(model, MODEL_PATH)])
+    assert out == loaded.source.text.replace("${KIPRJMOD}/x.step", MODEL_PATH)
+    after = kf.find_models(kf.footprint_name(_reparse(out).root).node)
+    assert [m.path for m in after] == [MODEL_PATH]
+    assert "(offset (xyz 0 0 1))" in out
+
+
+def test_model_retarget_second_of_two_models_only():
+    loaded = _load(vendor_footprint("FP", models=("${KIPRJMOD}/a.step", "${KIPRJMOD}/b.step")))
+    second = kf.find_models(kf.footprint_name(loaded.root).node)[1]
+    out = _apply(loaded, [kf.retarget_model(second, MODEL_PATH)])
+    paths = [m.path for m in kf.find_models(kf.footprint_name(_reparse(out).root).node)]
+    assert paths == ["${KIPRJMOD}/a.step", MODEL_PATH]
+
+
+def test_model_insert_then_footprint_header_and_embedded_files_untouched():
+    text = (
+        '(footprint "FP" (version 20240108) (generator "pcbnew") (generator_version "8.0")\n'
+        '  (layer "F.Cu")\n'
+        '  (descr "a part")\n'
+        '  (tags "small  part")\n'
+        '  (property "Value" "FP" (at 0 0 0) (layer "F.Fab"))\n'
+        '  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))\n'
+        '  (embedded_files\n'
+        '    (file (name "a.step") (type model) (data |abc|))\n'
+        '  )\n'
+        ')\n'
+    )
+    loaded = _load(text.encode())
+    ref = kf.footprint_name(loaded.root)
+    edits = [
+        kf.footprint_name_edit(ref, "NEW"),
+        *kf.footprint_value_edits(ref.node, "NEW"),
+        kf.model_insert_edit(loaded.source.text, ref.node, MODEL_PATH, "\n"),
+    ]
+    out = _apply(loaded, edits)
+    for kept in (
+        '(version 20240108) (generator "pcbnew") (generator_version "8.0")',
+        '(descr "a part")',
+        '(tags "small  part")',
+        '(embedded_files\n    (file (name "a.step") (type model) (data |abc|))\n  )',
+    ):
+        assert kept in out
+    assert out.startswith('(footprint "NEW" ')
+    assert out.count("(model ") == 1
+    assert _reparse(out)
+
+
+def _fixture(name: str) -> LoadedFile:
+    return _load((Path(__file__).resolve().parent / "fixtures" / "sexpr" / name).read_bytes())
+
+
+def test_footprint_bare_atom_value_becomes_quoted_string():
+    loaded = _fixture("bare_atoms.kicad_mod")
+    out = _apply(loaded, _fp_edits(loaded, "NEW"))
+    assert out == loaded.source.text.replace('(footprint "FIX_BARE"', '(footprint "NEW"').replace(
+        "(fp_text value FIX_BARE ", '(fp_text value "NEW" '
+    )
+
+
+def test_footprint_legacy_module_name_value_and_bare_model_path():
+    loaded = _fixture("legacy_module.kicad_mod")
+    ref = kf.footprint_name(loaded.root)
+    model = kf.find_models(ref.node)[0]
+    out = _apply(loaded, [*_fp_edits(loaded, "NEW"), kf.retarget_model(model, MODEL_PATH)])
+    expected = (
+        loaded.source.text.replace("(module FIX_LEGACY", '(module "NEW"')
+        .replace("(fp_text value FIX_LEGACY ", '(fp_text value "NEW" ')
+        .replace("${KIPRJMOD}/3d/FIX_LEGACY.wrl", '"' + MODEL_PATH + '"')
+    )
+    assert out == expected
+    assert [m.path for m in kf.find_models(kf.footprint_name(_reparse(out).root).node)] == [MODEL_PATH]
+
+
+def test_model_insert_without_trailing_newline_keeps_the_ending():
+    loaded = _fixture("no_trailing_newline.kicad_mod")
+    ref = kf.footprint_name(loaded.root)
+    out = _apply(loaded, [kf.model_insert_edit(loaded.source.text, ref.node, MODEL_PATH, loaded.source.eol)])
+    assert out.endswith(")")
+    assert not out.endswith("\n")
+    paths = [m.path for m in kf.find_models(kf.footprint_name(_reparse(out).root).node)]
+    assert paths == ["${CUSTOM_3DMODEL_DIR}/FIX_NO_EOL.step", MODEL_PATH]
