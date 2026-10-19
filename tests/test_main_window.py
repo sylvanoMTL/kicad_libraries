@@ -5,12 +5,15 @@ tmp_path and scan, KiCad detection, REPO_ROOT and the KiCad config writer are
 replaced before the window exists.
 """
 
+import json
+import os
+import stat
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSettings
 
-from kicad_lib_manager import main_window, settings
+from kicad_lib_manager import library_scanner, main_window, settings
 from kicad_lib_manager.models import (
     FootprintLibrary, FootprintRef, ScanResult, SymbolLibrary,
 )
@@ -29,7 +32,7 @@ def _isolated_settings(tmp_path):
 
 @pytest.fixture
 def make_window(qtbot, monkeypatch, tmp_path):
-    def make(results, repo=None):
+    def make(results, repo=None, empty_config=False):
         repo = Path(repo) if repo is not None else tmp_path / "repo"
         repo.mkdir(parents=True, exist_ok=True)
         fp_dir = tmp_path / "kicad_fp"
@@ -42,12 +45,29 @@ def make_window(qtbot, monkeypatch, tmp_path):
             item = queue.pop(0) if len(queue) > 1 else queue[0]
             return item() if callable(item) else item
 
+        # The real sync runs, but only against a synthetic KiCad tree and backup folder in tmp_path
+        config_base = tmp_path / "kicad_cfg"
+        config_base.mkdir(exist_ok=True)
+        config_file = config_base / "10.0" / "kicad_common.json"
+        if not empty_config:
+            config_file.parent.mkdir(exist_ok=True)
+            config_file.write_text('{"environment": {"vars": null}}\n', encoding="utf-8")
+
+        def fake_sync(repo_root):
+            return library_scanner.sync_kicad_path_vars(
+                repo_root,
+                config_base=config_base,
+                backup_root=tmp_path / "backups",
+                running=lambda: [],
+            )
+
         monkeypatch.setattr(main_window, "REPO_ROOT", repo)
         monkeypatch.setattr(main_window, "load_kicad_fp_dir", lambda: fp_dir)
         monkeypatch.setattr(main_window, "scan_all", fake_scan)
-        monkeypatch.setattr(main_window, "sync_kicad_path_vars", lambda repo_root: [])
+        monkeypatch.setattr(main_window, "sync_kicad_path_vars", fake_sync)
         make.calls = calls
         make.repo = repo
+        make.config_file = config_file
         w = main_window.MainWindow()
         qtbot.addWidget(w)
         qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
@@ -168,3 +188,52 @@ def test_destination_change_only_logs_and_never_on_keystrokes(make_window, tmp_p
     assert w._log._text.toPlainText().count(marker) == 1
     assert [lib.selected for lib in scan.symbol_libs] == [True]
     assert [lib.selected for lib in scan.footprint_libs] == [False]
+
+
+def _new_lib_scan():
+    return ScanResult(
+        symbol_libs=[SymbolLibrary("New", "Custom/Symbols/New.kicad_sym", "Custom", selected=True)],
+        footprint_libs=[
+            FootprintLibrary("NewFP", "Custom/Footprints/NewFP.pretty", "Custom", selected=True)
+        ],
+    )
+
+
+def test_generate_with_read_only_sym_table_logs_one_error_and_finishes(
+    make_window, qtbot
+):
+    w = make_window([_new_lib_scan()])
+    repo = make_window.repo
+    sym_table = repo / "sym-lib-table"
+    # The table lacks "New", so the regenerated text differs and a write is attempted
+    sym_table.write_bytes(_managed_table("sym_lib_table", []))
+    os.chmod(sym_table, stat.S_IREAD)
+    try:
+        with qtbot.captureExceptions() as exceptions:
+            w._on_generate()
+        assert exceptions == []
+    finally:
+        os.chmod(sym_table, stat.S_IREAD | stat.S_IWRITE)
+
+    lines = w._log._text.toPlainText().splitlines()
+    assert len([ln for ln in lines if "Could not write sym-lib-table" in ln]) == 1
+    assert (repo / "fp-lib-table").exists()
+    config = json.loads(make_window.config_file.read_text(encoding="utf-8"))
+    assert config["environment"]["vars"]["KICAD_LIB_GITHUB"] == str(repo).replace("\\", "/")
+    assert any("Updated" in ln for ln in lines)
+    assert w._dest_combo.itemText(0) == str(repo)
+
+
+def test_generate_without_kicad_config_warns_and_still_writes_both_tables(make_window):
+    w = make_window([_new_lib_scan()], empty_config=True)
+    repo = make_window.repo
+
+    w._on_generate()
+
+    text = w._log._text.toPlainText()
+    assert text.count("Could not find KiCad config directory") == 1
+    html = w._log._text.toHtml()
+    line = next(ln for ln in html.splitlines() if "Could not find KiCad config directory" in ln)
+    assert "#cc7700" in line.lower()
+    assert (repo / "sym-lib-table").exists()
+    assert (repo / "fp-lib-table").exists()
