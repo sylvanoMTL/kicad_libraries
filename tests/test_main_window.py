@@ -8,6 +8,7 @@ replaced before the window exists.
 import json
 import os
 import stat
+import threading
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,7 @@ from PySide6.QtCore import QSettings
 
 from kicad_lib_manager import library_scanner, main_window, settings
 from kicad_lib_manager.models import (
-    FootprintLibrary, FootprintRef, ScanResult, SymbolLibrary,
+    FootprintLibrary, FootprintRef, Issue, ScanResult, Severity, SymbolLibrary,
 )
 
 
@@ -32,7 +33,7 @@ def _isolated_settings(tmp_path):
 
 @pytest.fixture
 def make_window(qtbot, monkeypatch, tmp_path):
-    def make(results, repo=None, empty_config=False):
+    def make(results, repo=None, empty_config=False, wait=True):
         repo = Path(repo) if repo is not None else tmp_path / "repo"
         repo.mkdir(parents=True, exist_ok=True)
         fp_dir = tmp_path / "kicad_fp"
@@ -70,7 +71,8 @@ def make_window(qtbot, monkeypatch, tmp_path):
         make.config_file = config_file
         w = main_window.MainWindow()
         qtbot.addWidget(w)
-        qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+        if wait:
+            qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
         return w
 
     make.calls = []
@@ -237,3 +239,151 @@ def test_generate_without_kicad_config_warns_and_still_writes_both_tables(make_w
     assert "#cc7700" in line.lower()
     assert (repo / "sym-lib-table").exists()
     assert (repo / "fp-lib-table").exists()
+
+
+# ── Scan funnel and busy guard (HARD-05) ──────────────────────────────────
+
+
+def _gated(result, gate):
+    """A fake scan that blocks until gate is set (5 s cap so a broken guard fails)."""
+    def run():
+        gate.wait(5)
+        return result
+    return run
+
+
+def _raising(message):
+    def run():
+        raise RuntimeError(message)
+    return run
+
+
+def _scan_controls(w):
+    return [
+        w._act_rescan, w._act_set_kicad_path, w._act_generate,
+        w._rescan_btn, w._generate_btn,
+    ]
+
+
+def _log_text(w):
+    return w._log._text.toPlainText()
+
+
+def test_busy_rescans_are_dropped_and_controls_disabled(make_window, qtbot):
+    gate = threading.Event()
+    w = make_window([_gated(ScanResult(), gate)], wait=False)
+    calls = make_window.calls
+    try:
+        qtbot.waitUntil(lambda: len(calls) == 1, timeout=5000)
+        assert not any(c.isEnabled() for c in _scan_controls(w))
+
+        w._on_rescan()
+        w._on_rescan()
+
+        assert len(calls) == 1
+        assert _log_text(w).count("already running") == 2
+    finally:
+        gate.set()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+    assert all(c.isEnabled() for c in _scan_controls(w))
+    # Dropped requests are never replayed after the scan ends
+    qtbot.wait(100)
+    assert len(calls) == 1
+
+
+def test_busy_state_clears_then_one_rescan_starts_exactly_one_scan(make_window, qtbot):
+    gate = threading.Event()
+    w = make_window([_gated(ScanResult(), gate)], wait=False)
+    calls = make_window.calls
+    gate.set()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+    assert len(calls) == 1
+
+    w._on_rescan()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert len(calls) == 2
+
+
+def test_busy_set_kicad_path_opens_no_dialog_and_starts_no_scan(
+    make_window, qtbot, monkeypatch
+):
+    gate = threading.Event()
+    w = make_window([_gated(ScanResult(), gate)], wait=False)
+    calls = make_window.calls
+    dialogs = []
+    monkeypatch.setattr(
+        main_window.QFileDialog, "getExistingDirectory",
+        lambda *a, **k: dialogs.append(a) or "",
+    )
+    try:
+        qtbot.waitUntil(lambda: len(calls) == 1, timeout=5000)
+        w._on_set_kicad_path()
+        assert dialogs == []
+        assert len(calls) == 1
+        assert "already running" in _log_text(w)
+    finally:
+        gate.set()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+
+def test_scan_error_clears_busy_state(make_window, qtbot):
+    w = make_window([ScanResult(), _raising("boom")])
+
+    w._on_rescan()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert "Scan error: boom" in _log_text(w)
+    assert all(c.isEnabled() for c in _scan_controls(w))
+
+
+def test_busy_state_clears_after_empty_scan_result(make_window):
+    w = make_window([ScanResult()])
+
+    assert "Found 0 symbol libraries" in _log_text(w)
+    assert w._worker is None
+    assert all(c.isEnabled() for c in _scan_controls(w))
+
+
+def test_rescan_with_populate_raising_still_clears_busy_state(
+    make_window, qtbot, monkeypatch
+):
+    w = make_window([ScanResult()])
+
+    def boom(_result):
+        raise RuntimeError("populate boom")
+
+    monkeypatch.setattr(w._tree, "populate", boom)
+    with qtbot.captureExceptions() as exceptions:
+        w._on_rescan()
+        qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert any("populate boom" in str(exc[1]) for exc in exceptions)
+    assert all(c.isEnabled() for c in _scan_controls(w))
+
+
+def test_scan_issue_is_logged_in_its_severity_colour(make_window):
+    scan = ScanResult(issues=[Issue(Severity.WARNING, "scan.test", "[x] warn")])
+
+    w = make_window([scan])
+
+    assert "[x] warn" in _log_text(w)
+    assert "No warnings." not in _log_text(w)
+    html = w._log._text.toHtml()
+    line = next(ln for ln in html.splitlines() if "[x] warn" in ln)
+    assert "#cc7700" in line.lower()
+
+
+def test_close_while_scanning_waits_for_worker(make_window):
+    gate = threading.Event()
+    w = make_window([_gated(ScanResult(), gate)], wait=False)
+    worker = w._worker
+    timer = threading.Timer(0.2, gate.set)
+    timer.start()
+    try:
+        w.close()
+        assert not worker.isRunning()
+    finally:
+        gate.set()
+        timer.cancel()
+        worker.wait(5000)
