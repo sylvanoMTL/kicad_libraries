@@ -87,6 +87,11 @@ def _top_level(root: Node, match: Callable[[str], bool]) -> Node | None:
     return None
 
 
+def _is_token(node: Node) -> bool:
+    """True for a string or atom; a list has no text value to unquote."""
+    return node.kind in ("str", "atom")
+
+
 def find_symbols(root: Node) -> list[SymbolRef]:
     """Return the top-level symbols of a kicad_symbol_lib, in document order."""
     found = []
@@ -96,7 +101,8 @@ def find_symbols(root: Node) -> list[SymbolRef]:
         for child in lib.children:
             if child.head == "symbol" and len(child.children) >= 2:
                 name_node = child.children[1]
-                found.append(SymbolRef(unquote(name_node.text), child, name_node))
+                if _is_token(name_node):
+                    found.append(SymbolRef(unquote(name_node.text), child, name_node))
     return found
 
 
@@ -113,9 +119,10 @@ def find_property(symbol_node: Node, name: str) -> PropertyRef | None:
     for child in symbol_node.children:
         if child.head != "property" or len(child.children) < 3:
             continue
-        name_node = child.children[1]
+        name_node, value_node = child.children[1], child.children[2]
+        if not (_is_token(name_node) and _is_token(value_node)):
+            continue
         if unquote(name_node.text) == name:
-            value_node = child.children[2]
             return PropertyRef(name, unquote(value_node.text), child, name_node, value_node)
     return None
 
@@ -159,8 +166,12 @@ def _lib_entry(lib: Node) -> LibEntry:
         head = field.head
         if head is None:
             continue
-        if head in _LIB_FIELDS and len(field.children) >= 2 and head not in value_nodes:
-            value_nodes[head] = field.children[1]
+        if head in _LIB_FIELDS:
+            # A known field without a usable token value is never a flag
+            if head not in value_nodes and len(field.children) >= 2 and _is_token(field.children[1]):
+                value_nodes[head] = field.children[1]
+            else:
+                extras.append(field)
         elif len(field.children) == 1:
             flags.append(head)
         else:
