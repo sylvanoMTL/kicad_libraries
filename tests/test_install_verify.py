@@ -202,3 +202,126 @@ def test_hard_reads_symbol_from_disk(tmp_path):
     plan = make_plan(tmp_path)
     plan.symbol_lib_path.write_bytes(vendor_symbol_lib("ELSE", footprint_field=f"{LIB}:FP"))
     assert len(_by_code(verify.verify_install(plan), "verify.symbol_missing")) == 1
+
+
+# -- pin/pad soft check (POST-04, D-09, D-20) -----------------------------------
+
+
+def _pin_pad_plan(tmp_path, *, pins=None, pads=("1", "2"), npth=False):
+    sym = vendor_symbol_lib("PART", footprint_field=f"{LIB}:FP", pins=pins)
+    fp = vendor_footprint("FP", pads=pads, npth=npth, model=f"{MODEL_DIR_VAR}/X.stp")
+    return make_plan(tmp_path, sym=sym, footprints={"FP.kicad_mod": fp})
+
+
+def _mismatch(issues):
+    found = _by_code(issues, "verify.pin_pad_mismatch")
+    assert len(found) <= 1, found
+    return found[0] if found else None
+
+
+def test_pin_pad_match(tmp_path):
+    plan = _pin_pad_plan(tmp_path, pins=(tuple("12345678"),), pads=tuple("12345678"))
+    assert _mismatch(verify.verify_install(plan)) is None
+
+
+def test_pin_pad_extra_pad(tmp_path):
+    plan = _pin_pad_plan(tmp_path, pads=("1", "2", "3"))
+    issues = verify.verify_install(plan)
+    issue = _mismatch(issues)
+    assert issue.severity is Severity.WARNING
+    assert "pads with no pin: 3" in issue.text
+    assert "pins with no pad" not in issue.text
+    assert _errors(issues) == []
+
+
+def test_pin_pad_missing_pad(tmp_path):
+    plan = _pin_pad_plan(tmp_path, pins=(("1", "2", "3"),), pads=("1", "2"))
+    issue = _mismatch(verify.verify_install(plan))
+    assert "pins with no pad: 3" in issue.text
+    assert "pads with no pin" not in issue.text
+
+
+def test_pin_pad_both_directions(tmp_path):
+    plan = _pin_pad_plan(tmp_path, pins=(("1", "2", "3"),), pads=("1", "2", "4"))
+    issues = verify.verify_install(plan)
+    issue = _mismatch(issues)
+    assert "pins with no pad: 3" in issue.text and "pads with no pin: 4" in issue.text
+    assert len(_by_code(issues, "verify.pin_pad_mismatch")) == 1
+    assert f"{LIB}:FP" in issue.text
+
+
+def test_pin_pad_ignores_empty(tmp_path):
+    plan = _pin_pad_plan(tmp_path, pads=("1", "2"), npth=True)
+    assert _mismatch(verify.verify_install(plan)) is None
+    root = parse_bytes(vendor_footprint("FP", pads=("1",), npth=True), "fp.kicad_mod").root
+    assert verify.footprint_pad_numbers(footprint_name(root).node) == {"1"}
+
+
+def test_pin_pad_extends_child(tmp_path):
+    sym = extends_pair("PARENT_X", "CHILD_Y").replace(b'"Footprint" ""', f'"Footprint" "{LIB}:FP"'.encode())
+    plan = make_plan(tmp_path, sym=sym, symbol_names=("PARENT_X", "CHILD_Y"))
+    issues = verify.verify_install(plan)
+    assert _mismatch(issues) is None
+    assert _errors(issues) == []
+    root = parse_bytes(sym, "lib.kicad_sym").root
+    assert verify.symbol_pin_numbers(root, "CHILD_Y") == {"1", "2"}
+    assert find_symbol(root, "CHILD_Y") is not None
+
+
+def test_pin_pad_extends_child_still_reports_real_mismatch(tmp_path):
+    sym = extends_pair("PARENT_X", "CHILD_Y").replace(b'"Footprint" ""', f'"Footprint" "{LIB}:FP"'.encode())
+    fp = vendor_footprint("FP", pads=("1", "2", "3"), model=f"{MODEL_DIR_VAR}/X.stp")
+    plan = make_plan(tmp_path, sym=sym, symbol_names=("PARENT_X", "CHILD_Y"), footprints={"FP.kicad_mod": fp})
+    assert "pads with no pin: 3" in _mismatch(verify.verify_install(plan)).text
+
+
+def test_pin_pad_all_units(tmp_path):
+    sym = vendor_symbol_lib("PART", units=2, pins=(("1", "2"), ("3", "4")))
+    root = parse_bytes(sym, "lib.kicad_sym").root
+    assert verify.symbol_pin_numbers(root, "PART") == {"1", "2", "3", "4"}
+    assert verify.symbol_pin_numbers(root, "ABSENT") == set()
+
+
+def test_pin_pad_extends_cycle_terminates():
+    text = (
+        b'(kicad_symbol_lib (version 20211014)\n'
+        b'  (symbol "A" (extends "B"))\n'
+        b'  (symbol "B" (extends "A")\n'
+        b'    (symbol "B_1_1" (pin passive line (at 0 0 0) (length 1) (name "~") (number "7"))))\n'
+        b')\n'
+    )
+    root = parse_bytes(text, "lib.kicad_sym").root
+    assert verify.symbol_pin_numbers(root, "A") == {"7"}
+
+
+def test_pin_pad_numbers_unquoted_pad_atoms():
+    text = b'(footprint "FP" (pad 1 smd rect (at 0 0) (size 1 1)) (pad "2" smd rect (at 1 0) (size 1 1)))'
+    root = parse_bytes(text, "fp.kicad_mod").root
+    assert verify.footprint_pad_numbers(footprint_name(root).node) == {"1", "2"}
+
+
+def test_pin_pad_numbers_sorted():
+    issues = verify.pin_pad_issues("S", "L:FP", {"2", "10", "1", "A10", "A2"}, set())
+    assert len(issues) == 1
+    assert "pins with no pad: 1, 2, 10, A2, A10" in issues[0].text
+
+
+def test_pin_pad_issues_equal_sets():
+    assert verify.pin_pad_issues("S", "L:FP", {"1", "2"}, {"2", "1"}) == []
+
+
+def test_pin_pad_linked_footprint_is_the_one_read_from_disk(tmp_path):
+    """A skipped footprint (D-09) is checked as it exists on disk, not as the vendor drew it."""
+    plan = _pin_pad_plan(tmp_path, pads=("1", "2"))
+    assert _mismatch(verify.verify_install(plan)) is None
+    plan.pretty_path.joinpath("FP.kicad_mod").write_bytes(
+        vendor_footprint("FP", pads=("1", "2", "9"), model=f"{MODEL_DIR_VAR}/X.stp")
+    )
+    assert "pads with no pin: 9" in _mismatch(verify.verify_install(plan)).text
+
+
+def test_pin_pad_not_checked_without_a_link(tmp_path):
+    sym = vendor_symbol_lib("PART", footprint_field="")
+    fp = vendor_footprint("FP", pads=("1", "2", "3"))
+    plan = make_plan(tmp_path, sym=sym, footprints={"FP.kicad_mod": fp}, linked_footprint=None, model_file=None)
+    assert _mismatch(verify.verify_install(plan)) is None
