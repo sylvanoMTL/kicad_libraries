@@ -570,3 +570,153 @@ def test_version_detect_tools_explicit_cli_wins(tmp_path):
     tools = planner.detect_tools(None, explicit_cli=explicit)
     assert tools.kicad_cli == explicit
     assert tools.kicad_symbols_dir is None
+
+
+# -- LIB-02 library rules (plan 04-06, task 2) ----------------------------------
+
+NEW_LIBRARY = "IC_New_TI"
+
+
+def _pair_layout(tmp_path, symbol_libs=(LIBRARY,), footprint_libs=(LIBRARY,)):
+    write_custom_layout(tmp_path, list(symbol_libs), list(footprint_libs))
+    return RepoLayout.for_repo(tmp_path)
+
+
+def _header(data):
+    """The text before the first top-level symbol."""
+    loaded = parse_bytes(data, "lib")
+    return loaded.source.text[: find_symbols(loaded.root)[0].node.start]
+
+
+def test_library_new_pair_with_cli(tmp_path):
+    layout = _pair_layout(tmp_path)
+    fake = FakeCli(output_version=V9)
+    plan = _plan(tmp_path, layout, _tools(fake), options=InstallOptions(library=NEW_LIBRARY))
+    assert not plan.blocked, plan.issues
+    assert [op.kind for op in plan.ops] == ["mkdir", "model", "footprint", "symbol_lib"]
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (True, True)
+    assert plan.ops[0].path == layout.footprints_dir / f"{NEW_LIBRARY}.pretty"
+    sym_op = _op(plan, "symbol_lib")
+    assert sym_op.path == layout.symbols_dir / f"{NEW_LIBRARY}.kicad_sym"
+    assert sym_op.base_sha256 is None
+    loaded = parse_bytes(sym_op.data, "lib")
+    assert file_version(loaded.root) == V9
+    assert [s.name for s in find_symbols(loaded.root)] == [VENDOR]
+    assert (plan.source_version, plan.target_version, plan.normalised) == (V6, V9, True)
+    assert [" ".join(call[1:3]) for call in fake.calls] == ["sym upgrade"]
+    # The edited block is what ended up in the new file
+    symbol = find_symbol(loaded.root, VENDOR)
+    assert find_property(symbol.node, "Footprint").value == f"{NEW_LIBRARY}:FP"
+
+
+def test_library_new_pair_without_cli(tmp_path):
+    layout = _pair_layout(tmp_path)
+    vendor = vendor_symbol_lib(VENDOR)
+    plan = _plan(tmp_path, layout, ToolContext(), vendor, InstallOptions(library=NEW_LIBRARY))
+    assert not plan.blocked, plan.issues
+    assert [op.kind for op in plan.ops] == ["mkdir", "model", "footprint", "symbol_lib"]
+    data = _op(plan, "symbol_lib").data
+    assert file_version(parse_bytes(data, "lib").root) == V6
+    # The header is the vendor's own, so version and content agree
+    assert _header(data) == _header(vendor)
+    assert [s.name for s in find_symbols(parse_bytes(data, "lib").root)] == [VENDOR]
+    assert plan.target_version == V6 and plan.normalised is False
+    assert [i.severity for i in plan.issues if i.code == "install.cli_not_found"] == [Severity.INFO]
+
+
+def test_library_pair_completed_pretty_missing(custom_copy, ul_package, tmp_path, snapshot):
+    # IC_IMU_TDK has a symbol library and no footprint library today
+    assert not (custom_copy.footprints_dir / "IC_IMU_TDK.pretty").exists()
+    real_before = snapshot(REPO_ROOT / "Custom" / "Footprints")
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library="IC_IMU_TDK"), custom_copy, ToolContext())
+    assert not plan.blocked, plan.issues
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, True)
+    assert [op.path for op in plan.ops if op.kind == "mkdir"] == [custom_copy.footprints_dir / "IC_IMU_TDK.pretty"]
+    assert _op(plan, "symbol_lib").base_sha256 is not None
+    assert [i.severity for i in plan.issues if i.code == "install.pair_completed"] == [Severity.WARNING]
+    assert "IC_IMU_TDK.pretty" in _error_or_warning(plan, "install.pair_completed").text
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert result.ok, result.issues
+    assert (custom_copy.footprints_dir / "IC_IMU_TDK.pretty" / "DQK0006B.kicad_mod").is_file()
+    assert snapshot(REPO_ROOT / "Custom" / "Footprints") == real_before
+
+
+def _error_or_warning(plan, code):
+    found = [i for i in plan.issues if i.code == code]
+    assert found, f"no {code} in {[i.code for i in plan.issues]}"
+    return found[0]
+
+
+def test_library_pair_completed_sym_missing(tmp_path):
+    layout = _pair_layout(tmp_path, symbol_libs=(), footprint_libs=(LIBRARY,))
+    plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY))
+    assert not plan.blocked, plan.issues
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (True, False)
+    assert [op.kind for op in plan.ops] == ["model", "footprint", "symbol_lib"]
+    sym_op = _op(plan, "symbol_lib")
+    assert sym_op.path == layout.symbols_dir / f"{LIBRARY}.kicad_sym" and sym_op.base_sha256 is None
+    assert [s.name for s in find_symbols(parse_bytes(sym_op.data, "lib").root)] == [VENDOR]
+    assert [i.severity for i in plan.issues if i.code == "install.pair_completed"] == [Severity.WARNING]
+    assert "kicad_sym" in _error_or_warning(plan, "install.pair_completed").text
+
+
+@pytest.mark.parametrize(
+    "symbol_libs, footprint_libs",
+    [((LIBRARY,), (LIBRARY,)), ((LIBRARY,), ()), ((), (LIBRARY,))],
+    ids=["pair", "symbols-only", "footprints-only"],
+)
+def test_library_case_clash(tmp_path, snapshot, symbol_libs, footprint_libs):
+    layout = _pair_layout(tmp_path, symbol_libs, footprint_libs)
+    before = snapshot(layout.custom_dir)
+    twin = LIBRARY.lower()
+    plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=twin))
+    assert plan.blocked and not plan.ops
+    assert _codes(plan) == ["install.library_case_clash"]
+    assert LIBRARY in _error(plan, "install.library_case_clash").text
+    assert snapshot(layout.custom_dir) == before
+
+
+@pytest.mark.parametrize("name, suggestion", [("IC/Bad_TI", "IC_Bad_TI"), ("IC Bad TI", "IC_Bad_TI"), ("", None)])
+def test_library_invalid_name(tmp_path, snapshot, name, suggestion):
+    layout = _pair_layout(tmp_path)
+    before = snapshot(layout.custom_dir)
+    plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=name))
+    assert plan.blocked and not plan.ops
+    assert _codes(plan) == ["install.invalid_library"]
+    if suggestion is not None:
+        assert suggestion in _error(plan, "install.invalid_library").text
+    assert apply_plan(plan).ok is False
+    assert snapshot(layout.custom_dir) == before
+
+
+@pytest.mark.parametrize("version", [V6, V8, V9])
+def test_library_existing_header_unchanged(tmp_path, version):
+    layout = _target_layout(tmp_path, version, ("EXISTING_A", "EXISTING_B"))
+    original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
+    plan = _plan(tmp_path, layout, _tools(FakeCli(output_version=version)))
+    assert not plan.blocked, plan.issues
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, False)
+    planned = _op(plan, "symbol_lib").data
+    first = find_symbols(parse_bytes(original, "lib").root)[0].node.start
+    assert first > 0
+    assert planned[:first] == original[:first]
+    # Everything the library held before is still there, followed by the new symbol
+    names = [s.name for s in find_symbols(parse_bytes(planned, "lib").root)]
+    assert names == ["EXISTING_A", "EXISTING_B", VENDOR]
+
+
+@pytest.mark.kicad_cli
+def test_library_real_cli_new_header(tmp_path, ul_package):
+    tools = _real_tools()
+    layout = _pair_layout(tmp_path)
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=NEW_LIBRARY), layout, tools)
+    assert not plan.blocked, plan.issues
+    sym_op = _op(plan, "symbol_lib")
+    header = _header(sym_op.data)
+    assert "(version 20241209)" in header
+    assert '(generator "kicad_symbol_editor")' in header
+    assert '(generator_version "9.0")' in header
+    footprints = [(op.path.stem, op.data) for op in plan.ops if op.kind == "footprint"]
+    assert kicad_cli.load_gate(tools.kicad_cli, library=NEW_LIBRARY, symbol_lib=sym_op.data, footprints=footprints) == []
