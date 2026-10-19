@@ -1,5 +1,5 @@
+import os
 import re
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -214,24 +214,19 @@ def generate_fp_lib_table(libs: list[FootprintLibrary],
     return _merge_table("fp_lib_table", existing, libs)
 
 
-def backup_existing(file_path: Path) -> Path | None:
-    if not file_path.exists():
-        return None
-
-    base_name = file_path.name
-    parent = file_path.parent
-    max_num = 0
-    pattern = re.compile(re.escape(base_name) + r"_backup_(\d+)$")
-
-    for f in parent.iterdir():
-        m = pattern.match(f.name)
+def _next_backup_number(folder: Path) -> int:
+    """One more than the highest backup number of either table, so a pair shares it."""
+    pattern = re.compile(r"^(?:sym|fp)-lib-table_backup_(\d+)$")
+    highest = 0
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 1
+    for name in names:
+        m = pattern.match(name)
         if m:
-            max_num = max(max_num, int(m.group(1)))
-
-    backup_name = f"{base_name}_backup_{max_num + 1}"
-    backup_path = parent / backup_name
-    shutil.copy2(file_path, backup_path)
-    return backup_path
+            highest = max(highest, int(m.group(1)))
+    return highest + 1
 
 
 def write_tables(dest_folder: Path,
@@ -243,6 +238,8 @@ def write_tables(dest_folder: Path,
     except OSError as e:
         return [Issue(Severity.ERROR, "fs.write_failed",
                       f"Could not create {dest_folder}: {e.strerror or e}")]
+
+    backup_number = _next_backup_number(dest_folder)
 
     # Each table is processed on its own: one failure never blocks the other
     for tag, libs in (("sym_lib_table", sym_libs), ("fp_lib_table", fp_libs)):
@@ -265,8 +262,14 @@ def write_tables(dest_folder: Path,
             issues.append(result)
             continue
 
+        if existing is not None and result.content == existing.source.text:
+            issues.append(Issue(Severity.INFO, "table.unchanged",
+                                f"{filename} is already up to date; not rewritten"))
+            issues.extend(result.issues)
+            continue
+
         if existing is not None:
-            backup = fsutil.backup_file(path, path.parent)
+            backup = fsutil.backup_file(path, path.parent, number=backup_number)
             if isinstance(backup, Issue):
                 issues.append(backup)
                 continue
@@ -319,6 +322,7 @@ def list_backup_pairs(folder: Path) -> list[tuple[int, Path | None, Path | None]
 def restore_backup_pair(folder: Path, backup_num: int) -> list[Issue]:
     """Restore both sym-lib-table and fp-lib-table for a given backup number."""
     issues: list[Issue] = []
+    backup_number = _next_backup_number(folder)
     for base_name in ("sym-lib-table", "fp-lib-table"):
         backup_path = folder / f"{base_name}_backup_{backup_num}"
         if not backup_path.is_file():
@@ -333,7 +337,7 @@ def restore_backup_pair(folder: Path, backup_num: int) -> list[Issue]:
         current_path = folder / base_name
         # Never overwrite a table without a safety copy of it
         if current_path.exists():
-            safety = fsutil.backup_file(current_path, folder)
+            safety = fsutil.backup_file(current_path, folder, number=backup_number)
             if isinstance(safety, Issue):
                 issues.append(safety)
                 continue
