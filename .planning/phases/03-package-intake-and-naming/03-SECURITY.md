@@ -39,13 +39,13 @@ created: "2026-10-19"
 | T-03-06 | Tampering | zip slip via `..`, absolute, drive, UNC, backslash names | high | mitigate | `_hostile_reason` on normalised name, whole-package refusal in `_prescan` before any read | closed |
 | T-03-07 | Tampering | symlink or reparse-point members | high | mitigate | `S_ISLNK(external_attr >> 16)` and 0x400 bit refuse the package; staged files written from bytes | closed |
 | T-03-08 | Denial of service | zip bomb (count, size, total, ratio) | high | mitigate | `MAX_MEMBERS`, `MAX_MEMBER_BYTES`, `MAX_TOTAL_BYTES`, `_ratio_exceeded` on declared sizes; boundary tests | closed |
-| T-03-09 | Denial of service | headers lying about sizes | medium | mitigate | real-byte counting against `_Budget`; CRC / `BadZipFile` mapped to `intake.corrupt` | closed |
+| T-03-09 | Denial of service | headers lying about sizes | medium | mitigate | real-byte counting against `_Budget`; CRC / `BadZipFile` mapped to `intake.corrupt`. Gap (code review CR-02): corrupt LZMA payload raises `LZMAError` out of `open_package` | open — below high threshold (non-blocking) |
 | T-03-10 | Spoofing | duplicate / case-colliding members | medium | mitigate | casefolded duplicate refusal; members opened by `ZipInfo` | closed |
 | T-03-11 | Tampering | `name:stream` ADS and control characters | medium | mitigate | `:` (D-19) and control characters refuse the package | closed |
 | T-03-12 | Denial of service | recursive nested zips | medium | mitigate | one level only, `intake.nested_too_deep`, shared `_Budget` | closed |
 | T-03-13 | Information disclosure | encrypted members | low | mitigate | `intake.encrypted` refusal from the flag bit | closed |
 | T-03-14 | Tampering | hostile names inside KiCad files | medium | transfer | Phase 3 never turns a name into a path; `name_check` (03-05) exposes the sanitised form; Phase 4 write-time containment check owns paths | closed |
-| T-03-15 | Denial of service | huge in-place file read in `locate` | medium | mitigate | `_read_limited` reads at most `MAX_MEMBER_BYTES + 1` and skips with a WARNING | closed |
+| T-03-15 | Denial of service | huge in-place file read in `locate` | medium | mitigate | `_read_limited` reads at most `MAX_MEMBER_BYTES + 1` and skips with a WARNING. Gap (code review CR-01): the 100 MB model cap also applies to parsed `.kicad_sym`/`.kicad_mod` text, so the pure-Python parser can take minutes and GBs; needs a smaller text cap | open — below high threshold (non-blocking) |
 | T-03-16 | Denial of service | malformed / deep S-expressions | low | mitigate | iterative Phase 1 parser; errors mapped to `intake.unreadable_file` | closed |
 | T-03-17 | Spoofing | package imitating Ultra Librarian markers | low | accept | see Accepted Risks Log AR-03-01 | closed |
 | T-03-18 | Tampering | KiCad 5 `(module` footprint passed as v6+ | low | mitigate | root head recorded; WARNING `intake.legacy_footprint_syntax` (D-18) | closed |
@@ -88,6 +88,7 @@ created: "2026-10-19"
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-19 | 35 | 35 | 0 | secure-phase (L1 grep-depth, orchestrator; auditor skipped per ASVS L1 short-circuit) |
+| 2026-10-19 | 35 | 33 | 2 (both medium, below `high` block threshold; threats_open stays 0) | orchestrator, from code review 03-REVIEW.md CR-01 / CR-02 |
 
 ---
 
