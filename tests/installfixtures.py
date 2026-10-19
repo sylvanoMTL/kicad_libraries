@@ -13,6 +13,8 @@ Two house styles are reproduced from the real Custom/ headers:
   ``(hide yes)`` inside ``(effects`` and a Description property.
 """
 
+import re
+
 from zipfixtures import _quote
 
 V6_VERSION = 20211014
@@ -160,6 +162,58 @@ def target_lib(
 
 # -- vendor builders -----------------------------------------------------------
 
+_BARE_ATOM = re.compile(r"[A-Za-z0-9_.+\-]+")
+
+
+def _atom(text: str) -> str:
+    """Return text bare when KiCad would write it bare, else double-quoted."""
+    return text if _BARE_ATOM.fullmatch(text) else _quote(text)
+
+
+def _v6_library(version: int, symbol_lines: list[str], eol: str) -> bytes:
+    """Wrap symbol lines in the one-line Ultra Librarian header."""
+    lines = [f"(kicad_symbol_lib (version {version}) (generator kicad_symbol_editor)", *symbol_lines, ")"]
+    return (eol.join(lines) + eol).encode("utf-8")
+
+
+def _v6_symbol(
+    name: str,
+    *,
+    units: int,
+    pins: tuple[tuple[str, ...], ...] | None,
+    value: str | None,
+    keywords: str,
+    footprint_field: str,
+    fp_filters: str,
+    datasheet: str,
+    props: dict[str, str] | None,
+) -> list[str]:
+    """Return the lines of one vendor symbol with ids, hidden ki_* fields and a sub-symbol per unit."""
+    if pins is None:
+        pins = tuple((str(2 * unit + 1), str(2 * unit + 2)) for unit in range(units))
+    if len(pins) != units:
+        raise ValueError(f"{units} units need {units} pin groups, got {len(pins)}")
+    fields = [
+        ("Reference", "U", False),
+        ("Value", name if value is None else value, False),
+        ("Footprint", footprint_field, True),
+        ("Datasheet", datasheet, True),
+        *((key, text, True) for key, text in (props or {}).items()),
+        ("ki_keywords", keywords, True),
+        ("ki_locked", "", True),
+        ("ki_fp_filters", fp_filters, True),
+    ]
+    lines = [f"  (symbol {_quote(name)} (pin_names (offset 0.254)) (in_bom yes) (on_board yes)"]
+    for index, (key, text, hide) in enumerate(fields):
+        lines.extend(_v6_property("    ", index, key, text, hide=hide))
+    for unit, numbers in enumerate(pins, start=1):
+        lines.append(f"    (symbol {_quote(f'{name}_{unit}_1')}")
+        for row, number in enumerate(numbers):
+            lines.extend(_v6_pin("      ", number, x="-7.62", y=f"{0 - 2.54 * row:g}", angle="0", name=f"P{number}"))
+        lines.append("    )")
+    lines.append("  )")
+    return lines
+
 
 def vendor_symbol_lib(
     name: str = "PART",
@@ -175,8 +229,23 @@ def vendor_symbol_lib(
     props: dict[str, str] | None = None,
     eol: str = "\r\n",
 ) -> bytes:
-    """Build a vendor .kicad_sym holding one symbol in the Ultra Librarian shape."""
-    return b""
+    """Build a vendor .kicad_sym holding one symbol in the Ultra Librarian shape.
+
+    One sub-symbol <name>_<u>_1 per unit; default pins are numbered consecutively, two per
+    unit. props land right after Datasheet. pins must have one entry per unit.
+    """
+    lines = _v6_symbol(
+        name,
+        units=units,
+        pins=pins,
+        value=value,
+        keywords=keywords,
+        footprint_field=footprint_field,
+        fp_filters=fp_filters,
+        datasheet=datasheet,
+        props=props,
+    )
+    return _v6_library(version, lines, eol)
 
 
 def extends_pair(
@@ -187,8 +256,29 @@ def extends_pair(
     child_first: bool = False,
     eol: str = "\r\n",
 ) -> bytes:
-    """Build a .kicad_sym holding a parent symbol and a child that (extends "<parent>")."""
-    return b""
+    """Build a .kicad_sym holding a parent symbol and a child that (extends "<parent>").
+
+    The child has its own properties and no sub-symbol: it draws through its parent.
+    """
+    parent_lines = _v6_symbol(
+        parent,
+        units=1,
+        pins=None,
+        value=None,
+        keywords="",
+        footprint_field="FP",
+        fp_filters="FP",
+        datasheet="https://www.ti.com/lit/gpn/part",
+        props=None,
+    )
+    child_lines = [f"  (symbol {_quote(child)} (extends {_quote(parent)})"]
+    child_lines.extend(_v6_property("    ", 0, "Reference", "U", hide=False))
+    child_lines.extend(_v6_property("    ", 1, "Value", child, hide=False))
+    child_lines.extend(_v6_property("    ", 2, "Footprint", "", hide=True))
+    child_lines.extend(_v6_property("    ", 3, "Datasheet", "", hide=True))
+    child_lines.append("  )")
+    ordered = child_lines + parent_lines if child_first else parent_lines + child_lines
+    return _v6_library(version, ordered, eol)
 
 
 def vendor_footprint(
@@ -203,5 +293,44 @@ def vendor_footprint(
     embedded: bool = False,
     eol: str = "\r\n",
 ) -> bytes:
-    """Build a vendor .kicad_mod in the Ultra Librarian shape."""
-    return b""
+    """Build a vendor .kicad_mod in the Ultra Librarian shape.
+
+    value_form "fp_text" writes (fp_text value <atom> ...); "property" writes
+    (property "Value" ...). model and models each add a (model ...) block with a non-zero
+    offset; npth adds an np_thru_hole pad with an empty number; embedded adds (embedded_files).
+    """
+    if value_form not in ("fp_text", "property"):
+        raise ValueError(f"unknown value form {value_form!r}")
+    effects = "    (effects (font (size 1 1) (thickness 0.15)))"
+    lines = [
+        f"(footprint {_quote(name)} (version {version}) (generator pcbnew)",
+        '  (layer "F.Cu")',
+        "  (attr smd)",
+        '  (fp_text reference "REF**" (at 0 -2 unlocked) (layer F.SilkS)',
+        effects,
+        "  )",
+    ]
+    if value_form == "fp_text":
+        lines.append(f"  (fp_text value {_atom(name)} (at 0 2 unlocked) (layer F.Fab)")
+    else:
+        lines.append(f'  (property "Value" {_quote(name)} (at 0 2 unlocked) (layer "F.Fab")')
+    lines.extend([effects, "  )"])
+    for index, number in enumerate(pads):
+        lines.append(
+            f"  (pad {_quote(number)} smd rect (at {1.5 * index:g} 0) (size 0.9 0.6)"
+            ' (layers "F.Cu" "F.Paste" "F.Mask"))'
+        )
+    if npth:
+        lines.append('  (pad "" np_thru_hole circle (at 0 3) (size 1 1) (drill 1) (layers "*.Cu" "*.Mask"))')
+    for path in ([model] if model is not None else []) + list(models):
+        lines.extend([
+            f"  (model {_quote(path)}",
+            "    (offset (xyz 0 0 1))",
+            "    (scale (xyz 1 1 1))",
+            "    (rotate (xyz 0 0 0))",
+            "  )",
+        ])
+    if embedded:
+        lines.append("  (embedded_files)")
+    lines.append(")")
+    return (eol.join(lines) + eol).encode("utf-8")
