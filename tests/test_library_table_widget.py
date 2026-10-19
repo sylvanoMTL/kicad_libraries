@@ -454,6 +454,17 @@ def test_select_all_prefers_custom_for_collided_pairs(qtbot):
     _assert_invariants(w, scan)
 
 
+def test_select_all_group_headers_reflect_the_collision_choice(qtbot):
+    scan = _collision_scan()
+    w = _make_widget(qtbot, scan)
+
+    w.select_all()
+
+    for tree in (w._sym_tree, w._fp_tree):
+        assert tree.topLevelItem(0).checkState(0) == Qt.CheckState.Checked
+        assert tree.topLevelItem(1).checkState(0) == Qt.CheckState.PartiallyChecked
+
+
 def test_select_all_twice_gives_the_same_selection(qtbot):
     scan = _collision_scan()
     w = _make_widget(qtbot, scan)
