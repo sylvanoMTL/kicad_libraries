@@ -12,7 +12,17 @@ import sys
 from pathlib import Path
 
 import pytest
-from zipfixtures import STEP_BYTES, footprint, symbol_lib
+from zipfixtures import (
+    LEGACY_LIB_BYTES,
+    LEGACY_MOD_BYTES,
+    REPO_ROOT,
+    STEP_BYTES,
+    UL_ZIP,
+    footprint,
+    make_zip,
+    symbol_lib,
+    unpack_sample,
+)
 
 from kicad_lib_manager.importer import package as pkg
 from kicad_lib_manager.importer.detect import detect_candidate
@@ -282,3 +292,129 @@ def test_folder_dispatch(tmp_path):
     missing = open_package(tmp_path / "nope", tmp_path)
     assert missing.refused
     assert [i.code for i in missing.issues] == ["intake.not_found"]
+
+
+# -- folders through detection (INTK-01, INTK-02, D-17) ---------------------------
+
+
+def _shape(candidate):
+    """Names, content hashes and part metadata of a candidate, independent of vendor and staging."""
+    return (
+        [(s.name, s.file.sha256, s.meta) for s in candidate.symbols],
+        [(f.name, f.file.sha256) for f in candidate.footprints],
+        [(m.filename, m.file.sha256) for m in candidate.models],
+    )
+
+
+def _ul_zip_candidate():
+    with open_package(UL_ZIP, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+    assert candidate is not None
+    return candidate
+
+
+def test_folder_loose_candidate(tmp_path):
+    folder = _make_folder(tmp_path)
+    with open_package(folder, tmp_path) as package:
+        candidate, issues = detect_candidate(package)
+        assert candidate is not None
+        assert candidate.vendor == "Loose"
+        assert candidate.confidence == 0.3
+        assert [s.name for s in candidate.symbols] == ["LOOSE1"]
+        assert [f.name for f in candidate.footprints] == ["FP"]
+        assert [m.filename for m in candidate.models] == ["c.step", "d.STP"]
+        assert not [i for i in issues if i.code == "intake.unknown_vendor"]
+        assert not [i for i in issues if i.severity is Severity.ERROR]
+
+
+def test_folder_real_loose_files(tmp_path):
+    # D-17: the committed UL zip unpacked flat is the real loose-files case (success criterion 1)
+    folder = unpack_sample(tmp_path / "loose", flat=True, kicad_only=True)
+    expected = _ul_zip_candidate()
+    with open_package(folder, tmp_path) as package:
+        assert package.kind == "folder" and package.staging_dir is None
+        candidate, issues = detect_candidate(package)
+        assert candidate is not None
+        assert candidate.vendor == "Loose"
+        assert candidate.confidence == 0.3
+        assert [s.name for s in candidate.symbols] == ["CSD85301Q2"]
+        assert candidate.symbols[0].file.member == "2026-10-18_09-12-49.kicad_sym"
+        assert [f.name for f in candidate.footprints] == ["DQK0006B"]
+        assert [m.filename for m in candidate.models] == ["DLV0006A.stp"]
+        assert not [i for i in issues if i.code == "intake.unknown_vendor"]
+        assert _shape(candidate) == _shape(expected)
+
+
+def test_folder_unzipped_ul(tmp_path):
+    # D-17: all six members of the UL download at their archive paths
+    folder = unpack_sample(tmp_path / "ul")
+    expected = _ul_zip_candidate()
+    with open_package(folder, tmp_path) as package:
+        candidate, issues = detect_candidate(package)
+        assert candidate is not None
+        assert candidate.vendor == "UltraLibrarian"
+        assert candidate.confidence == 0.9
+        assert [s.name for s in candidate.symbols] == ["CSD85301Q2"]
+        assert candidate.symbols[0].file.member == "KiCADv6/2026-10-18_09-12-49.kicad_sym"
+        assert [f.name for f in candidate.footprints] == ["DQK0006B"]
+        assert [m.filename for m in candidate.models] == ["DLV0006A.stp"]
+        assert sorted(candidate.ignored) == sorted(["ImportGuides.html", "readme.txt", "KiCADv6/ImportGuide.html"])
+        assert not [i for i in issues if i.severity is Severity.ERROR]
+        assert _shape(candidate) == _shape(expected)
+
+
+def test_zip_and_folder_same_shape(tmp_path):
+    folder = _make_folder(tmp_path)
+    archive = make_zip(
+        tmp_path / "pkg.zip",
+        [(name, (folder / name).read_bytes()) for name in ("a.kicad_sym", "sub/b.kicad_mod", "c.step", "d.STP", "readme.txt")],
+    )
+    with open_package(archive, tmp_path) as from_zip, open_package(folder, tmp_path) as from_folder:
+        zip_candidate, _ = detect_candidate(from_zip)
+        folder_candidate, _ = detect_candidate(from_folder)
+        assert zip_candidate.vendor == "Unknown"
+        assert folder_candidate.vendor == "Loose"
+        assert _shape(zip_candidate) == _shape(folder_candidate)
+        assert sorted(zip_candidate.ignored) == sorted(folder_candidate.ignored) == ["readme.txt"]
+
+
+def test_folder_empty_and_legacy_only(tmp_path):
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    with open_package(empty, tmp_path) as package:
+        candidate, issues = detect_candidate(package)
+        assert candidate is None
+        assert [i.code for i in issues if i.severity is Severity.ERROR] == ["intake.nothing_found"]
+    old = tmp_path / "old"
+    old.mkdir()
+    (old / "x.lib").write_bytes(LEGACY_LIB_BYTES)
+    (old / "x.mod").write_bytes(LEGACY_MOD_BYTES)
+    with open_package(old, tmp_path) as package:
+        candidate, issues = detect_candidate(package)
+        assert candidate is None
+        errors = [i for i in issues if i.severity is Severity.ERROR]
+        assert [i.code for i in errors] == ["intake.legacy_only"]
+        assert "re-download as KiCad v6+" in errors[0].text
+
+
+def test_folder_zip_inside_is_ignored(tmp_path):
+    folder = tmp_path / "pick"
+    folder.mkdir()
+    (folder / "a.kicad_sym").write_bytes(symbol_lib(("S",)))
+    # a hostile member would refuse the package if the zip were opened; a folder must only list it
+    make_zip(folder / "pkg.zip", [("../evil.step", STEP_BYTES)])
+    with open_package(folder, tmp_path) as package:
+        assert not package.refused
+        assert "pkg.zip" in package.ignored
+        assert [pf.member for pf in package.files] == ["a.kicad_sym"]
+        assert not package.legacy
+
+
+def test_folder_names_are_posix(tmp_path):
+    folder = tmp_path / "pick"
+    (folder / "sub" / "dir").mkdir(parents=True)
+    (folder / "sub" / "dir" / "x.kicad_mod").write_bytes(footprint("X"))
+    with open_package(folder, tmp_path) as package:
+        assert package.names == ["sub/dir/x.kicad_mod"]
+        assert [pf.member for pf in package.files] == ["sub/dir/x.kicad_mod"]
+        assert "\\" not in package.files[0].member
