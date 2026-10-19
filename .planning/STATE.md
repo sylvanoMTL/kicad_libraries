@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 04
 current_phase_name: Plan and Install Core
 status: executing
-stopped_at: Completed 04-06-PLAN.md
-last_updated: "2026-10-19T23:02:43.314Z"
+stopped_at: Completed 04-07-PLAN.md
+last_updated: "2026-10-19T23:19:03.668Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 04 execution started
-state_head: 43095356d36df53161143d2c1a80b0ecfab7203e
+state_head: cf8ecc2cad69fa4b478c0ce1b9cd73dafc215754
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 35
-  completed_plans: 31
+  completed_plans: 32
   percent: 43
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 ## Current Position
 
 Phase: 04 (Plan and Install Core) — EXECUTING
-Plan: 3 of 10
+Plan: 4 of 10
 Status: Ready to execute
 Last activity: 2026-10-19 — Phase 04 execution started
 
@@ -61,6 +61,7 @@ Progress: [████░░░░░░] 43%
 | Phase 02 P07 | 20 min | 3 tasks | 7 files |
 | Phase 04 P01 | 20 min | 2 tasks | 9 files |
 | Phase 04 P06 | 10 min | 2 tasks | 2 files |
+| Phase 04 P07 | 14 min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -85,6 +86,9 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-01: Unsupported install cases refuse with dedicated codes (library_not_found, version_unsupported, rename_unsupported, extends_unsupported) that later plans remove one by one
 - [Phase 04]: 04-06: kicad-cli output is used only when its version equals the target header; otherwise vendor text is merged with install.version_mismatch
 - [Phase 04]: 04-06: library names must be non-empty, equal their sanitize_name form and not be a case twin (install.invalid_library, install.library_case_clash); a half pair is completed with install.pair_completed
+- [Phase 04]: 04-07: install backup folders prune on (date, time, sequence) so a -2 suffixed folder ranks newer than the plain one
+- [Phase 04]: 04-07: rollback unlinks a file written under another spelling only when both spellings are listed (case-sensitive FS); a single listed name is never unlinked
+- [Phase 04]: 04-07: apply_plan keeps soft verify WARNINGs in InstallResult.issues and emits install.cli_not_found once
 
 ### Pending Todos
 
@@ -109,6 +113,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-19T23:02:42.086Z
-Stopped at: Completed 04-06-PLAN.md
+Last session: 2026-10-19T23:19:02.672Z
+Stopped at: Completed 04-07-PLAN.md
 Resume file: None
