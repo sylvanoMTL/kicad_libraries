@@ -6,6 +6,7 @@ Every check re-reads its files; nothing is taken from the bytes the plan carries
 """
 
 import os
+import re
 from pathlib import Path
 
 from ..kicad_files import (
@@ -17,7 +18,10 @@ from ..kicad_files import (
     load,
 )
 from ..models import Issue, Severity
+from ..sexpr import Node, unquote
 from .plan import MODEL_DIR_VAR, InstallPlan
+
+_DIGITS = re.compile(r"(\d+)")
 
 
 def _err(code: str, text: str) -> Issue:
@@ -115,7 +119,92 @@ def verify_install(plan: InstallPlan) -> list[Issue]:
         issues.extend(problems)
         if plan.model_file is not None and footprint is not None:
             issues.extend(_model_issues(plan, footprint))
+        # Soft check: against the footprint the written Footprint field really resolves to (D-09)
+        ref = footprint_name(footprint.root) if footprint is not None else None
+        if ref is not None:
+            issues.extend(
+                pin_pad_issues(
+                    plan.symbol_name,
+                    f"{plan.library}:{plan.linked_footprint}",
+                    symbol_pin_numbers(library.root, plan.symbol_name),
+                    footprint_pad_numbers(ref.node),
+                )
+            )
     return _unique(issues)
+
+
+# -- pin/pad comparison (POST-04, D-20) -------------------------------------------
+
+
+def _token_text(node: Node) -> str | None:
+    """The unquoted text of a string or atom node, None for a list."""
+    return unquote(node.text) if node.kind in ("str", "atom") else None
+
+
+def _extends_parent(symbol_node: Node) -> str | None:
+    for child in symbol_node.children:
+        if child.head == "extends" and len(child.children) >= 2:
+            return _token_text(child.children[1])
+    return None
+
+
+def _collect_pin_numbers(symbol_node: Node, found: set[str]) -> None:
+    """Add the number of every pin below symbol_node, in any unit or body style."""
+    stack = [symbol_node]
+    while stack:
+        node = stack.pop()
+        if node.head == "pin":
+            for child in node.children:
+                if child.head == "number" and len(child.children) >= 2:
+                    number = _token_text(child.children[1])
+                    if number:
+                        found.add(number)
+        stack.extend(c for c in node.children if c.kind == "list")
+
+
+def symbol_pin_numbers(root: Node, name: str) -> set[str]:
+    """Pin numbers of the named top-level symbol, plus those of every extends ancestor in the same library."""
+    by_name: dict[str, Node] = {}
+    for ref in find_symbols(root):
+        by_name.setdefault(ref.name, ref.node)
+    pins: set[str] = set()
+    seen: set[str] = set()
+    current: str | None = name
+    while current is not None and current in by_name and current not in seen:
+        seen.add(current)
+        _collect_pin_numbers(by_name[current], pins)
+        current = _extends_parent(by_name[current])
+    return pins
+
+
+def footprint_pad_numbers(footprint_node: Node) -> set[str]:
+    """Numbers of the footprint's direct pad children; pads with an empty number (mounting holes) are ignored."""
+    found = set()
+    for child in footprint_node.children:
+        if child.head == "pad" and len(child.children) >= 2:
+            number = _token_text(child.children[1])
+            if number:
+                found.add(number)
+    return found
+
+
+def _natural(value: str) -> list[tuple[int, int, str]]:
+    """Sort key that puts 2 before 10 and A2 before A10."""
+    return [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in _DIGITS.split(value) if p]
+
+
+def pin_pad_issues(symbol_name: str, footprint: str, pins: set[str], pads: set[str]) -> list[Issue]:
+    """One WARNING when the symbol's pin numbers and the footprint's pad numbers differ in either direction."""
+    no_pad = sorted(pins - pads, key=_natural)
+    no_pin = sorted(pads - pins, key=_natural)
+    if not no_pad and not no_pin:
+        return []
+    parts = []
+    if no_pad:
+        parts.append(f"pins with no pad: {', '.join(no_pad)}")
+    if no_pin:
+        parts.append(f"pads with no pin: {', '.join(no_pin)}")
+    return [Issue(Severity.WARNING, "verify.pin_pad_mismatch", f"{symbol_name} does not match {footprint}; " + "; ".join(parts))]
 
 
 def _unique(issues: list[Issue]) -> list[Issue]:
