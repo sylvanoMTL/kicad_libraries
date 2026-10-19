@@ -637,7 +637,7 @@ MEMBERS = {   # name: (file_size, compress_size); all external_attr == 0x0, no d
 2. **Should a Reference of `U` for a discrete MOSFET really suggest `IC`?** (RESOLVED) Locked by D-01/D-04 and the expected `IC_SubCategory_TI`; no action, only a reminder that the owner expects to edit it.
 3. **Where does `Package` live when Phase 5 runs intake in a worker thread?** (RESOLVED) The `with` block must span intake and the later plan/install, or the dialog must hold the `Package` and call `close()`.
    - **Resolution:** Phase 3 provides both `__enter__/__exit__` and an idempotent `close()` on `Package`. Choosing which one the Phase 5 dialog uses is Phase 5's design decision and is out of Phase 3 scope.
-4. **Should `kicad_files.py` gain `file_kind` / `file_version` read helpers now?** (RESOLVED) Yes: tiny, tested, additive helpers so the importer does not touch `Node` internals; the layering test's `ALLOWED` map is unaffected. Planned in 03-03.
+4. **Should `kicad_files.py` gain `file_kind` / `file_version` read helpers now?** (RESOLVED) Yes: tiny, tested, additive helpers so the importer does not touch `Node` internals; the layering test's `ALLOWED` map is unaffected. Planned in 03-04.
 
 Related owner answers: A6's extra refusals are kept (CONTEXT.md D-19). The real loose-files case is the UL zip unzipped into `tmp_path` (CONTEXT.md D-17).
 

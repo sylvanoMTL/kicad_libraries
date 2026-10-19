@@ -94,20 +94,21 @@ Plans:
   4. For the UL sample, the suggested target library follows `<Type>_<SubCategory>_<Manufacturer>`, ends in `_TI` (from the `ti.com` datasheet host and existing `Custom/` prefixes), and is a default that can be overridden
   5. Names containing `/`, `:`, Windows-reserved names (e.g. `CON`, `NUL`) or traversal are sanitised, with `.` and `-` kept. Both the original and the sanitised name are reported.
 
-**Plans**: 6 plans
+**Plans**: 7 plans
 
 Plans:
 **Wave 1**
-- [ ] 03-01-PLAN.md — Tracer: UL zip -> staging outside the repo -> UL adapter -> candidate -> `IC_SubCategory_TI`; importer layering guard, shared zip builders, `downloaded_examples/** -text` (wave 1)
+- [ ] 03-01-PLAN.md — Tracer: UL zip -> staging outside the repo -> UL adapter -> candidate (with-block and explicit `close()`), then `IC_SubCategory_TI`; importer layering guard (wave 1)
+- [ ] 03-02-PLAN.md — Shared test builders: hostile/lying/encrypted zip builders, `unpack_sample` (UL zip unpacked into `tmp_path` as the real loose-files case, D-17), KiCad/3D/legacy bytes, synthetic `Custom/` layout, `downloaded_examples/** -text` (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 03-02-PLAN.md — Zip safety: whole-package refusal of hostile, duplicate and encrypted members, size/count/ratio caps on declared and real bytes, one-level nested zips, staging and cleanup checks (wave 2)
-- [ ] 03-03-PLAN.md — Detection: `file_kind` / `file_version` helpers, content checks and versions, every item returned, KiCad 5 legacy matrix, generic Unknown vendor, loose-folder adapter (wave 2)
-- [ ] 03-04-PLAN.md — Name sanitiser: `sanitize_name`, `sanitize_filename`, `case_clash`; every existing `Custom/` name unchanged (wave 2)
+- [ ] 03-03-PLAN.md — Zip safety: whole-package refusal of hostile, duplicate and encrypted members (D-05, D-19), size/count/ratio caps on declared and real bytes, one-level nested zips, staging and cleanup checks (wave 2)
+- [ ] 03-04-PLAN.md — Detection: `file_kind` / `file_version` helpers, content checks and versions, `(module ...)` footprints accepted with a warning (D-18), every item returned, KiCad 5 legacy matrix, generic Unknown vendor, loose-folder adapter on real UL files (D-17) (wave 2)
+- [ ] 03-05-PLAN.md — Name sanitiser: `sanitize_name`, `sanitize_filename`, `case_clash`; every existing `Custom/` name unchanged; `name_check` on every candidate symbol, footprint and model (original beside sanitised) (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 03-05-PLAN.md — Library suggestion: fresh `Custom/` listing, manufacturer alias/host/aggregator chain, SubCategory vocabulary, ranked alternatives, D-04 placeholder contract (wave 3)
-- [ ] 03-06-PLAN.md — Folder intake: read-only walk, links and junctions skipped, depth and size caps, loose folder and unzipped UL parity with zips (wave 3)
+- [ ] 03-06-PLAN.md — Library suggestion: fresh `Custom/` listing, manufacturer alias/host/aggregator chain, SubCategory vocabulary with an explicit spelling rule, ranked alternatives, D-04 placeholder contract (wave 3)
+- [ ] 03-07-PLAN.md — Folder intake: read-only walk, links and junctions skipped, depth and size caps, real loose UL files and unzipped UL parity with zips (D-17) (wave 3)
 
 ### Phase 4: Plan and Install Core
 
