@@ -4,10 +4,13 @@ import hashlib
 import zipfile
 from pathlib import Path
 
-from zipfixtures import STEP_BYTES, VRML_BYTES, footprint, make_zip, symbol_lib
+from zipfixtures import STEP_BYTES, VRML_BYTES, footprint, make_zip, symbol_lib, unpack_sample
 
+from kicad_lib_manager.importer import detect
 from kicad_lib_manager.importer import package as package_module
 from kicad_lib_manager.importer.adapters.base import Detection, locate
+from kicad_lib_manager.importer.adapters.loose import LOOSE_CONFIDENCE, LooseAdapter
+from kicad_lib_manager.importer.adapters.ultralibrarian import UltraLibrarianAdapter
 from kicad_lib_manager.importer.detect import ADAPTERS, detect_candidate
 from kicad_lib_manager.importer.package import Package, PackageFile, open_package
 from kicad_lib_manager.importer.suggest import TokenChoice, placeholder_tokens, suggest_library
@@ -43,7 +46,8 @@ def test_ultra_sample_end_to_end():
 
 
 def test_ultra_adapter_registry_holds_the_ultra_adapter():
-    assert [a.name for a in ADAPTERS] == ["UltraLibrarian"]
+    # Plan 03-04 registers the loose-folder adapter after the Ultra Librarian one (D-09)
+    assert [a.name for a in ADAPTERS] == ["UltraLibrarian", "Loose"]
 
 
 def test_ultra_sample_part_meta():
@@ -173,6 +177,8 @@ def _codes(issues, code):
     return [i for i in issues if i.code == code]
 
 
+# OHM SIGN (U+2126): must come through verbatim, never normalised to the Greek capital omega
+OHM_NAME = "Part_" + chr(0x2126)
 GOOD_PAIR = [("good.kicad_sym", symbol_lib(("GOOD",))), ("good.kicad_mod", footprint("GOODFP"))]
 
 
@@ -311,12 +317,108 @@ def test_locate_oversize_file_skipped(tmp_path, monkeypatch):
 
 def test_locate_casefolded_markers(tmp_path):
     members = [
-        ("KICADV6/2020-01-01_00-00-00.KICAD_SYM", symbol_lib(("Part_Ω",))),
+        ("KICADV6/2020-01-01_00-00-00.KICAD_SYM", symbol_lib((OHM_NAME,))),
         ("KICADV6/FOOTPRINTS.PRETTY/X.KICAD_MOD", footprint("X")),
         ("importguides.HTML", b"<html></html>"),
     ]
     candidate, _, staged = _detect_zip(tmp_path, members)
     assert candidate.vendor == "UltraLibrarian"
     assert len(staged) == 2
-    assert [s.name for s in candidate.symbols] == ["Part_Ω"]
+    assert [s.name for s in candidate.symbols] == [OHM_NAME]
     assert [f.name for f in candidate.footprints] == ["X"]
+
+
+# -- plan 03-04 task 2: generic vendor, loose folders, registry (D-09, D-17) -------
+
+GENERIC_MEMBERS = [("lib/x.kicad_sym", symbol_lib(("X",))), ("fp/y.kicad_mod", footprint("Y"))]
+
+
+def test_generic_unknown_vendor(tmp_path):
+    candidate, issues, _ = _detect_zip(tmp_path, GENERIC_MEMBERS)
+    assert candidate.vendor == "Unknown"
+    assert candidate.confidence == 0.1
+    for where in (issues, candidate.issues):
+        notes = _codes(where, "intake.unknown_vendor")
+        assert len(notes) == 1
+        assert notes[0].severity is Severity.INFO
+
+
+def _folder_package(folder, names=None):
+    """Build a folder Package over the files in folder, as plan 03-07's folder walk will."""
+    kinds = {".kicad_sym": "symbol", ".kicad_mod": "footprint", ".stp": "model", ".step": "model", ".wrl": "model"}
+    files = []
+    for path in sorted(folder.iterdir()):
+        data = path.read_bytes()
+        files.append(
+            PackageFile(path.name, path, kinds[path.suffix.casefold()], len(data), hashlib.sha256(data).hexdigest(), False)
+        )
+    return Package(
+        source=folder,
+        kind="folder",
+        names=names if names is not None else [pf.member for pf in files],
+        files=files,
+    )
+
+
+def test_loose_folder_package(tmp_path):
+    # D-17: the committed UL zip unpacked flat into tmp_path is the real loose-files case
+    folder = unpack_sample(tmp_path / "loose", flat=True, kicad_only=True)
+    package = _folder_package(folder)
+    assert len(package.files) == 3
+    candidate, issues = detect_candidate(package)
+    assert candidate is not None
+    assert candidate.vendor == "Loose"
+    assert candidate.confidence == 0.3
+    assert [s.name for s in candidate.symbols] == ["CSD85301Q2"]
+    assert [f.name for f in candidate.footprints] == ["DQK0006B"]
+    assert [m.filename for m in candidate.models] == ["DLV0006A.stp"]
+    assert not _codes(issues, "intake.unknown_vendor")
+    assert not _errors(issues)
+
+
+def test_loose_adapter_detect_rules(tmp_path):
+    adapter = LooseAdapter()
+    assert adapter.name == "Loose"
+    assert LOOSE_CONFIDENCE == 0.3
+    folder = tmp_path / "f"
+    folder.mkdir()
+    assert adapter.detect(Package(source=folder, kind="folder")) == Detection(
+        "Loose", 0.3, ("folder of loose files",)
+    )
+    assert adapter.detect(Package(source=tmp_path / "a.zip", kind="zip")) is None
+
+
+def test_ul_folder_beats_loose(tmp_path):
+    folder = tmp_path / "unzipped"
+    folder.mkdir()
+    (folder / "s.kicad_sym").write_bytes(symbol_lib(("S",)))
+    (folder / "f.kicad_mod").write_bytes(footprint("F"))
+    names = ["KiCADv6/2026-10-18_09-12-49.kicad_sym", "KiCADv6/ImportGuide.html", "ImportGuides.html"]
+    package = _folder_package(folder, names=names)
+    candidate, _ = detect_candidate(package)
+    assert candidate.vendor == "UltraLibrarian"
+    assert candidate.confidence == 0.9
+
+
+class _Fake:
+    def __init__(self, name, confidence):
+        self.name = name
+        self._confidence = confidence
+
+    def detect(self, package):
+        return Detection(self.name, self._confidence)
+
+
+def test_registry_extension_point(tmp_path, monkeypatch):
+    assert [type(a) for a in detect.ADAPTERS] == [UltraLibrarianAdapter, LooseAdapter]
+    monkeypatch.setattr(detect, "ADAPTERS", [*detect.ADAPTERS, _Fake("SnapEDA", 0.95)])
+    candidate, issues, _ = _detect_zip(tmp_path, GENERIC_MEMBERS)
+    assert candidate.vendor == "SnapEDA"
+    assert not _codes(issues, "intake.unknown_vendor")
+    with open_package(UL_ZIP, REPO_ROOT) as package:
+        ul, _ = detect_candidate(package)
+    assert ul.vendor == "UltraLibrarian"
+
+    monkeypatch.setattr(detect, "ADAPTERS", [_Fake("First", 0.5), _Fake("Second", 0.5)])
+    candidate, _, _ = _detect_zip(tmp_path, GENERIC_MEMBERS, name="tie.zip")
+    assert candidate.vendor == "First"
