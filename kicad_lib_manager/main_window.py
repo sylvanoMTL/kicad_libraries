@@ -76,33 +76,34 @@ class MainWindow(QMainWindow):
 
         file_menu = menubar.addMenu("&File")
 
-        gen_action = QAction("&Generate Tables", self)
-        gen_action.setShortcut(QKeySequence("Ctrl+G"))
-        gen_action.setToolTip("Generate sym-lib-table and fp-lib-table from selected libraries")
-        gen_action.setStatusTip("Generate sym-lib-table and fp-lib-table from selected libraries")
-        gen_action.triggered.connect(self._on_generate)
-        file_menu.addAction(gen_action)
+        # Kept as attributes: _set_scan_running toggles them while a scan runs
+        self._act_generate = QAction("&Generate Tables", self)
+        self._act_generate.setShortcut(QKeySequence("Ctrl+G"))
+        self._act_generate.setToolTip("Generate sym-lib-table and fp-lib-table from selected libraries")
+        self._act_generate.setStatusTip("Generate sym-lib-table and fp-lib-table from selected libraries")
+        self._act_generate.triggered.connect(self._on_generate)
+        file_menu.addAction(self._act_generate)
 
-        restore_action = QAction("&Restore Backup...", self)
-        restore_action.setShortcut(QKeySequence("Ctrl+R"))
-        restore_action.setToolTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
-        restore_action.setStatusTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
-        restore_action.triggered.connect(self._on_restore_backup)
-        file_menu.addAction(restore_action)
+        self._act_restore = QAction("&Restore Backup...", self)
+        self._act_restore.setShortcut(QKeySequence("Ctrl+R"))
+        self._act_restore.setToolTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
+        self._act_restore.setStatusTip("Restore a previous sym-lib-table / fp-lib-table backup pair")
+        self._act_restore.triggered.connect(self._on_restore_backup)
+        file_menu.addAction(self._act_restore)
 
-        rescan_action = QAction("Re&scan Libraries", self)
-        rescan_action.setShortcut(QKeySequence("Ctrl+Shift+R"))
-        rescan_action.setToolTip("Rescan the repository for symbol and footprint libraries")
-        rescan_action.setStatusTip("Rescan the repository for symbol and footprint libraries")
-        rescan_action.triggered.connect(self._on_rescan)
-        file_menu.addAction(rescan_action)
+        self._act_rescan = QAction("Re&scan Libraries", self)
+        self._act_rescan.setShortcut(QKeySequence("Ctrl+Shift+R"))
+        self._act_rescan.setToolTip("Rescan the repository for symbol and footprint libraries")
+        self._act_rescan.setStatusTip("Rescan the repository for symbol and footprint libraries")
+        self._act_rescan.triggered.connect(self._on_rescan)
+        file_menu.addAction(self._act_rescan)
 
-        kicad_action = QAction("Set KiCad &Footprint Path...", self)
-        kicad_action.setShortcut(QKeySequence("Ctrl+K"))
-        kicad_action.setToolTip("Set KiCad default footprint library folder for cross-referencing")
-        kicad_action.setStatusTip("Set KiCad default footprint library folder for cross-referencing")
-        kicad_action.triggered.connect(self._on_set_kicad_path)
-        file_menu.addAction(kicad_action)
+        self._act_set_kicad_path = QAction("Set KiCad &Footprint Path...", self)
+        self._act_set_kicad_path.setShortcut(QKeySequence("Ctrl+K"))
+        self._act_set_kicad_path.setToolTip("Set KiCad default footprint library folder for cross-referencing")
+        self._act_set_kicad_path.setStatusTip("Set KiCad default footprint library folder for cross-referencing")
+        self._act_set_kicad_path.triggered.connect(self._on_set_kicad_path)
+        file_menu.addAction(self._act_set_kicad_path)
 
         file_menu.addSeparator()
 
@@ -166,10 +167,10 @@ class MainWindow(QMainWindow):
         browse_btn.clicked.connect(self._on_browse_dest)
         toolbar.addWidget(browse_btn)
 
-        rescan_btn = QPushButton("Rescan")
-        rescan_btn.setToolTip("Rescan repository for libraries (Ctrl+Shift+R)")
-        rescan_btn.clicked.connect(self._on_rescan)
-        toolbar.addWidget(rescan_btn)
+        self._rescan_btn = QPushButton("Rescan")
+        self._rescan_btn.setToolTip("Rescan repository for libraries (Ctrl+Shift+R)")
+        self._rescan_btn.clicked.connect(self._on_rescan)
+        toolbar.addWidget(self._rescan_btn)
 
         self._generate_btn = QPushButton("Generate Tables")
         self._generate_btn.setStyleSheet(
@@ -260,7 +261,27 @@ class MainWindow(QMainWindow):
                 "info",
             )
 
+    def _set_scan_running(self, running: bool):
+        """Disable the controls that must not act while a scan is in flight."""
+        for control in (
+            self._rescan_btn, self._act_rescan, self._act_set_kicad_path,
+            self._act_generate, self._generate_btn,
+        ):
+            control.setEnabled(not running)
+
     def _start_scan(self):
+        """Start a scan; every scan request must go through here.
+
+        Refuses while a worker exists, because a disabled control does not stop a
+        programmatic caller (the post-import rescan included). The guard keys on
+        the worker reference, not on the thread's running state: the custom
+        finished signal fires while run() has not returned yet.
+        """
+        if self._worker is not None:
+            self._log.log("A scan is already running; request ignored.", "info")
+            return
+
+        self._set_scan_running(True)
         self._progress = QProgressDialog(
             "Scanning libraries...", None, 0, 100, self
         )
@@ -285,31 +306,38 @@ class MainWindow(QMainWindow):
         self._progress.setLabelText(message)
         self._progress.setValue(min(percentage, 99))
 
+    def _finish_scan(self):
+        """Release the worker and re-enable the controls; always runs after a scan."""
+        if self._worker is not None:
+            self._worker.wait()
+            self._worker = None
+        self._set_scan_running(False)
+
     def _on_scan_finished(self, result: ScanResult):
-        self._progress.setValue(100)
-        self._scan_result = result
+        try:
+            self._progress.setValue(100)
+            self._scan_result = result
 
-        sym_count = len(result.symbol_libs)
-        fp_count = len(result.footprint_libs)
-        self._log.log(
-            f"Found {sym_count} symbol libraries, {fp_count} footprint libraries.",
-            "success",
-        )
+            sym_count = len(result.symbol_libs)
+            fp_count = len(result.footprint_libs)
+            self._log.log(
+                f"Found {sym_count} symbol libraries, {fp_count} footprint libraries.",
+                "success",
+            )
 
-        # Pre-select libraries that exist in the current table files
-        self._apply_existing_selection(result)
+            # Pre-select libraries that exist in the current table files
+            self._apply_existing_selection(result)
 
-        self._tree.populate(result)
+            self._tree.populate(result)
 
-        self._log_issues(result.issues)
+            self._log_issues(result.issues)
 
-        if not any(
-            i.severity in (Severity.WARNING, Severity.ERROR) for i in result.issues
-        ):
-            self._log.log("No warnings.", "success")
-
-        self._worker.wait()
-        self._worker = None
+            if not any(
+                i.severity in (Severity.WARNING, Severity.ERROR) for i in result.issues
+            ):
+                self._log.log("No warnings.", "success")
+        finally:
+            self._finish_scan()
 
     def _apply_existing_selection(self, result: ScanResult):
         """Pre-select libraries that are already present in the destination tables."""
@@ -350,10 +378,11 @@ class MainWindow(QMainWindow):
         )
 
     def _on_scan_error(self, error_msg: str):
-        self._progress.close()
-        self._log.log(f"Scan error: {error_msg}", "error")
-        self._worker.wait()
-        self._worker = None
+        try:
+            self._progress.close()
+            self._log.log(f"Scan error: {error_msg}", "error")
+        finally:
+            self._finish_scan()
 
     def _log_issues(self, issues: list[Issue]):
         for issue in issues:
@@ -410,6 +439,9 @@ class MainWindow(QMainWindow):
             ))
 
     def _on_set_kicad_path(self):
+        if self._worker is not None:
+            self._log.log("A scan is already running; request ignored.", "info")
+            return
         current = str(self._kicad_fp_dir) if self._kicad_fp_dir else "C:/Program Files"
         folder = QFileDialog.getExistingDirectory(
             self,
@@ -465,5 +497,8 @@ class MainWindow(QMainWindow):
         about.exec()
 
     def closeEvent(self, event: QCloseEvent):
+        # Never destroy a running QThread
+        if self._worker is not None:
+            self._worker.wait()
         save_window_geometry(self.saveGeometry())
         super().closeEvent(event)
