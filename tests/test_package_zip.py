@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import types
 import zipfile
 from pathlib import Path
 
@@ -488,3 +489,197 @@ def test_corrupt_lzma_member_refused_and_cleaned_up(tmp_path, _tmpdir):
     assert package.files == []
     assert package.staging_dir is None
     assert list(_tmpdir.iterdir()) == []
+
+
+_CODEC_NAMES = ["ZIP_STORED", "ZIP_DEFLATED", "ZIP_BZIP2", "ZIP_LZMA", "ZIP_ZSTANDARD"]
+
+
+def _codec(name: str) -> int:
+    method = getattr(zipfile, name, None)
+    if method is None:
+        pytest.skip(f"this Python's zipfile has no {name}")
+    return method
+
+
+def _corrupt_part_zip(path: Path, method: int) -> Path:
+    data = zip_bytes([("p.kicad_sym", symbol_lib(("PART",)))], compression=method)
+    path.write_bytes(corrupt_member(data, 0, _FLIP_OFFSET))
+    return path
+
+
+@pytest.mark.parametrize("name", _CODEC_NAMES)
+def test_corrupt_member_every_codec_refused_and_cleaned_up(name, tmp_path, _tmpdir):
+    path = _corrupt_part_zip(tmp_path / "bad.zip", _codec(name))
+    package = open_package(path, REPO_ROOT)
+    assert package.refused is True
+    assert _codes(package) == ["intake.corrupt"]
+    assert "p.kicad_sym" in _errors(package)[0].text
+    assert package.files == []
+    assert package.staging_dir is None
+    assert list(_tmpdir.iterdir()) == []
+
+
+def test_corrupt_zstd_fixture_raises_zstd_error(tmp_path):
+    method = _codec("ZIP_ZSTANDARD")
+    from compression.zstd import ZstdError
+
+    path = _corrupt_part_zip(tmp_path / "bad.zip", method)
+    with zipfile.ZipFile(path) as zf:
+        with pytest.raises(ZstdError):
+            with zf.open(zf.infolist()[0]) as src:
+                while src.read(65536):
+                    pass
+
+
+def test_corrupt_member_covers_every_zip_codec():
+    # Tripwire: a codec this zipfile can write but the corrupt-member test does not cover
+    # may raise an error class that _READ_ERRORS misses, so it must be reviewed first.
+    writable = set()
+    for attr in dir(zipfile):
+        value = getattr(zipfile, attr)
+        if not attr.startswith("ZIP_") or not isinstance(value, int) or value not in zipfile.compressor_names:
+            continue
+        try:
+            with zipfile.ZipFile(io.BytesIO(), "w") as zf:
+                zf.writestr("a.txt", b"x" * 100, compress_type=value)
+        except (NotImplementedError, RuntimeError):
+            continue
+        writable.add(value)
+    covered = {getattr(zipfile, n) for n in _CODEC_NAMES if getattr(zipfile, n, None) is not None}
+    assert writable == covered
+
+
+def test_corrupt_nested_lzma_member_refused(tmp_path, _tmpdir):
+    inner = corrupt_member(
+        zip_bytes([("p.kicad_sym", symbol_lib(("PART",)))], compression=zipfile.ZIP_LZMA), 0, _FLIP_OFFSET
+    )
+    outer = make_zip(tmp_path / "outer.zip", [("inner.zip", inner)])
+    package = open_package(outer, REPO_ROOT)
+    assert _codes(package) == ["intake.corrupt"]
+    assert "inner.zip/p.kicad_sym" in _errors(package)[0].text
+    assert package.files == []
+    assert list(_tmpdir.iterdir()) == []
+
+
+def test_corrupt_member_mid_staging_removes_earlier_files_and_spares_other_package(tmp_path, _tmpdir):
+    with open_package(UL_ZIP, REPO_ROOT) as held:
+        recorded = [(f.path, hashlib.sha256(f.path.read_bytes()).hexdigest()) for f in held.files]
+        assert recorded
+        data = zip_bytes(
+            [
+                ("a.step", STEP_BYTES),
+                ("b.kicad_mod", footprint()),
+                ("c.kicad_sym", symbol_lib(("PART",))),
+            ],
+            compression=zipfile.ZIP_LZMA,
+        )
+        bad = tmp_path / "bad.zip"
+        bad.write_bytes(corrupt_member(data, 2, _FLIP_OFFSET))
+        package = open_package(bad, REPO_ROOT)
+        assert _codes(package) == ["intake.corrupt"]
+        assert "c.kicad_sym" in _errors(package)[0].text
+        assert package.files == []
+        assert [p.name for p in _tmpdir.iterdir()] == [held.staging_dir.name]
+        for path, digest in recorded:
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
+    assert list(_tmpdir.iterdir()) == []
+
+
+def test_staging_failed_missing_temp_folder(tmp_path, monkeypatch):
+    missing = tmp_path / "missing"
+    monkeypatch.setattr(tempfile, "tempdir", str(missing))
+    package = open_package(UL_ZIP, REPO_ROOT)
+    assert _codes(package) == ["intake.staging_failed"]
+    assert "ul_CSD85301Q2.zip" in _errors(package)[0].text
+    assert package.files == []
+    assert package.staging_dir is None
+    assert not missing.exists()
+
+
+def test_staging_failed_permission_error(monkeypatch, _tmpdir):
+    def deny(*args, **kwargs):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr(pkg, "tempfile", types.SimpleNamespace(TemporaryDirectory=deny))
+    package = open_package(UL_ZIP, REPO_ROOT)
+    assert _codes(package) == ["intake.staging_failed"]
+    assert "Access is denied" in _errors(package)[0].text
+    assert package.files == []
+    assert package.staging_dir is None
+
+
+def _build_missing_path(tmp_path, monkeypatch):
+    return tmp_path / "absent.zip"
+
+
+def _build_text_file(tmp_path, monkeypatch):
+    path = tmp_path / "notes.txt"
+    path.write_bytes(b"hello")
+    return path
+
+
+def _build_zero_byte_zip(tmp_path, monkeypatch):
+    path = tmp_path / "zero.zip"
+    path.write_bytes(b"")
+    return path
+
+
+def _build_text_zip(tmp_path, monkeypatch):
+    path = tmp_path / "text.zip"
+    path.write_bytes(b"hello")
+    return path
+
+
+def _build_corrupt_lzma(tmp_path, monkeypatch):
+    return _corrupt_part_zip(tmp_path / "bad.zip", zipfile.ZIP_LZMA)
+
+
+def _build_corrupt_zstd(tmp_path, monkeypatch):
+    return _corrupt_part_zip(tmp_path / "bad.zip", _codec("ZIP_ZSTANDARD"))
+
+
+def _build_lying_header(tmp_path, monkeypatch):
+    data = zip_bytes([("big.kicad_sym", b"x" * 5_000_000)])
+    path = tmp_path / "lie.zip"
+    path.write_bytes(lie_about_size(data, 100))
+    return path
+
+
+def _build_encrypted(tmp_path, monkeypatch):
+    path = tmp_path / "enc.zip"
+    path.write_bytes(mark_encrypted(zip_bytes([("a.kicad_sym", symbol_lib())])))
+    return path
+
+
+def _build_hostile_name(tmp_path, monkeypatch):
+    return make_zip(tmp_path / "evil.zip", [("../evil.step", STEP_BYTES)])
+
+
+def _build_missing_temp_folder(tmp_path, monkeypatch):
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path / "missing"))
+    return UL_ZIP
+
+
+NEVER_RAISES = {
+    "missing_path": (_build_missing_path, "intake.not_found"),
+    "text_file": (_build_text_file, "intake.unsupported"),
+    "zero_byte_zip": (_build_zero_byte_zip, "intake.corrupt"),
+    "text_zip": (_build_text_zip, "intake.corrupt"),
+    "corrupt_lzma": (_build_corrupt_lzma, "intake.corrupt"),
+    "corrupt_zstd": (_build_corrupt_zstd, "intake.corrupt"),
+    "lying_header": (_build_lying_header, "intake.corrupt"),
+    "encrypted": (_build_encrypted, "intake.encrypted"),
+    "hostile_name": (_build_hostile_name, "intake.hostile_member"),
+    "missing_temp_folder": (_build_missing_temp_folder, "intake.staging_failed"),
+}
+
+
+@pytest.mark.parametrize("case", list(NEVER_RAISES), ids=list(NEVER_RAISES))
+def test_open_package_never_raises_on_expected_faults(case, tmp_path, _tmpdir, monkeypatch):
+    build, expected = NEVER_RAISES[case]
+    path = build(tmp_path, monkeypatch)
+    package = open_package(path, REPO_ROOT)
+    assert package.refused is True
+    assert _codes(package) == [expected]
+    assert package.files == []
+    assert package.staging_dir is None
