@@ -243,20 +243,134 @@ def next_property_id(symbol_node: Node) -> int | None:
     return max(found) + 1 if found else None
 
 
+# Format versions where the property writer changed: ids stop at 20220914, (hide yes) starts at 20231120
+_NO_ID_FROM = 20220914
+_HIDE_YES_FROM = 20231120
+_DESCRIPTION_FROM = 20230620
+_HIDDEN_TEMPLATE_ORDER = ("Datasheet", "Footprint", "ki_fp_filters", "ki_keywords")
+
+
+def _effects_node(property_node: Node) -> Node | None:
+    return next((c for c in property_node.children if c.head == "effects"), None)
+
+
+def _hide_part(effects: Node) -> Node | None:
+    """Return the bare hide atom or (hide ...) list inside an effects list, or None."""
+    for part in effects.children[1:]:
+        if (part.kind == "atom" and part.text == "hide") or part.head == "hide":
+            return part
+    return None
+
+
+def _hide_is_on(part: Node) -> bool:
+    if part.kind == "atom" or len(part.children) < 2:
+        return True
+    value = part.children[1]
+    return _is_token(value) and unquote(value.text) == "yes"
+
+
+def property_is_hidden(prop: PropertyRef) -> bool:
+    """True when the property's effects carry a bare hide or (hide yes)."""
+    effects = _effects_node(prop.node)
+    if effects is None:
+        return False
+    part = _hide_part(effects)
+    return part is not None and _hide_is_on(part)
+
+
+def hidden_template(symbol_node: Node) -> PropertyRef | None:
+    """Return a hidden property to clone: Datasheet, Footprint, ki_fp_filters, ki_keywords, then any hidden one."""
+    for name in _HIDDEN_TEMPLATE_ORDER:
+        prop = find_property(symbol_node, name)
+        if prop is not None and property_is_hidden(prop):
+            return prop
+    for child in symbol_node.children:
+        if child.head != "property" or len(child.children) < 3:
+            continue
+        name_node, value_node = child.children[1], child.children[2]
+        if not (_is_token(name_node) and _is_token(value_node)):
+            continue
+        prop = PropertyRef(unquote(name_node.text), unquote(value_node.text), child, name_node, value_node)
+        if property_is_hidden(prop):
+            return prop
+    return None
+
+
+def rename_property_edit(prop: PropertyRef, new_name: str) -> Edit:
+    """Return the edit that replaces only the property's name token."""
+    return Edit(prop.name_node.start, prop.name_node.end, quote(new_name))
+
+
+def synth_property_text(name: str, value: str, *, version: int | None, next_id: int | None) -> str:
+    """Return a hidden property block for a symbol that has no hidden property to clone.
+
+    The id appears only before format 20220914, bare hide before 20231120, (hide yes) from then on.
+    An unknown version is written in the current style.
+    """
+    parts = [f"(property {quote(name)} {quote(value)}"]
+    if next_id is not None and version is not None and version < _NO_ID_FROM:
+        parts.append(f" (id {next_id})")
+    parts.append(" (at 0 0 0) (effects (font (size 1.27 1.27))")
+    parts.append(" hide)" if version is not None and version < _HIDE_YES_FROM else " (hide yes))")
+    parts.append(")")
+    return "".join(parts)
+
+
+def description_field_name(symbol_node: Node, version: int | None) -> str:
+    """Return the name to use for the description field of a symbol.
+
+    An existing Description or ki_description wins; otherwise the target's own format decides.
+    """
+    for name in ("Description", "ki_description"):
+        if find_property(symbol_node, name) is not None:
+            return name
+    if version is None or version >= _DESCRIPTION_FROM:
+        return "Description"
+    return "ki_description"
+
+
 def new_property_text(
-    text: str, template: PropertyRef, name: str, value: str, next_id: int | None
+    text: str,
+    template: PropertyRef,
+    name: str,
+    value: str,
+    next_id: int | None,
+    *,
+    version: int | None = None,
 ) -> str:
-    """Return a copy of the template property with a new name and value (and id when it carries one)."""
+    """Return a hidden copy of the template property with a new name and value.
+
+    The id is renewed when the template carries one. A template that is not hidden gets the hide
+    flag in the style of version; without a version the template's own style decides (ids mean bare hide).
+    """
     block = text[template.node.start:template.node.end]
     node = parse(block).children[0]
     edits = [
         Edit(node.children[1].start, node.children[1].end, quote(name)),
         Edit(node.children[2].start, node.children[2].end, quote(value)),
     ]
-    if next_id is not None:
-        for part in node.children:
-            if part.head == "id" and len(part.children) >= 2:
+    has_id = False
+    for part in node.children:
+        if part.head == "id" and len(part.children) >= 2:
+            has_id = True
+            if next_id is not None:
                 edits.append(Edit(part.children[1].start, part.children[1].end, str(next_id)))
+    bare = has_id if version is None else version < _HIDE_YES_FROM
+    effects = _effects_node(node)
+    if effects is None:
+        last = node.children[-1].end
+        flag = " hide" if bare else " (hide yes)"
+        edits.append(Edit(last, last, f" (effects (font (size 1.27 1.27)){flag})"))
+    else:
+        part = _hide_part(effects)
+        if part is None:
+            end = effects.children[-1].end
+            edits.append(Edit(end, end, " hide" if bare else " (hide yes)"))
+        elif not _hide_is_on(part):
+            if bare:
+                edits.append(Edit(part.start, part.end, "hide"))
+            else:
+                edits.append(Edit(part.children[1].start, part.children[1].end, "yes"))
     return apply_edits(block, edits)
 
 
