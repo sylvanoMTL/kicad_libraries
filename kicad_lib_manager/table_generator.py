@@ -1,5 +1,6 @@
 import re
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 
 from . import fsutil, kicad_files
@@ -11,46 +12,6 @@ ENV_VAR = "KICAD_LIB_GITHUB"
 _MANAGED_MARKER = f"${{{ENV_VAR}}}/"
 
 _TABLE_FILES = {"sym_lib_table": "sym-lib-table", "fp_lib_table": "fp-lib-table"}
-
-# Regex to extract individual (lib ...) entries from a table file
-_LIB_ENTRY_RE = re.compile(
-    r'\(lib\s+\(name\s+"([^"]*)"\)'
-    r'\(type\s+"([^"]*)"\)'
-    r'\(uri\s+"([^"]*)"\)'
-    r'\(options\s+"([^"]*)"\)'
-    r'\(descr\s+"([^"]*)"\)\)',
-)
-
-
-def parse_lib_table(path: Path) -> list[dict]:
-    """Parse an existing sym-lib-table or fp-lib-table file.
-
-    Returns a list of dicts with keys: name, type, uri, options, descr, raw.
-    """
-    if not path.exists():
-        return []
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
-
-    entries = []
-    for m in _LIB_ENTRY_RE.finditer(text):
-        entries.append({
-            "name": m.group(1),
-            "type": m.group(2),
-            "uri": m.group(3),
-            "options": m.group(4),
-            "descr": m.group(5),
-            "raw": m.group(0),
-        })
-    return entries
-
-
-def count_table_entries(path: Path) -> int:
-    """Count the number of library entries in an existing table file."""
-    return len(parse_lib_table(path))
-
 
 def _entry_text(name: str, uri: str) -> str:
     return (
@@ -252,16 +213,6 @@ def write_tables(dest_folder: Path,
     return issues
 
 
-def list_backups(folder: Path) -> list[Path]:
-    backups = []
-    pattern = re.compile(r"(sym-lib-table|fp-lib-table)_backup_\d+$")
-    if folder.exists():
-        for f in sorted(folder.iterdir()):
-            if f.is_file() and pattern.match(f.name):
-                backups.append(f)
-    return backups
-
-
 def list_backup_pairs(folder: Path) -> list[tuple[int, Path | None, Path | None]]:
     """List backups grouped by number. Returns (number, sym_path, fp_path) tuples."""
     sym_pattern = re.compile(r"sym-lib-table_backup_(\d+)$")
@@ -285,33 +236,57 @@ def list_backup_pairs(folder: Path) -> list[tuple[int, Path | None, Path | None]
     return [(n, sym_map.get(n), fp_map.get(n)) for n in all_nums]
 
 
-def restore_backup(backup_path: Path) -> list[str]:
-    messages = []
-    name = backup_path.name
-    # Extract base name: remove _backup_N suffix
-    base_name = re.sub(r"_backup_\d+$", "", name)
-    current_path = backup_path.parent / base_name
-
-    # Back up current file before restoring
-    backup = backup_existing(current_path)
-    if backup:
-        messages.append(f"Backed up current {base_name} -> {backup.name}")
-
-    shutil.copy2(backup_path, current_path)
-    messages.append(f"Restored {name} -> {base_name}")
-    return messages
-
-
-def restore_backup_pair(folder: Path, backup_num: int) -> list[str]:
+def restore_backup_pair(folder: Path, backup_num: int) -> list[Issue]:
     """Restore both sym-lib-table and fp-lib-table for a given backup number."""
-    messages = []
+    issues: list[Issue] = []
     for base_name in ("sym-lib-table", "fp-lib-table"):
         backup_path = folder / f"{base_name}_backup_{backup_num}"
-        if backup_path.exists():
-            current_path = folder / base_name
-            existing_backup = backup_existing(current_path)
-            if existing_backup:
-                messages.append(f"Backed up current {base_name} -> {existing_backup.name}")
-            shutil.copy2(backup_path, current_path)
-            messages.append(f"Restored {backup_path.name} -> {base_name}")
-    return messages
+        if not backup_path.is_file():
+            continue
+        try:
+            data = backup_path.read_bytes()
+        except OSError as e:
+            issues.append(Issue(Severity.ERROR, "fs.read_failed",
+                                f"Could not read {backup_path.name}: {e.strerror or e}"))
+            continue
+
+        current_path = folder / base_name
+        # Never overwrite a table without a safety copy of it
+        if current_path.exists():
+            safety = fsutil.backup_file(current_path, folder)
+            if isinstance(safety, Issue):
+                issues.append(safety)
+                continue
+            issues.append(Issue(Severity.INFO, "table.backed_up",
+                                f"Backed up current {base_name} -> {safety.name}"))
+
+        failure = fsutil.atomic_write_bytes(current_path, data)
+        if failure is not None:
+            issues.append(failure)
+            continue
+        issues.append(Issue(Severity.SUCCESS, "table.restored",
+                            f"Restored {backup_path.name} -> {base_name}"))
+    return issues
+
+
+@dataclass(frozen=True)
+class TableInfo:
+    entry_count: int
+    managed: frozenset[str]  # repo-relative paths (URI tails) of managed entries
+
+
+def table_info(path: Path) -> TableInfo | Issue | None:
+    """Read a lib table's entry count and managed rel_paths; None when the file is absent."""
+    if not path.exists():
+        return None
+    loaded = kicad_files.load(path)
+    if isinstance(loaded, Issue):
+        return loaded
+    table = kicad_files.lib_table(loaded.root)
+    if table is None:
+        return Issue(Severity.ERROR, "table.unrecognised",
+                     f"Could not read {path.name}: no lib table found")
+    managed = frozenset(
+        e.uri.split(_MANAGED_MARKER, 1)[1] for e in table.entries if _is_managed(e)
+    )
+    return TableInfo(len(table.entries), managed)
