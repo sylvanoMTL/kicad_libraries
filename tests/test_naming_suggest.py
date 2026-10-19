@@ -6,11 +6,15 @@ import pytest
 from zipfixtures import (
     CURRENT_CUSTOM_FOOTPRINT_LIBS,
     CURRENT_CUSTOM_SYMBOL_LIBS,
+    REPO_ROOT,
+    UL_ZIP,
     symbol_lib,
     write_custom_layout,
 )
 
+from kicad_lib_manager.importer import suggest as suggest_mod
 from kicad_lib_manager.importer.candidate import ExistingLibrary, PartMeta
+from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import (
     RepoLayout,
     list_existing_libraries,
@@ -18,11 +22,14 @@ from kicad_lib_manager.importer.layout import (
     list_model_files,
     list_symbol_libs,
 )
+from kicad_lib_manager.importer.naming import sanitize_name
+from kicad_lib_manager.importer.package import open_package
 from kicad_lib_manager.importer.suggest import (
     TokenChoice,
     is_aggregator_host,
     manufacturer_choice,
     manufacturer_token,
+    placeholder_tokens,
     suggest_library,
 )
 from kicad_lib_manager.models import Severity
@@ -181,3 +188,236 @@ def test_manufacturer_aggregator_ignored():
     assert (Severity.INFO, "naming.aggregator_host") in _codes(suggestion)
     plain = suggest_library(PartMeta("X", reference="U", datasheet="https://www.ti.com/x"))
     assert (Severity.INFO, "naming.aggregator_host") not in _codes(plain)
+
+
+# -- Task 2: SubCategory vocabulary, ranking, sanitise pass, D-04 contract ---------------------
+
+UL_ALTERNATIVES = [
+    "IC_Battery_Charger_TI",
+    "IC_Battery_Fuel_Gauge_ADI",
+    "IC_Button_Controller_ADI",
+    "IC_IMU_TDK",
+    "IC_Magnetometer_Memsic",
+]
+CHARGER_META = PartMeta(
+    "X",
+    reference="U",
+    description="Single-cell Li-Ion battery charger with power path",
+    datasheet="https://www.ti.com/x",
+)
+
+
+def _ul_meta() -> PartMeta:
+    with open_package(UL_ZIP, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+        return candidate.symbols[0].meta
+
+
+def _suggest(meta, existing=()):
+    """Suggest and check that the produced name is already sanitised (every suggestion in this file)."""
+    suggestion = suggest_library(meta, existing)
+    assert sanitize_name(suggestion.name).changed is False
+    return suggestion
+
+
+def _libs(*names):
+    return [ExistingLibrary(name, True, True) for name in names]
+
+
+def test_suggest_ul_sample_with_layout(tmp_path):
+    suggestion = _suggest(_ul_meta(), _existing(tmp_path))
+    assert suggestion.name == "IC_SubCategory_TI"
+    assert suggestion.confidence == "low"
+    assert suggestion.placeholders == ("SubCategory",)
+    assert suggestion.matches_existing is False
+    assert [a.name for a in suggestion.alternatives] == UL_ALTERNATIVES
+    first = suggestion.alternatives[0]
+    assert first.score == 5
+    assert first.shared_tokens == ("IC", "TI")
+    assert [a.score for a in suggestion.alternatives[1:]] == [2, 2, 2, 2]
+    assert first.has_symbols and first.has_footprints
+    assert suggestion.alternatives[3].name == "IC_IMU_TDK"
+    assert suggestion.alternatives[3].has_footprints is False
+    assert (Severity.WARNING, "naming.placeholder") in _codes(suggestion)
+
+
+def test_suggest_vocab_full_match(tmp_path):
+    suggestion = _suggest(CHARGER_META, _existing(tmp_path))
+    assert suggestion.name == "IC_Battery_Charger_TI"
+    assert suggestion.confidence == "high"
+    assert suggestion.placeholders == ()
+    assert suggestion.matches_existing is True
+    assert suggestion.subcategory == TokenChoice("Battery_Charger", "vocab", True)
+    codes = {code for _, code in _codes(suggestion)}
+    assert "naming.placeholder" not in codes
+    assert "naming.low_confidence" not in codes
+    # The matched library is also the first alternative, with its shared tokens in name order
+    top = suggestion.alternatives[0]
+    assert (top.name, top.score) == ("IC_Battery_Charger_TI", 7)
+    assert top.shared_tokens == ("IC", "Battery", "Charger", "TI")
+
+
+def test_suggest_vocab_whole_tokens_only(tmp_path):
+    existing = _existing(tmp_path)
+    part_number = PartMeta("X", reference="J", value="USB4056-03-A", datasheet="https://www.gct.co/x")
+    assert _suggest(part_number, existing).name == "Connector_SubCategory_GCT"
+    described = PartMeta(
+        "X",
+        reference="J",
+        value="USB4056-03-A",
+        description="USB Type-C receptacle",
+        datasheet="https://www.gct.co/x",
+    )
+    assert _suggest(described, existing).name == "Connector_USB_GCT"
+
+
+def test_suggest_vocab_prefers_more_tokens(tmp_path):
+    meta = PartMeta("X", reference="U", description="battery fuel gauge and charger")
+    suggestion = _suggest(meta, _existing(tmp_path))
+    assert suggestion.subcategory == TokenChoice("Battery_Fuel_Gauge", "vocab", True)
+
+
+def test_suggest_vocab_literal_newline_escapes(tmp_path):
+    # A literal backslash followed by n, as stored in the existing Custom/ descriptions
+    meta = PartMeta("X", reference="U", description="Fuel\\nGauge   for battery")
+    suggestion = _suggest(meta, _existing(tmp_path))
+    assert suggestion.subcategory == TokenChoice("Battery_Fuel_Gauge", "vocab", True)
+
+
+def test_suggest_unknown_reference_takes_type_from_vocab(tmp_path):
+    meta = PartMeta("X", reference="", description="3-axis magnetometer", datasheet="https://www.memsic.com/x")
+    suggestion = _suggest(meta, _existing(tmp_path))
+    assert suggestion.name == "IC_Magnetometer_Memsic"
+    assert suggestion.type == TokenChoice("IC", "vocab", False)
+    assert suggestion.confidence == "low"
+    assert suggestion.matches_existing is True
+    assert (Severity.WARNING, "naming.low_confidence") in _codes(suggestion)
+
+
+def test_suggest_known_reference_limits_vocab_to_its_type(tmp_path):
+    # "Magnetometer" is an IC library; a connector part never borrows it
+    meta = PartMeta("X", reference="J", description="3-axis magnetometer")
+    suggestion = _suggest(meta, _existing(tmp_path))
+    assert suggestion.name == "Connector_SubCategory_Manufacturer"
+
+
+def test_suggest_all_placeholders():
+    suggestion = _suggest(PartMeta(symbol_name="X"), ())
+    assert suggestion.name == "Type_SubCategory_Manufacturer"
+    assert suggestion.placeholders == ("Type", "SubCategory", "Manufacturer")
+    assert suggestion.confidence == "low"
+    assert suggestion.alternatives == ()
+    assert suggestion.matches_existing is False
+
+
+def test_suggest_guess_warns_low_confidence():
+    meta = PartMeta("X", reference="U", manufacturer="Acme Widgets")
+    suggestion = _suggest(meta, ())
+    assert suggestion.name == "IC_SubCategory_Acme"
+    assert suggestion.confidence == "low"
+    warning = next(i for i in suggestion.issues if i.code == "naming.low_confidence")
+    assert warning.severity is Severity.WARNING
+    assert "Acme (property)" in warning.text
+    assert "SubCategory (placeholder)" in warning.text
+
+
+def test_suggest_issue_order():
+    meta = PartMeta("X", reference="U", datasheet="https://www.snapeda.com/x")
+    codes = [i.code for i in _suggest(meta, ()).issues]
+    assert codes == ["naming.aggregator_host", "naming.low_confidence", "naming.placeholder"]
+
+
+def test_suggest_ranking_cap_and_determinism():
+    names = [
+        "IC_Alpha_TI",
+        "IC_bravo_TI",
+        "IC_Charlie_TI",
+        "IC_delta_TI",
+        "IC_Echo_TI",
+        "IC_foxtrot_TI",
+        "IC_Golf_TI",
+        "IC_hotel_TI",
+    ]
+    meta = PartMeta("X", reference="U", datasheet="https://www.ti.com/x")
+    first = _suggest(meta, _libs(*reversed(names)))
+    second = _suggest(meta, _libs(*names))
+    assert [a.name for a in first.alternatives] == [
+        "IC_Alpha_TI",
+        "IC_bravo_TI",
+        "IC_Charlie_TI",
+        "IC_delta_TI",
+        "IC_Echo_TI",
+    ]
+    assert len(first.alternatives) == 5
+    assert all(a.score == 5 for a in first.alternatives)
+    assert first == second
+    assert suggest_library(meta, _libs(*names)) == second
+    assert suggest_mod.MAX_ALTERNATIVES == 5
+
+
+def test_suggest_ranking_scores_follow_the_formula():
+    meta = PartMeta("X", reference="U", description="fuel gauge", datasheet="https://www.ti.com/x")
+    existing = _libs("IC_Fuel_Gauge_ADI", "IC_Other_TI", "Connector_Fuel_TI", "Connector_USB_GCT")
+    ranked = {a.name: a.score for a in _suggest(meta, existing).alternatives}
+    # type 2 + shared 2 / mfr 3 + type 2 / mfr 3 + shared 1; Connector_USB_GCT scores 0 and is dropped
+    assert ranked == {"IC_Fuel_Gauge_ADI": 4, "IC_Other_TI": 5, "Connector_Fuel_TI": 4}
+
+
+def test_suggest_case_clash_and_exact_match():
+    suggestion = _suggest(CHARGER_META, _libs("ic_battery_charger_ti"))
+    assert suggestion.name == "IC_battery_charger_TI"
+    assert suggestion.subcategory == TokenChoice("battery_charger", "vocab", True)
+    assert suggestion.type == TokenChoice("IC", "reference", True)
+    assert suggestion.manufacturer == TokenChoice("TI", "host_table", True)
+    assert suggestion.matches_existing is False
+    clash = [i for i in suggestion.issues if i.code == "naming.case_clash"]
+    assert len(clash) == 1
+    assert clash[0].severity is Severity.WARNING
+    assert "IC_battery_charger_TI" in clash[0].text
+    assert "ic_battery_charger_ti" in clash[0].text
+
+
+def test_suggest_exact_match_with_guessed_manufacturer():
+    meta = PartMeta("X", reference="U", manufacturer="Würth Elektronik", description="battery charger")
+    suggestion = _suggest(meta, _libs("IC_Battery_Charger_Wurth"))
+    assert suggestion.name == "IC_Battery_Charger_Wurth"
+    assert suggestion.matches_existing is True
+    assert suggestion.confidence == "low"
+
+
+def test_suggest_sanitize_issues_are_reported():
+    # An odd vocabulary Type is sanitised and the change is listed among the issues
+    meta = PartMeta("X", reference="", description="3-axis magnetometer", datasheet="https://www.memsic.com/x")
+    suggestion = _suggest(meta, _libs("I C_Magnetometer_Memsic"))
+    assert suggestion.name == "I_C_Magnetometer_Memsic"
+    assert any(i.code == "naming.changed" and i.severity is Severity.INFO for i in suggestion.issues)
+
+
+def test_suggest_never_raises_on_odd_input():
+    odd = PartMeta(
+        "X",
+        reference="#PWR",
+        value="~",
+        datasheet="http://[bad",
+        description="\\n\\n   µΩ",
+        keywords="\x00",
+        manufacturer="  ",
+    )
+    assert _suggest(odd, ()).name == "Type_SubCategory_Manufacturer"
+
+
+def test_placeholder_contract_on_edited_name(tmp_path):
+    # D-04: Phases 4 and 5 call these on a plain edited string, with no suggestion object
+    assert placeholder_tokens("Transistor_MOSFET_TI") == []
+    assert sanitize_name("Transistor_MOSFET_TI").changed is False
+    suggestion = _suggest(_ul_meta(), _existing(tmp_path))
+    assert placeholder_tokens(suggestion.name) == ["SubCategory"]
+    assert placeholder_tokens("Type_SubCategory_Manufacturer") == ["Type", "SubCategory", "Manufacturer"]
+
+
+def test_suggest_live_custom():
+    if not (REPO_ROOT / "Custom" / "Symbols").is_dir():
+        pytest.skip("Custom submodule not checked out (git submodule update --init Custom)")
+    suggestion = _suggest(_ul_meta(), list_existing_libraries(RepoLayout.for_repo(REPO_ROOT)))
+    assert suggestion.name == "IC_SubCategory_TI"
+    assert suggestion.alternatives[0].name == "IC_Battery_Charger_TI"
