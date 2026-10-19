@@ -1,6 +1,7 @@
 """Suggest a <Type>_<SubCategory>_<Manufacturer> library name for a part (D-01, D-02, D-04)."""
 
 import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
@@ -50,6 +51,48 @@ HOST_TOKENS = {
 }
 
 _SLD_LABELS = {"co", "com", "org", "net", "ac", "gov", "edu"}
+
+# Manufacturer names as they appear in Custom/ symbols, folded (casefold, letters and digits only)
+MANUFACTURER_ALIASES = {
+    "texasinstruments": "TI",
+    "ti": "TI",
+    "analogdevices": "ADI",
+    "adi": "ADI",
+    "maximintegrated": "ADI",
+    "maxim": "ADI",
+    "lineartechnology": "ADI",
+    "linear": "ADI",
+    "tdk": "TDK",
+    "invensense": "TDK",
+    "tdkinvensense": "TDK",
+    "murata": "Murata",
+    "muratamanufacturing": "Murata",
+    "gct": "GCT",
+    "globalconnectortechnology": "GCT",
+    "memsic": "Memsic",
+    "ublox": "uBlox",
+    "abracon": "Abracon",
+}
+_CORPORATE_WORDS = frozenset(
+    {"inc", "ltd", "gmbh", "corp", "corporation", "co", "ag", "llc", "plc", "limited", "incorporated"}
+)
+# Distributor and library sites: registrable label (first label of the registered domain), any TLD
+AGGREGATOR_DOMAINS = frozenset(
+    {
+        "snapeda",
+        "snapmagic",
+        "ultralibrarian",
+        "componentsearchengine",
+        "samacsys",
+        "digikey",
+        "mouser",
+        "octopart",
+        "lcsc",
+        "arrow",
+        "farnell",
+        "alldatasheet",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -117,13 +160,43 @@ def type_choice(reference: str) -> TokenChoice:
     return TokenChoice("Type", "placeholder", False)
 
 
+def is_aggregator_host(host: str) -> bool:
+    """Return True for a distributor or library site, whatever its TLD."""
+    return registered_domain(host.casefold()).split(".")[0] in AGGREGATOR_DOMAINS
+
+
+def manufacturer_token(value: str) -> TokenChoice:
+    """Map a manufacturer property value to a token: a known name is confident, the first word is a guess."""
+    folded = unicodedata.normalize("NFKD", value)
+    folded = "".join(c for c in folded if not unicodedata.combining(c)).casefold()
+    words = [w for w in re.findall(r"[a-z0-9]+", folded) if w not in _CORPORATE_WORDS]
+    if not words:
+        return TokenChoice("Manufacturer", "placeholder", False)
+    alias = MANUFACTURER_ALIASES.get("".join(words))
+    if alias is not None:
+        return TokenChoice(alias, "name_alias", True)
+    return TokenChoice(words[0][0].upper() + words[0][1:], "property", False)
+
+
 def manufacturer_choice(meta: PartMeta) -> TokenChoice:
-    """Map the datasheet host to a manufacturer suffix through the host table."""
+    """Pick the manufacturer token: mapped name, mapped host, unmapped name, host guess, placeholder (D-02)."""
+    named = manufacturer_token(meta.manufacturer)
+    if named.source == "name_alias":
+        return named
     host = datasheet_host(meta.datasheet)
-    if host is not None:
-        token = HOST_TOKENS.get(registered_domain(host.casefold()))
+    domain = None
+    if host is not None and not is_aggregator_host(host):
+        domain = registered_domain(host.casefold())
+    if domain is not None:
+        token = HOST_TOKENS.get(domain)
         if token is not None:
             return TokenChoice(token, "host_table", True)
+    if named.source == "property":
+        return named
+    if domain is not None:
+        label = domain.split(".")[0].replace("-", "")
+        if label:
+            return TokenChoice(label.capitalize(), "host_guess", False)
     return TokenChoice("Manufacturer", "placeholder", False)
 
 
@@ -147,6 +220,16 @@ def suggest_library(meta: PartMeta, existing: Sequence[ExistingLibrary] = ()) ->
     choices = (type_, subcategory, manufacturer)
     confidence = "high" if all(c.confident for c in choices) else "low"
     issues: list[Issue] = []
+    host = datasheet_host(meta.datasheet)
+    if host is not None and is_aggregator_host(host):
+        issues.append(
+            Issue(
+                Severity.INFO,
+                "naming.aggregator_host",
+                f"Datasheet host {host} is a distributor or library site; "
+                "it was not used as the manufacturer",
+            )
+        )
     if confidence == "low":
         unsure = ", ".join(c.token for c in choices if not c.confident)
         issues.append(
