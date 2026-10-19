@@ -131,7 +131,7 @@ Plans:
   4. A failure injected on any write leaves every file the install touched exactly as it was, with no dangling symbol, orphan footprint or stray model, and the failure is logged. An existing model with the same SHA-256 is reused, and a different one is reported as a conflict instead of being overwritten.
   5. After install, verification re-parses the written files, resolves `<Lib>:<FP>` and confirms the model file exists. It warns when the part name already exists in another library or the symbol's pin numbers don't match the footprint's pad numbers. Importing the same package twice with the same choices changes nothing the second time.
 
-**Plans**: 3/10 plans executed
+**Plans**: 5/10 plans executed
 
 Plans:
 **Wave 1**
@@ -140,8 +140,8 @@ Plans:
 - [x] 04-03-PLAN.md — kicad-cli seam: locate, run with timeout, memoised `sym upgrade`, D-03 load gate on staging copies, FakeCli, `kicad_cli` marker (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 04-04-PLAN.md — kicad_files write side: install unit, exact rename across sub-symbols and extends, replace/insert-before, property primitives, footprint and model edits (wave 2)
-- [ ] 04-05-PLAN.md — Verification: D-18 hard checks, POST-04 pin/pad warning, POST-03 name-elsewhere with a bytes prefilter over stock libraries (wave 2)
+- [x] 04-04-PLAN.md — kicad_files write side: install unit, exact rename across sub-symbols and extends, replace/insert-before, property primitives, footprint and model edits (wave 2)
+- [x] 04-05-PLAN.md — Verification: D-18 hard checks, POST-04 pin/pad warning, POST-03 name-elsewhere with a bytes prefilter over stock libraries (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 04-06-PLAN.md — Planner: D-01 version table with memoised normalisation, D-04 new-library header, LIB-02 pair rules (wave 3)
@@ -213,7 +213,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
-| 4. Plan and Install Core | 3/10 | In Progress | - |
+| 4. Plan and Install Core | 5/10 | In Progress | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
