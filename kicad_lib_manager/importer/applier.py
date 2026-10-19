@@ -5,6 +5,7 @@ at any write (the same seam table_generator.write_tables uses).
 """
 
 import hashlib
+import os
 import re
 from collections.abc import Callable
 from datetime import datetime
@@ -12,7 +13,7 @@ from pathlib import Path
 
 from .. import fsutil
 from ..models import Issue, Severity
-from . import verify
+from . import kicad_cli, verify
 from .plan import FileOp, InstallPlan, InstallResult
 
 
@@ -52,6 +53,105 @@ def _undo(undo: list[tuple[str, Path, bytes | None]], backup_dir: Path | None) -
     return leftovers
 
 
+def _name_taken(path: Path) -> bool:
+    """True when path, or a name differing from it only by letter case, is in its parent folder (exact-case listing)."""
+    try:
+        names = os.listdir(path.parent)
+    except OSError:
+        return False
+    wanted = path.name.casefold()
+    return any(name.casefold() == wanted for name in names)
+
+
+def _current_bytes(op: FileOp) -> bytes | Issue:
+    """The bytes on disk at the spelling the plan was built from."""
+    path = op.listed_path or op.path
+    try:
+        return path.read_bytes()
+    except OSError as e:
+        return _err("install.stale_plan", f"Could not read {path.name}: {e.strerror or e}; rebuild the plan")
+
+
+def _gate(plan: InstallPlan, original_symbol_lib: bytes | None) -> list[Issue]:
+    exe = plan.tools.kicad_cli
+    if exe is None:
+        return [Issue(Severity.INFO, "install.cli_not_found", "kicad-cli was not found, so the KiCad load check was skipped")]
+    symbol_op = next((op for op in plan.ops if op.kind == "symbol_lib"), None)
+    footprints = [(op.path.stem, op.data) for op in plan.ops if op.kind == "footprint" and op.data is not None]
+    if symbol_op is None and not footprints:
+        return []
+    return kicad_cli.load_gate(
+        exe,
+        library=plan.library,
+        symbol_lib=symbol_op.data if symbol_op is not None else None,
+        footprints=footprints,
+        original_symbol_lib=original_symbol_lib if symbol_op is not None and symbol_op.base_sha256 is not None else None,
+        runner=plan.tools.cli_runner,
+        timeout=plan.tools.cli_timeout,
+    )
+
+
+def run_load_gate(plan: InstallPlan) -> list[Issue]:
+    """Ask kicad-cli whether KiCad can load the planned symbol library and footprints; writes nothing (D-03).
+
+    Without kicad-cli the result is one INFO install.cli_not_found. Any ERROR means KiCad rejected the result.
+    """
+    original = None
+    symbol_op = next((op for op in plan.ops if op.kind == "symbol_lib" and op.base_sha256 is not None), None)
+    if symbol_op is not None and plan.tools.kicad_cli is not None:
+        current = _current_bytes(symbol_op)
+        original = current if isinstance(current, bytes) else None
+    return _gate(plan, original)
+
+
+def _preflight(plan: InstallPlan) -> tuple[list[Issue], dict[int, bytes], dict[int, bytes | None]]:
+    """Check containment, freshness and the staged sources; return the issues, source bytes and pre-images.
+
+    Each pass reports every problem it finds, and a failing pass stops the next one, so the
+    caller sees the cheapest explanation first and nothing has been written.
+    """
+    custom = plan.layout.custom_dir.resolve()
+    issues: list[Issue] = []
+    for op in plan.ops:
+        for path in {op.path, op.listed_path or op.path}:
+            if not path.resolve().is_relative_to(custom):
+                issues.append(_err("install.path_outside_custom", f"{path} is outside {custom}"))
+    if issues:
+        return issues, {}, {}
+
+    pre_images: dict[int, bytes | None] = {}
+    for index, op in enumerate(plan.ops):
+        if op.base_sha256 is None:
+            if _name_taken(op.path):
+                issues.append(_err("install.stale_plan", f"{op.path.name} appeared after the preview was built; rebuild the plan"))
+            pre_images[index] = None
+            continue
+        current = _current_bytes(op)
+        if isinstance(current, Issue):
+            issues.append(current)
+        elif hashlib.sha256(current).hexdigest() != op.base_sha256:
+            issues.append(_err("install.stale_plan", f"{op.path.name} changed on disk after the preview was built; rebuild the plan"))
+        else:
+            pre_images[index] = current
+    if issues:
+        return issues, {}, {}
+
+    sources: dict[int, bytes] = {}
+    for index, op in enumerate(plan.ops):
+        if op.source is None:
+            continue
+        try:
+            data = op.source.path.read_bytes()
+        except OSError as e:
+            issues.append(_err("install.source_gone", f"Could not read {op.source.member}: {e.strerror or e}"))
+            continue
+        if hashlib.sha256(data).hexdigest() != op.source.sha256:
+            issues.append(_err("install.source_changed", f"{op.source.member} changed after the package was opened"))
+            continue
+        sources[index] = data
+    return issues, sources, pre_images
+
+
 def apply_plan(
     plan: InstallPlan,
     *,
@@ -66,38 +166,21 @@ def apply_plan(
             keys = ", ".join(c.key for c in unresolved)
             issues.append(_err("install.conflict_unresolved", f"Unresolved conflicts: {keys}"))
         return _result(plan, False, issues)
-    if not plan.ops:
+    if plan.is_noop:
         return _result(plan, True, [*plan.issues, Issue(Severity.INFO, "install.nothing_to_do", "Everything is already installed")])
 
-    # Preconditions: nothing is written until every one of these holds
-    custom = plan.layout.custom_dir.resolve()
-    sources: dict[int, bytes] = {}
-    pre_images: dict[int, bytes | None] = {}
-    for index, op in enumerate(plan.ops):
-        if not op.path.resolve().is_relative_to(custom):
-            return _result(plan, False, [_err("install.path_outside_custom", f"{op.path} is outside {custom}")])
-        if op.source is not None:
-            try:
-                data = op.source.path.read_bytes()
-            except OSError as e:
-                return _result(plan, False, [_err("install.source_gone", f"Could not read {op.source.member}: {e.strerror or e}")])
-            if hashlib.sha256(data).hexdigest() != op.source.sha256:
-                return _result(plan, False, [_err("install.source_changed", f"{op.source.member} changed after the package was opened")])
-            sources[index] = data
-        if op.kind == "mkdir":
-            continue
-        if op.base_sha256 is None:
-            if op.path.exists():
-                return _result(plan, False, [_err("install.stale_plan", f"{op.path.name} appeared after the plan was made; rebuild the plan")])
-            pre_images[index] = None
-        else:
-            try:
-                current = op.path.read_bytes()
-            except OSError as e:
-                return _result(plan, False, [_err("install.stale_plan", f"Could not read {op.path.name}: {e.strerror or e}")])
-            if hashlib.sha256(current).hexdigest() != op.base_sha256:
-                return _result(plan, False, [_err("install.stale_plan", f"{op.path.name} changed after the plan was made; rebuild the plan")])
-            pre_images[index] = current
+    # Cheap preconditions first; nothing is written until every one of them holds
+    problems, sources, pre_images = _preflight(plan)
+    if problems:
+        return _result(plan, False, problems)
+
+    # D-03: KiCad must be able to load the result before the first backup or write
+    symbol_index = next((i for i, op in enumerate(plan.ops) if op.kind == "symbol_lib"), None)
+    original = pre_images.get(symbol_index) if symbol_index is not None else None
+    gate = _gate(plan, original)
+    rejected = [i for i in gate if i.severity is Severity.ERROR]
+    if rejected:
+        return _result(plan, False, rejected)
 
     # Back up every existing file the install changes, before the first write
     backup_dir: Path | None = None
@@ -125,8 +208,11 @@ def apply_plan(
         if problem is not None:
             failures.append(problem)
             break
+    warnings: list[Issue] = []
     if not failures:
-        failures.extend(i for i in verify.verify_install(plan) if i.severity is Severity.ERROR)
+        checked = verify.verify_install(plan)
+        failures.extend(i for i in checked if i.severity is Severity.ERROR)
+        warnings = [i for i in checked if i.severity is not Severity.ERROR]
     if failures:
         leftovers = _undo(undo, backup_dir)
         return _result(
@@ -137,8 +223,9 @@ def apply_plan(
         )
 
     issues = [*plan.issues]
-    if plan.tools.kicad_cli is None:
-        issues.append(Issue(Severity.INFO, "install.cli_not_found", "kicad-cli was not found, so the KiCad load check was skipped"))
+    known = {i.code for i in issues}
+    issues.extend(i for i in gate if i.code not in known)
+    issues.extend(warnings)
     issues.append(Issue(Severity.SUCCESS, "install.done", f"Installed {plan.symbol_name} into {plan.library}"))
     return _result(plan, True, issues, touched=touched, backup_dir=backup_dir)
 
