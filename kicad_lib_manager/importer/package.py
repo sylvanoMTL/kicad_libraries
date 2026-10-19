@@ -40,6 +40,16 @@ _IGNORED_LISTED = 20
 _WINDOWS_REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
 _SHOWN_MAX = 200
 
+try:  # lzma is optional in some Linux builds; zipfile then raises RuntimeError, which is already caught
+    import lzma
+
+    _LZMA_ERRORS: tuple[type[Exception], ...] = (lzma.LZMAError,)
+except ImportError:
+    _LZMA_ERRORS = ()
+
+# The errors a damaged member raises while it is read and decompressed (CR-02); returned as ERROR intake.corrupt, never raised
+_READ_ERRORS = (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError, OSError, *_LZMA_ERRORS)
+
 
 @dataclass(frozen=True)
 class PackageFile:
@@ -268,7 +278,7 @@ def _copy_member(
     try:
         with zf.open(info) as src, open(target, "xb") as dst:
             copied = _copy_capped(src, dst, limit, sha)
-    except (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError, OSError) as e:
+    except _READ_ERRORS as e:
         return None, Issue(Severity.ERROR, "intake.corrupt", f"Could not read member {_shown(name)} of {label}: {e}")
     if copied is None:
         return None, Issue(
