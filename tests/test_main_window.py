@@ -11,7 +11,9 @@ import pytest
 from PySide6.QtCore import QSettings
 
 from kicad_lib_manager import main_window, settings
-from kicad_lib_manager.models import FootprintLibrary, ScanResult, SymbolLibrary
+from kicad_lib_manager.models import (
+    FootprintLibrary, FootprintRef, ScanResult, SymbolLibrary,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -102,3 +104,67 @@ def test_generate_splices_table_and_logs_issues(make_window):
     assert "Written sym-lib-table" in log_text
     assert "Written fp-lib-table" in log_text
     assert "#007700" in w._log._text.toHtml()
+
+
+def _managed_table(tag, entries):
+    lines = [f"({tag}", "  (version 7)"]
+    for name, rel in entries:
+        lines.append(
+            f'  (lib (name "{name}")(type "KiCad")'
+            f'(uri "${{KICAD_LIB_GITHUB}}/{rel}")(options "")(descr ""))'
+        )
+    lines.append(")")
+    return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def test_startup_preselection_matches_by_rel_path_not_nickname(make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "sym-lib-table").write_bytes(
+        _managed_table("sym_lib_table", [("Same", "Custom/Symbols/Same.kicad_sym")])
+    )
+    (repo / "fp-lib-table").write_bytes(
+        _managed_table("fp_lib_table", [("Solo", "Custom/Footprints/Solo.pretty")])
+    )
+    scan = ScanResult(
+        symbol_libs=[
+            SymbolLibrary(
+                "Same", "Custom/Symbols/Same.kicad_sym", "Custom",
+                footprint_refs=[FootprintRef("Solo", "X", True)],
+            ),
+            SymbolLibrary(
+                "Same", "WurthElektronik/KiCad-Library/symbols/Same.kicad_sym",
+                "WurthElektronik",
+            ),
+        ],
+        footprint_libs=[FootprintLibrary("Solo", "Custom/Footprints/Solo.pretty", "Custom")],
+    )
+
+    w = make_window([scan], repo=repo)
+
+    custom_same, wurth_same = w._scan_result.symbol_libs
+    assert custom_same.selected is True
+    assert wurth_same.selected is False
+    assert w._scan_result.footprint_libs[0].selected is True
+
+
+def test_destination_change_only_logs_and_never_on_keystrokes(make_window, tmp_path):
+    scan = ScanResult(
+        symbol_libs=[SymbolLibrary("A", "Custom/Symbols/A.kicad_sym", "Custom", selected=True)],
+        footprint_libs=[FootprintLibrary("B", "Custom/Footprints/B.pretty", "Custom")],
+    )
+    w = make_window([scan])
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "sym-lib-table").write_bytes(
+        _managed_table("sym_lib_table", [("A", "Custom/Symbols/A.kicad_sym")])
+    )
+    marker = f"Existing sym-lib-table found at {other}"
+
+    w._dest_combo.setEditText(str(other))
+    assert marker not in w._log._text.toPlainText()
+
+    w._dest_combo.lineEdit().editingFinished.emit()
+    assert w._log._text.toPlainText().count(marker) == 1
+    assert [lib.selected for lib in scan.symbol_libs] == [True]
+    assert [lib.selected for lib in scan.footprint_libs] == [False]
