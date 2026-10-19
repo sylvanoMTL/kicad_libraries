@@ -3,15 +3,22 @@ import sys
 from dataclasses import dataclass
 
 # Separators are ASCII space/tab/CR/LF only, like KiCad's lexer (never the regex \s class)
+# A string is only opened here; _string_end finds where it closes. bad keeps "every position
+# matches" true, so _TOKEN.match never returns None.
 _TOKEN = re.compile(
     r'(?P<open>\()'
     r'|(?P<close>\))'
-    r'|(?P<str>"(?:[^"\\]|\\.)*")'
+    r'|(?P<quote>")'
     r'|(?P<atom>[^ \t\r\n()"]+)'
     r'|(?P<ws>[ \t\r\n]+)'
     r'|(?P<bad>.)',
     re.S,
 )
+
+# Escape pairs matched per regex call: bounds the backtracking state the regex engine keeps for a
+# repeated group, whatever the string length.
+_STRING_WINDOW = 1024
+_STRING_BODY = re.compile(r'[^"\\]*(?:\\.[^"\\]*){0,%d}' % _STRING_WINDOW, re.S)
 
 # KiCad's writer escapes exactly these four; TAB stays raw
 _QUOTE_TABLE = str.maketrans({
@@ -59,26 +66,56 @@ class Node:
         return f"Node({self.kind} {self.start}:{self.end}, {len(self.children)} children)"
 
 
+def _string_end(text: str, start: int) -> int:
+    """Return the offset just past the closing quote of the string opening at start, or -1 when it is unterminated."""
+    pos = start + 1
+    while True:
+        pos = _STRING_BODY.match(text, pos).end()
+        if pos == len(text):
+            return -1
+        if text[pos] == '"':
+            return pos + 1
+        # A backslash starts the next window; as the last character it escapes nothing
+        if pos == len(text) - 1:
+            return -1
+
+
 def parse(text: str, *, max_nodes: int | None = None) -> Node:
     """Parse text into a span-carrying tree, raising SexprError at the first bad token.
 
     max_nodes caps the lists, atoms and strings built (the root is not counted); the token
-    that would cross it raises sexpr.too_many_nodes. None means no limit.
+    that would cross it raises sexpr.too_many_nodes. None means no limit. String ends are
+    found by a linear scan, so one long string costs no more than its own text.
     """
     root = Node(0, len(text), "root", [])
     # Explicit stack: no recursion limit on deeply nested input
     stack = [root]
     limit = sys.maxsize if max_nodes is None else max_nodes
     count = 0
-    for m in _TOKEN.finditer(text):
+    pos = 0
+    size = len(text)
+    while pos < size:
+        m = _TOKEN.match(text, pos)
         kind = m.lastgroup
+        start = m.start()
+        end = m.end()
+        if kind == "quote":
+            end = _string_end(text, start)
+            if end < 0:
+                raise SexprError(
+                    "sexpr.unterminated",
+                    "unterminated string or stray character",
+                    *_line_col(text, start),
+                )
+            kind = "str"
+        pos = end
         if kind == "ws":
             continue
         if kind == "bad":
             raise SexprError(
                 "sexpr.unterminated",
                 "unterminated string or stray character",
-                *_line_col(text, m.start()),
+                *_line_col(text, start),
             )
         if kind != "close":
             count += 1
@@ -86,10 +123,10 @@ def parse(text: str, *, max_nodes: int | None = None) -> Node:
                 raise SexprError(
                     "sexpr.too_many_nodes",
                     f"more than {max_nodes} nodes",
-                    *_line_col(text, m.start()),
+                    *_line_col(text, start),
                 )
         if kind == "open":
-            node = Node(m.start(), -1, "list", [])
+            node = Node(start, -1, "list", [])
             stack[-1].children.append(node)
             stack.append(node)
         elif kind == "close":
@@ -97,11 +134,11 @@ def parse(text: str, *, max_nodes: int | None = None) -> Node:
                 raise SexprError(
                     "sexpr.unbalanced",
                     "unbalanced ')'",
-                    *_line_col(text, m.start()),
+                    *_line_col(text, start),
                 )
-            stack.pop().end = m.end()
+            stack.pop().end = end
         else:
-            stack[-1].children.append(Node(m.start(), m.end(), kind, [], m.group()))
+            stack[-1].children.append(Node(start, end, kind, [], text[start:end]))
     if len(stack) != 1:
         raise SexprError(
             "sexpr.unclosed",
