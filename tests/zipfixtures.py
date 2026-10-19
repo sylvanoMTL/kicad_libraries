@@ -13,10 +13,12 @@ of the loose-files sample rule for Phase 3.
 """
 
 import io
+import random
 import struct
+import tracemalloc
 import warnings
 import zipfile
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -207,6 +209,65 @@ def footprint(
         lines.append("  )")
     lines.append(")")
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+# -- hostile string builders (CR-03) -------------------------------------------
+
+STRING_KINDS = ("plain", "escape", "mixed", "special")
+_STRING_UNITS = {"plain": 1, "escape": 2, "mixed": 3, "special": 2}
+_PLAIN_ALPHABET = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 "
+# Letters and digits minus n, r and t: a backslash before one of them is an unknown escape, kept verbatim
+_ESCAPED_ALPHABET = bytes(c for c in _PLAIN_ALPHABET if c not in b"nrt ")
+_SPECIAL_ALPHABET = b'"' + BS.encode() + b"n"
+
+
+def _draw(rng: random.Random, count: int, alphabet: bytes) -> bytes:
+    """Return count seeded random bytes mapped onto alphabet, all at C speed."""
+    table = bytes(alphabet[b % len(alphabet)] for b in range(256))
+    return rng.randbytes(count).translate(table)
+
+
+def string_body(kind: str, size: int, *, seed: int = 0) -> str:
+    """Return exactly size ASCII characters of seeded random string content of one CR-03 class."""
+    if kind not in _STRING_UNITS:
+        raise ValueError(f"unknown string kind {kind!r}")
+    if size < 0:
+        raise ValueError("size must not be negative")
+    unit = _STRING_UNITS[kind]
+    lead_len, pairs = size % unit, size // unit
+    rng = random.Random(seed)
+    lead = _draw(rng, lead_len, _PLAIN_ALPHABET)
+    backslashes = BS.encode() * pairs
+    buf = bytearray(unit * pairs)
+    if kind == "plain":
+        buf[:] = _draw(rng, pairs, _PLAIN_ALPHABET)
+    elif kind == "escape":
+        buf[0::2] = backslashes
+        buf[1::2] = _draw(rng, pairs, _ESCAPED_ALPHABET)
+    elif kind == "mixed":
+        buf[0::3] = _draw(rng, pairs, _ESCAPED_ALPHABET)
+        buf[1::3] = backslashes
+        buf[2::3] = _draw(rng, pairs, _ESCAPED_ALPHABET)
+    else:
+        buf[0::2] = backslashes
+        buf[1::2] = _draw(rng, pairs, _SPECIAL_ALPHABET)
+    return (lead + bytes(buf)).decode("ascii")
+
+
+def traced_peak(fn: Callable[[], object]) -> tuple[object, int]:
+    """Call fn and return its result with the tracemalloc peak in bytes above the traced size just before the call."""
+    started = not tracemalloc.is_tracing()
+    if started:
+        tracemalloc.start()
+    try:
+        tracemalloc.reset_peak()
+        baseline = tracemalloc.get_traced_memory()[0]
+        result = fn()
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        if started:
+            tracemalloc.stop()
+    return result, peak - baseline
 
 
 STEP_BYTES = (

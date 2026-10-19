@@ -1,8 +1,10 @@
 import random
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from zipfixtures import STRING_KINDS, string_body, traced_peak
 
 from kicad_lib_manager.sexpr import Edit, Node, SexprError, apply_edits, parse, quote, unquote
 
@@ -455,3 +457,37 @@ def test_unquote_decodes_tab_escape():
 
 def test_unquote_escaped_backslash_before_n_stays_two_characters():
     assert unquote(r'"a\\nb"') == "a\\nb"
+
+
+# -- CR-03: one long string costs no more than its own text ---------------------------
+
+_KIB_512 = 512 * 1024
+
+
+@pytest.mark.parametrize("kind", STRING_KINDS)
+def test_one_string_token_parse_memory_is_linear(kind):
+    text = '(d "' + string_body(kind, _KIB_512) + '")'
+    root, peak = traced_peak(lambda: parse(text))
+    (lst,) = root.children
+    assert [c.kind for c in lst.children] == ["atom", "str"]
+    node = lst.children[1]
+    assert (node.start, node.end) == (3, len(text) - 1)
+    assert peak <= 3 * sys.getsizeof(text), f"{kind}: peak {peak} for a {sys.getsizeof(text)} byte text"
+
+
+def _parse_error(text: str):
+    try:
+        parse(text)
+    except SexprError as e:
+        return e
+    return None
+
+
+@pytest.mark.parametrize("kind", STRING_KINDS)
+def test_unterminated_long_string_memory_is_linear(kind):
+    text = '(d "' + string_body(kind, _KIB_512)
+    err, peak = traced_peak(lambda: _parse_error(text))
+    assert isinstance(err, SexprError)
+    assert err.code == "sexpr.unterminated"
+    assert (err.line, err.col) == (1, 4)
+    assert peak <= 3 * sys.getsizeof(text), f"{kind}: peak {peak} for a {sys.getsizeof(text)} byte text"
