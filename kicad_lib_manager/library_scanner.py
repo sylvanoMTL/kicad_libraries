@@ -1,10 +1,14 @@
+import copy
 import json
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 from typing import Callable
 
+from . import fsutil
+from .kicad_process import kicad_running
 from .models import (
     FootprintLibrary,
     FootprintRef,
@@ -65,23 +69,104 @@ def find_kicad_config_dir(base: Path | None = None) -> Path | None:
     return versions[0] if versions else None
 
 
-def sync_kicad_path_vars(repo_root: Path) -> list[str]:
-    """Set KICAD_LIB_GITHUB and CUSTOM_3DMODEL_DIR in kicad_common.json."""
-    config_dir = find_kicad_config_dir()
+_KICAD_COMMON_BACKUPS_KEPT = 10
+
+
+def _only_vars_changed(before: dict, after: dict, desired: dict[str, str]) -> bool:
+    """True when after equals before with just the desired variables set in environment.vars."""
+    expected = copy.deepcopy(before)
+    env = expected.setdefault("environment", {})
+    env["vars"] = {**(env.get("vars") or {}), **desired}
+    return after == expected
+
+
+def _prune_backups(backup_dir: Path, name: str, keep: int) -> list[Issue]:
+    """Delete all but the newest `keep` numbered backups of name; failures only warn."""
+    pattern = re.compile(re.escape(name) + r"_backup_(\d+)$")
+    try:
+        numbered = [
+            (int(m.group(1)), backup_dir / entry)
+            for entry in os.listdir(backup_dir)
+            if (m := pattern.match(entry))
+        ]
+    except OSError:
+        return []
+    numbered.sort(key=lambda item: item[0], reverse=True)
+    issues = []
+    for _, path in numbered[keep:]:
+        try:
+            try:
+                path.unlink()
+            except PermissionError:
+                # A read-only old backup (Windows) cannot be deleted until the bit is cleared
+                os.chmod(path, stat.S_IREAD | stat.S_IWRITE)
+                path.unlink()
+        except OSError as e:
+            issues.append(Issue(
+                Severity.WARNING,
+                "config.prune_failed",
+                f"Could not remove old backup {path.name}: {e.strerror or e}",
+            ))
+    return issues
+
+
+def sync_kicad_path_vars(
+    repo_root: Path,
+    *,
+    config_base: Path | None = None,
+    backup_root: Path | None = None,
+    running: Callable[[], list[str]] | None = None,
+) -> list[Issue]:
+    """Set KICAD_LIB_GITHUB and CUSTOM_3DMODEL_DIR in the newest kicad_common.json.
+
+    The file is backed up first, re-parsed to prove only environment.vars changed,
+    then replaced atomically. Older KiCad versions are never touched.
+    """
+    config_dir = find_kicad_config_dir(config_base)
     if not config_dir:
-        return ["Could not find KiCad config directory"]
+        return [Issue(
+            Severity.WARNING,
+            "config.dir_not_found",
+            "Could not find KiCad config directory; path variables were not set",
+        )]
 
     config_file = config_dir / "kicad_common.json"
     if not config_file.exists():
-        return [f"KiCad config not found: {config_file}"]
+        return [Issue(
+            Severity.WARNING,
+            "config.not_found",
+            f"KiCad config not found: {config_file} "
+            f"(start and close KiCad {config_dir.name} once, then Generate again)",
+        )]
 
+    src = fsutil.read_source(config_file)
+    if isinstance(src, Issue):
+        return [src]
     try:
-        config = json.loads(config_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
-        return [f"Failed to read KiCad config: {e}"]
+        config = json.loads(src.text)
+    except json.JSONDecodeError as e:
+        return [Issue(
+            Severity.ERROR,
+            "config.bad_json",
+            f"Could not read {config_file.name}: invalid JSON at line {e.lineno}, "
+            f"col {e.colno}; nothing was written",
+        )]
 
-    env = config.setdefault("environment", {})
-    env_vars = env.setdefault("vars", {})
+    # KiCad 7 and 8 write "vars": null, so None counts as an empty object
+    bad_shape = not isinstance(config, dict)
+    env = {} if bad_shape else config.get("environment", {})
+    bad_shape = bad_shape or not isinstance(env, dict)
+    old_vars = {} if bad_shape else env.get("vars")
+    if old_vars is None:
+        old_vars = {}
+    bad_shape = bad_shape or not isinstance(old_vars, dict)
+    if bad_shape:
+        return [Issue(
+            Severity.ERROR,
+            "config.bad_shape",
+            f"{config_file.name} has an unexpected structure "
+            f"(environment.vars is not an object); nothing was written",
+        )]
 
     repo_str = str(repo_root).replace("\\", "/")
     desired = {
@@ -89,32 +174,68 @@ def sync_kicad_path_vars(repo_root: Path) -> list[str]:
         "CUSTOM_3DMODEL_DIR": f"{repo_str}/Custom/3DModels",
     }
 
-    messages = []
-    changed = False
+    issues: list[Issue] = []
+    set_issues: list[Issue] = []
     for key, value in desired.items():
-        old = env_vars.get(key)
+        old = old_vars.get(key)
         if old == value:
-            messages.append(f"KiCad path '{key}' already set correctly")
+            issues.append(Issue(
+                Severity.INFO, "config.var_ok", f"KiCad path '{key}' already set correctly"
+            ))
+        elif old is None:
+            set_issues.append(Issue(
+                Severity.SUCCESS, "config.var_set", f"KiCad path '{key}' set to: {value}"
+            ))
         else:
-            env_vars[key] = value
-            changed = True
-            if old is None:
-                messages.append(f"KiCad path '{key}' set to: {value}")
-            else:
-                messages.append(f"KiCad path '{key}' updated: {old} -> {value}")
+            set_issues.append(Issue(
+                Severity.SUCCESS,
+                "config.var_set",
+                f"KiCad path '{key}' updated: {old} -> {value}",
+            ))
+    if not set_issues:
+        return issues
 
-    if changed:
-        try:
-            config_file.write_text(
-                json.dumps(config, indent=2) + "\n", encoding="utf-8"
-            )
-            messages.append(
-                f"Updated {config_file} (restart KiCad to apply)"
-            )
-        except OSError as e:
-            messages.append(f"Failed to write KiCad config: {e}")
+    new_config = copy.deepcopy(config)
+    new_config.setdefault("environment", {})["vars"] = {**old_vars, **desired}
+    new_text = json.dumps(new_config, indent=2, ensure_ascii=False) + "\n"
+    if not _only_vars_changed(config, json.loads(new_text), desired):
+        return issues + [Issue(
+            Severity.ERROR,
+            "config.verify_failed",
+            f"Did not write {config_file.name}: the new content would change "
+            f"more than environment.vars",
+        )]
+    new_text = fsutil.normalize_eol(new_text, src.eol)
 
-    return messages
+    names = (running or kicad_running)()
+    if names:
+        issues.append(Issue(
+            Severity.WARNING,
+            "config.kicad_running",
+            f"KiCad appears to be running ({', '.join(names)}); it may overwrite these "
+            f"path variables when it exits. Close KiCad and press Generate again.",
+        ))
+
+    backup_dir = (backup_root or fsutil.default_backup_dir()) / "kicad_common" / config_dir.name
+    backup = fsutil.backup_file(config_file, backup_dir)
+    if isinstance(backup, Issue):
+        return issues + [backup]
+    issues.append(Issue(
+        Severity.INFO, "config.backed_up", f"Backed up {config_file.name} to {backup}"
+    ))
+
+    failure = fsutil.atomic_write_text(config_file, new_text, bom=src.bom)
+    if failure is not None:
+        return issues + [failure]
+
+    issues.extend(set_issues)
+    issues.append(Issue(
+        Severity.SUCCESS, "config.written", f"Updated {config_file} (restart KiCad to apply)"
+    ))
+    issues.extend(_prune_backups(
+        backup_dir, config_file.name, keep=_KICAD_COMMON_BACKUPS_KEPT
+    ))
+    return issues
 
 
 def find_kicad_footprint_dir(base: Path | None = None, *,
