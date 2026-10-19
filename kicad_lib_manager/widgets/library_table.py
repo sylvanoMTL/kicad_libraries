@@ -55,7 +55,8 @@ class LibraryTableWidget(QWidget):
 
         self._sym_libs: list[SymbolLibrary] = []
         self._fp_libs: list[FootprintLibrary] = []
-        self._fp_items: dict[str, QTreeWidgetItem] = {}  # nickname -> item
+        self._sym_items: dict[str, QTreeWidgetItem] = {}  # rel_path -> item
+        self._fp_items: dict[str, QTreeWidgetItem] = {}  # rel_path -> item
         self._updating = False
 
         self._sym_tree.itemChanged.connect(self._on_sym_item_changed)
@@ -65,6 +66,7 @@ class LibraryTableWidget(QWidget):
         self._updating = True
         self._sym_tree.clear()
         self._fp_tree.clear()
+        self._sym_items.clear()
         self._fp_items.clear()
         self._sym_libs = scan_result.symbol_libs
         self._fp_libs = scan_result.footprint_libs
@@ -111,6 +113,7 @@ class LibraryTableWidget(QWidget):
                     for col in range(item.columnCount()):
                         item.setForeground(col, orange)
                 group.addChild(item)
+                self._sym_items[lib.rel_path] = item
 
             group.setExpanded(True)
 
@@ -131,16 +134,12 @@ class LibraryTableWidget(QWidget):
                 item.setCheckState(0, state)
                 item.setData(0, Qt.ItemDataRole.UserRole, lib)
                 group.addChild(item)
-                self._fp_items[lib.nickname] = item
+                self._fp_items[lib.rel_path] = item
 
             group.setExpanded(True)
 
+        # Render the selected flags as given; footprint selection is never recomputed here
         self._updating = False
-
-        # Apply footprint filter based on selected symbols
-        sources = sorted(set(lib.source for lib in self._fp_libs))
-        for source in sources:
-            self._sync_footprint_selection(source)
 
     def _on_sym_item_changed(self, item: QTreeWidgetItem, column: int):
         if self._updating or column != 0:
@@ -172,20 +171,21 @@ class LibraryTableWidget(QWidget):
         """Recalculate footprint check states for a given source.
 
         Only footprints belonging to the affected source are updated.
-        A footprint is selected if at least one selected symbol references it.
+        A footprint is selected if at least one selected symbol of the same
+        source references it.
         """
         needed = set()
         for lib in self._sym_libs:
-            if lib.selected:
+            if lib.source == source and lib.selected:
                 for ref in lib.footprint_refs:
                     needed.add(ref.library_name)
 
         self._updating = True
-        for nickname, fp_item in self._fp_items.items():
+        for fp_item in self._fp_items.values():
             fp_lib = fp_item.data(0, Qt.ItemDataRole.UserRole)
             if not fp_lib or fp_lib.source != source:
                 continue  # Only manage footprints from the affected source
-            should_check = nickname in needed
+            should_check = fp_lib.nickname in needed
             state = Qt.CheckState.Checked if should_check else Qt.CheckState.Unchecked
             fp_item.setCheckState(0, state)
             fp_lib.selected = should_check
