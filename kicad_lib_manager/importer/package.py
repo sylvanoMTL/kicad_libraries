@@ -47,8 +47,24 @@ try:  # lzma is optional in some Linux builds; zipfile then raises RuntimeError,
 except ImportError:
     _LZMA_ERRORS = ()
 
+try:  # Zstandard members are readable from Python 3.14; a damaged one raises ZstdError, which is not an OSError
+    from compression.zstd import ZstdError
+
+    _ZSTD_ERRORS: tuple[type[Exception], ...] = (ZstdError,)
+except ImportError:
+    _ZSTD_ERRORS = ()
+
 # The errors a damaged member raises while it is read and decompressed (CR-02); returned as ERROR intake.corrupt, never raised
-_READ_ERRORS = (zipfile.BadZipFile, RuntimeError, NotImplementedError, zlib.error, EOFError, OSError, *_LZMA_ERRORS)
+_READ_ERRORS = (
+    zipfile.BadZipFile,
+    RuntimeError,
+    NotImplementedError,
+    zlib.error,
+    EOFError,
+    OSError,
+    *_LZMA_ERRORS,
+    *_ZSTD_ERRORS,
+)
 
 
 @dataclass(frozen=True)
@@ -315,9 +331,23 @@ def _stage_zip(
         else:
             package.ignored.append(name)
 
-    tmp = tempfile.TemporaryDirectory(prefix=STAGING_PREFIX, ignore_cleanup_errors=True)
+    try:
+        tmp = tempfile.TemporaryDirectory(prefix=STAGING_PREFIX, ignore_cleanup_errors=True)
+    except OSError as e:
+        return Issue(
+            Severity.ERROR,
+            "intake.staging_failed",
+            f"Could not create a temp folder to stage {path.name}: {e.strerror or e}",
+        )
     package._tmp = tmp
-    staging = Path(tmp.name).resolve()
+    try:
+        staging = Path(tmp.name).resolve()
+    except OSError as e:
+        return Issue(
+            Severity.ERROR,
+            "intake.staging_failed",
+            f"Could not resolve the temp folder to stage {path.name}: {e.strerror or e}",
+        )
     if staging.is_relative_to(Path(repo_root).resolve()):
         return Issue(
             Severity.ERROR,
