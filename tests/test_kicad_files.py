@@ -13,6 +13,7 @@ from kicad_lib_manager.kicad_files import (
     find_symbol,
     find_symbols,
     footprint_name,
+    lib_table,
     lib_table_entries,
     load,
     parse_bytes,
@@ -366,3 +367,43 @@ def test_live_custom_footprints():
         assert ref is not None, f"{path.name} has no footprint name"
         for m in find_models(ref.node):
             assert _slice(loaded, m.path_node) == m.path_node.text
+
+
+# -- token-kind guards (WR-01) and value-less field routing (IN-04) ------------------
+
+
+def test_lib_entry_with_a_list_for_a_value_leaves_the_field_unset():
+    loaded = parse_bytes(b'(sym_lib_table (lib (name (x y))(uri "u")))', "t")
+    (entry,) = lib_table_entries(loaded.root)
+    assert entry.name is None
+    assert entry.uri == "u"
+    assert [x.head for x in entry.extras] == ["name"]
+    assert entry.flags == ()
+
+
+def test_lib_entry_valueless_known_field_goes_to_extras_never_flags():
+    loaded = parse_bytes(b'(sym_lib_table (lib (name)(type "KiCad")(uri "u")(name "N")))', "t")
+    (entry,) = lib_table_entries(loaded.root)
+    assert entry.flags == ()
+    assert entry.name == "N"
+    (extra,) = entry.extras
+    assert extra.head == "name" and len(extra.children) == 1
+
+
+def test_lib_table_exposes_version_among_the_other_children():
+    table = lib_table(_fixture("tables/basic.sym-lib-table").root)
+    assert table.others[0].head == "version"
+
+
+def test_find_symbols_skips_a_symbol_whose_name_is_not_a_token():
+    text = '(kicad_symbol_lib (symbol (x y) (a)) (symbol "Real"))'
+    loaded = parse_bytes(text.encode(), "s.kicad_sym")
+    assert [s.name for s in find_symbols(loaded.root)] == ["Real"]
+
+
+def test_find_property_skips_a_property_with_a_non_token_name_or_value():
+    text = '(symbol "S" (property "Footprint" (at 0 0)) (property (x) "v") (property "Footprint" "FP"))'
+    symbol = parse_bytes(text.encode(), "s").root.children[0]
+    assert find_property(symbol, "Footprint").value == "FP"
+    only_bad = parse_bytes(b'(symbol "S" (property "Footprint" (at 0 0)))', "s").root.children[0]
+    assert find_property(only_bad, "Footprint") is None
