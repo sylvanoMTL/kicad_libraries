@@ -94,7 +94,20 @@ Plans:
   4. For the UL sample, the suggested target library follows `<Type>_<SubCategory>_<Manufacturer>`, ends in `_TI` (from the `ti.com` datasheet host and existing `Custom/` prefixes), and is a default that can be overridden
   5. Names containing `/`, `:`, Windows-reserved names (e.g. `CON`, `NUL`) or traversal are sanitised, with `.` and `-` kept. Both the original and the sanitised name are reported.
 
-**Plans**: TBD
+**Plans**: 6 plans
+
+Plans:
+**Wave 1**
+- [ ] 03-01-PLAN.md — Tracer: UL zip -> staging outside the repo -> UL adapter -> candidate -> `IC_SubCategory_TI`; importer layering guard, shared zip builders, `downloaded_examples/** -text` (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 03-02-PLAN.md — Zip safety: whole-package refusal of hostile, duplicate and encrypted members, size/count/ratio caps on declared and real bytes, one-level nested zips, staging and cleanup checks (wave 2)
+- [ ] 03-03-PLAN.md — Detection: `file_kind` / `file_version` helpers, content checks and versions, every item returned, KiCad 5 legacy matrix, generic Unknown vendor, loose-folder adapter (wave 2)
+- [ ] 03-04-PLAN.md — Name sanitiser: `sanitize_name`, `sanitize_filename`, `case_clash`; every existing `Custom/` name unchanged (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 03-05-PLAN.md — Library suggestion: fresh `Custom/` listing, manufacturer alias/host/aggregator chain, SubCategory vocabulary, ranked alternatives, D-04 placeholder contract (wave 3)
+- [ ] 03-06-PLAN.md — Folder intake: read-only walk, links and junctions skipped, depth and size caps, loose folder and unzipped UL parity with zips (wave 3)
 
 ### Phase 4: Plan and Install Core
 
@@ -109,6 +122,7 @@ Plans:
   5. After install, verification re-parses the written files, resolves `<Lib>:<FP>` and confirms the model file exists. It warns when the part name already exists in another library or the symbol's pin numbers don't match the footprint's pad numbers. Importing the same package twice with the same choices changes nothing the second time.
 
 **Plans**: TBD
+**Contract from Phase 3 (D-04)**: install is refused while `importer.suggest.placeholder_tokens(name)` is non-empty for the chosen target library name (a `Type`, `SubCategory` or `Manufacturer` placeholder is still in it).
 **Research flag**: Spike early. Check that KiCad 9/10 loads a `20211014` symbol spliced into a `20241209` library, and check how `kicad-cli sym upgrade` / `fp upgrade` behave on a staging copy. Also decide how vendor symbols that use `extends` are handled.
 
 ### Phase 5: Import UI and Post-Install
@@ -125,6 +139,7 @@ Plans:
 
 **Plans**: TBD
 **UI hint**: yes
+**Contract from Phase 3 (D-04)**: the Install button stays disabled, with the reason shown, while `importer.suggest.placeholder_tokens(name)` is non-empty for the edited target library name.
 
 ### Phase 6: Git Commit Step
 
@@ -163,7 +178,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 |-------|----------------|--------|-----------|
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
-| 3. Package Intake and Naming | 0/TBD | Not started | - |
+| 3. Package Intake and Naming | 0/6 | Planned | - |
 | 4. Plan and Install Core | 0/TBD | Not started | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
