@@ -1,10 +1,11 @@
 ---
 phase: "05"
 slug: "import-ui-and-post-install"
-status: draft
+status: approved
 shadcn_initialized: false
 preset: none
 created: "2026-10-20"
+reviewed_at: "2026-10-20"
 ---
 
 # Phase 05 - UI Design Contract
@@ -440,6 +441,9 @@ Initial keyboard focus (focal point) per page: Edit page, the Target library com
 | KiCad-running notice | `KiCad is running. Reopen KiCad's Symbol and Footprint editors to see {Lib}.` (same text goes to the log as WARNING) |
 | Table outcome lines | `Added {Lib} to sym-lib-table and fp-lib-table` · `Library tables not changed: {Lib} was already listed` · for an existing library absent from the tables, WARNING in the result view and log: `{Lib} is not in the library tables. Press Generate Tables to add it.` |
 | Rejected drops | `Drop ignored: drop one .zip file or one folder at a time.` · `Drop ignored: '{name}' is not a .zip file or a folder.` · busy: `Import is unavailable while a scan is running.` |
+| Preview build failure | Blocking reason `Error: Preview could not be built - see the log` (previous tree kept; log line `Import step failed: {text}`) |
+| Rescan failure (Result view) | Library list row: `Rescan failed - see the log` in `ERROR` |
+| Content view read failure | Body text: `Could not read {path}: {reason}.` |
 | Library-creation refusal (WR-02) | `Cannot create {Lib}: the Custom/Symbols folder is missing. Check the Custom submodule is checked out.` shown as an ERROR Issue before any write |
 | Destructive confirmation | **Overwrite** (per conflict): no extra confirmation dialog. The action is chosen explicitly per item, shown in red with its hint, previewed as `~ modified` with a diff, and backed up before write. There is no bulk overwrite, and no other destructive action in this phase. |
 
@@ -449,37 +453,87 @@ Log routing: all Issues from open, build, install, rescan and table writes go to
 
 ## UI Considerations
 
-Applicable state considerations resolved: 17 covered, 4 backstop, 2 unresolved.
+Produced by the UI-consideration probe after checker approval (2026-10-20). There are 13 surfaces (E1..E13), and the owner confirmed the element kinds that replace the heuristic classification. That leaves 68 applicable considerations: 58 covered, 6 backstop and 4 dismissed. Two cross-cutting items are unresolved. Error and empty copy lives in the Copywriting Contract; rows here reference it and don't restate it.
 
-| Category | Element(s) | Status | Resolution / Reason |
-|----------|------------|--------|---------------------|
-| empty | Start page Downloads offer (static-content) | ✅ covered | With no zip in Downloads the row reads the documented `No .zip files found in your Downloads folder.` copy and shows no Open button; Browse zip... and Browse folder... stay available. |
-| error | Start page issue list (list-collection) | ✅ covered | A refused, KiCad-5-only or empty package keeps the dialog on the Start page and lists its ERROR and WARNING Issues; the same Issues reach the log; the user can pick another file. |
-| zero-one-many | Start page issue list (list-collection) | ✅ covered | One reason shows as one row, many rows scroll inside a 160px-high list. |
-| loading | Open / detect step (interactive-control) | ✅ covered | While `open_package` and `detect_candidate` run, the Start buttons are disabled and `Reading package...` with an indeterminate bar is shown. |
-| loading | First plan build (list-collection) | ✅ covered | The Edit page shows `Building preview...` and a disabled Install until the first plan arrives. |
-| loading | Plan rebuild (list-collection) | ✅ covered | A pending or running rebuild keeps the old tree, shows `Updating...`, and disables Install with the reason `Updating preview...`; a superseded result is discarded. |
-| zero-one-many | Footprint checklist (list-collection) | ✅ covered | Zero footprints shows `No footprint in this package` in amber, one shows a plain label, several show a checklist with a linked marker, six visible rows then a scrollbar. |
-| zero-one-many | Symbol and model pickers (list-collection) | ✅ covered | One item renders as a plain label, several as a combo box; the model combo always ends with `No model`, and a package with no model shows `No 3D model in this package`. |
-| partial | Fields form (form) | ✅ covered | Value and MPN cannot be empty and block Install; Datasheet, Description and Manufacturer may be emptied and install blank, with placeholder text `Empty - the field will be written blank`. |
-| partial | Target library combo (form) | ✅ covered | A suggested name with placeholder or low-confidence tokens shows those tokens in amber on the token line, and Install stays blocked while placeholders remain. |
-| partial | Conflict rows (list-collection) | ✅ covered | Unresolved rows show an amber bar and `Needs a choice`; resolved rows show a green bar and the hint; Install stays blocked until every row is resolved. |
-| zero-one-many | Conflict rows (list-collection) | ✅ covered | With no conflicts the section is hidden; one or many rows stack with 8px gaps and the left pane scrolls. |
-| populated | Preview tree (list-collection) | ✅ covered | The populated tree shows Files, Renames, Path rewrites, Format, Conflicts and Issues in that order, hiding every empty section except Files. |
-| overflow | Preview tree, blocking-reason strip (list-collection, static-content) | ✅ covered | Paths elide in the middle with the full text as tooltip and no horizontal scrollbar; the reason strip wraps to at most 3 lines and the tooltip carries the full list. |
-| error | Install failure (interactive-control) | ✅ covered | A rolled-back install returns to the Edit page with the red banner and the rollback reasons, rebuilds the plan, and allows a retry; copy is in the Copywriting contract. |
-| error | Dropped file on the main window (interactive-control) | ✅ covered | A multi-file drop or a non-zip, non-folder drop is refused with the documented log line; drops are ignored with a status-bar message while a scan runs. |
-| zero-one-many | Result view warnings and files (list-collection) | ✅ covered | No warnings shows `No warnings.`; the files list shows all written paths and scrolls past 8 rows. |
-| long-text | Names, paths, descriptions (form, static-content) | 🧪 backstop | Labels and tree rows elide in the middle with tooltips, and the Description box scrolls; confirm at the 900x600 minimum size with a 60-character library name and a 120-character description that no control is clipped or overlaps (offscreen widget-geometry test, plus manual UAT). |
-| overflow | Left pane at minimum size (form) | 🧪 backstop | With 3 conflicts and 6 footprints at 900x600 the left pane scrolls vertically and shows no horizontal scrollbar; asserted by a geometry test on the `QScrollArea`. |
-| long-text | Content view (static-content) | 🧪 backstop | A diff over 5000 lines or 512 KiB ends with the `Diff truncated` line; asserted with a synthetic large `.kicad_sym` in a pytest-qt test. |
-| loading | Post-install status rows (list-collection) | 🧪 backstop | The Library list and Library tables rows show `Rescanning...` and `Updating...` and then settle to a final line; asserted in a pytest-qt test that drives the main-window callback, and checked once in the real-`Custom/` UAT. |
-| overflow | Windows dark mode / high-contrast themes (all) | ⚠ unresolved | The semantic colors and the `LogPanel` black text assume the light Windows palette (existing behaviour of the app). Planner treats this as out of scope and as a known assumption. |
-| overflow | Display scaling above 150% (all) | ⚠ unresolved | Sizes are declared at 96 DPI; the 900x600 minimum is not verified at 175% or 200% scaling. Planner treats this as an assumption to check in the manual UAT. |
+Surfaces and confirmed kinds: E1 entry points (nav) · E2 drag and drop (interactive-control) · E3 Start page (interactive-control, static-content) · E4 Start issue list (list-collection) · E5 Items (form, list-collection) · E6 Target library (form) · E7 Fields (form) · E8 Conflicts (list-collection, form) · E9 Preview tree (list-collection) · E10 Content view (static-content) · E11 Blocking strip and Install Part (interactive-control, static-content) · E12 Install progress and failure (interactive-control) · E13 Result view (list-collection, static-content).
+
+| Category | Element | Status | Resolution / Reason |
+|----------|---------|--------|---------------------|
+| loading | E1 entry points | ✅ covered | The Import menu action and toolbar button are disabled while a scan runs, through `_set_scan_running`. |
+| error | E1 entry points | ⛔ dismissed | Reason: opening the dialog cannot fail. Package and plan failures surface inside the dialog (E3, E9, E12). |
+| overflow | E1 entry points | ⛔ dismissed | Reason: fixed short labels (`Import Part...`) in a menu and toolbar row, so no overflow is possible. |
+| long-text | E1 entry points | ⛔ dismissed | Reason: fixed copy only; no user or vendor text appears in these controls. |
+| loading | E2 drag and drop | ✅ covered | While a scan runs or the dialog is open, drops are ignored with a forbidden cursor and the status-bar message `Import is unavailable while a scan is running.` |
+| error | E2 drag and drop | ✅ covered | A drop of several paths, or of a path that is neither a zip nor a folder, is refused with the documented log warnings. |
+| long-text | E2 drag and drop | ✅ covered | `{name}` in the refusal line is the base name only, and the log panel wraps long lines (existing behaviour). |
+| loading | E3 Start page | ✅ covered | While `open_package` / `detect_candidate` run, the buttons are disabled and `Reading package...` with an indeterminate bar replaces the Downloads row. The label follows the progress callback text. |
+| error | E3 Start page | ✅ covered | A refused, KiCad-5-only or empty package keeps the dialog on the Start page and fills the issue list (E4). A missing Downloads folder shows `Downloads folder not found.` |
+| overflow | E3 Start page | ✅ covered | The content is a centered column, max width 560. The Downloads offer elides the zip name in the middle. |
+| long-text | E3 Start page | ✅ covered | The elided Downloads zip name has the full path as its tooltip. |
+| empty | E4 Start issue list | ✅ covered | The list is hidden until a package is refused or empty. A package with no Issues and nothing detected shows `No KiCad symbol or footprint was found in this package.` |
+| loading | E4 Start issue list | ✅ covered | The list is cleared when a new package starts reading. `Reading package...` is the only content until detection returns. |
+| error | E4 Start issue list | ✅ covered | This list is the error state. It shows ERROR and WARNING Issues, glyph-prefixed and severity-colored, followed by the closing `MUTED` line (`Pick another file.` / `Check that you downloaded the KiCad format...`). The same Issues go to the log. |
+| populated | E4 Start issue list | ✅ covered | One row per Issue (`✖` / `⚠` + text), word-wrapped (`setWordWrap(True)`), above the closing line. |
+| partial | E4 Start issue list | ⛔ dismissed | Reason: each Issue is a complete record (severity + text). No row can be half-populated. |
+| overflow | E4 Start issue list | ✅ covered | Max 160px high, then the list scrolls vertically; rows wrap instead of scrolling horizontally. |
+| zero-one-many | E4 Start issue list | ✅ covered | One Issue shows as one row; many rows scroll inside the 160px list. |
+| empty | E5 Items | ✅ covered | No footprint shows `No footprint in this package` in `AMBER`, and no model shows `No 3D model in this package` in `AMBER`. A package with no symbol never reaches this page (refused on Start, D-05). |
+| loading | E5 Items | ✅ covered | During the first plan build the left pane is disabled and the preview shows `Building preview...`. |
+| error | E5 Items | ✅ covered | Unchecking the last footprint adds the blocking reason `Select at least one footprint` and the amber frame on the footprint list. |
+| populated | E5 Items | ✅ covered | Several symbols or models show as a combo with the first preselected. Several footprints show as a checklist with every row checked, and the linked row is bold with `(linked)`. |
+| partial | E5 Items | ✅ covered | An `extends` parent is included automatically, and a note under the symbol combo says so. Unchecking the linked footprint moves "linked" to the first remaining checked row. |
+| overflow | E5 Items | ✅ covered | The footprint checklist shows 6 rows, then a vertical scrollbar. |
+| zero-one-many | E5 Items | ✅ covered | Zero items gives an amber label, one item a plain label, and several items a combo or checklist. The model combo always ends with `No model`. |
+| long-text | E5 Items | 🧪 backstop | `{ statement: "Item labels elide in the middle with the full name as tooltip and combo popups show full names; at the 900x600 minimum with a 60-character name no control is clipped or overlaps", verification: backstop }` (offscreen widget-geometry test plus manual UAT). |
+| empty | E6 Target library | ✅ covered | An empty name shows the amber frame and the blocking reason `Library name is empty`. |
+| loading | E6 Target library | ✅ covered | Typing rebuilds after a 300 ms debounce and picking from the list rebuilds immediately. While a rebuild runs, `Updating...` shows and Install is disabled. The library list is read fresh each time the dialog opens. |
+| error | E6 Target library | ✅ covered | An empty name, a case-twin or a `sanitize_name` failure shows the plan's Issue in the preview, a blocking reason, and the amber frame. |
+| partial | E6 Target library | ✅ covered | Placeholder and low-confidence tokens show in `AMBER` on the token line with the token hint. Install stays blocked while any placeholder remains. |
+| long-text | E6 Target library | 🧪 backstop | `{ statement: "A 60-character library name stays readable in the combo and token line at the 900x600 minimum without clipping the badge", verification: backstop }` (offscreen geometry test). |
+| empty | E7 Fields | ✅ covered | Emptied Datasheet, Description and Manufacturer show the placeholder `Empty - the field will be written blank` and install blank. Emptied Value and MPN block Install. |
+| loading | E7 Fields | ✅ covered | Edits rebuild after the debounce. During a rebuild the read-only Footprint field keeps the previous plan's value and Install is disabled. The field always shows the value from the rebuilt plan (D-14). |
+| error | E7 Fields | ✅ covered | An empty Value or MPN shows the amber frame and the reasons `Value is empty` / `MPN is empty - it names the 3D model file`. Clicking the reason link focuses the field. |
+| partial | E7 Fields | ✅ covered | The required fields (Value, MPN) and the optional ones (Datasheet, Description, Manufacturer) behave as above. A field left as default shows a disabled `↺`. |
+| long-text | E7 Fields | 🧪 backstop | `{ statement: "A 120-character Description scrolls inside its single-line box and the form does not widen past the left pane at 900x600", verification: backstop }` (offscreen geometry test). |
+| empty | E8 Conflicts | ✅ covered | The Conflicts section is hidden when the plan has no conflicts. |
+| loading | E8 Conflicts | ✅ covered | Rows stay visible through a rebuild. Choices are keyed by `Conflict.key` and survive while the key is still in the new plan (D-14a); a new key starts unresolved. |
+| error | E8 Conflicts | ✅ covered | Choosing Rename and leaving its name empty shows the amber frame on the rename field and the reason `Enter a new name for {kind} {name}`. |
+| populated | E8 Conflicts | ✅ covered | Each row has a kind/name/location line, three toggle buttons, and a hint line. Overwrite is checked in red and Rename / Skip in the accent. |
+| partial | E8 Conflicts | ✅ covered | Unresolved rows show an amber bar and `Needs a choice`; resolved rows show a green bar and the hint. Install stays blocked until every row is resolved. |
+| overflow | E8 Conflicts | 🧪 backstop | `{ statement: "With 3 conflicts and 6 footprints at 900x600 the left pane scrolls vertically and shows no horizontal scrollbar", verification: backstop }` (geometry test on the `QScrollArea`). |
+| zero-one-many | E8 Conflicts | ✅ covered | With zero conflicts the section is hidden; one or many rows stack 8px apart and the left pane scrolls. |
+| long-text | E8 Conflicts | ✅ covered | Line 1 elides in the middle with the full text as tooltip. The rename field has a min width of 160 and long names scroll inside it. |
+| empty | E9 Preview tree | ✅ covered | Before the first plan, a centered `Building preview...` shows instead of an empty tree. For a no-op plan, the Files section lists `=` unchanged rows and the strip reads `Nothing to install ...`. |
+| loading | E9 Preview tree | ✅ covered | During a rebuild the previous tree stays, `Updating...` shows in `AMBER`, and the busy strip appears only after 150 ms. A superseded result is discarded by generation counter. |
+| error | E9 Preview tree | ✅ covered | If a rebuild raises, the previous tree stays and `Updating...` hides. Install is blocked with the reason `Error: Preview could not be built - see the log`, and the log gets `Import step failed: {text}`. The next edit retries the build. |
+| populated | E9 Preview tree | ✅ covered | Sections appear in fixed order: Files, Renames, Path rewrites, Format, Conflicts, Issues. Every empty section is hidden except Files. |
+| partial | E9 Preview tree | ✅ covered | Path rewrites show `(none)` for an absent old value. The Format row states when kicad-cli is missing (`⚠`). |
+| overflow | E9 Preview tree | ✅ covered | The Item column elides in the middle with the full text as tooltip. There is no horizontal scrollbar, and expand state and scroll position are restored across rebuilds. |
+| zero-one-many | E9 Preview tree | ✅ covered | Section headers read `{Name} ({count})`; a section with zero rows is hidden, except Files. |
+| overflow | E10 Content view | ✅ covered | `QPlainTextEdit` in `NoWrap` with both scrollbars. Diffs are capped at 5000 lines or 512 KiB. A file that cannot be read shows `Could not read {path}: {reason}.` as the body. |
+| long-text | E10 Content view | 🧪 backstop | `{ statement: "A diff over 5000 lines or 512 KiB ends with the 'Diff truncated: showing the first {n} of {total} lines.' line", verification: backstop }` (pytest-qt test with a synthetic large `.kicad_sym`). |
+| loading | E11 Blocking strip and Install Part | ✅ covered | While a rebuild is pending, the single reason `Updating preview...` replaces all others and Install Part is disabled. |
+| error | E11 Blocking strip and Install Part | ✅ covered | Plan ERROR issues appear as reasons prefixed with `Error:`. Each reason is a link that focuses its control. |
+| overflow | E11 Blocking strip and Install Part | ✅ covered | The strip wraps to at most 3 lines, then elides; the tooltip carries the full reason list. |
+| long-text | E11 Blocking strip and Install Part | ✅ covered | A long reason (for example a long conflict name) wraps within the 3-line cap. The ready line keeps a fixed shape (`{n} new, {m} modified, {k} unchanged files`). |
+| loading | E12 Install progress and failure | ✅ covered | A determinate bar with step text is shown and the button reads `Installing...` while disabled. Close and Esc are ignored until the worker finishes, and a stalled callback leaves the bar at its last value. |
+| error | E12 Install progress and failure | ✅ covered | A rolled-back install returns to the Edit page with the red banner and the rollback reasons, rebuilds the plan, and allows a retry. A failed restore uses the `{backup_dir}` variant of the copy. |
+| long-text | E12 Install progress and failure | ✅ covered | Banner reasons wrap one per line and cap at 6 lines, then the banner body scrolls. The step text elides at the right. |
+| empty | E13 Result view | ✅ covered | With no warnings the view shows `No warnings.` in `MUTED`. The KiCad notice is hidden when KiCad is not running, and the commit slot is hidden in Phase 5. |
+| loading | E13 Result view | 🧪 backstop | `{ statement: "Library list and Library tables rows show 'Rescanning...' / 'Updating...' and then settle to a final line", verification: backstop }` (pytest-qt test driving the main-window callback, plus a real-`Custom/` UAT check). |
+| error | E13 Result view | ✅ covered | A failed table write shows its failure line in `ERROR`. A failed rescan makes the Library list row read `Rescan failed - see the log` in `ERROR`. A failed KiCad-running check shows no notice and logs nothing, since the notice is a best-effort hint. |
+| populated | E13 Result view | ✅ covered | The view shows the success banner, then the KiCad notice if KiCad is running, Warnings, post-install status rows, Files written, Backup with Open folder, and Close. |
+| partial | E13 Result view | ✅ covered | An existing library that is missing from the tables shows the `⚠` Generate-hint row. For an existing library the tables row reads `Not needed: existing library`. |
+| overflow | E13 Result view | ✅ covered | The Files written list shows 8 rows, then scrolls. Warnings wrap. |
+| zero-one-many | E13 Result view | ✅ covered | Zero warnings shows `No warnings.`; the heading reads `Files written ({n})` and the list lists every touched path. |
+| long-text | E13 Result view | ✅ covered | File paths and the backup path elide in the middle with the full text as tooltip. The backup path stays selectable (Mono). |
+| overflow | Windows dark mode / high-contrast themes (all surfaces) | ⚠ unresolved — planner must treat as assumption | The semantic colors and the `LogPanel` black text assume the light Windows palette, which is the app's existing behaviour. This is out of scope and a known assumption. |
+| overflow | Display scaling above 150% (all surfaces) | ⚠ unresolved — planner must treat as assumption | Sizes are declared at 96 DPI, and the 900x600 minimum is not verified at 175% or 200%. This is an assumption to check in the manual UAT. |
 
 <!-- Status vocabulary (locked by probe-core projectTruths):
      ✅ covered   → a plain truth string lifted into must_haves.truths
      🧪 backstop  → a flat scalar { statement, verification: backstop }
+     ⛔ dismissed → not applicable, reason recorded
      ⚠ unresolved → an explicit planner assumption (surfaced, never silently dropped)
      Rows are REPLACED (not appended) on a probe re-run — idempotent. -->
 
@@ -509,12 +563,12 @@ Not applicable. This is a PySide6 desktop app: there is no component registry, n
 
 ## Checker Sign-Off
 
-- [ ] Dimension 1 Copywriting: PASS
-- [ ] Dimension 2 Visuals: PASS
-- [ ] Dimension 3 Color: PASS
-- [ ] Dimension 4 Typography: PASS
-- [ ] Dimension 5 Spacing: PASS
-- [ ] Dimension 6 Registry Safety: PASS
-- [ ] Dimension 7 Inventory Provenance: PASS
+- [x] Dimension 1 Copywriting: FLAG (non-blocking: single-word `Close` and `Open` labels)
+- [x] Dimension 2 Visuals: PASS
+- [x] Dimension 3 Color: PASS
+- [x] Dimension 4 Typography: PASS
+- [x] Dimension 5 Spacing: PASS
+- [x] Dimension 6 Registry Safety: PASS
+- [x] Dimension 7 Inventory Provenance: PASS
 
-**Approval:** pending
+**Approval:** approved 2026-10-20 (gsd-ui-checker, re-check after revision 1; 6 PASS, 1 FLAG)
