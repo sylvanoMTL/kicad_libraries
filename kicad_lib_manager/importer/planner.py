@@ -6,7 +6,7 @@ to create or change, so apply_plan only has to write them.
 
 import hashlib
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
@@ -14,6 +14,7 @@ from .. import fsutil
 from ..kicad_files import (
     LoadedFile,
     SymbolRef,
+    block_text,
     description_field_name,
     extends_name,
     file_kind,
@@ -36,7 +37,9 @@ from ..kicad_files import (
     replace_exact_tokens,
     retarget_model,
     set_property_edit,
+    symbol_insert_before_edit,
     symbol_insert_edit,
+    symbol_replace_edit,
     symbol_unit,
     synth_property_text,
     unit_library_text,
@@ -47,8 +50,8 @@ from . import kicad_cli
 from . import package as _package
 from .adapters.base import MANUFACTURER_FIELDS, MPN_FIELDS
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
-from .layout import RepoLayout, list_footprint_libs, list_symbol_libs
-from .naming import sanitize_filename, sanitize_name
+from .layout import RepoLayout, list_footprint_libs, list_model_files, list_symbol_libs
+from .naming import MAX_NAME_LEN, NameResult, case_clash, sanitize_filename, sanitize_name
 from .package import PackageFile
 from .plan import (
     MODEL_DIR_VAR,
@@ -57,6 +60,7 @@ from .plan import (
     InstallOptions,
     InstallPlan,
     Rename,
+    Resolution,
     ToolContext,
 )
 from .suggest import manufacturer_choice, placeholder_tokens
@@ -359,6 +363,111 @@ def _cli_not_found() -> Issue:
     )
 
 
+def suggest_free_name(base: str, taken: Collection[str], *, suffix: str = "", casefold: bool) -> str:
+    """The first free `<base>_<n><suffix>` for n = 2, 3, ..., cleaned like any other name (D-06).
+
+    Files compare ignoring letter case (casefold=True), symbol names compare exactly. The base is
+    cut, never the number, when the name would pass the length limit.
+    """
+    used = {name.casefold() for name in taken} if casefold else set(taken)
+    candidate = ""
+    for n in range(2, len(used) + 3):
+        tail = f"_{n}"
+        stem = base[: max(1, MAX_NAME_LEN - len(tail))] + tail
+        candidate = sanitize_filename(stem + suffix).sanitized if suffix else sanitize_name(stem).sanitized
+        if (candidate.casefold() if casefold else candidate) not in used:
+            break
+    return candidate
+
+
+def _digest(path: Path) -> str | None:
+    """SHA-256 of a file read in chunks; None when it cannot be read."""
+    digest = hashlib.sha256()
+    try:
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+_FOOTPRINT_SUFFIX = ".kicad_mod"
+
+
+def _footprint_files(pretty: Path) -> tuple[str, ...]:
+    """Exact-case names of the .kicad_mod files directly in a .pretty folder."""
+    return tuple(sorted(
+        name for name in _listing(pretty) if name.casefold().endswith(_FOOTPRINT_SUFFIX) and (pretty / name).is_file()
+    ))
+
+
+@dataclass(frozen=True)
+class _FileSpec:
+    """One footprint or model file the install wants to put somewhere, and how to compare it with what is there."""
+
+    kind: str  # "footprint" | "model"
+    folder: Path
+    where: str  # shown in the conflict text
+    files: tuple[str, ...]  # exact-case file names already in folder
+    default: str  # the name the plan would use; every conflict key is built from it
+    file_of: Callable[[str], str]  # name -> file name
+    identity_of: Callable[[str], str]  # file name -> name
+    same: Callable[[str, str], bool]  # (name, sha256 of the existing file) -> planned content equals it
+    make_op: Callable[[str, Path | None, str | None], FileOp]  # (name, existing file, its sha256) -> the write
+    sanitise: Callable[[str], NameResult]
+    suggest: Callable[[], str]
+
+
+@dataclass(frozen=True)
+class _Decision:
+    """What happens to one file: the name it is used under, the write if any, its conflict and notes."""
+
+    name: str
+    op: FileOp | None = None
+    conflict: Conflict | None = None
+    issues: tuple[Issue, ...] = ()
+    kept: bool = False  # skip: the existing file is used as it is
+
+
+def _decide_file(spec: _FileSpec, key: str, resolution: Resolution | None) -> _Decision:
+    """Settle one file against the folder: nothing to do (D-07), a plain write, or a Conflict (D-05, D-10)."""
+    wanted = spec.file_of(spec.default)
+    hit = next((f for f in spec.files if f == wanted), None) or next(
+        (f for f in spec.files if f.casefold() == wanted.casefold()), None
+    )
+    if hit is None:
+        return _Decision(spec.default, op=spec.make_op(spec.default, None, None))
+    existing = spec.folder / hit
+    digest = _digest(existing)
+    if digest is None:
+        return _Decision(spec.default, issues=(_err("install.target_unreadable", f"Could not read {hit} in {spec.where}"),))
+    if hit == wanted and spec.same(spec.default, digest):
+        return _Decision(spec.default)
+    text = (
+        f"{spec.where} already holds {hit}, which differs from {wanted} only by letter case"
+        if hit != wanted
+        else f"{spec.where} already holds a different {hit}"
+    )
+    conflict = Conflict(key=key, kind=spec.kind, name=spec.default, existing=text, suggested_name=spec.suggest())
+    if resolution is None:
+        return _Decision(spec.default, conflict=conflict)
+    return _Decision(
+        spec.default,
+        conflict=conflict,
+        issues=(_err("install.resolution_unsupported", f"{key} cannot be resolved yet"),),
+    )
+
+
+@dataclass(frozen=True)
+class _SymState:
+    """What happens to one symbol of the unit; kind is new, identical, overwrite, skip, open (unresolved) or error."""
+
+    vendor: str
+    final: str
+    kind: str
+
+
 def _select(
     candidate: ImportCandidate, options: InstallOptions
 ) -> tuple[SymbolItem | None, list[FootprintItem], ModelItem | None, list[Issue]]:
@@ -539,22 +648,18 @@ def build_plan(
         ))
 
     step("Planning names", 3)
-    sym_renames: list[Rename] = []
     new_names: dict[str, str] = {}
     for ref in unit:
         checked = sanitize_name(ref.name)
         if any(i.code == "naming.empty" for i in checked.issues):
             return refuse(_err("install.invalid_name", f"The symbol name {ref.name!r} has no usable characters, so it cannot be installed"))
         new_names[ref.name] = checked.sanitized
-        if checked.sanitized != ref.name:
-            sym_renames.append(Rename("symbol", ref.name, checked.sanitized))
-    final_symbols = tuple(new_names[ref.name] for ref in unit)
-    if len({name.casefold() for name in final_symbols}) != len(final_symbols):
-        return refuse(_err("install.duplicate_name", f"Two symbols of {sym_item.name} would both be installed under one name: {_name_list(list(final_symbols))}"))
+    default_symbols = tuple(new_names[ref.name] for ref in unit)
+    if len({name.casefold() for name in default_symbols}) != len(default_symbols):
+        return refuse(_err("install.duplicate_name", f"Two symbols of {sym_item.name} would both be installed under one name: {_name_list(list(default_symbols))}"))
 
     # D-14: a caller footprint name is sanitised like a vendor name and drives every place the name appears
     fp_names_list: list[str] = []
-    fp_renames: list[Rename] = []
     for fp_item in fp_items:
         wanted = options.footprint_names.get(fp_item.name)
         checked = fp_item.name_check if wanted is None else sanitize_name(wanted)
@@ -564,11 +669,15 @@ def build_plan(
         if wanted is not None:
             issues.extend(i for i in checked.issues if i.severity is not Severity.ERROR)
         fp_names_list.append(checked.sanitized)
-        if checked.sanitized != fp_item.name:
-            fp_renames.append(Rename("footprint", fp_item.name, checked.sanitized))
     fp_names = tuple(fp_names_list)
     if len({name.casefold() for name in fp_names}) != len(fp_names):
         return refuse(_err("install.duplicate_name", f"Two chosen footprints would both be installed under one name: {_name_list(list(fp_names))}"))
+    fp_refs = []
+    for fp_item, vendor_fp in zip(fp_items, vendor_fps):
+        fp_ref = footprint_name(vendor_fp.root)
+        if fp_ref is None:
+            return refuse(_err("install.source_unreadable", f"{fp_item.file.member} is not a KiCad footprint"))
+        fp_refs.append(fp_ref)
 
     # D-01: the vendor text is normalised once, on the unrenamed unit, so later edits never re-run kicad-cli
     unit_text = _unit_text(vendor_sym, unit)
@@ -610,24 +719,44 @@ def build_plan(
         else:
             issues.append(Issue(Severity.WARNING, "install.manufacturer_missing", "No manufacturer was found; the Manufacturer property is empty"))
     base_fields = _Fields(
-        # D-17: the first footprint is linked; D-15: every installed footprint is a filter
-        footprint=f"{library}:{fp_names[0]}",
-        filters=" ".join(fp_names),
+        footprint="",
+        filters="",
         manufacturer=manufacturer,
         manufacturer_forced=options.manufacturer is not None,
     )
-    chosen_fields = replace(
-        base_fields, mpn=options.mpn, value=options.value, datasheet=options.datasheet, description=options.description
-    )
-    all_edits: list[Edit] = []
-    final_mpn = ""
-    for ref in work_unit:
-        is_chosen = ref is work_unit[-1]
-        symbol_edits, mpn = _edit_symbol(work, ref, new_names[ref.name], chosen_fields if is_chosen else base_fields, style)
-        all_edits.extend(symbol_edits)
-        all_edits.extend(rename_symbol_edits(work.root, ref.name, new_names[ref.name]))
-        if is_chosen:
-            final_mpn = mpn
+    renders: dict[tuple, tuple[LoadedFile, dict[str, str], str] | Issue] = {}
+
+    def render_symbols(names: dict[str, str], link: str, filters: str) -> tuple[LoadedFile, dict[str, str], str] | Issue:
+        """The unit edited under the given final names and footprint link: (text, block per final name, final MPN)."""
+        memo = (tuple(names.items()), link, filters)
+        if memo in renders:
+            return renders[memo]
+        fields = replace(base_fields, footprint=link, filters=filters)
+        chosen_fields = replace(
+            fields, mpn=options.mpn, value=options.value, datasheet=options.datasheet, description=options.description
+        )
+        all_edits: list[Edit] = []
+        final_mpn = ""
+        for ref in work_unit:
+            is_chosen = ref is work_unit[-1]
+            symbol_edits, mpn = _edit_symbol(work, ref, names[ref.name], chosen_fields if is_chosen else fields, style)
+            all_edits.extend(symbol_edits)
+            all_edits.extend(rename_symbol_edits(work.root, ref.name, names[ref.name]))
+            if is_chosen:
+                final_mpn = mpn
+        edited = _loaded_text(apply_edits(work.source.text, all_edits), work.source.bom, "the edited symbol", "install.source_unreadable")
+        if isinstance(edited, Issue):
+            renders[memo] = edited
+            return edited
+        placed = {ref.name: ref for ref in find_symbols(edited.root)}
+        blocks = {name: edited.source.text[placed[name].node.start:placed[name].node.end] for name in names.values()}
+        renders[memo] = (edited, blocks, final_mpn)
+        return renders[memo]
+
+    first = render_symbols(new_names, f"{library}:{fp_names[0]}", " ".join(fp_names))
+    if isinstance(first, Issue):
+        return refuse(first)
+    final_mpn = first[2]
 
     model_file: str | None = None
     if model_item is not None:
@@ -646,36 +775,72 @@ def build_plan(
             f"No 3D model found in {candidate.source.name}; the footprint installs without one",
         ))
 
-    edited = _loaded_text(apply_edits(work.source.text, all_edits), work.source.bom, "the edited symbol", "install.source_unreadable")
-    if isinstance(edited, Issue):
-        return refuse(edited)
-    placed = {ref.name: ref for ref in find_symbols(edited.root)}
-    blocks = [edited.source.text[placed[name].node.start:placed[name].node.end] for name in final_symbols]
-    if target is not None:
-        # The only change to an existing library is the inserted symbol: its header is never edited
-        sym_text = apply_edits(target.source.text, [symbol_insert_edit(target, block) for block in blocks])
-        sym_bytes = fsutil.encode_source(sym_text, target.source.bom)
-    else:
-        # A new library is the normalised unit file with the edited symbols, already in parent-first order
-        sym_bytes = fsutil.encode_source(edited.source.text, edited.source.bom)
+    step("Checking for conflicts", 5)
+    resolutions = options.resolutions
 
-    fp_bytes: list[bytes] = []
-    for index, (fp_item, vendor_fp, fp_name) in enumerate(zip(fp_items, vendor_fps, fp_names)):
-        fp_ref = footprint_name(vendor_fp.root)
-        if fp_ref is None:
-            return refuse(_err("install.source_unreadable", f"{fp_item.file.member} is not a KiCad footprint"))
-        fp_edits = [footprint_name_edit(fp_ref, fp_name), *footprint_value_edits(fp_ref.node, fp_name)]
+    def resolution_for(key: str) -> Resolution | None:
+        found = resolutions.get(key)
+        if found is not None and found.action not in ("overwrite", "rename", "skip"):
+            issues.append(_err("install.bad_resolution", f"{key}: {found.action!r} is not overwrite, rename or skip"))
+            return None
+        return found
+
+    # The model comes first: its name goes into the first footprint, and the footprint's bytes decide its own conflict
+    model_dec: _Decision | None = None
+    if model_item is not None and model_file is not None:
+        model_suffix = PurePosixPath(model_file).suffix
+        model_stem = model_file[: len(model_file) - len(model_suffix)]
+        model_item_file = model_item.file
+        model_dir = layout.models_dir
+        model_files = tuple(name for name in list_model_files(layout) if "/" not in name)
+
+        def make_model_op(name: str, existing: Path | None, digest: str | None) -> FileOp:
+            return FileOp(
+                "model",
+                model_dir / name,
+                source=model_item_file,
+                base_sha256=digest,
+                listed_path=existing if existing is not None and existing.name != name else None,
+            )
+
+        model_dec = _decide_file(
+            _FileSpec(
+                kind="model",
+                folder=model_dir,
+                where=model_dir.name,
+                files=model_files,
+                default=model_file,
+                file_of=lambda name: name,
+                identity_of=lambda name: name,
+                same=lambda name, digest: digest == model_item_file.sha256,
+                make_op=make_model_op,
+                sanitise=lambda wanted: sanitize_filename(wanted),
+                suggest=lambda: suggest_free_name(model_stem, model_files, suffix=model_suffix, casefold=True),
+            ),
+            f"model:{model_file.casefold()}",
+            resolution_for(f"model:{model_file.casefold()}"),
+        )
+
+    model_link = model_dec.name if model_dec is not None else None
+    pretty_files = _footprint_files(pretty)
+    fp_taken = [name[: -len(_FOOTPRINT_SUFFIX)] for name in pretty_files]
+
+    def render_fp(index: int, name: str) -> tuple[bytes, list[Issue]]:
+        """The vendor footprint under a final name; the first footprint carries the model link."""
+        fp_ref, vendor_fp = fp_refs[index], vendor_fps[index]
+        notes: list[Issue] = []
+        fp_edits = [footprint_name_edit(fp_ref, name), *footprint_value_edits(fp_ref.node, name)]
         existing = find_models(fp_ref.node)
         # The model belongs to the linked (first) footprint
-        if model_file is not None and index == 0:
-            model_path = f"{MODEL_DIR_VAR}/{model_file}"
+        if model_link is not None and index == 0:
+            model_path = f"{MODEL_DIR_VAR}/{model_link}"
             if existing:
                 fp_edits.append(retarget_model(existing[0], model_path))
                 if len(existing) > 1:
-                    issues.append(Issue(
+                    notes.append(Issue(
                         Severity.WARNING,
                         "install.extra_models",
-                        f"{fp_name} has {len(existing)} 3D model blocks; the first now links {model_file} and the other {len(existing) - 1} are left unchanged",
+                        f"{name} has {len(existing)} 3D model blocks; the first now links {model_link} and the other {len(existing) - 1} are left unchanged",
                     ))
             else:
                 fp_edits.append(model_insert_edit(vendor_fp.source.text, fp_ref.node, model_path, vendor_fp.source.eol))
@@ -683,59 +848,148 @@ def build_plan(
             # Vendor model paths are never edited; one that cannot resolve from this library is reported
             stale = next((m.path for m in existing if not _resolves_in_library(m.path)), None)
             if stale is not None:
-                issues.append(Issue(
+                notes.append(Issue(
                     Severity.WARNING,
                     "install.stale_model_path",
-                    f"{fp_name} links the 3D model {stale!r}, which will not resolve from this library; the path is left unchanged",
+                    f"{name} links the 3D model {stale!r}, which will not resolve from this library; the path is left unchanged",
                 ))
-        if fp_item.has_embedded_files:
-            issues.append(Issue(
+        if fp_items[index].has_embedded_files:
+            notes.append(Issue(
                 Severity.WARNING,
                 "install.embedded_files",
-                f"{fp_name} contains embedded files; they are kept exactly as they are",
+                f"{name} contains embedded files; they are kept exactly as they are",
             ))
-        fp_bytes.append(fsutil.encode_source(apply_edits(vendor_fp.source.text, fp_edits), vendor_fp.source.bom))
+        return fsutil.encode_source(apply_edits(vendor_fp.source.text, fp_edits), vendor_fp.source.bom), notes
 
-    step("Checking for conflicts", 5)
-    conflicts: list[Conflict] = []
-    for sym_name in final_symbols:
-        if target is not None and find_symbol(target.root, sym_name) is not None:
-            conflicts.append(Conflict(
-                key=f"symbol:{library}:{sym_name}",
-                kind="symbol",
-                name=sym_name,
-                existing=f"{sym_path.name} already holds a symbol named {sym_name}",
-            ))
-    listed = [name.casefold() for name in _listing(pretty)]
-    for fp_name in fp_names:
-        if f"{fp_name}.kicad_mod".casefold() in listed:
-            conflicts.append(Conflict(
-                key=f"footprint:{library}:{fp_name.casefold()}",
-                kind="footprint",
-                name=fp_name,
-                existing=f"{pretty.name} already holds {fp_name}.kicad_mod",
-            ))
-    if model_file is not None:
-        if any(name.casefold() == model_file.casefold() for name in _listing(layout.models_dir)):
-            conflicts.append(Conflict(
-                key=f"model:{model_file.casefold()}",
-                kind="model",
-                name=model_file,
-                existing=f"3DModels already holds {model_file}",
-            ))
+    def footprint_spec(index: int) -> _FileSpec:
+        default = fp_names[index]
+
+        def make_fp_op(name: str, existing: Path | None, digest: str | None) -> FileOp:
+            return FileOp(
+                "footprint",
+                pretty / f"{name}{_FOOTPRINT_SUFFIX}",
+                data=render_fp(index, name)[0],
+                base_sha256=digest,
+                listed_path=existing if existing is not None and existing.name != f"{name}{_FOOTPRINT_SUFFIX}" else None,
+            )
+
+        return _FileSpec(
+            kind="footprint",
+            folder=pretty,
+            where=pretty.name,
+            files=pretty_files,
+            default=default,
+            file_of=lambda name: f"{name}{_FOOTPRINT_SUFFIX}",
+            identity_of=lambda name: name[: -len(_FOOTPRINT_SUFFIX)],
+            same=lambda name, digest: hashlib.sha256(render_fp(index, name)[0]).hexdigest() == digest,
+            make_op=make_fp_op,
+            sanitise=sanitize_name,
+            suggest=lambda: suggest_free_name(default, [*fp_taken, *fp_names], casefold=True),
+        )
+
+    fp_decisions = [
+        _decide_file(
+            footprint_spec(index),
+            f"footprint:{library}:{name.casefold()}",
+            resolution_for(f"footprint:{library}:{name.casefold()}"),
+        )
+        for index, name in enumerate(fp_names)
+    ]
+    for decision in fp_decisions:
+        issues.extend(decision.issues)
+    if model_dec is not None:
+        issues.extend(model_dec.issues)
+    final_fps = tuple(d.name for d in fp_decisions)
+    linked = final_fps[0]
+    for index, decision in enumerate(fp_decisions):
+        if not decision.kept:
+            issues.extend(render_fp(index, decision.name)[1])
+
+    # The symbol is judged last: its Footprint field and filters carry the footprint names that survived
+    link = f"{library}:{linked}"
+    filters = " ".join(final_fps)
+    names = dict(new_names)
+    rendered = render_symbols(names, link, filters)
+    if isinstance(rendered, Issue):
+        return refuse(rendered)
+    edited, blocks, _ = rendered
+    existing_syms = {} if target is None else {ref.name: ref for ref in find_symbols(target.root)}
+
+    def plain(text: str) -> str:
+        return fsutil.normalize_eol(text, "\n")
+
+    states: list[_SymState] = []
+    sym_conflicts: list[Conflict] = []
+    for ref in unit:
+        default = new_names[ref.name]
+        present = existing_syms.get(default)
+        if present is None or target is None:
+            states.append(_SymState(ref.name, default, "new"))
+            continue
+        if plain(block_text(target.source.text, present.node)) == plain(blocks[default]):
+            states.append(_SymState(ref.name, default, "identical"))
+            continue
+        key = f"symbol:{library}:{default}"
+        taken = [*existing_syms, *(new_names[r.name] for r in unit if r is not ref)]
+        conflict = Conflict(
+            key=key,
+            kind="symbol",
+            name=default,
+            existing=f"{library} already has a different {default}",
+            suggested_name=suggest_free_name(default, taken, casefold=False),
+        )
+        res = resolution_for(key)
+        if res is None:
+            states.append(_SymState(ref.name, default, "open"))
+        else:
+            issues.append(_err("install.resolution_unsupported", f"{key} cannot be resolved yet"))
+            states.append(_SymState(ref.name, default, "error"))
+        sym_conflicts.append(replace(conflict, resolution=res))
+    for state in states:
+        if state.kind == "new":
+            issues.extend(case_clash(state.final, existing_syms))
+
+    final_symbols = tuple(names[ref.name] for ref in unit)
+    sym_edits: list[Edit] = []
+    if target is not None:
+        for index, state in enumerate(states):
+            if state.kind != "new":
+                continue
+            # A derived symbol must stay behind its parent: a new parent goes in front of an existing descendant
+            behind = [existing_syms[s.final] for s in states[index + 1 :] if s.final in existing_syms]
+            if behind:
+                sym_edits.append(symbol_insert_before_edit(target, min(behind, key=lambda r: r.node.start), blocks[state.final]))
+            else:
+                sym_edits.append(symbol_insert_edit(target, blocks[state.final]))
+    if target is not None:
+        sym_bytes = fsutil.encode_source(apply_edits(target.source.text, sym_edits), target.source.bom)
+    else:
+        # A new library is the normalised unit file with the edited symbols, already in parent-first order
+        sym_bytes = fsutil.encode_source(edited.source.text, edited.source.bom)
+
+    conflicts = [*sym_conflicts]
+    conflicts.extend(d.conflict for d in fp_decisions if d.conflict is not None)
+    if model_dec is not None and model_dec.conflict is not None:
+        conflicts.append(model_dec.conflict)
 
     ops: list[FileOp] = []
     if not pretty_exists:
         ops.append(FileOp("mkdir", pretty))
-    if model_item is not None and model_file is not None:
+    if model_dec is not None and model_dec.op is not None:
         if not layout.models_dir.is_dir():
             ops.append(FileOp("mkdir", layout.models_dir))
-        ops.append(FileOp("model", layout.models_dir / model_file, source=model_item.file))
-    for fp_name, data in zip(fp_names, fp_bytes):
-        ops.append(FileOp("footprint", pretty / f"{fp_name}.kicad_mod", data=data))
-    base = hashlib.sha256(target_bytes).hexdigest() if target is not None else None
-    ops.append(FileOp("symbol_lib", sym_path, data=sym_bytes, base_sha256=base))
+        ops.append(model_dec.op)
+    ops.extend(d.op for d in fp_decisions if d.op is not None)
+    if target is None or sym_edits:
+        base = hashlib.sha256(target_bytes).hexdigest() if target is not None else None
+        ops.append(FileOp("symbol_lib", sym_path, data=sym_bytes, base_sha256=base))
 
+    sym_renames = [Rename("symbol", ref.name, names[ref.name]) for ref in unit if names[ref.name] != ref.name]
+    fp_renames = [
+        Rename("footprint", fp_item.name, decision.name)
+        for fp_item, decision in zip(fp_items, fp_decisions)
+        if decision.name != fp_item.name and not decision.kept
+    ]
     return InstallPlan(
         vendor=candidate.vendor,
         source=candidate.source,
@@ -745,9 +999,9 @@ def build_plan(
         new_symbol_lib=not sym_exists,
         new_footprint_lib=not pretty_exists,
         symbol_names=final_symbols,
-        footprint_names=fp_names,
-        linked_footprint=fp_names[0],
-        model_file=model_file,
+        footprint_names=final_fps,
+        linked_footprint=linked,
+        model_file=model_dec.name if model_dec is not None else None,
         source_version=source_version,
         target_version=target_version,
         normalised=source.normalised,
