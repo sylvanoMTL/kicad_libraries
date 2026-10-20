@@ -225,3 +225,21 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
+
+## Backlog
+
+### Phase 999.1: Follow-up — Phase 04 deferred UAT follow-up: Test 2 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 04 verification
+**Source phase:** 04
+**Deferred at:** 2026-10-20 during /gsd-verify-work 04 session completion
+**Follow-ups:**
+- [ ] Test 2: I do not have kicad 10 yet (re-test the D-01 as-is-with-warning row on KiCad 10, symbol format 20251024) (deferred 2026-10-20)
+
+### Phase 999.2: Follow-up — Phase 04 deferred UAT follow-up: Test 3 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 04 verification
+**Source phase:** 04
+**Deferred at:** 2026-10-20 during /gsd-verify-work 04 session completion
+**Follow-ups:**
+- [ ] Test 3: pass i cannot test it (re-test case-twin rollback and overwrite on a case-sensitive folder; owner chose to defer) (deferred 2026-10-20)
