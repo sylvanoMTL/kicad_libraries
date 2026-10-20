@@ -57,6 +57,11 @@ Seeded per requirement from `04-RESEARCH.md` § Validation Architecture. Task ID
 | 04-05-T2 | 04-05 | 2 | POST-04 | — | Pin/pad mismatch warned both ways; empty-number pads ignored; `extends` child pins read from the parent | unit | `./env/Scripts/python.exe -m pytest tests/test_install_verify.py -k pin_pad -x` | ✅ | ✅ green |
 | 04-03-T2, 04-10-T2 | 04-03, 04-10 | 1, 6 | (D-03 / D-22) | — | Real `kicad-cli` load check of the UL install result (skipped when absent) | `kicad_cli` e2e | `./env/Scripts/python.exe -m pytest tests/test_install_e2e.py -m kicad_cli -x` | ✅ | ✅ green |
 | 04-01-T1, 04-10-T2 | 04-01, 04-10 | 1, 6 | (layering) | — | New importer modules registered and Qt-free | static | `./env/Scripts/python.exe -m pytest tests/test_importer_layering.py tests/test_layering.py -x -q` | ✅ | ✅ green |
+| 04-11-T1, 04-11-T2 | 04-11 | 1 (gap) | INST-07, INST-08 (CR-01) | rollback half-state on an exception | An exception in a write, verify, the gate, folder resolve or progress is rolled back (`install.unexpected`); an interrupt is rolled back then re-raised; a raising progress callback is dropped with one WARNING; an undo-step error is reported and the rest still undone | unit | `./env/Scripts/python.exe -m pytest tests/test_install_apply.py -k "rollback or unexpected or progress or make_folders" -x` | ✅ | ✅ green |
+| 04-11-T3 | 04-11 | 1 (gap) | INST-07 (WR-01) | rollback safety net pruned | Pruning never deletes the running install's backup folder and counts it toward the ten kept; backup stamp is UTC | unit | `./env/Scripts/python.exe -m pytest tests/test_install_apply.py -k "prune or backup_stamp" -x` | ✅ | ✅ green |
+| 04-12-T1 | 04-12 | 1 (gap) | INTK-08 (WR-03) | — | Package-level Issues ride on the candidate, de-duplicated, and reach `InstallResult.issues` from a folder and a zip | unit + e2e | `./env/Scripts/python.exe -m pytest tests/test_install_plan.py tests/test_install_e2e.py -k "package_issue or carries_package_issues" -x` | ✅ | ✅ green |
+| 04-12-T2 | 04-12 | 1 (gap) | INST-04, D-11 (WR-05) | — | Empty or whitespace-only option text means not set; vendor MPN, Value and Datasheet kept and the model named `<MPN>.<ext>` | unit | `./env/Scripts/python.exe -m pytest tests/test_install_plan.py -k blank_option -x` | ✅ | ✅ green |
+| 04-13-T1, 04-13-T2 | 04-13 | 2 (gap) | INST-07, LIB-02 (CR-02) | TOCTOU across the kicad-cli gate window | A target edited, or a new path created, during the gate or between writes is refused as `install.stale_plan`; the foreign file is untouched and the backup copy is the rollback pre-image | unit | `./env/Scripts/python.exe -m pytest tests/test_install_apply.py -k stale_plan -x` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -93,7 +98,7 @@ Seeded per requirement from `04-RESEARCH.md` § Validation Architecture. Task ID
 - [x] Feedback latency < 30s (largest targeted run: `-m kicad_cli` at about 18 s; full suite about 100 s)
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** validated 2026-10-20 (validate-phase audit after execution; all 15 mapped commands green, full suite 1321 passed / 5 skipped)
+**Approval:** validated 2026-10-20 (validate-phase audit after execution; all 15 mapped commands green, full suite 1321 passed / 5 skipped). Re-validated 2026-10-20 after gap plans 04-11 to 04-13: all 20 mapped commands green (04-13-T3 is the docs-only disposition record), full suite 1345 passed / 5 skipped, `-m kicad_cli` 15 passed.
 
 ## Validation Audit 2026-10-20
 
@@ -103,3 +108,12 @@ Seeded per requirement from `04-RESEARCH.md` § Validation Architecture. Task ID
 | Resolved | 0 |
 | Escalated | 0 |
 | Commands run green | 15 |
+
+## Validation Audit 2026-10-20
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+| Commands run green | 20 |
