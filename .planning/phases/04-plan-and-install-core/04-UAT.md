@@ -3,7 +3,7 @@ status: complete
 phase: 04-plan-and-install-core
 source: [04-VERIFICATION.md]
 started: 2026-10-20T11:40:00Z
-updated: 2026-10-20T11:45:26.865Z
+updated: 2026-10-20T11:46:30.150Z
 ---
 
 ## Current Test
@@ -19,12 +19,12 @@ result: pass
 ### 2. KiCad 10 symbol format 20251024 (research assumption A1)
 expected: Every 20241209 Custom/ library takes the as-is-with-warning row of the D-01 version table.
 result: skipped
-reason: "I do not have kicad 10 yet" (KiCad 10 not installed; re-test when it is available)
+reason: "Deferred follow-up: I do not have kicad 10 yet"
 
 ### 3. Case-sensitive-volume rollback and overwrite branches (case twin written under another spelling)
 expected: Rollback restores the original spelling and removes the twin.
 result: skipped
-reason: "pass i cannot test it" (no case-sensitive volume available; covered by faked-listing tests in 04-07/04-09 only)
+reason: "Deferred follow-up: pass i cannot test it"
 
 ### 4. A part edited in KiCad shows as a conflict on re-import (accepted D-07 consequence, from 04-09)
 expected: Owner confirms this reads correctly in the Phase 5 preview.
@@ -40,3 +40,12 @@ skipped: 2
 blocked: 0
 
 ## Gaps
+
+## Deferred Follow-Ups
+
+- test: 2
+  idea: "I do not have kicad 10 yet (re-test the D-01 as-is-with-warning row on KiCad 10, symbol format 20251024)"
+  deferred_at: 2026-10-20
+- test: 3
+  idea: "pass i cannot test it (re-test case-twin rollback and overwrite on a case-sensitive folder; owner chose to defer)"
+  deferred_at: 2026-10-20
