@@ -812,3 +812,51 @@ def test_success_touched_order(custom_copy, ul_package, tmp_path):
         plan.symbol_lib_path,
     )
     assert result.issues[-1].severity is Severity.SUCCESS and result.issues[-1].code == "install.done"
+
+
+# -- exception safety (CR-01) ---------------------------------------------------------------------
+
+
+def _raising_writes(monkeypatch, fail_on: int, error: BaseException) -> dict:
+    """Make the fail_on-th forward atomic write raise error; later calls (the undo) are real."""
+    real = fsutil.atomic_write_bytes
+    state = {"calls": 0, "raised": False}
+
+    def raising(path, data, **kwargs):
+        if not state["raised"]:
+            state["calls"] += 1
+            if state["calls"] == fail_on:
+                state["raised"] = True
+                raise error
+        return real(path, data, **kwargs)
+
+    monkeypatch.setattr(fsutil, "atomic_write_bytes", raising)
+    return state
+
+
+def test_rollback_unexpected_error_in_a_write(hand_layout, snapshot, monkeypatch):
+    plan = _hand_plan(hand_layout, new_library=True)
+    before = snapshot(hand_layout.custom_dir)
+    state = _raising_writes(monkeypatch, fail_on=2, error=RuntimeError("injected"))  # model written, footprint raises
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    assert state["raised"]
+    assert not result.ok
+    assert _codes(_errors(result.issues)) == ["install.unexpected", "install.rolled_back"]
+    assert "RuntimeError" in _errors(result.issues)[0].text
+    assert result.touched == ()
+    assert snapshot(hand_layout.custom_dir) == before
+    assert not list(hand_layout.custom_dir.rglob("*.tmp"))
+
+
+def test_rollback_interrupt_in_a_write_is_reraised(hand_layout, snapshot, monkeypatch):
+    plan = _hand_plan(hand_layout, new_library=True)
+    before = snapshot(hand_layout.custom_dir)
+    state = _raising_writes(monkeypatch, fail_on=2, error=KeyboardInterrupt())
+
+    with pytest.raises(KeyboardInterrupt):
+        apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    assert state["raised"]
+    assert snapshot(hand_layout.custom_dir) == before
