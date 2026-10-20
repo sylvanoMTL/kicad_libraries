@@ -2,17 +2,17 @@
 gsd_state_version: "1.0"
 current_phase: 04
 current_phase_name: Plan and Install Core
-status: executing
-stopped_at: Completed 04-09-PLAN.md
-last_updated: "2026-10-20T08:38:29.738Z"
+status: verifying
+stopped_at: Completed 04-10-PLAN.md
+last_updated: "2026-10-20T08:48:37.654Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 04 execution started
-state_head: 422520160071194539f48687f24d8697335052d9
+state_head: 1e1cf92de01f6d7ee0bb7051a32c7d6dcf8b4b1e
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 35
-  completed_plans: 34
+  completed_plans: 35
   percent: 43
 ---
 
@@ -29,7 +29,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 
 Phase: 04 (Plan and Install Core) — EXECUTING
 Plan: 10 of 10
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Last activity: 2026-10-19 — Phase 04 execution started
 
 Progress: [████░░░░░░] 43%
@@ -64,6 +64,7 @@ Progress: [████░░░░░░] 43%
 | Phase 04 P07 | 14 min | 3 tasks | 2 files |
 | Phase 04 P08 | 14 min | 2 tasks | 2 files |
 | Phase 04 P09 | 19 min | 2 tasks | 2 files |
+| Phase 04 P10 | 7min | 2 tasks | 5 files |
 
 ## Accumulated Context
 
@@ -94,6 +95,8 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-08: new symbol properties follow the block's own format; Manufacturer is unit-wide, mpn/value/datasheet/description overrides apply to the chosen symbol only
 - [Phase 04]: 04-08: a vendor model path is stale unless it starts with a path variable other than KIPRJMOD; extends unit text is ordered parent first before kicad-cli runs
 - [Phase 04]: 04-09: symbol conflicts are judged against the block rendered with the surviving footprint names; a kept first footprint drops the incoming model; a skipped chosen symbol sets plan.linked_footprint to None
+- [Phase 04]: 04-10: test_uat_scratch_install is gated by KICAD_IMPORT_UAT_DIR and not marked kicad_cli, so -m kicad_cli shows 7 passed, 0 skipped
+- [Phase 04]: 04-10: INST-06 and ROADMAP criterion 3 amended for D-02 (only the incoming symbol is normalised; footprints are copied as-is)
 
 ### Pending Todos
 
@@ -118,6 +121,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-20T08:38:28.802Z
-Stopped at: Completed 04-09-PLAN.md
+Last session: 2026-10-20T08:48:36.629Z
+Stopped at: Completed 04-10-PLAN.md
 Resume file: None
