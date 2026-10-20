@@ -64,6 +64,7 @@ class _Transaction:
     rolled_back: bool = False
     leftovers: list[Issue] = field(default_factory=list)
     notes: list[Issue] = field(default_factory=list)
+    progress: Callable | None = None
 
 
 def _drop_twin(step: _Undo) -> None:
@@ -87,6 +88,7 @@ def _rollback(undo: list[_Undo], backup_dir: Path | None) -> list[Issue]:
     for step in reversed(undo):
         if step.kind == "file" and first[str(step.restore).casefold()] is not step:
             continue
+        what = "restored" if step.pre_image is not None else "removed"
         try:
             if step.kind == "mkdir":
                 step.written.rmdir()
@@ -100,9 +102,27 @@ def _rollback(undo: list[_Undo], backup_dir: Path | None) -> list[Issue]:
         except FileNotFoundError:
             continue
         except OSError as e:
-            what = "restored" if step.pre_image is not None else "removed"
             leftovers.append(_rollback_failed(f"{step.written} could not be {what} ({e.strerror or e}){where}"))
+        except Exception as e:
+            leftovers.append(_rollback_failed(f"{step.written} could not be {what} ({type(e).__name__}: {e}){where}"))
     return leftovers
+
+
+def _notify(txn: _Transaction, message: str, current: int, total: int) -> None:
+    """Call the progress callback; a callback that raises is dropped for the rest of the run and noted once."""
+    if txn.progress is None:
+        return
+    try:
+        txn.progress(message, current, total)
+    except Exception as e:
+        txn.progress = None
+        txn.notes.append(
+            Issue(
+                Severity.WARNING,
+                "install.progress_failed",
+                f"The progress display failed ({type(e).__name__}: {e}); the install went on without it",
+            )
+        )
 
 
 # Accepted limitation (T-04-40): rolled_back is set before the restore starts, so a KeyboardInterrupt or
@@ -310,6 +330,7 @@ def _transaction(
     progress: Callable | None,
 ) -> InstallResult:
     """Preflight, gate, back up, write, verify; record into txn so the caller can undo on any exit."""
+    txn.progress = progress
     # Cheap preconditions first; nothing is written until every one of them holds
     problems, sources, pre_images = _preflight(plan)
     if problems:
@@ -341,8 +362,7 @@ def _transaction(
     failures: list[Issue] = []
     total = len(plan.ops)
     for index, op in enumerate(plan.ops):
-        if progress is not None:
-            progress(f"Writing {op.path.name}", index, total)
+        _notify(txn, f"Writing {op.path.name}", index, total)
         problem = _write(plan, op, sources.get(index), txn.undo, txn.touched, pre_images.get(index))
         if problem is not None:
             failures.append(problem)
@@ -375,14 +395,20 @@ def _transaction(
 
 def _make_folders(plan: InstallPlan, op: FileOp, undo: list[_Undo]) -> Issue | None:
     """Create op.path and any missing parents below Custom/, recording each folder for the rollback."""
-    custom = plan.layout.custom_dir.resolve()
+    try:
+        custom = plan.layout.custom_dir.resolve()
+    except OSError as e:
+        return _err("fs.write_failed", f"Could not create {op.path.name}: {e.strerror or e}")
     missing: list[Path] = []
     folder = op.path
     while not folder.exists() and folder != folder.parent:
         missing.append(folder)
         folder = folder.parent
     for folder in reversed(missing):
-        resolved = folder.resolve()
+        try:
+            resolved = folder.resolve()
+        except OSError as e:
+            return _err("fs.write_failed", f"Could not create {folder.name}: {e.strerror or e}")
         if resolved == custom or not resolved.is_relative_to(custom):
             return _err("fs.write_failed", f"Could not create {op.path.name}: {custom} does not exist")
         try:
