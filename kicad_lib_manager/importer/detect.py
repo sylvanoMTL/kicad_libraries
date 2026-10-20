@@ -13,7 +13,12 @@ ADAPTERS: list[Adapter] = [UltraLibrarianAdapter(), LooseAdapter()]
 
 
 def detect_candidate(package: Package) -> tuple[ImportCandidate | None, list[Issue]]:
-    """Pick the best-scoring adapter (registry order breaks ties) and locate the package contents."""
+    """Pick the best-scoring adapter (registry order breaks ties) and locate the package contents.
+
+    candidate.issues holds the package's own Issues first, then the unknown-vendor note when it
+    applies, then the locate Issues, each exactly once (WR-03). The returned list is the detection
+    Issues only and excludes package.issues, so a caller showing both never repeats one.
+    """
     if package.refused:
         return None, []
     best: Detection | None = None
@@ -35,4 +40,7 @@ def detect_candidate(package: Package) -> tuple[ImportCandidate | None, list[Iss
         )
         issues = [note, *issues]
         candidate = replace(candidate, issues=(note, *candidate.issues))
+    if candidate is not None:
+        # WR-03: intake Issues travel with the candidate, so no caller has to forward them
+        candidate = replace(candidate, issues=tuple(dict.fromkeys((*package.issues, *candidate.issues))))
     return candidate, issues
