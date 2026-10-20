@@ -1,5 +1,6 @@
 """Refusals and contract edges of build_plan / apply_plan, the D-01 version table and the LIB-02 library rules (Phase 4)."""
 
+import re
 import sys
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,7 +15,7 @@ from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
-from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
+from kicad_lib_manager.importer.plan import InstallOptions, Rename, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.kicad_files import (
     file_version,
@@ -365,19 +366,19 @@ def _target_layout(tmp_path, version, names=("EXISTING_A",), *, library=LIBRARY,
     return layout
 
 
-def _vendor(symbol=None, *, model=True):
+def _vendor(symbol=None, *, model=True, model_name="part.step", footprint_bytes=None):
     """Package members: one vendor symbol (default PART at 20211014), footprint FP and optionally a STEP file."""
     members = [
         ("part.kicad_sym", vendor_symbol_lib(VENDOR) if symbol is None else symbol),
-        ("FP.kicad_mod", vendor_footprint("FP")),
+        ("FP.kicad_mod", vendor_footprint("FP") if footprint_bytes is None else footprint_bytes),
     ]
     if model:
-        members.append(("part.step", STEP_BYTES))
+        members.append((model_name, STEP_BYTES))
     return members
 
 
-def _plan(tmp_path, layout, tools, symbol=None, options=None):
-    with _open(tmp_path, _vendor(symbol)) as (_, candidate):
+def _plan(tmp_path, layout, tools, symbol=None, options=None, **kwargs):
+    with _open(tmp_path, _vendor(symbol, **kwargs)) as (_, candidate):
         return build_plan(candidate, options or InstallOptions(library=LIBRARY), layout, tools)
 
 
@@ -720,3 +721,247 @@ def test_library_real_cli_new_header(tmp_path, ul_package):
     assert '(generator_version "9.0")' in header
     footprints = [(op.path.stem, op.data) for op in plan.ops if op.kind == "footprint"]
     assert kicad_cli.load_gate(tools.kicad_cli, library=NEW_LIBRARY, symbol_lib=sym_op.data, footprints=footprints) == []
+
+
+# -- D-11..D-15 field rules, exact renames, caller footprint names (plan 04-08, task 1) --------
+
+
+def _symbol_in(plan, name=VENDOR):
+    """(loaded library, symbol ref) of a symbol in the planned .kicad_sym bytes."""
+    loaded = parse_bytes(_op(plan, "symbol_lib").data, "lib")
+    assert not isinstance(loaded, Issue), loaded
+    symbol = find_symbol(loaded.root, name)
+    assert symbol is not None, [s.name for s in find_symbols(loaded.root)]
+    return loaded, symbol
+
+
+def _property_names(symbol):
+    return [unquote(c.children[1].text) for c in symbol.node.children if c.head == "property"]
+
+
+def _property_text(loaded, symbol, name):
+    prop = find_property(symbol.node, name)
+    assert prop is not None, _property_names(symbol)
+    return loaded.source.text[prop.node.start : prop.node.end]
+
+
+def _value_of(plan, name, symbol_name=VENDOR):
+    _, symbol = _symbol_in(plan, symbol_name)
+    prop = find_property(symbol.node, name)
+    return None if prop is None else prop.value
+
+
+def _vendor_property_names(data, name=VENDOR):
+    return _property_names(find_symbol(parse_bytes(data, "lib").root, name))
+
+
+def test_fields_mf_mp_renamed_in_place(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    vendor = vendor_symbol_lib(VENDOR, props={"MF": "Texas Instruments", "MP": "XYZ123"})
+    original = _vendor_property_names(vendor)
+    plan = _plan(tmp_path, layout, ToolContext(), vendor, model_name="part.stp")
+    assert not plan.blocked, plan.issues
+    _, symbol = _symbol_in(plan)
+    assert _property_names(symbol) == [{"MF": "Manufacturer", "MP": "MPN"}.get(n, n) for n in original]
+    assert (_value_of(plan, "Manufacturer"), _value_of(plan, "MPN")) == ("Texas Instruments", "XYZ123")
+    assert plan.model_file == "XYZ123.stp"
+    assert "install.manufacturer_missing" not in [i.code for i in plan.issues]
+
+
+def test_fields_exact_manufacturer_kept(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    vendor = vendor_symbol_lib(VENDOR, props={"Manufacturer": "Exact Co", "MANUFACTURER": "Other Co"})
+    plan = _plan(tmp_path, layout, ToolContext(), vendor)
+    assert not plan.blocked, plan.issues
+    _, symbol = _symbol_in(plan)
+    names = _property_names(symbol)
+    assert names.count("Manufacturer") == 1 and names.count("MANUFACTURER") == 1
+    assert (_value_of(plan, "Manufacturer"), _value_of(plan, "MANUFACTURER")) == ("Exact Co", "Other Co")
+
+
+def test_fields_added_hidden_20211014(tmp_path, ul_package):
+    layout = _target_layout(tmp_path, V6)
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, ToolContext())
+    assert not plan.blocked, plan.issues
+    loaded, symbol = _symbol_in(plan, "CSD85301Q2")
+    assert (_value_of(plan, "Manufacturer", "CSD85301Q2"), _value_of(plan, "MPN", "CSD85301Q2")) == ("TI", "CSD85301Q2")
+    ids = {}
+    for name in ("Manufacturer", "MPN"):
+        text = _property_text(loaded, symbol, name)
+        assert "(hide yes)" not in text and re.search(r"\bhide\)", text), text
+        found = re.search(r"\(id (\d+)\)", text)
+        assert found, text
+        ids[name] = int(found.group(1))
+    # The UL symbol's own ids run 0..6, so the new properties continue at 7
+    assert ids == {"Manufacturer": 7, "MPN": 8}
+
+
+def test_fields_added_hidden_20241209(tmp_path):
+    layout = _target_layout(tmp_path, V9)
+    plan = _plan(
+        tmp_path, layout, ToolContext(), target_lib(V9, (VENDOR,)), InstallOptions(library=LIBRARY, manufacturer="TI")
+    )
+    assert not plan.blocked, plan.issues
+    loaded, symbol = _symbol_in(plan)
+    assert (_value_of(plan, "Manufacturer"), _value_of(plan, "MPN")) == ("TI", VENDOR)
+    for name in ("Manufacturer", "MPN"):
+        text = _property_text(loaded, symbol, name)
+        assert "(hide yes)" in text and "(id " not in text, text
+
+
+def test_fields_overrides_win(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    vendor = vendor_symbol_lib(VENDOR, props={"MF": "Old Co", "MP": "OLD123"})
+    options = InstallOptions(
+        library=LIBRARY,
+        value="VAL",
+        datasheet="https://example.com/ds.pdf",
+        description="A description",
+        manufacturer="NewCo",
+        mpn="NEW-1",
+    )
+    plan = _plan(tmp_path, layout, ToolContext(), vendor, options)
+    assert not plan.blocked, plan.issues
+    _, symbol = _symbol_in(plan)
+    names = _property_names(symbol)
+    assert names.count("Manufacturer") == 1 and names.count("MPN") == 1
+    assert "MF" not in names and "MP" not in names
+    assert [_value_of(plan, n) for n in ("Value", "Datasheet", "ki_description", "Manufacturer", "MPN")] == [
+        "VAL",
+        "https://example.com/ds.pdf",
+        "A description",
+        "NewCo",
+        "NEW-1",
+    ]
+    assert plan.model_file == "NEW-1.step"
+    assert "install.manufacturer_missing" not in [i.code for i in plan.issues]
+
+
+def test_fields_manufacturer_missing_warns(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    plan = _plan(tmp_path, layout, ToolContext(), vendor_symbol_lib(VENDOR, datasheet=""))
+    assert not plan.blocked, plan.issues
+    assert _value_of(plan, "Manufacturer") == ""
+    assert _value_of(plan, "MPN") == VENDOR
+    assert [i.severity for i in plan.issues if i.code == "install.manufacturer_missing"] == [Severity.WARNING]
+
+
+@pytest.mark.parametrize(
+    "version, vendor, expected, absent",
+    [
+        (V6, vendor_symbol_lib(VENDOR, version=V6), "ki_description", "Description"),
+        (V9, vendor_symbol_lib(VENDOR, version=V9), "Description", "ki_description"),
+        (V6, vendor_symbol_lib(VENDOR, version=V6, props={"Description": "old"}), "Description", "ki_description"),
+        (V6, vendor_symbol_lib(VENDOR, version=V6, props={"ki_description": "old"}), "ki_description", "Description"),
+    ],
+    ids=["v6-new", "v9-new", "existing-description", "existing-ki_description"],
+)
+def test_fields_description_name_by_version(tmp_path, version, vendor, expected, absent):
+    layout = _target_layout(tmp_path, version)
+    options = InstallOptions(library=LIBRARY, description="New text")
+    plan = _plan(tmp_path, layout, ToolContext(), vendor, options)
+    assert not plan.blocked, plan.issues
+    _, symbol = _symbol_in(plan)
+    names = _property_names(symbol)
+    assert names.count(expected) == 1 and absent not in names
+    assert _value_of(plan, expected) == "New text"
+
+
+def test_rename_sanitised_symbol(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    vendor = vendor_symbol_lib("PART/X", units=2, keywords="PART/X PART/XY power")
+    plan = _plan(tmp_path, layout, ToolContext(), vendor)
+    assert not plan.blocked, plan.issues
+    assert plan.symbol_names == ("PART_X",)
+    assert Rename("symbol", "PART/X", "PART_X") in plan.renames
+    loaded, symbol = _symbol_in(plan, "PART_X")
+    subs = [unquote(c.children[1].text) for c in symbol.node.children if c.head == "symbol"]
+    assert subs == ["PART_X_1_1", "PART_X_2_1"]
+    assert find_symbol(loaded.root, "PART/X") is None
+    assert _value_of(plan, "Value", "PART_X") == "PART_X"
+    # Only a token equal to the old name changes: PART/XY is a different word
+    assert _value_of(plan, "ki_keywords", "PART_X") == "PART_X PART/XY power"
+    assert _value_of(plan, "MPN", "PART_X") == "PART/X"
+    assert plan.model_file == "PART_X.step"
+
+
+def test_rename_not_listed_when_the_name_is_clean(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert not plan.blocked, plan.issues
+    assert plan.renames == ()
+
+
+def test_rename_value_override_beats_the_token_rewrite(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    plan = _plan(
+        tmp_path, layout, ToolContext(), vendor_symbol_lib("PART/X"), InstallOptions(library=LIBRARY, value="Mine")
+    )
+    assert not plan.blocked, plan.issues
+    assert _value_of(plan, "Value", "PART_X") == "Mine"
+
+
+def test_footprint_consistency_after_override(custom_copy, ul_package):
+    _, candidate = ul_package
+    options = InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "DQK0006B_TI"})
+    plan = build_plan(candidate, options, custom_copy)
+    assert not plan.blocked, plan.issues
+    assert plan.footprint_names == ("DQK0006B_TI",) and plan.linked_footprint == "DQK0006B_TI"
+    assert Rename("footprint", "DQK0006B", "DQK0006B_TI") in plan.renames
+    fp_op = next(op for op in plan.ops if op.kind == "footprint")
+    assert fp_op.path.name == "DQK0006B_TI.kicad_mod"
+    ref = footprint_name(parse_bytes(fp_op.data, "fp").root)
+    value = next(c for c in ref.node.children if c.head == "fp_text" and c.children[1].text == "value")
+    assert ref.name == unquote(value.children[2].text) == "DQK0006B_TI"
+    assert _value_of(plan, "Footprint", "CSD85301Q2") == f"{UL_LIBRARY}:DQK0006B_TI"
+    assert _value_of(plan, "ki_fp_filters", "CSD85301Q2") == "DQK0006B_TI"
+
+
+def test_footprint_consistency_override_is_sanitised(custom_copy, ul_package):
+    _, candidate = ul_package
+    options = InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "DQK 0006/B"})
+    plan = build_plan(candidate, options, custom_copy)
+    assert not plan.blocked, plan.issues
+    assert plan.footprint_names == ("DQK_0006_B",)
+    assert [i.severity for i in plan.issues if i.code == "naming.changed"] == [Severity.INFO]
+    assert Rename("footprint", "DQK0006B", "DQK_0006_B") in plan.renames
+
+
+def test_footprint_consistency_unusable_override_refused(custom_copy, ul_package, snapshot):
+    _, candidate = ul_package
+    before = snapshot(custom_copy.custom_dir)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "///"}), custom_copy)
+    assert plan.blocked and not plan.ops
+    assert _codes(plan) == ["install.invalid_name"]
+    assert apply_plan(plan).ok is False
+    assert snapshot(custom_copy.custom_dir) == before
+
+
+def test_fields_value_injection_quoted(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    hostile = 'A") (x'
+    plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY, mpn=hostile))
+    assert not plan.blocked, plan.issues
+    loaded, symbol = _symbol_in(plan)
+    assert find_property(symbol.node, "MPN").value == hostile
+    assert plan.model_file == "A_x.step"
+    assert [op.path.name for op in plan.ops if op.kind == "model"] == ["A_x.step"]
+    # One quoted token: the planned library re-parses and holds exactly the old and the new symbol
+    assert [s.name for s in find_symbols(loaded.root)] == ["EXISTING_A", VENDOR]
+
+
+@pytest.mark.parametrize("version", [V6, V9])
+def test_fields_existing_symbols_untouched(tmp_path, version):
+    layout = _target_layout(tmp_path, version, ("EXISTING_A", "EXISTING_B"))
+    original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
+    parsed = parse_bytes(original, "lib")
+    cut = len(parsed.source.text[: find_symbols(parsed.root)[-1].node.end].encode("utf-8"))
+    options = InstallOptions(library=LIBRARY, mpn="NEW")
+    plan = _plan(tmp_path, layout, _tools(FakeCli(output_version=version)), options=options)
+    assert not plan.blocked, plan.issues
+    planned = _op(plan, "symbol_lib").data
+    # Header and every existing symbol are byte-identical; text is only inserted after the last symbol
+    assert planned[:cut] == original[:cut]
+    assert planned.endswith(original[cut:])
+    assert len(planned) > len(original)
