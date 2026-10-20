@@ -1,5 +1,7 @@
 """Refusals and contract edges of build_plan / apply_plan, the D-01 version table and the LIB-02 library rules (Phase 4)."""
 
+import hashlib
+import os
 import re
 import sys
 from contextlib import contextmanager
@@ -15,7 +17,7 @@ from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
-from kicad_lib_manager.importer.plan import InstallOptions, Rename, ToolContext
+from kicad_lib_manager.importer.plan import InstallOptions, Rename, Resolution, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.importer.verify import verify_install
 from kicad_lib_manager.kicad_files import (
@@ -1387,3 +1389,303 @@ def test_conflict_unresolved_blocks(tmp_path, snapshot):
     for key in (SYM_KEY, FP_KEY, MODEL_KEY):
         assert key in unresolved[0].text
     assert snapshot(layout.custom_dir) == before
+
+
+# -- resolutions: overwrite in place, rename with validation, skip uses the existing item (plan 04-09, task 2) --------
+
+
+def _res(action, rename_to=None):
+    return Resolution(action, rename_to)
+
+
+def _with(resolutions, **kwargs):
+    return InstallOptions(library=LIBRARY, resolutions=resolutions, **kwargs)
+
+
+def _sha(data):
+    return hashlib.sha256(data).hexdigest()
+
+
+def _footprint_of(plan, name="FP"):
+    op = next(op for op in plan.ops if op.kind == "footprint" and op.path.stem == name)
+    loaded = parse_bytes(op.data, "fp")
+    return op, loaded, footprint_name(loaded.root)
+
+
+def test_resolution_overwrite_symbol_in_place(tmp_path):
+    layout = _clashing_layout(tmp_path, footprint=False, model=False, extra_names=("EXISTING_C",))
+    path = layout.symbols_dir / f"{LIBRARY}.kicad_sym"
+    original = path.read_bytes()
+    old = parse_bytes(original, "lib")
+    span = find_symbol(old.root, VENDOR).node
+    plan = _plan(tmp_path, layout, ToolContext(), options=_with({SYM_KEY: _res("overwrite")}))
+    assert not plan.blocked, plan.issues
+    op = _op(plan, "symbol_lib")
+    assert op.base_sha256 == _sha(original) and op.listed_path is None
+    planned = parse_bytes(op.data, "lib")
+    # Everything before and after the old block is byte-identical, so the library keeps its order (D-08)
+    assert planned.source.text[: span.start] == old.source.text[: span.start]
+    assert planned.source.text.endswith(old.source.text[span.end :])
+    assert [s.name for s in find_symbols(planned.root)] == ["EXISTING_A", VENDOR, "EXISTING_C"]
+    assert find_property(find_symbol(planned.root, VENDOR).node, "Footprint").value == f"{LIBRARY}:FP"
+    assert [(c.key, c.resolution) for c in plan.conflicts] == [(SYM_KEY, _res("overwrite"))]
+
+
+@pytest.mark.parametrize("existing", ["FP.kicad_mod", "fp.kicad_mod"], ids=["same-spelling", "case-twin"])
+def test_resolution_overwrite_footprint(tmp_path, existing):
+    layout = _target_layout(tmp_path, V6)
+    _put_footprint(layout, existing)
+    on_disk = (_pretty(layout) / existing).read_bytes()
+    plan = _plan(tmp_path, layout, ToolContext(), options=_with({FP_KEY: _res("overwrite")}))
+    assert not plan.blocked, plan.issues
+    op = _op(plan, "footprint")
+    assert op.base_sha256 == _sha(on_disk)
+    # Paths compare ignoring case on Windows, so the spelling is compared as text
+    assert (None if op.listed_path is None else op.listed_path.name) == (None if existing == "FP.kicad_mod" else existing)
+    assert op.path.name == "FP.kicad_mod"
+
+
+def test_resolution_overwrite_model_case_twin(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    _put_model(layout, "part.STEP", b"other bytes")
+    plan = _plan(tmp_path, layout, ToolContext(), options=_with({MODEL_KEY: _res("overwrite")}))
+    assert not plan.blocked, plan.issues
+    op = _op(plan, "model")
+    assert (op.path.name, op.listed_path.name) == ("PART.step", "part.STEP")
+    assert op.base_sha256 == _sha(b"other bytes")
+    assert plan.model_file == "PART.step"
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="replacing a case twin leaves one entry only on NTFS (research spike S7)")
+def test_resolution_overwrite_model_case_twin_applies_on_ntfs(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    _put_model(layout, "part.STEP", b"other bytes")
+    with _open(tmp_path, _vendor()) as (_, candidate):
+        plan = build_plan(candidate, _with({MODEL_KEY: _res("overwrite")}), layout, ToolContext())
+        _apply(plan, tmp_path)
+    assert os.listdir(layout.models_dir) == ["PART.step"]
+    assert (layout.models_dir / "PART.step").read_bytes() == STEP_BYTES
+
+
+def test_resolution_rename_symbol(tmp_path):
+    layout = _clashing_layout(tmp_path, footprint=False, model=False)
+    vendor = vendor_symbol_lib(VENDOR, units=2)
+    plan = _plan(tmp_path, layout, ToolContext(), vendor, _with({SYM_KEY: _res("rename")}))
+    assert not plan.blocked, plan.issues
+    assert plan.symbol_names == ("PART_2",)
+    loaded, symbol = _symbol_in(plan, "PART_2")
+    assert [unquote(c.children[1].text) for c in symbol.node.children if c.head == "symbol"] == ["PART_2_1_1", "PART_2_2_1"]
+    assert [s.name for s in find_symbols(loaded.root)] == ["EXISTING_A", VENDOR, "PART_2"]
+    assert _value_of(plan, "MPN", "PART_2") == VENDOR
+    assert _value_of(plan, "Value", "PART_2") == "PART_2"
+    assert Rename("symbol", VENDOR, "PART_2") in plan.renames
+    assert [(c.key, c.resolution) for c in plan.conflicts] == [(SYM_KEY, _res("rename"))]
+
+
+def test_resolution_rename_symbol_follows_extends(tmp_path):
+    layout = _target_layout(tmp_path, V6, (PARENT,))
+    key = f"symbol:{LIBRARY}:{PARENT}"
+    options = InstallOptions(library=LIBRARY, symbol=CHILD, resolutions={key: _res("rename", "PARENT_NEW")})
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, child_first=True), options)
+    assert not plan.blocked, plan.issues
+    assert plan.symbol_names == ("PARENT_NEW", CHILD)
+    loaded, child = _symbol_in(plan, CHILD)
+    assert extends_name(child.node) == "PARENT_NEW"
+    _, parent = _symbol_in(plan, "PARENT_NEW")
+    assert [unquote(c.children[1].text) for c in parent.node.children if c.head == "symbol"] == ["PARENT_NEW_1_1"]
+    assert [s.name for s in find_symbols(loaded.root)] == [PARENT, "PARENT_NEW", CHILD]
+
+
+def test_resolution_rename_footprint_flows(tmp_path):
+    layout = _clashing_layout(tmp_path, symbol=False, model=False)
+    plan = _plan(tmp_path, layout, ToolContext(), options=_with({FP_KEY: _res("rename", "FP_ALT")}))
+    assert not plan.blocked, plan.issues
+    op, loaded, ref = _footprint_of(plan, "FP_ALT")
+    assert op.path.name == "FP_ALT.kicad_mod" and op.base_sha256 is None
+    value = next(c for c in ref.node.children if c.head == "fp_text" and c.children[1].text == "value")
+    assert ref.name == unquote(value.children[2].text) == "FP_ALT"
+    assert _value_of(plan, "Footprint") == f"{LIBRARY}:FP_ALT"
+    assert _value_of(plan, "ki_fp_filters") == "FP_ALT"
+    assert plan.linked_footprint == "FP_ALT" and plan.footprint_names == ("FP_ALT",)
+    assert Rename("footprint", "FP", "FP_ALT") in plan.renames
+    # The existing FP.kicad_mod is not written
+    assert [o.path.name for o in plan.ops if o.kind == "footprint"] == ["FP_ALT.kicad_mod"]
+
+
+def test_resolution_rename_footprint_uses_the_suggestion(tmp_path):
+    layout = _clashing_layout(tmp_path, symbol=False, model=False)
+    plan = _plan(tmp_path, layout, ToolContext(), options=_with({FP_KEY: _res("rename")}))
+    assert not plan.blocked, plan.issues
+    assert plan.footprint_names == ("FP_2",)
+    assert _value_of(plan, "Footprint") == f"{LIBRARY}:FP_2"
+
+
+def test_resolution_rename_model_flows(tmp_path):
+    layout = _clashing_layout(tmp_path, symbol=False, footprint=False)
+    plan = _plan(tmp_path, layout, ToolContext(), options=_with({MODEL_KEY: _res("rename")}))
+    assert not plan.blocked, plan.issues
+    op = _op(plan, "model")
+    assert op.path == layout.models_dir / "PART_2.step" and op.base_sha256 is None and op.listed_path is None
+    assert plan.model_file == "PART_2.step"
+    _, _, ref = _footprint_of(plan)
+    assert [m.path for m in find_models(ref.node)] == ["${CUSTOM_3DMODEL_DIR}/PART_2.step"]
+    assert Rename("model", "PART.step", "PART_2.step") in plan.renames
+
+
+RENAME_CASES = [
+    ("symbol", "../x", "x"),
+    ("symbol", "EXISTING_A", None),
+    ("symbol", "///", None),
+    ("footprint", "../x", "x"),
+    ("footprint", "OTHER", None),
+    ("footprint", "///", None),
+    ("model", "../x.step", "x.step"),
+    ("model", "OTHER.step", None),
+    ("model", "///", None),
+]
+
+
+@pytest.mark.parametrize("kind, rename_to, expected", RENAME_CASES, ids=[f"{k}-{r}" for k, r, _ in RENAME_CASES])
+def test_resolution_rename_invalid(tmp_path, kind, rename_to, expected):
+    layout = _clashing_layout(tmp_path)
+    _put_footprint(layout, "OTHER.kicad_mod", vendor_footprint("OTHER"))
+    _put_model(layout, "OTHER.step", b"yet another model")
+    keys = {"symbol": SYM_KEY, "footprint": FP_KEY, "model": MODEL_KEY}
+    # The other two kinds are overwritten, so only the rename under test can go wrong
+    resolutions = {key: _res("overwrite") for key in keys.values()}
+    resolutions[keys[kind]] = _res("rename", rename_to)
+    plan = _plan(tmp_path, layout, ToolContext(), options=_with(resolutions))
+    if expected is None:
+        assert plan.blocked
+        assert _codes(plan) == ["install.bad_rename"]
+        return
+    assert not plan.blocked, plan.issues
+    assert "naming.changed" in [i.code for i in plan.issues if i.severity is Severity.INFO]
+    if kind == "symbol":
+        assert plan.symbol_names == (expected,)
+    elif kind == "footprint":
+        assert plan.footprint_names == (expected,)
+        assert _op(plan, "footprint").path.name == f"{expected}.kicad_mod"
+    else:
+        assert plan.model_file == expected
+        assert _op(plan, "model").path.name == expected
+
+
+def test_resolution_rename_target_identical(tmp_path):
+    layout = _clashing_layout(tmp_path)
+    resolutions = {
+        SYM_KEY: _res("rename", "PART_9"),
+        FP_KEY: _res("rename", "FP_9"),
+        MODEL_KEY: _res("rename", "PART_9.step"),
+    }
+    _install(tmp_path, layout, options=_with(resolutions))
+    again = _plan(tmp_path, layout, ToolContext(), options=_with(resolutions))
+    # The renamed items are already there with the planned content: nothing to write, nothing to ask again
+    assert again.ops == () and not again.blocked and again.is_noop, again.issues
+    assert [(c.key, c.resolution) for c in again.conflicts] == [(k, resolutions[k]) for k in (SYM_KEY, FP_KEY, MODEL_KEY)]
+    assert again.symbol_names == ("PART_9",) and again.linked_footprint == "FP_9" and again.model_file == "PART_9.step"
+
+
+def test_resolution_skip_footprint(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    _put_footprint(layout, "fp.kicad_mod", vendor_footprint("fp", pads=("1",)))
+    with _open(tmp_path, _vendor()) as (_, candidate):
+        plan = build_plan(candidate, _with({FP_KEY: _res("skip")}), layout, ToolContext())
+        assert not plan.blocked, plan.issues
+        assert [op.kind for op in plan.ops] == ["symbol_lib"]
+        assert plan.linked_footprint == "fp" and plan.footprint_names == ("fp",) and plan.model_file is None
+        assert _value_of(plan, "Footprint") == f"{LIBRARY}:fp"
+        assert _value_of(plan, "ki_fp_filters") == "fp"
+        assert [i.severity for i in plan.issues if i.code == "install.model_not_attached"] == [Severity.INFO]
+        assert plan.renames == ()
+        result = _apply(plan, tmp_path)
+    # D-09: the pin/pad check runs against the footprint that is really linked
+    assert "verify.pin_pad_mismatch" in [i.code for i in result.issues]
+    assert os.listdir(_pretty(layout)) == ["fp.kicad_mod"] and os.listdir(layout.models_dir) == []
+
+
+def test_resolution_skip_model(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    _put_model(layout, "part.STEP", b"other bytes")
+    with _open(tmp_path, _vendor()) as (_, candidate):
+        plan = build_plan(candidate, _with({MODEL_KEY: _res("skip")}), layout, ToolContext())
+        assert not plan.blocked, plan.issues
+        assert not [op for op in plan.ops if op.kind == "model"]
+        assert plan.model_file == "part.STEP"
+        _, _, ref = _footprint_of(plan)
+        assert [m.path for m in find_models(ref.node)] == ["${CUSTOM_3DMODEL_DIR}/part.STEP"]
+        _apply(plan, tmp_path)
+    assert os.listdir(layout.models_dir) == ["part.STEP"]
+    assert (layout.models_dir / "part.STEP").read_bytes() == b"other bytes"
+
+
+def test_resolution_skip_symbol(tmp_path):
+    layout = _clashing_layout(tmp_path, footprint=False, model=False)
+    path = layout.symbols_dir / f"{LIBRARY}.kicad_sym"
+    original = path.read_bytes()
+    with _open(tmp_path, _vendor()) as (_, candidate):
+        plan = build_plan(candidate, _with({SYM_KEY: _res("skip")}), layout, ToolContext())
+        assert not plan.blocked, plan.issues
+        assert [op.kind for op in plan.ops] == ["model", "footprint"]
+        kept = [i for i in plan.issues if i.code == "install.symbol_kept"]
+        assert [i.severity for i in kept] == [Severity.WARNING]
+        assert VENDOR in kept[0].text and "Footprint" in kept[0].text
+        _apply(plan, tmp_path)
+    assert path.read_bytes() == original
+    assert (_pretty(layout) / "FP.kicad_mod").is_file() and (layout.models_dir / "PART.step").is_file()
+
+
+def test_resolution_skip_parent_symbol_keeps_the_child_linked(tmp_path):
+    layout = _target_layout(tmp_path, V6, (PARENT,))
+    key = f"symbol:{LIBRARY}:{PARENT}"
+    options = InstallOptions(library=LIBRARY, symbol=CHILD, resolutions={key: _res("skip")})
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD), options)
+    assert not plan.blocked, plan.issues
+    loaded, child = _symbol_in(plan, CHILD)
+    assert [s.name for s in find_symbols(loaded.root)] == [PARENT, CHILD]
+    assert extends_name(child.node) == PARENT
+    assert _value_of(plan, "Footprint", CHILD) == f"{LIBRARY}:FP"
+    assert plan.linked_footprint == "FP"
+    assert [i.code for i in plan.issues if i.code == "install.symbol_kept"] == ["install.symbol_kept"]
+
+
+def test_resolution_parent_before_child(tmp_path):
+    layout = _target_layout(tmp_path, V6, ("EXISTING_A", CHILD))
+    path = layout.symbols_dir / f"{LIBRARY}.kicad_sym"
+    old = parse_bytes(path.read_bytes(), "lib")
+    span = find_symbol(old.root, CHILD).node
+    key = f"symbol:{LIBRARY}:{CHILD}"
+    options = InstallOptions(library=LIBRARY, symbol=CHILD, resolutions={key: _res("overwrite")})
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, child_first=True), options)
+    assert [c.key for c in plan.conflicts] == [key]
+    assert not plan.blocked, plan.issues
+    planned = parse_bytes(_op(plan, "symbol_lib").data, "lib")
+    assert [s.name for s in find_symbols(planned.root)] == ["EXISTING_A", PARENT, CHILD]
+    assert extends_name(find_symbol(planned.root, CHILD).node) == PARENT
+    # The parent goes in right where the child stood, and nothing around them moves
+    assert planned.source.text[: span.start] == old.source.text[: span.start]
+    assert planned.source.text.endswith(old.source.text[span.end :])
+
+
+def test_resolution_no_global_default(tmp_path, snapshot):
+    layout = _clashing_layout(tmp_path)
+    before = snapshot(layout.custom_dir)
+    resolutions = {SYM_KEY: _res("overwrite"), "symbol:Other_Lib:Nothing": _res("overwrite")}
+    plan = _plan(tmp_path, layout, ToolContext(), options=_with(resolutions))
+    # One resolved key resolves exactly that conflict; a key that matches nothing changes nothing
+    assert plan.blocked
+    assert [c.key for c in plan.unresolved_conflicts] == [FP_KEY, MODEL_KEY]
+    assert [c.key for c in plan.conflicts if c.resolution is not None] == [SYM_KEY]
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert not result.ok and not result.touched
+    text = next(i.text for i in result.issues if i.code == "install.conflict_unresolved")
+    assert FP_KEY in text and MODEL_KEY in text and SYM_KEY not in text
+    assert snapshot(layout.custom_dir) == before
+
+
+def test_resolution_unknown_action_is_refused(tmp_path):
+    layout = _clashing_layout(tmp_path, footprint=False, model=False)
+    plan = _plan(tmp_path, layout, ToolContext(), options=_with({SYM_KEY: _res("replace")}))
+    assert plan.blocked
+    assert "install.bad_resolution" in _codes(plan)
+    assert [c.resolution for c in plan.conflicts] == [None]
