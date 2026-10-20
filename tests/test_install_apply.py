@@ -11,6 +11,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -993,3 +994,57 @@ def test_rollback_step_error_is_reported(hand_layout, monkeypatch):
     # the later undo steps still ran
     assert not (hand_layout.footprints_dir / f"{LIB}.pretty").exists()
     assert not (hand_layout.models_dir / "X.stp").exists()
+
+
+# -- the running install's backup folder (WR-01) --------------------------------------------------
+
+
+def test_prune_never_deletes_the_new_backup_folder(hand_layout, monkeypatch):
+    monkeypatch.setattr(applier.time, "strftime", lambda fmt, *a: "20200101-000000")
+    installs = hand_layout.repo_root / "bk" / "installs"
+    for day in range(1, 11):
+        _stamp_folder(installs, f"202601{day:02d}-101010")
+    plan = _hand_plan(hand_layout, new_library=False)
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    assert result.ok, result.issues
+    assert result.backup_dir.name == f"20200101-000000_{LIB}"
+    assert (result.backup_dir / f"{LIB}.kicad_sym_backup_1").is_file()
+    folders = sorted(p.name for p in installs.iterdir())
+    assert len(folders) == applier.INSTALL_BACKUPS_KEPT
+    assert result.backup_dir.name in folders
+    assert "20260101-101010_IC_Old_TI" not in folders
+
+
+def test_prune_exclude_counts_toward_keep(tmp_path):
+    installs = tmp_path / "installs"
+    oldest = _stamp_folder(installs, "20260101-101010")
+    _stamp_folder(installs, "20260102-101010")
+    _stamp_folder(installs, "20260103-101010")
+
+    issues = applier.prune_install_backups(installs, keep=2, exclude=oldest)
+
+    assert issues == []
+    assert sorted(p.name for p in installs.iterdir()) == ["20260101-101010_IC_Old_TI", "20260103-101010_IC_Old_TI"]
+
+
+def test_prune_exclude_absent_changes_nothing(tmp_path):
+    installs = tmp_path / "installs"
+    for day in range(1, 4):
+        _stamp_folder(installs, f"202601{day:02d}-101010")
+
+    issues = applier.prune_install_backups(installs, keep=2, exclude=installs / "20250101-000000_IC_Old_TI")
+
+    assert issues == []
+    assert sorted(p.name for p in installs.iterdir()) == ["20260102-101010_IC_Old_TI", "20260103-101010_IC_Old_TI"]
+
+
+def test_backup_stamp_is_utc(hand_layout, monkeypatch):
+    monkeypatch.setattr(applier.time, "gmtime", lambda *a: time.struct_time((2026, 3, 29, 1, 30, 0, 6, 88, 0)))
+    plan = _hand_plan(hand_layout, new_library=False)
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    assert result.ok, result.issues
+    assert result.backup_dir.name.startswith("20260329-013000")
