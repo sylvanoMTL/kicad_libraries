@@ -17,8 +17,11 @@ from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
 from kicad_lib_manager.importer.plan import InstallOptions, Rename, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
+from kicad_lib_manager.importer.verify import verify_install
 from kicad_lib_manager.kicad_files import (
+    extends_name,
     file_version,
+    find_models,
     find_property,
     find_symbol,
     find_symbols,
@@ -967,3 +970,165 @@ def test_fields_existing_symbols_untouched(tmp_path, version):
     assert planned[:cut] == original[:cut]
     assert planned.endswith(original[cut:])
     assert len(planned) > len(original)
+
+
+# -- D-16 extends units, D-17 several footprints, INTK-08 no-model path (plan 04-08, task 2) --------
+
+PARENT, CHILD = "PARENT_X", "CHILD_Y"
+
+
+def _symbol_names(plan):
+    return [s.name for s in find_symbols(parse_bytes(_op(plan, "symbol_lib").data, "lib").root)]
+
+
+@pytest.mark.parametrize("new_library", [False, True], ids=["existing", "new"])
+def test_unit_parent_first(tmp_path, new_library):
+    layout = _pair_layout(tmp_path)
+    library = NEW_LIBRARY if new_library else LIBRARY
+    options = InstallOptions(library=library, symbol=CHILD)
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, child_first=True), options)
+    assert not plan.blocked, plan.issues
+    assert plan.symbol_names == (PARENT, CHILD) and plan.symbol_name == CHILD
+    names = _symbol_names(plan)
+    assert names == ([PARENT, CHILD] if new_library else [LIBRARY, PARENT, CHILD])
+    # The library still parses with the child after its parent and the child still extends it
+    _, child = _symbol_in(plan, CHILD)
+    assert extends_name(child.node) == PARENT
+
+
+def test_unit_fields_on_every_symbol(tmp_path):
+    layout = _pair_layout(tmp_path)
+    options = InstallOptions(library=LIBRARY, symbol=CHILD, mpn="CHILD-MPN", manufacturer="TI")
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD), options)
+    assert not plan.blocked, plan.issues
+    for name in (PARENT, CHILD):
+        assert _value_of(plan, "Footprint", name) == f"{LIBRARY}:FP"
+        assert _value_of(plan, "ki_fp_filters", name) == "FP"
+        assert _value_of(plan, "Manufacturer", name) == "TI"
+    # The caller's part number belongs to the chosen symbol; its parent keeps its own name
+    assert _value_of(plan, "MPN", CHILD) == "CHILD-MPN"
+    assert _value_of(plan, "MPN", PARENT) == PARENT
+    assert plan.model_file == "CHILD-MPN.step"
+
+
+def test_unit_parent_rename_updates_extends(tmp_path):
+    layout = _pair_layout(tmp_path)
+    options = InstallOptions(library=LIBRARY, symbol=CHILD)
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair("PARENT/X", CHILD), options)
+    assert not plan.blocked, plan.issues
+    assert plan.symbol_names == (PARENT, CHILD)
+    assert Rename("symbol", "PARENT/X", PARENT) in plan.renames
+    loaded, child = _symbol_in(plan, CHILD)
+    assert extends_name(child.node) == PARENT
+    _, parent = _symbol_in(plan, PARENT)
+    assert [unquote(c.children[1].text) for c in parent.node.children if c.head == "symbol"] == ["PARENT_X_1_1"]
+    assert "PARENT/X" not in loaded.source.text.replace('(property "MPN" "PARENT/X"', "")
+
+
+def test_unit_existing_parent_is_a_conflict(tmp_path):
+    layout = _target_layout(tmp_path, V6, (PARENT,))
+    options = InstallOptions(library=LIBRARY, symbol=CHILD)
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD), options)
+    assert [c.key for c in plan.conflicts] == [f"symbol:{LIBRARY}:{PARENT}"]
+    assert plan.blocked
+
+
+@pytest.mark.parametrize("size", [1, 2], ids=["1", "2"])
+def test_unit_invariant(layout, tmp_path, size):
+    symbol = vendor_symbol_lib(PARENT) if size == 1 else extends_pair(PARENT, CHILD)
+    chosen = PARENT if size == 1 else CHILD
+    with _open(tmp_path, _vendor(symbol)) as (_, candidate):
+        plan = build_plan(candidate, InstallOptions(library=LIBRARY, symbol=chosen), layout, ToolContext())
+        assert not plan.blocked, plan.issues
+        assert len(plan.symbol_names) == size
+        result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert result.ok, result.issues
+    assert not [i for i in verify_install(plan) if i.severity is Severity.ERROR]
+    library = parse_bytes((layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes(), "lib")
+    present = [s.name for s in find_symbols(library.root)]
+    for name in plan.symbol_names:
+        assert present.count(name) == 1
+        assert find_property(find_symbol(library.root, name).node, "Footprint").value == f"{LIBRARY}:FP"
+
+
+def test_several_footprints_order(layout, tmp_path):
+    members = [
+        ("part.kicad_sym", vendor_symbol_lib(VENDOR)),
+        ("FP_A.kicad_mod", vendor_footprint("FP_A")),
+        ("FP_B.kicad_mod", vendor_footprint("FP_B")),
+        ("part.step", STEP_BYTES),
+    ]
+    with _open(tmp_path, members) as (_, candidate):
+        plan = build_plan(candidate, InstallOptions(library=LIBRARY, footprints=("FP_B", "FP_A")), layout, ToolContext())
+    assert not plan.blocked, plan.issues
+    footprints = [op for op in plan.ops if op.kind == "footprint"]
+    assert [op.path.stem for op in footprints] == ["FP_B", "FP_A"]
+    assert _value_of(plan, "Footprint") == f"{LIBRARY}:FP_B"
+    assert _value_of(plan, "ki_fp_filters") == "FP_B FP_A"
+    carried = {op.path.stem: [m.path for m in find_models(footprint_name(parse_bytes(op.data, "fp").root).node)] for op in footprints}
+    assert carried == {"FP_B": ["${CUSTOM_3DMODEL_DIR}/PART.step"], "FP_A": []}
+
+
+def test_no_model_package(layout, tmp_path):
+    plan = _plan(tmp_path, layout, ToolContext(), model=False)
+    assert not plan.blocked, plan.issues
+    assert plan.model_file is None
+    assert not [op for op in plan.ops if op.kind in ("model",)]
+    assert b"(model" not in _op(plan, "footprint").data
+    found = [i for i in plan.issues if i.code == "install.no_model"]
+    assert [i.severity for i in found] == [Severity.WARNING]
+    assert "No 3D model found in pkg.zip" in found[0].text
+    assert "install.model_declined" not in [i.code for i in plan.issues]
+
+
+def test_no_model_declined(custom_copy, ul_package):
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, no_model=True), custom_copy)
+    assert not plan.blocked, plan.issues
+    assert plan.model_file is None
+    assert not [op for op in plan.ops if op.kind == "model"]
+    assert b"(model" not in next(op for op in plan.ops if op.kind == "footprint").data
+    assert [i.severity for i in plan.issues if i.code == "install.model_declined"] == [Severity.INFO]
+    assert "install.no_model" not in [i.code for i in plan.issues]
+
+
+@pytest.mark.parametrize(
+    "path, stale",
+    [
+        ("${KIPRJMOD}/x.step", True),
+        ("C:/models/x.step", True),
+        ("x.step", True),
+        ("${KICAD9_3DMODEL_DIR}/Pkg.3dshapes/x.step", False),
+        ("${CUSTOM_3DMODEL_DIR}/x.step", False),
+    ],
+    ids=["kiprjmod", "absolute", "relative", "stock", "custom"],
+)
+def test_no_model_stale_vendor_path(layout, tmp_path, path, stale):
+    plan = _plan(tmp_path, layout, ToolContext(), model=False, footprint_bytes=vendor_footprint("FP", model=path))
+    assert not plan.blocked, plan.issues
+    assert plan.model_file is None
+    # The vendor path is never edited
+    assert [m.path for m in find_models(footprint_name(parse_bytes(_op(plan, "footprint").data, "fp").root).node)] == [path]
+    assert ("install.stale_model_path" in [i.code for i in plan.issues]) is stale
+    if stale:
+        assert [i.severity for i in plan.issues if i.code == "install.stale_model_path"] == [Severity.WARNING]
+
+
+def test_model_extra_blocks_warn(layout, tmp_path):
+    plan = _plan(tmp_path, layout, ToolContext(), footprint_bytes=vendor_footprint("FP", models=("a.step", "b.step")))
+    assert not plan.blocked, plan.issues
+    paths = [m.path for m in find_models(footprint_name(parse_bytes(_op(plan, "footprint").data, "fp").root).node)]
+    assert paths == ["${CUSTOM_3DMODEL_DIR}/PART.step", "b.step"]
+    assert [i.severity for i in plan.issues if i.code == "install.extra_models"] == [Severity.WARNING]
+    # The remaining block is reported once, as an extra block, not a second time as a stale path
+    assert "install.stale_model_path" not in [i.code for i in plan.issues]
+
+
+def test_model_embedded_files_warn(layout, tmp_path):
+    plan = _plan(tmp_path, layout, ToolContext(), footprint_bytes=vendor_footprint("FP", embedded=True))
+    assert not plan.blocked, plan.issues
+    assert [i.severity for i in plan.issues if i.code == "install.embedded_files"] == [Severity.WARNING]
+    loaded = parse_bytes(_op(plan, "footprint").data, "fp")
+    node = footprint_name(loaded.root).node
+    embedded = [c for c in node.children if c.head == "embedded_files"]
+    assert [loaded.source.text[c.start : c.end] for c in embedded] == ["(embedded_files)"]
