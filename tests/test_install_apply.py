@@ -314,6 +314,50 @@ def test_stale_plan_created_path_appears_during_gate(hand_layout, tmp_path):
     assert result.backup_dir is None
 
 
+def _change_before_write(plan: InstallPlan, kind: str, change):
+    """A progress callback that runs change() just before the op of this kind is written."""
+    wanted = next(i for i, op in enumerate(plan.ops) if op.kind == kind)
+    state = {"ran": 0}
+
+    def progress(message, current, total):
+        if current == wanted:
+            state["ran"] += 1
+            change()
+
+    return state, progress
+
+
+def test_stale_plan_target_edited_between_writes(hand_layout):
+    plan = _hand_plan(hand_layout, new_library=False)
+    edited = plan.symbol_lib_path.read_bytes() + b"\n# edited\n"
+    state, progress = _change_before_write(plan, "symbol_lib", lambda: plan.symbol_lib_path.write_bytes(edited))
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk", progress=progress)
+
+    assert state["ran"] == 1
+    assert not result.ok
+    assert _codes(_errors(result.issues)) == ["install.stale_plan", "install.rolled_back"]
+    assert not (hand_layout.models_dir / "X.stp").exists()
+    assert not (plan.pretty_path / "FP.kicad_mod").exists()
+    assert plan.symbol_lib_path.read_bytes() == edited
+
+
+def test_stale_plan_created_path_appears_between_writes(hand_layout):
+    plan = _hand_plan(hand_layout, new_library=False)
+    original = plan.symbol_lib_path.read_bytes()
+    foreign = plan.pretty_path / "FP.kicad_mod"
+    state, progress = _change_before_write(plan, "footprint", lambda: foreign.write_bytes(b"foreign"))
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk", progress=progress)
+
+    assert state["ran"] == 1
+    assert not result.ok
+    assert _codes(_errors(result.issues)) == ["install.stale_plan", "install.rolled_back"]
+    assert not (hand_layout.models_dir / "X.stp").exists()
+    assert foreign.read_bytes() == b"foreign"
+    assert plan.symbol_lib_path.read_bytes() == original
+
+
 # -- the staged source (WR-04) -----------------------------------------------------------
 
 
