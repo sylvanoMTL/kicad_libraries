@@ -8,10 +8,15 @@ only the paths the caller passes in ``-o`` and never starts a process.
 list of mode names consumed one per call (the last one repeats). Modes follow the spike
 results in 04-RESEARCH.md: upgrade, not_updated, reject, missing, conflict, timeout,
 oserror. A pair that is not in ``modes`` upgrades.
+
+``on_call`` is an optional hook called with the argv list (as strings) on every call, right after
+the call is recorded and before the inputs are captured. It lets a test change the tree while the
+gate runs (another process editing a file during the install).
 """
 
 import re
 import subprocess
+from collections.abc import Callable
 from pathlib import Path
 
 _VERSION_RE = re.compile(rb"\(version \d+\)")
@@ -27,9 +32,15 @@ _RESULTS = {
 
 
 class FakeCli:
-    def __init__(self, modes: dict[str, str | list[str]] | None = None, output_version: int = 20241209):
+    def __init__(
+        self,
+        modes: dict[str, str | list[str]] | None = None,
+        output_version: int = 20241209,
+        on_call: Callable[[list[str]], None] | None = None,
+    ):
         self.modes = dict(modes or {})
         self.output_version = output_version
+        self.on_call = on_call
         self.calls: list[list[str]] = []
         self.kwargs: list[dict] = []
         # File name -> bytes of every input, captured at call time (callers delete their temp folder)
@@ -51,6 +62,8 @@ class FakeCli:
         argv = [str(a) for a in argv]
         self.calls.append(argv)
         self.kwargs.append(kwargs)
+        if self.on_call is not None:
+            self.on_call(argv)
         args = argv[1:]
         key = " ".join(args[:2])
         source = Path(args[-1])

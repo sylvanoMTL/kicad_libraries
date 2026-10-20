@@ -241,6 +241,79 @@ def test_stale_plan_target_deleted(hand_layout):
     assert "install.stale_plan" in _codes(_errors(result.issues))
 
 
+# -- stale plan across the gate window (CR-02) --------------------------------------------
+
+
+def _first_call_hook(change):
+    """A FakeCli on_call hook that runs change() on its first call only and counts the runs."""
+    state = {"ran": 0}
+
+    def hook(argv):
+        if state["ran"] == 0:
+            state["ran"] += 1
+            change()
+
+    return state, hook
+
+
+def test_stale_plan_target_edited_during_gate(hand_layout, tmp_path):
+    plan = _hand_plan(hand_layout, new_library=False)
+    original = plan.symbol_lib_path.read_bytes()
+    edited = original + b"\n# edited in KiCad\n"
+    state, hook = _first_call_hook(lambda: plan.symbol_lib_path.write_bytes(edited))
+    fake = FakeCli(on_call=hook)
+
+    result = apply_plan(_with_cli(plan, fake), backup_root=tmp_path / "bk")
+
+    assert state["ran"] == 1
+    assert fake.calls[0][1:3] == ["sym", "upgrade"]
+    assert not result.ok
+    assert _codes(_errors(result.issues)) == ["install.stale_plan"]
+    assert plan.symbol_lib_path.read_bytes() == edited
+    assert not (hand_layout.models_dir / "X.stp").exists()
+    assert not (plan.pretty_path / "FP.kicad_mod").exists()
+    assert "install.done" not in _codes(result.issues)
+    assert result.backup_dir is not None
+    assert (result.backup_dir / f"{LIB}.kicad_sym_backup_1").read_bytes() == edited
+    assert result.touched == ()
+
+
+def test_stale_plan_ul_target_edited_during_gate(custom_copy, ul_package, tmp_path):
+    plan = _ul_plan(custom_copy, ul_package)
+    edited = plan.symbol_lib_path.read_bytes() + b"\n# edited in KiCad\n"
+    state, hook = _first_call_hook(lambda: plan.symbol_lib_path.write_bytes(edited))
+    fake = FakeCli(on_call=hook)
+
+    result = apply_plan(_with_cli(plan, fake), backup_root=tmp_path / "bk")
+
+    assert state["ran"] == 1
+    assert fake.calls[0][1:3] == ["sym", "upgrade"]
+    assert not result.ok
+    assert _codes(_errors(result.issues)) == ["install.stale_plan"]
+    assert plan.symbol_lib_path.read_bytes() == edited
+    assert not (custom_copy.models_dir / "CSD85301Q2.stp").exists()
+    assert not (plan.pretty_path / "DQK0006B.kicad_mod").exists()
+
+
+def test_stale_plan_created_path_appears_during_gate(hand_layout, tmp_path):
+    plan = _hand_plan(hand_layout, new_library=False)
+    original = plan.symbol_lib_path.read_bytes()
+    foreign = plan.pretty_path / "FP.kicad_mod"
+    state, hook = _first_call_hook(lambda: foreign.write_bytes(b"foreign"))
+    fake = FakeCli(on_call=hook)
+
+    result = apply_plan(_with_cli(plan, fake), backup_root=tmp_path / "bk")
+
+    assert state["ran"] == 1
+    assert not result.ok
+    (stale,) = _errors(result.issues)
+    assert stale.code == "install.stale_plan" and "FP.kicad_mod" in stale.text
+    assert foreign.read_bytes() == b"foreign"
+    assert not (hand_layout.models_dir / "X.stp").exists()
+    assert plan.symbol_lib_path.read_bytes() == original
+    assert result.backup_dir is None
+
+
 # -- the staged source (WR-04) -----------------------------------------------------------
 
 
