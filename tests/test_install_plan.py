@@ -1,5 +1,6 @@
 """Refusals and contract edges of build_plan / apply_plan, the D-01 version table and the LIB-02 library rules (Phase 4)."""
 
+import dataclasses
 import hashlib
 import os
 import re
@@ -275,6 +276,45 @@ def test_candidate_carries_package_issues(layout, tmp_path):
         for extra in ((), package.issues):
             plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, package_issues=extra)
             assert [i.code for i in plan.issues].count("intake.ignored_members") == 1
+
+
+# -- WR-05: a blank override means not set --------------------------------------
+
+_TEXT_FIELDS = ("value", "datasheet", "description", "manufacturer", "mpn")
+
+
+def test_blank_options_mean_not_set():
+    blank = InstallOptions(library="X", value="", datasheet="  ", description="\t", manufacturer="", mpn="")
+    assert [getattr(blank, name) for name in _TEXT_FIELDS] == [None] * 5
+    assert InstallOptions(library="X", mpn=" CSD85301Q2 ").mpn == " CSD85301Q2 "
+    assert dataclasses.replace(InstallOptions(library="X", mpn="A"), mpn="").mpn is None
+    kept = InstallOptions(library=" X ", symbol=" ", model="")
+    assert (kept.library, kept.symbol, kept.model) == (" X ", " ", "")
+
+
+@pytest.mark.parametrize("blank", ["", "  "], ids=["empty", "spaces"])
+def test_blank_option_keeps_ul_vendor_values(custom_copy, ul_package, blank):
+    _, candidate = ul_package
+    unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY), custom_copy)
+    blanked = build_plan(
+        candidate,
+        InstallOptions(library=UL_LIBRARY, **dict.fromkeys(_TEXT_FIELDS, blank)),
+        custom_copy,
+    )
+    assert not blanked.blocked, blanked.issues
+    assert blanked.ops == unset.ops
+    assert blanked.model_file == "CSD85301Q2.stp"
+    sym_op = next(op for op in blanked.ops if op.kind == "symbol_lib")
+    symbol = find_symbol(parse_bytes(sym_op.data, "lib").root, "CSD85301Q2")
+    values = {name: find_property(symbol.node, name) for name in ("Value", "Datasheet", "MPN", "Manufacturer")}
+    assert {name: prop.value for name, prop in values.items()} == {
+        "Value": "CSD85301Q2",
+        "Datasheet": "https://www.ti.com/lit/gpn/csd85301q2",
+        "MPN": "CSD85301Q2",
+        "Manufacturer": "TI",
+    }
+    assert find_property(symbol.node, "ki_description") is None
+    assert find_property(symbol.node, "Description") is None
 
 
 # -- Consistency of the installed names -----------------------------------------
