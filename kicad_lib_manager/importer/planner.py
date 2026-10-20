@@ -393,6 +393,7 @@ def _digest(path: Path) -> str | None:
 
 
 _FOOTPRINT_SUFFIX = ".kicad_mod"
+_MODEL_EXTENSIONS = (".step", ".stp", ".wrl")
 
 
 def _footprint_files(pretty: Path) -> tuple[str, ...]:
@@ -430,12 +431,43 @@ class _Decision:
     kept: bool = False  # skip: the existing file is used as it is
 
 
+def _find_hit(spec: _FileSpec, wanted: str) -> str | None:
+    """The listed file named wanted, else one that differs from it only by letter case."""
+    return next((f for f in spec.files if f == wanted), None) or next(
+        (f for f in spec.files if f.casefold() == wanted.casefold()), None
+    )
+
+
+def _rename_file(spec: _FileSpec, conflict: Conflict, resolution: Resolution) -> _Decision:
+    """Carry out a rename resolution (D-06): the caller's name or the suggestion, cleaned and checked for a new clash."""
+    chosen = resolution.rename_to if resolution.rename_to is not None else conflict.suggested_name
+    checked = spec.sanitise(chosen)
+    if any(i.code == "naming.empty" for i in checked.issues):
+        return _Decision(spec.default, conflict=conflict, issues=(
+            _err("install.bad_rename", f"{conflict.key}: {chosen!r} has no usable characters; enter another name"),
+        ))
+    notes = [i for i in checked.issues if i.severity is not Severity.ERROR] if resolution.rename_to is not None else []
+    name = checked.sanitized
+    wanted = spec.file_of(name)
+    hit = _find_hit(spec, wanted)
+    if hit is None:
+        return _Decision(name, op=spec.make_op(name, None, None), conflict=conflict, issues=tuple(notes))
+    digest = _digest(spec.folder / hit)
+    if digest is None:
+        return _Decision(name, conflict=conflict, issues=(_err("install.target_unreadable", f"Could not read {hit} in {spec.where}"),))
+    if hit == wanted and spec.same(name, digest):
+        # Repeating the same rename finds the earlier result already in place
+        return _Decision(name, conflict=conflict, issues=tuple(notes))
+    return _Decision(name, conflict=conflict, issues=(
+        *notes,
+        _err("install.bad_rename", f"{conflict.key}: {spec.where} already holds {hit}, so {wanted} is not free; enter another name"),
+    ))
+
+
 def _decide_file(spec: _FileSpec, key: str, resolution: Resolution | None) -> _Decision:
     """Settle one file against the folder: nothing to do (D-07), a plain write, or a Conflict (D-05, D-10)."""
     wanted = spec.file_of(spec.default)
-    hit = next((f for f in spec.files if f == wanted), None) or next(
-        (f for f in spec.files if f.casefold() == wanted.casefold()), None
-    )
+    hit = _find_hit(spec, wanted)
     if hit is None:
         return _Decision(spec.default, op=spec.make_op(spec.default, None, None))
     existing = spec.folder / hit
@@ -452,11 +484,13 @@ def _decide_file(spec: _FileSpec, key: str, resolution: Resolution | None) -> _D
     conflict = Conflict(key=key, kind=spec.kind, name=spec.default, existing=text, suggested_name=spec.suggest())
     if resolution is None:
         return _Decision(spec.default, conflict=conflict)
-    return _Decision(
-        spec.default,
-        conflict=conflict,
-        issues=(_err("install.resolution_unsupported", f"{key} cannot be resolved yet"),),
-    )
+    resolved = replace(conflict, resolution=resolution)
+    if resolution.action == "overwrite":
+        # The write replaces the file on disk under whatever spelling it has now (Pitfall 12)
+        return _Decision(spec.default, op=spec.make_op(spec.default, existing, digest), conflict=resolved)
+    if resolution.action == "skip":
+        return _Decision(spec.identity_of(hit), conflict=resolved, kept=True)
+    return _rename_file(spec, resolved, resolution)
 
 
 @dataclass(frozen=True)
@@ -778,10 +812,12 @@ def build_plan(
     step("Checking for conflicts", 5)
     resolutions = options.resolutions
 
+    bad_actions: dict[str, Issue] = {}
+
     def resolution_for(key: str) -> Resolution | None:
         found = resolutions.get(key)
         if found is not None and found.action not in ("overwrite", "rename", "skip"):
-            issues.append(_err("install.bad_resolution", f"{key}: {found.action!r} is not overwrite, rename or skip"))
+            bad_actions[key] = _err("install.bad_resolution", f"{key}: {found.action!r} is not overwrite, rename or skip")
             return None
         return found
 
@@ -793,6 +829,11 @@ def build_plan(
         model_item_file = model_item.file
         model_dir = layout.models_dir
         model_files = tuple(name for name in list_model_files(layout) if "/" not in name)
+        model_extensions = (*_MODEL_EXTENSIONS, *([model_suffix.casefold()] if model_suffix else []))
+
+        def model_sanitise(wanted: str) -> NameResult:
+            """A renamed model keeps a 3D model extension: the original one is added when the new name has none."""
+            return sanitize_filename(wanted if wanted.casefold().endswith(model_extensions) else wanted + model_suffix)
 
         def make_model_op(name: str, existing: Path | None, digest: str | None) -> FileOp:
             return FileOp(
@@ -814,7 +855,7 @@ def build_plan(
                 identity_of=lambda name: name,
                 same=lambda name, digest: digest == model_item_file.sha256,
                 make_op=make_model_op,
-                sanitise=lambda wanted: sanitize_filename(wanted),
+                sanitise=model_sanitise,
                 suggest=lambda: suggest_free_name(model_stem, model_files, suffix=model_suffix, casefold=True),
             ),
             f"model:{model_file.casefold()}",
@@ -897,9 +938,19 @@ def build_plan(
     ]
     for decision in fp_decisions:
         issues.extend(decision.issues)
+    if fp_decisions[0].kept and model_dec is not None:
+        # The kept footprint does not link the incoming model, so copying it would leave a stray file (D-09)
+        issues.append(Issue(
+            Severity.INFO,
+            "install.model_not_attached",
+            f"The 3D model {model_dec.name} is not installed: the existing footprint {fp_decisions[0].name} is kept and does not link it",
+        ))
+        model_dec = None
     if model_dec is not None:
         issues.extend(model_dec.issues)
     final_fps = tuple(d.name for d in fp_decisions)
+    if len({name.casefold() for name in final_fps}) != len(final_fps):
+        issues.append(_err("install.duplicate_name", f"Two chosen footprints would both end up under one name: {_name_list(list(final_fps))}"))
     linked = final_fps[0]
     for index, decision in enumerate(fp_decisions):
         if not decision.kept:
@@ -908,66 +959,110 @@ def build_plan(
     # The symbol is judged last: its Footprint field and filters carry the footprint names that survived
     link = f"{library}:{linked}"
     filters = " ".join(final_fps)
-    names = dict(new_names)
-    rendered = render_symbols(names, link, filters)
-    if isinstance(rendered, Issue):
-        return refuse(rendered)
-    edited, blocks, _ = rendered
     existing_syms = {} if target is None else {ref.name: ref for ref in find_symbols(target.root)}
 
     def plain(text: str) -> str:
         return fsutil.normalize_eol(text, "\n")
 
-    states: list[_SymState] = []
-    sym_conflicts: list[Conflict] = []
-    for ref in unit:
-        default = new_names[ref.name]
-        present = existing_syms.get(default)
-        if present is None or target is None:
-            states.append(_SymState(ref.name, default, "new"))
-            continue
-        if plain(block_text(target.source.text, present.node)) == plain(blocks[default]):
-            states.append(_SymState(ref.name, default, "identical"))
-            continue
-        key = f"symbol:{library}:{default}"
-        taken = [*existing_syms, *(new_names[r.name] for r in unit if r is not ref)]
-        conflict = Conflict(
-            key=key,
-            kind="symbol",
-            name=default,
-            existing=f"{library} already has a different {default}",
-            suggested_name=suggest_free_name(default, taken, casefold=False),
-        )
-        res = resolution_for(key)
-        if res is None:
-            states.append(_SymState(ref.name, default, "open"))
-        else:
-            issues.append(_err("install.resolution_unsupported", f"{key} cannot be resolved yet"))
-            states.append(_SymState(ref.name, default, "error"))
-        sym_conflicts.append(replace(conflict, resolution=res))
+    # A rename changes the block other members are compared with, so the unit is judged again until no rename is left to apply
+    renamed: dict[str, str] = {}
+    rename_notes: dict[str, list[Issue]] = {}
+    known_conflicts: dict[str, Conflict] = {}
+    for _ in range(len(unit) + 1):
+        names = {vendor: renamed.get(vendor, default) for vendor, default in new_names.items()}
+        rendered = render_symbols(names, link, filters)
+        if isinstance(rendered, Issue):
+            return refuse(rendered)
+        edited, blocks, _mpn = rendered
+        sym_notes: list[Issue] = []
+        states: list[_SymState] = []
+        again = False
+        for ref in unit:
+            default, final = new_names[ref.name], names[ref.name]
+            present = existing_syms.get(final)
+            if present is None or target is None:
+                states.append(_SymState(ref.name, final, "new"))
+                continue
+            if plain(block_text(target.source.text, present.node)) == plain(blocks[final]):
+                states.append(_SymState(ref.name, final, "identical"))
+                continue
+            if final != default:
+                sym_notes.append(_err("install.bad_rename", f"{final} cannot be used: {library} already has a different {final}; enter another name"))
+                states.append(_SymState(ref.name, final, "error"))
+                continue
+            key = f"symbol:{library}:{default}"
+            taken = [*existing_syms, *(new_names[r.name] for r in unit if r is not ref)]
+            conflict = Conflict(
+                key=key,
+                kind="symbol",
+                name=default,
+                existing=f"{library} already has a different {default}",
+                suggested_name=suggest_free_name(default, taken, casefold=False),
+            )
+            res = resolution_for(key)
+            known_conflicts[default] = replace(conflict, resolution=res)
+            if res is None:
+                states.append(_SymState(ref.name, final, "open"))
+            elif res.action == "rename":
+                chosen = res.rename_to if res.rename_to is not None else conflict.suggested_name
+                checked = sanitize_name(chosen)
+                if any(i.code == "naming.empty" for i in checked.issues):
+                    sym_notes.append(_err("install.bad_rename", f"{key}: {chosen!r} has no usable characters; enter another name"))
+                    states.append(_SymState(ref.name, final, "error"))
+                else:
+                    renamed[ref.name] = checked.sanitized
+                    rename_notes[ref.name] = (
+                        [i for i in checked.issues if i.severity is not Severity.ERROR] if res.rename_to is not None else []
+                    )
+                    again = True
+                    states.append(_SymState(ref.name, final, "error"))
+            else:
+                states.append(_SymState(ref.name, final, res.action))
+        if not again:
+            break
+    issues.extend(bad_actions.values())
+    for notes in rename_notes.values():
+        issues.extend(notes)
+    issues.extend(sym_notes)
+    final_symbols = tuple(names[ref.name] for ref in unit)
+    if len({name.casefold() for name in final_symbols}) != len(final_symbols):
+        issues.append(_err("install.duplicate_name", f"Two symbols of {sym_item.name} would both end up under one name: {_name_list(list(final_symbols))}"))
     for state in states:
         if state.kind == "new":
             issues.extend(case_clash(state.final, existing_syms))
+        elif state.kind == "skip":
+            issues.append(Issue(
+                Severity.WARNING,
+                "install.symbol_kept",
+                f"The existing {state.final} in {library} is kept; its Footprint field was not changed to {link}",
+            ))
 
-    final_symbols = tuple(names[ref.name] for ref in unit)
     sym_edits: list[Edit] = []
     if target is not None:
         for index, state in enumerate(states):
-            if state.kind != "new":
-                continue
-            # A derived symbol must stay behind its parent: a new parent goes in front of an existing descendant
-            behind = [existing_syms[s.final] for s in states[index + 1 :] if s.final in existing_syms]
-            if behind:
-                sym_edits.append(symbol_insert_before_edit(target, min(behind, key=lambda r: r.node.start), blocks[state.final]))
-            else:
-                sym_edits.append(symbol_insert_edit(target, blocks[state.final]))
+            if state.kind == "overwrite":
+                # D-08: the new block takes the old block's place, so the library keeps its order
+                sym_edits.append(symbol_replace_edit(target, existing_syms[state.final], blocks[state.final]))
+            elif state.kind == "new":
+                # A derived symbol must stay behind its parent: a new parent goes in front of an existing descendant
+                behind = [existing_syms[s.final] for s in states[index + 1 :] if s.final in existing_syms]
+                if behind:
+                    sym_edits.append(symbol_insert_before_edit(target, min(behind, key=lambda r: r.node.start), blocks[state.final]))
+                else:
+                    sym_edits.append(symbol_insert_edit(target, blocks[state.final]))
     if target is not None:
         sym_bytes = fsutil.encode_source(apply_edits(target.source.text, sym_edits), target.source.bom)
     else:
         # A new library is the normalised unit file with the edited symbols, already in parent-first order
         sym_bytes = fsutil.encode_source(edited.source.text, edited.source.bom)
 
-    conflicts = [*sym_conflicts]
+    # A conflict stays listed while it needs a decision or was settled by one; an item that matches by now has none
+    conflicts = [
+        known_conflicts[new_names[state.vendor]]
+        for state in states
+        if new_names[state.vendor] in known_conflicts
+        and (state.final != new_names[state.vendor] or state.kind not in ("new", "identical"))
+    ]
     conflicts.extend(d.conflict for d in fp_decisions if d.conflict is not None)
     if model_dec is not None and model_dec.conflict is not None:
         conflicts.append(model_dec.conflict)
@@ -990,6 +1085,11 @@ def build_plan(
         for fp_item, decision in zip(fp_items, fp_decisions)
         if decision.name != fp_item.name and not decision.kept
     ]
+    model_renames = (
+        [Rename("model", model_file, model_dec.name)]
+        if model_dec is not None and model_file is not None and model_dec.name != model_file and not model_dec.kept
+        else []
+    )
     return InstallPlan(
         vendor=candidate.vendor,
         source=candidate.source,
@@ -1000,13 +1100,14 @@ def build_plan(
         new_footprint_lib=not pretty_exists,
         symbol_names=final_symbols,
         footprint_names=final_fps,
-        linked_footprint=linked,
+        # A kept chosen symbol still has whatever Footprint field it had, so this install links nothing
+        linked_footprint=None if states[-1].kind == "skip" else linked,
         model_file=model_dec.name if model_dec is not None else None,
         source_version=source_version,
         target_version=target_version,
         normalised=source.normalised,
         ops=tuple(ops),
         conflicts=tuple(conflicts),
-        renames=(*sym_renames, *fp_renames),
+        renames=(*sym_renames, *fp_renames, *model_renames),
         issues=tuple(issues),
     )
