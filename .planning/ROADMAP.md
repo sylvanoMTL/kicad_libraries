@@ -131,7 +131,7 @@ Plans:
   4. A failure injected on any write leaves every file the install touched exactly as it was, with no dangling symbol, orphan footprint or stray model, and the failure is logged. An existing model with the same SHA-256 is reused, and a different one is reported as a conflict instead of being overwritten.
   5. After install, verification re-parses the written files, resolves `<Lib>:<FP>` and confirms the model file exists. It warns when the part name already exists in another library or the symbol's pin numbers don't match the footprint's pad numbers. Importing the same package twice with the same choices changes nothing the second time.
 
-**Plans**: 10/13 plans executed (3 gap-closure plans pending)
+**Plans**: 12/13 plans executed (3 gap-closure plans pending)
 
 Plans:
 **Wave 1**
@@ -158,8 +158,8 @@ Plans:
 
 **Gap closure** *(04-VERIFICATION.md gaps 1-2 and 04-REVIEW.md CR-01, CR-02, WR-01, WR-03, WR-05)*
 **Gap wave 1**
-- [ ] 04-11-PLAN.md — Applier exception safety: guarded transaction rolls back on any exception (install.unexpected, interrupts re-raised after rollback), guarded progress callback, _make_folders resolve inside try; prune never deletes the running install's backup folder, UTC stamp (gap 1, CR-01, WR-01)
-- [ ] 04-12-PLAN.md — Planner/candidate: package-level Issues folded into ImportCandidate.issues and proven end to end; blank InstallOptions text fields mean not set (WR-03, WR-05)
+- [x] 04-11-PLAN.md — Applier exception safety: guarded transaction rolls back on any exception (install.unexpected, interrupts re-raised after rollback), guarded progress callback, _make_folders resolve inside try; prune never deletes the running install's backup folder, UTC stamp (gap 1, CR-01, WR-01)
+- [x] 04-12-PLAN.md — Planner/candidate: package-level Issues folded into ImportCandidate.issues and proven end to end; blank InstallOptions text fields mean not set (WR-03, WR-05)
 
 **Gap wave 2** *(blocked on gap wave 1 completion)*
 - [ ] 04-13-PLAN.md — Applier stale-plan guarantee across the kicad-cli gate window: backup copy hashed against the plan base and used as the rollback pre-image, per-write re-check, FakeCli on_call hook; review dispositions recorded (gap 2, CR-02)
@@ -221,7 +221,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
-| 4. Plan and Install Core | 10/10 | In Progress | - |
+| 4. Plan and Install Core | 12/13 | In Progress | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
