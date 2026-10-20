@@ -35,9 +35,18 @@ class Resolution:
     rename_to: str | None = None
 
 
+_TEXT_OVERRIDES = ("value", "datasheet", "description", "manufacturer", "mpn")
+
+
 @dataclass(frozen=True)
 class InstallOptions:
-    """The caller's choices. Item names refer to vendor items (SymbolItem.name, FootprintItem.name, ModelItem.filename)."""
+    """The caller's choices. Item names refer to vendor items (SymbolItem.name, FootprintItem.name, ModelItem.filename).
+
+    An empty or whitespace-only value, datasheet, description, manufacturer or mpn means "not set"
+    and becomes None, so the vendor value is kept (WR-05; a Qt line edit returns "" for an untouched
+    field). There is no way to ask for an empty value: an explicit "clear this field" outcome is a
+    Phase 5 preview decision, so until then a deliberate blank edit installs the vendor value.
+    """
 
     library: str
     symbol: str | None = None
@@ -52,6 +61,12 @@ class InstallOptions:
     manufacturer: str | None = None
     mpn: str | None = None
     resolutions: Mapping[str, Resolution] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for name in _TEXT_OVERRIDES:
+            text = getattr(self, name)
+            if isinstance(text, str) and not text.strip():
+                object.__setattr__(self, name, None)
 
 
 @dataclass(frozen=True)
