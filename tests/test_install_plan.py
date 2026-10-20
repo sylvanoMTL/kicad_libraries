@@ -496,7 +496,9 @@ def test_version_memoised(tmp_path):
         second = build_plan(candidate, InstallOptions(library=LIBRARY, value="TWO"), layout, _tools(fake))
     assert not first.blocked and not second.blocked
     assert [call[1:3] for call in fake.calls] == [["sym", "upgrade"]]
-    assert _op(first, "symbol_lib").data == _op(second, "symbol_lib").data
+    # The caller's Value is the only difference between the two builds; both start from the one CLI result
+    assert _value_of(first, "Value") == "ONE" and _value_of(second, "Value") == "TWO"
+    assert _op(first, "symbol_lib").data.replace(b"ONE", b"TWO") == _op(second, "symbol_lib").data
 
 
 def test_version_cli_sees_the_chosen_unit_only(tmp_path):

@@ -7,35 +7,42 @@ to create or change, so apply_plan only has to write them.
 import hashlib
 import os
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 
 from .. import fsutil
 from ..kicad_files import (
     LoadedFile,
-    PropertyRef,
+    SymbolRef,
+    description_field_name,
     extends_name,
     file_kind,
     file_version,
     find_models,
     find_property,
     find_symbol,
+    find_symbols,
     footprint_name,
     footprint_name_edit,
     footprint_value_edits,
+    hidden_template,
     model_insert_edit,
     new_property_text,
     next_property_id,
     parse_bytes,
     property_insert_edit,
+    rename_property_edit,
+    rename_symbol_edits,
+    replace_exact_tokens,
     retarget_model,
     set_property_edit,
     symbol_insert_edit,
     symbol_unit,
+    synth_property_text,
     unit_library_text,
 )
 from ..models import Issue, Severity
-from ..sexpr import Edit, Node, apply_edits, parse, quote
+from ..sexpr import Edit, Node, apply_edits
 from . import kicad_cli
 from . import package as _package
 from .adapters.base import MANUFACTURER_FIELDS, MPN_FIELDS
@@ -49,12 +56,11 @@ from .plan import (
     FileOp,
     InstallOptions,
     InstallPlan,
+    Rename,
     ToolContext,
 )
 from .suggest import manufacturer_choice, placeholder_tokens
 
-# Hidden vendor properties to clone when a new property has to be added (D-13)
-_TEMPLATE_PROPERTIES = ("Datasheet", "Footprint", "ki_fp_filters", "ki_keywords")
 _LISTED_NAMES = 20
 
 
@@ -97,54 +103,94 @@ def _parse_vendor(pf: PackageFile) -> LoadedFile | Issue:
     return loaded
 
 
-class _SymbolEditor:
-    """Collects the span edits for one vendor symbol block, parsed from the block's own text."""
+@dataclass(frozen=True)
+class _Fields:
+    """What one symbol of the incoming unit is given (D-11 to D-15)."""
 
-    def __init__(self, block: str, node: Node, eol: str):
-        self.block = block
-        self.node = node
-        self.eol = eol
-        self.edits: list[Edit] = []
-        self._inserts: list[str] = []
-        self._next_id = next_property_id(node)
-        self._template: PropertyRef | None = None
-        for name in _TEMPLATE_PROPERTIES:
-            self._template = find_property(node, name)
-            if self._template is not None:
-                break
+    footprint: str
+    filters: str
+    # Used when the symbol carries no value of its own; written always when forced (the caller typed it)
+    manufacturer: str
+    manufacturer_forced: bool
+    # Caller overrides; they apply to the chosen symbol only
+    mpn: str | None = None
+    value: str | None = None
+    datasheet: str | None = None
+    description: str | None = None
 
-    def add(self, name: str, value: str) -> Issue | None:
-        """Add a hidden property cloned from an existing one."""
-        if self._template is None:
-            return _err("install.no_property_template", f"The symbol has no property to copy the layout of {name} from")
-        self._inserts.append(new_property_text(self.block, self._template, name, value, self._next_id))
-        if self._next_id is not None:
-            self._next_id += 1
-        return None
 
-    def set_or_add(self, name: str, value: str) -> Issue | None:
-        found = find_property(self.node, name)
+def _edit_symbol(
+    work: LoadedFile, ref: SymbolRef, new_name: str, fields: _Fields, version: int | None
+) -> tuple[list[Edit], str]:
+    """The span edits that turn one vendor symbol into its installed form, and the MPN it ends up with.
+
+    Every property receives at most one edit, computed from its final value. New properties are
+    hidden copies of an existing hidden one in the style of `version`.
+    """
+    text, eol, node = work.source.text, work.source.eol, ref.node
+    edits: list[Edit] = []
+    inserts: list[str] = []
+    template = hidden_template(node)
+    next_id = next_property_id(node)
+
+    def add(name: str, value: str) -> None:
+        nonlocal next_id
+        if template is not None:
+            inserts.append(new_property_text(text, template, name, value, next_id, version=version))
+        else:
+            inserts.append(synth_property_text(name, value, version=version, next_id=next_id))
+        if next_id is not None:
+            next_id += 1
+
+    def put(name: str, value: str) -> None:
+        found = find_property(node, name)
+        if found is None:
+            add(name, value)
+        elif found.value != value:
+            edits.append(set_property_edit(found, value))
+
+    def role(name: str, aliases: tuple[str, ...], override: str | None, fallback: str) -> str:
+        """Make `name` exist (D-12): keep the exact property, else rename the first vendor alias in place, else add it."""
+        present = [p for p in (find_property(node, alias) for alias in aliases) if p is not None]
+        vendor_value = next((p.value for p in present if p.value), "")
+        value = override if override is not None else (vendor_value or fallback)
+        exact = find_property(node, name)
+        target = exact or next((p for p in present if p.value), present[0] if present else None)
+        if target is None:
+            add(name, value)
+            return value
+        if target is not exact:
+            edits.append(rename_property_edit(target, name))
+        if target.value != value:
+            edits.append(set_property_edit(target, value))
+        return value
+
+    def retoken(name: str) -> None:
+        found = find_property(node, name)
         if found is not None:
-            self.edits.append(set_property_edit(found, value))
-            return None
-        return self.add(name, value)
+            changed = replace_exact_tokens(found.value, ref.name, new_name)
+            if changed != found.value:
+                edits.append(set_property_edit(found, changed))
 
-    def role(self, name: str, aliases: tuple[str, ...], fallback: str) -> Issue | None:
-        """Make sure property `name` exists: keep it, rename the first vendor alias in place (D-12), or add it."""
-        for alias in aliases:
-            found = find_property(self.node, alias)
-            if found is not None and found.value:
-                if alias != name:
-                    self.edits.append(Edit(found.name_node.start, found.name_node.end, quote(name)))
-                return None
-        return self.set_or_add(name, fallback)
-
-    def result(self) -> str:
-        edits = list(self.edits)
-        for block in self._inserts:
-            # Zero-width inserts at one position keep their list order
-            edits.append(property_insert_edit(self.block, self.node, block, self.eol))
-        return apply_edits(self.block, edits)
+    put("Footprint", fields.footprint)
+    put("ki_fp_filters", fields.filters)
+    forced = fields.manufacturer if fields.manufacturer_forced else None
+    role("Manufacturer", MANUFACTURER_FIELDS, forced, fields.manufacturer)
+    mpn = role("MPN", MPN_FIELDS, fields.mpn, ref.name)
+    if fields.value is not None:
+        put("Value", fields.value)
+    elif new_name != ref.name:
+        retoken("Value")
+    if new_name != ref.name:
+        retoken("ki_keywords")
+    if fields.datasheet is not None:
+        put("Datasheet", fields.datasheet)
+    if fields.description is not None:
+        put(description_field_name(node, version), fields.description)
+    for block in inserts:
+        # Zero-width inserts at one position keep their list order
+        edits.append(property_insert_edit(text, node, block, eol))
+    return edits, mpn
 
 
 def _listing(folder: Path) -> list[str]:
@@ -472,9 +518,36 @@ def build_plan(
         return refuse(_err("install.extends_unsupported", f"{sym_item.name} extends another symbol, which cannot be installed yet"))
 
     step("Planning names", 3)
-    sym_name = sym_item.name_check.sanitized
-    if sym_name != sym_item.name:
-        return refuse(_err("install.rename_unsupported", f"The symbol name {sym_item.name!r} would be renamed to {sym_name!r}, which cannot be installed yet"))
+    sym_renames: list[Rename] = []
+    new_names: dict[str, str] = {}
+    for ref in unit:
+        checked = sanitize_name(ref.name)
+        if any(i.code == "naming.empty" for i in checked.issues):
+            return refuse(_err("install.invalid_name", f"The symbol name {ref.name!r} has no usable characters, so it cannot be installed"))
+        new_names[ref.name] = checked.sanitized
+        if checked.sanitized != ref.name:
+            sym_renames.append(Rename("symbol", ref.name, checked.sanitized))
+    final_symbols = tuple(new_names[ref.name] for ref in unit)
+    if len({name.casefold() for name in final_symbols}) != len(final_symbols):
+        return refuse(_err("install.duplicate_name", f"Two symbols of {sym_item.name} would both be installed under one name: {_name_list(list(final_symbols))}"))
+
+    # D-14: a caller footprint name is sanitised like a vendor name and drives every place the name appears
+    fp_names_list: list[str] = []
+    fp_renames: list[Rename] = []
+    for fp_item in fp_items:
+        wanted = options.footprint_names.get(fp_item.name)
+        checked = fp_item.name_check if wanted is None else sanitize_name(wanted)
+        if any(i.code == "naming.empty" for i in checked.issues):
+            shown = fp_item.name if wanted is None else wanted
+            return refuse(_err("install.invalid_name", f"The footprint name {shown!r} has no usable characters; enter another name"))
+        if wanted is not None:
+            issues.extend(i for i in checked.issues if i.severity is not Severity.ERROR)
+        fp_names_list.append(checked.sanitized)
+        if checked.sanitized != fp_item.name:
+            fp_renames.append(Rename("footprint", fp_item.name, checked.sanitized))
+    fp_names = tuple(fp_names_list)
+    if len({name.casefold() for name in fp_names}) != len(fp_names):
+        return refuse(_err("install.duplicate_name", f"Two chosen footprints would both be installed under one name: {_name_list(list(fp_names))}"))
 
     # D-01: the vendor text is normalised once, on the unrenamed unit, so later edits never re-run kicad-cli
     unit_text = unit_library_text(vendor_sym, keep={ref.name for ref in unit})
@@ -485,55 +558,78 @@ def build_plan(
     issues.extend(version_issues)
     if source is None:
         return refuse()
-    source_ref = find_symbol(source.loaded.root, sym_item.name)
-    if source_ref is None:
+    source_unit = symbol_unit(source.loaded.root, sym_item.name)
+    if source_unit is None:
         return refuse(_err("install.cli_gate_failed", f"kicad-cli output no longer holds the symbol {sym_item.name}"))
     source_version = file_version(vendor_sym.root)
     target_version = file_version(target.root) if target is not None else source.version
 
-    fp_names = tuple(item.name_check.sanitized for item in fp_items)
-    if len({name.casefold() for name in fp_names}) != len(fp_names):
-        return refuse(_err("install.duplicate_name", f"Two chosen footprints would both be installed under one name: {_name_list(list(fp_names))}"))
+    step("Editing the symbol", 4)
+    # Edits run on a text holding only the incoming unit, so nothing outside it can be touched
+    cut = unit_library_text(source.loaded, keep={ref.name for ref in source_unit})
+    if cut == source.loaded.source.text:
+        work = source.loaded
+    else:
+        parsed_cut = _loaded_text(cut, source.loaded.source.bom, "the incoming symbol", "install.source_unreadable")
+        if isinstance(parsed_cut, Issue):
+            return refuse(parsed_cut)
+        work = parsed_cut
+    work_unit = symbol_unit(work.root, sym_item.name)
+    if work_unit is None:
+        return refuse(_err("install.source_unreadable", f"{sym_item.file.member} no longer holds the symbol {sym_item.name}"))
+    # New properties follow the format of the block they join, which is the target's own format whenever the two agree
+    style = source.version if source.version is not None else target_version
+
     meta = sym_item.meta
-    mpn = meta.mpn or sym_item.name
-    manufacturer = meta.manufacturer
+    manufacturer = options.manufacturer if options.manufacturer is not None else meta.manufacturer
     if not manufacturer:
         choice = manufacturer_choice(meta)
         if choice.source != "placeholder":
             manufacturer = choice.token
         else:
             issues.append(Issue(Severity.WARNING, "install.manufacturer_missing", "No manufacturer was found; the Manufacturer property is empty"))
+    base_fields = _Fields(
+        # D-17: the first footprint is linked; D-15: every installed footprint is a filter
+        footprint=f"{library}:{fp_names[0]}",
+        filters=" ".join(fp_names),
+        manufacturer=manufacturer,
+        manufacturer_forced=options.manufacturer is not None,
+    )
+    chosen_fields = replace(
+        base_fields, mpn=options.mpn, value=options.value, datasheet=options.datasheet, description=options.description
+    )
+    all_edits: list[Edit] = []
+    final_mpn = ""
+    for ref in work_unit:
+        is_chosen = ref is work_unit[-1]
+        symbol_edits, mpn = _edit_symbol(work, ref, new_names[ref.name], chosen_fields if is_chosen else base_fields, style)
+        all_edits.extend(symbol_edits)
+        all_edits.extend(rename_symbol_edits(work.root, ref.name, new_names[ref.name]))
+        if is_chosen:
+            final_mpn = mpn
+
     model_file: str | None = None
     if model_item is not None:
         suffix = PurePosixPath(model_item.filename).suffix
-        model_file = sanitize_filename(mpn + suffix).sanitized
+        named = sanitize_filename((final_mpn or sym_item.name) + suffix)
+        if any(i.code == "naming.empty" for i in named.issues):
+            return refuse(_err("install.invalid_name", f"The part number {final_mpn!r} has no usable characters for a 3D model file name; enter another"))
+        model_file = named.sanitized
     else:
         issues.append(Issue(Severity.WARNING, "install.no_model", "No 3D model will be installed"))
 
-    step("Editing the symbol", 4)
-    eol = source.loaded.source.eol
-    block = source.loaded.source.text[source_ref.node.start:source_ref.node.end]
-    editor = _SymbolEditor(block, parse(block).children[0], eol)
-    edit_problems = [
-        # D-17: the first footprint is linked; D-15: every installed footprint is a filter
-        editor.set_or_add("Footprint", f"{library}:{fp_names[0]}"),
-        editor.set_or_add("ki_fp_filters", " ".join(fp_names)),
-        editor.role("Manufacturer", MANUFACTURER_FIELDS, manufacturer),
-        editor.role("MPN", MPN_FIELDS, mpn),
-    ]
-    failed = [p for p in edit_problems if p is not None]
-    if failed:
-        return refuse(*failed)
-    new_block = editor.result()
+    edited = _loaded_text(apply_edits(work.source.text, all_edits), work.source.bom, "the edited symbol", "install.source_unreadable")
+    if isinstance(edited, Issue):
+        return refuse(edited)
+    placed = {ref.name: ref for ref in find_symbols(edited.root)}
+    blocks = [edited.source.text[placed[name].node.start:placed[name].node.end] for name in final_symbols]
     if target is not None:
         # The only change to an existing library is the inserted symbol: its header is never edited
-        sym_text = apply_edits(target.source.text, [symbol_insert_edit(target, new_block)])
+        sym_text = apply_edits(target.source.text, [symbol_insert_edit(target, block) for block in blocks])
         sym_bytes = fsutil.encode_source(sym_text, target.source.bom)
     else:
-        # A new library is the normalised unit file with the edited block in place of the original
-        whole = source.loaded.source
-        sym_text = apply_edits(whole.text, [Edit(source_ref.node.start, source_ref.node.end, new_block)])
-        sym_bytes = fsutil.encode_source(sym_text, whole.bom)
+        # A new library is the normalised unit file with the edited symbol
+        sym_bytes = fsutil.encode_source(edited.source.text, edited.source.bom)
 
     fp_bytes: list[bytes] = []
     for index, (fp_item, vendor_fp, fp_name) in enumerate(zip(fp_items, vendor_fps, fp_names)):
@@ -553,13 +649,14 @@ def build_plan(
 
     step("Checking for conflicts", 5)
     conflicts: list[Conflict] = []
-    if target is not None and find_symbol(target.root, sym_name) is not None:
-        conflicts.append(Conflict(
-            key=f"symbol:{library}:{sym_name}",
-            kind="symbol",
-            name=sym_name,
-            existing=f"{sym_path.name} already holds a symbol named {sym_name}",
-        ))
+    for sym_name in final_symbols:
+        if target is not None and find_symbol(target.root, sym_name) is not None:
+            conflicts.append(Conflict(
+                key=f"symbol:{library}:{sym_name}",
+                kind="symbol",
+                name=sym_name,
+                existing=f"{sym_path.name} already holds a symbol named {sym_name}",
+            ))
     listed = [name.casefold() for name in _listing(pretty)]
     for fp_name in fp_names:
         if f"{fp_name}.kicad_mod".casefold() in listed:
@@ -598,7 +695,7 @@ def build_plan(
         library=library,
         new_symbol_lib=not sym_exists,
         new_footprint_lib=not pretty_exists,
-        symbol_names=(sym_name,),
+        symbol_names=final_symbols,
         footprint_names=fp_names,
         linked_footprint=fp_names[0],
         model_file=model_file,
@@ -607,6 +704,6 @@ def build_plan(
         normalised=source.normalised,
         ops=tuple(ops),
         conflicts=tuple(conflicts),
-        renames=(),
+        renames=(*sym_renames, *fp_renames),
         issues=tuple(issues),
     )
