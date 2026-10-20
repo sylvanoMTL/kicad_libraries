@@ -10,6 +10,7 @@ import re
 import shutil
 import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import NamedTuple
 
@@ -53,6 +54,19 @@ def _rollback_failed(text: str) -> Issue:
     return _err("install.rollback_failed", text)
 
 
+@dataclass
+class _Transaction:
+    """What one install has done so far, kept outside the writing code so the guard in apply_plan can undo it."""
+
+    undo: list[_Undo] = field(default_factory=list)
+    touched: list[Path] = field(default_factory=list)
+    backup_dir: Path | None = None
+    rolled_back: bool = False
+    leftovers: list[Issue] = field(default_factory=list)
+    notes: list[Issue] = field(default_factory=list)
+    progress: Callable | None = None
+
+
 def _drop_twin(step: _Undo) -> None:
     """After a restore, remove the file written under another spelling when both spellings now coexist."""
     if step.written.name == step.restore.name:
@@ -74,6 +88,7 @@ def _rollback(undo: list[_Undo], backup_dir: Path | None) -> list[Issue]:
     for step in reversed(undo):
         if step.kind == "file" and first[str(step.restore).casefold()] is not step:
             continue
+        what = "restored" if step.pre_image is not None else "removed"
         try:
             if step.kind == "mkdir":
                 step.written.rmdir()
@@ -87,13 +102,47 @@ def _rollback(undo: list[_Undo], backup_dir: Path | None) -> list[Issue]:
         except FileNotFoundError:
             continue
         except OSError as e:
-            what = "restored" if step.pre_image is not None else "removed"
             leftovers.append(_rollback_failed(f"{step.written} could not be {what} ({e.strerror or e}){where}"))
+        except Exception as e:
+            leftovers.append(_rollback_failed(f"{step.written} could not be {what} ({type(e).__name__}: {e}){where}"))
     return leftovers
 
 
-def prune_install_backups(installs_dir: Path, keep: int = INSTALL_BACKUPS_KEPT) -> list[Issue]:
+def _notify(txn: _Transaction, message: str, current: int, total: int) -> None:
+    """Call the progress callback; a callback that raises is dropped for the rest of the run and noted once."""
+    if txn.progress is None:
+        return
+    try:
+        txn.progress(message, current, total)
+    except Exception as e:
+        txn.progress = None
+        txn.notes.append(
+            Issue(
+                Severity.WARNING,
+                "install.progress_failed",
+                f"The progress display failed ({type(e).__name__}: {e}); the install went on without it",
+            )
+        )
+
+
+# Accepted limitation (T-04-40): rolled_back is set before the restore starts, so a KeyboardInterrupt or
+# SystemExit that lands inside _rollback itself stops the restore part-way and it is not retried. Every
+# Exception in a step is caught per step, so only a BaseException-only signal (a second Ctrl+C, the process
+# exiting) can do that, and retrying would mean ignoring it. The pre-images are in the app-data backup
+# folder, which with `git status` in Custom is the D-19 recovery path.
+def _rollback_once(txn: _Transaction) -> list[Issue]:
+    """Undo the transaction's writes at most once and return what could not be undone."""
+    if not txn.rolled_back:
+        txn.rolled_back = True
+        txn.leftovers = _rollback(txn.undo, txn.backup_dir)
+    return txn.leftovers
+
+
+def prune_install_backups(installs_dir: Path, keep: int = INSTALL_BACKUPS_KEPT, *, exclude: Path | None = None) -> list[Issue]:
     """Keep the newest `keep` install backup folders and delete the rest (D-19).
+
+    The folder `exclude` names (the running install's own backup, its rollback safety net) is never
+    deleted and counts as one of the kept folders.
 
     Only direct child folders named <YYYYmmdd>-<HHMMSS>[-<n>]_<library> are candidates, and a
     link whose target lies elsewhere is never followed; anything else in installs_dir is left alone.
@@ -117,8 +166,19 @@ def prune_install_backups(installs_dir: Path, keep: int = INSTALL_BACKUPS_KEPT) 
         # A suffix-less name is the first of its second, so -2 is newer than none
         found.append(((match[1], match[2], int(match[3] or 1), child.name), child))
     found.sort(key=lambda item: item[0], reverse=True)
+    kept_extra = 0
+    if exclude is not None:
+        try:
+            same_parent = exclude.parent.resolve() == root
+        except OSError:
+            same_parent = False
+        if same_parent:
+            rest = [item for item in found if item[1].name != exclude.name]
+            if len(rest) < len(found):
+                found = rest
+                kept_extra = 1
     issues: list[Issue] = []
-    for _, child in found[max(keep, 0):]:
+    for _, child in found[max(keep - kept_extra, 0):]:
         try:
             shutil.rmtree(child)
         except OSError as e:
@@ -127,9 +187,13 @@ def prune_install_backups(installs_dir: Path, keep: int = INSTALL_BACKUPS_KEPT) 
 
 
 def _backup_folder(root: Path, library: str) -> Path:
-    """installs/<timestamp>_<library>, with -2, -3 ... after the timestamp when the name is taken."""
+    """installs/<timestamp>_<library>, with -2, -3 ... after the timestamp when the name is taken.
+
+    The stamp is UTC, so a daylight-saving fall-back hour cannot rank a new folder below older ones;
+    the exclude rule in prune_install_backups covers a clock that is set back by hand.
+    """
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", library)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     installs = root / "installs"
     number = 1
     while True:
@@ -245,7 +309,11 @@ def apply_plan(
     backup_root: Path | None = None,
     progress: Callable | None = None,
 ) -> InstallResult:
-    """Write the plan to disk; any failure restores every file the install touched."""
+    """Write the plan to disk; any failure restores every file the install touched.
+
+    An Exception raised anywhere in the transaction is undone and reported as install.unexpected.
+    An interrupt (KeyboardInterrupt, SystemExit) is undone and then propagates unchanged.
+    """
     if plan.blocked:
         issues = [i for i in plan.issues if i.severity is Severity.ERROR]
         unresolved = plan.unresolved_conflicts
@@ -256,6 +324,31 @@ def apply_plan(
     if plan.is_noop:
         return _result(plan, True, [*plan.issues, Issue(Severity.INFO, "install.nothing_to_do", "Everything is already installed")])
 
+    txn = _Transaction()
+    try:
+        return _transaction(plan, txn, backup_root, progress)
+    except BaseException as error:
+        leftovers = _rollback_once(txn)
+        if not isinstance(error, Exception):
+            raise
+        cause = _err("install.unexpected", f"The install stopped unexpectedly ({type(error).__name__}: {error})")
+        issues = [cause]
+        if txn.undo:
+            summary = "some files could not be restored" if leftovers else "every change was undone"
+            issues.append(_err("install.rolled_back", f"The install failed ({cause.text}); {summary}"))
+        issues.extend(leftovers)
+        issues.extend(txn.notes)
+        return _result(plan, False, issues, backup_dir=txn.backup_dir)
+
+
+def _transaction(
+    plan: InstallPlan,
+    txn: _Transaction,
+    backup_root: Path | None,
+    progress: Callable | None,
+) -> InstallResult:
+    """Preflight, gate, back up, write, verify; record into txn so the caller can undo on any exit."""
+    txn.progress = progress
     # Cheap preconditions first; nothing is written until every one of them holds
     problems, sources, pre_images = _preflight(plan)
     if problems:
@@ -270,28 +363,25 @@ def apply_plan(
         return _result(plan, False, rejected)
 
     # D-19: every existing file the install changes is backed up before the first write
-    backup_dir: Path | None = None
     housekeeping: list[Issue] = []
     if any(op.base_sha256 is not None for op in plan.ops):
         root = backup_root if backup_root is not None else fsutil.default_backup_dir()
         backup_dir = _backup_folder(root, plan.library)
+        txn.backup_dir = backup_dir
         for op in plan.ops:
             if op.base_sha256 is None:
                 continue
             saved = fsutil.backup_file(op.listed_path or op.path, backup_dir)
             if isinstance(saved, Issue):
                 return _result(plan, False, [saved])
-        housekeeping = prune_install_backups(backup_dir.parent)
+        housekeeping = prune_install_backups(backup_dir.parent, exclude=backup_dir)
 
     # Writes in plan order; an entry reaches the undo list only after its write succeeded
-    undo: list[_Undo] = []
-    touched: list[Path] = []
     failures: list[Issue] = []
     total = len(plan.ops)
     for index, op in enumerate(plan.ops):
-        if progress is not None:
-            progress(f"Writing {op.path.name}", index, total)
-        problem = _write(plan, op, sources.get(index), undo, touched, pre_images.get(index))
+        _notify(txn, f"Writing {op.path.name}", index, total)
+        problem = _write(plan, op, sources.get(index), txn.undo, txn.touched, pre_images.get(index))
         if problem is not None:
             failures.append(problem)
             break
@@ -301,35 +391,42 @@ def apply_plan(
         failures.extend(i for i in checked if i.severity is Severity.ERROR)
         warnings = [i for i in checked if i.severity is not Severity.ERROR]
     if failures:
-        leftovers = _rollback(undo, backup_dir)
+        leftovers = _rollback_once(txn)
         cause = failures[0].text
         summary = "some files could not be restored" if leftovers else "every change was undone"
         return _result(
             plan,
             False,
-            [*failures, _err("install.rolled_back", f"The install failed ({cause}); {summary}"), *leftovers, *housekeeping],
-            backup_dir=backup_dir,
+            [*failures, _err("install.rolled_back", f"The install failed ({cause}); {summary}"), *leftovers, *housekeeping, *txn.notes],
+            backup_dir=txn.backup_dir,
         )
 
     issues = [*plan.issues]
     known = {i.code for i in issues}
     issues.extend(i for i in gate if i.code not in known)
     issues.extend(housekeeping)
+    issues.extend(txn.notes)
     issues.extend(warnings)
     issues.append(Issue(Severity.SUCCESS, "install.done", f"Installed {plan.symbol_name} into {plan.library}"))
-    return _result(plan, True, issues, touched=touched, backup_dir=backup_dir)
+    return _result(plan, True, issues, touched=txn.touched, backup_dir=txn.backup_dir)
 
 
 def _make_folders(plan: InstallPlan, op: FileOp, undo: list[_Undo]) -> Issue | None:
     """Create op.path and any missing parents below Custom/, recording each folder for the rollback."""
-    custom = plan.layout.custom_dir.resolve()
+    try:
+        custom = plan.layout.custom_dir.resolve()
+    except OSError as e:
+        return _err("fs.write_failed", f"Could not create {op.path.name}: {e.strerror or e}")
     missing: list[Path] = []
     folder = op.path
     while not folder.exists() and folder != folder.parent:
         missing.append(folder)
         folder = folder.parent
     for folder in reversed(missing):
-        resolved = folder.resolve()
+        try:
+            resolved = folder.resolve()
+        except OSError as e:
+            return _err("fs.write_failed", f"Could not create {folder.name}: {e.strerror or e}")
         if resolved == custom or not resolved.is_relative_to(custom):
             return _err("fs.write_failed", f"Could not create {op.path.name}: {custom} does not exist")
         try:
