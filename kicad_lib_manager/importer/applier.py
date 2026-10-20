@@ -138,8 +138,11 @@ def _rollback_once(txn: _Transaction) -> list[Issue]:
     return txn.leftovers
 
 
-def prune_install_backups(installs_dir: Path, keep: int = INSTALL_BACKUPS_KEPT) -> list[Issue]:
+def prune_install_backups(installs_dir: Path, keep: int = INSTALL_BACKUPS_KEPT, *, exclude: Path | None = None) -> list[Issue]:
     """Keep the newest `keep` install backup folders and delete the rest (D-19).
+
+    The folder `exclude` names (the running install's own backup, its rollback safety net) is never
+    deleted and counts as one of the kept folders.
 
     Only direct child folders named <YYYYmmdd>-<HHMMSS>[-<n>]_<library> are candidates, and a
     link whose target lies elsewhere is never followed; anything else in installs_dir is left alone.
@@ -163,8 +166,19 @@ def prune_install_backups(installs_dir: Path, keep: int = INSTALL_BACKUPS_KEPT) 
         # A suffix-less name is the first of its second, so -2 is newer than none
         found.append(((match[1], match[2], int(match[3] or 1), child.name), child))
     found.sort(key=lambda item: item[0], reverse=True)
+    kept_extra = 0
+    if exclude is not None:
+        try:
+            same_parent = exclude.parent.resolve() == root
+        except OSError:
+            same_parent = False
+        if same_parent:
+            rest = [item for item in found if item[1].name != exclude.name]
+            if len(rest) < len(found):
+                found = rest
+                kept_extra = 1
     issues: list[Issue] = []
-    for _, child in found[max(keep, 0):]:
+    for _, child in found[max(keep - kept_extra, 0):]:
         try:
             shutil.rmtree(child)
         except OSError as e:
@@ -173,9 +187,13 @@ def prune_install_backups(installs_dir: Path, keep: int = INSTALL_BACKUPS_KEPT) 
 
 
 def _backup_folder(root: Path, library: str) -> Path:
-    """installs/<timestamp>_<library>, with -2, -3 ... after the timestamp when the name is taken."""
+    """installs/<timestamp>_<library>, with -2, -3 ... after the timestamp when the name is taken.
+
+    The stamp is UTC, so a daylight-saving fall-back hour cannot rank a new folder below older ones;
+    the exclude rule in prune_install_backups covers a clock that is set back by hand.
+    """
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", library)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
     installs = root / "installs"
     number = 1
     while True:
@@ -356,7 +374,7 @@ def _transaction(
             saved = fsutil.backup_file(op.listed_path or op.path, backup_dir)
             if isinstance(saved, Issue):
                 return _result(plan, False, [saved])
-        housekeeping = prune_install_backups(backup_dir.parent)
+        housekeeping = prune_install_backups(backup_dir.parent, exclude=backup_dir)
 
     # Writes in plan order; an entry reaches the undo list only after its write succeeded
     failures: list[Issue] = []
