@@ -104,6 +104,18 @@ def ul_package():
 
 
 @pytest.fixture
+def kicad_cli_path() -> Path:
+    """The kicad-cli of the installed KiCad (located as the app does); skips when there is none."""
+    from kicad_lib_manager.importer import kicad_cli
+    from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
+
+    exe = kicad_cli.locate_kicad_cli(kicad_fp_dir=find_kicad_footprint_dir())
+    if exe is None:
+        pytest.skip("kicad-cli not found")
+    return exe
+
+
+@pytest.fixture
 def snapshot():
     """Return a function mapping a folder to {relative path: sha256} for files and {relative path/: "dir"} for folders."""
 

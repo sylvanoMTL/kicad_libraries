@@ -61,7 +61,7 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 - [ ] **INST-03**: The footprint is written to the target `.pretty/`, with filename, internal footprint name, value text, the symbol's Footprint field and `ki_fp_filters` all consistent
 - [ ] **INST-04**: The 3D model is copied into `Custom/3DModels/` as `<MPN>.<original ext>` (case kept). An identical existing file (same SHA-256) is reused silently; a different one is a preview conflict.
 - [ ] **INST-05**: The footprint references the model as `${CUSTOM_3DMODEL_DIR}/<file>`, rewriting an existing `(model ...)` path or inserting a model block when the vendor footprint has none
-- [ ] **INST-06**: When `kicad-cli` is available, the incoming symbol and footprint are normalised to the installed KiCad's format before merging. Without it, they are merged as-is with a warning.
+- [ ] **INST-06**: When `kicad-cli` is available, the incoming symbol is normalised to the target library's format before merging (footprints are copied as-is, D-02). Without it, the symbol is merged as-is with a warning.
 - [ ] **INST-07**: If any write fails, every file touched by the install is restored to its previous state and the failure is logged
 - [ ] **INST-08**: After install, the result is verified: files re-parse, `<Lib>:<FP>` resolves, and the model file exists. Any failure is reported in the log.
 - [ ] **INST-09**: Importing the same package twice with the same choices changes nothing the second time

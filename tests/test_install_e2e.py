@@ -6,19 +6,23 @@ is never written (D-22).
 """
 
 import hashlib
+import os
+import shutil
 import zipfile
 from pathlib import Path
 
 import pytest
 from installfixtures import vendor_footprint
-from zipfixtures import UL_MODEL_MEMBER, UL_SYMBOL_MEMBER, make_zip, unpack_sample
+from zipfixtures import UL_FOOTPRINT_MEMBER, UL_MODEL_MEMBER, UL_SYMBOL_MEMBER, make_zip, unpack_sample
 
 from kicad_lib_manager import fsutil
+from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.detect import detect_candidate
+from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, InstallOptions, Resolution, ToolContext
-from kicad_lib_manager.importer.planner import build_plan
+from kicad_lib_manager.importer.planner import build_plan, detect_tools
 from kicad_lib_manager.importer.verify import verify_install
 from kicad_lib_manager.kicad_files import (
     find_models,
@@ -28,6 +32,7 @@ from kicad_lib_manager.kicad_files import (
     footprint_name,
     load,
 )
+from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.sexpr import unquote
 
@@ -414,3 +419,159 @@ def test_second_install_new_library_is_noop(custom_copy, ul_package, tmp_path, s
     assert "install.nothing_to_do" in _codes(result.issues)
     assert snapshot(layout.custom_dir) == custom_after_first
     assert not (tmp_path / "bk").exists()
+
+
+# -- real kicad-cli: load check, the CONTEXT version scenarios, UAT scratch install (plan 04-10, Task 2) ----------
+
+
+@pytest.fixture
+def real_tools(kicad_cli_path):
+    """The tools the app would detect on this machine; kicad-cli is present because kicad_cli_path did not skip."""
+    tools = detect_tools(find_kicad_footprint_dir())
+    assert tools.kicad_cli == kicad_cli_path
+    return tools
+
+
+def _written_gate_issues(exe, layout, library, footprint_names=("DQK0006B",)):
+    """Run the real load check on the library and footprints now on disk."""
+    pretty = layout.footprints_dir / f"{library}.pretty"
+    footprints = [(name, (pretty / f"{name}.kicad_mod").read_bytes()) for name in footprint_names]
+    symbol_lib = (layout.symbols_dir / f"{library}.kicad_sym").read_bytes()
+    return kicad_cli.load_gate(exe, library=library, symbol_lib=symbol_lib, footprints=footprints)
+
+
+@pytest.mark.kicad_cli
+def test_cli_load_check_after_install(custom_copy, ul_package, tmp_path, real_tools, kicad_cli_path):
+    _, candidate = ul_package
+    plan, result = _install(candidate, custom_copy, tmp_path, tools=real_tools)
+    assert result.ok, result.issues
+    assert "install.cli_not_found" not in _codes(result.issues)
+    issues = _written_gate_issues(kicad_cli_path, custom_copy, LIBRARY)
+    assert [i for i in issues if i.severity is Severity.ERROR] == [], issues
+
+
+def _scenario_same_version(candidate, layout, tmp_path, tools):
+    plan, result = _install(candidate, layout, tmp_path, tools=tools)
+    assert plan.normalised is False
+    assert not [c for c in _codes(plan.issues) if c.startswith("install.version")]
+    return result, LIBRARY
+
+
+def _scenario_newer_target(candidate, layout, tmp_path, tools):
+    plan, result = _install(candidate, layout, tmp_path, library="IC_Magnetometer_Memsic", tools=tools)
+    assert plan.normalised is True and plan.target_version == 20241209
+    assert not [c for c in _codes(plan.issues) if c.startswith("install.version")]
+    block = layout.symbols_dir.joinpath("IC_Magnetometer_Memsic.kicad_sym").read_text(encoding="utf-8")
+    assert "(id " not in block[block.index(f'(symbol "{SYMBOL}"') :]
+    return result, "IC_Magnetometer_Memsic"
+
+
+def _scenario_target_not_cli_format(candidate, layout, tmp_path, tools):
+    plan, result = _install(candidate, layout, tmp_path, library="IC_IMU_TDK", tools=tools)
+    assert plan.normalised is False
+    found = {i.code: i.severity for i in plan.issues}
+    assert found["install.version_mismatch"] is Severity.WARNING
+    assert found["install.pair_completed"] is Severity.WARNING
+    return result, "IC_IMU_TDK"
+
+
+def _scenario_new_library(candidate, layout, tmp_path, tools):
+    plan, result = _install(candidate, layout, tmp_path, library=NEW_LIBRARY, tools=tools)
+    text = (layout.symbols_dir / f"{NEW_LIBRARY}.kicad_sym").read_text(encoding="utf-8")
+    header = text[: text.index("(symbol ")]
+    assert "(version 20241209)" in header and '(generator_version "9.0")' in header
+    return result, NEW_LIBRARY
+
+
+def _scenario_incoming_newer(candidate, layout, tmp_path, tools):
+    """The real 20241209 Magnetometer library as the incoming file into the 20211014 Battery Charger library."""
+    incoming = (layout.symbols_dir / "IC_Magnetometer_Memsic.kicad_sym").read_bytes()
+    src = tmp_path / "src"
+    src.mkdir()
+    zip_path = make_zip(
+        src / "pkg.zip",
+        [("MMC5983MA.kicad_sym", incoming), ("DQK0006B.kicad_mod", _zip_member(UL_FOOTPRINT_MEMBER))],
+    )
+    before = _tree_digest(layout.custom_dir)
+    with open_package(zip_path, REPO_ROOT) as package:
+        mixed, _ = detect_candidate(package)
+        assert mixed is not None
+        plan = build_plan(mixed, InstallOptions(library=LIBRARY, symbol="MMC5983MA"), layout, tools)
+        assert plan.blocked and not plan.ops
+        errors = [i for i in plan.issues if i.severity is Severity.ERROR]
+        assert [i.code for i in errors] == ["install.version_newer_than_target"]
+        assert "20241209" in errors[0].text and "20211014" in errors[0].text
+        result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert not result.ok
+    assert _tree_digest(layout.custom_dir) == before
+    return None
+
+
+_SCENARIOS = {
+    "same_version_target": _scenario_same_version,
+    "older_incoming_is_normalised": _scenario_newer_target,
+    "target_in_another_format_warns": _scenario_target_not_cli_format,
+    "incoming_newer_than_target_is_refused": _scenario_incoming_newer,
+    "new_library_gets_cli_header": _scenario_new_library,
+}
+
+
+@pytest.mark.kicad_cli
+@pytest.mark.parametrize("scenario", list(_SCENARIOS))
+def test_cli_version_scenarios(scenario, custom_copy, ul_package, tmp_path, real_tools, kicad_cli_path):
+    _, candidate = ul_package
+    outcome = _SCENARIOS[scenario](candidate, custom_copy, tmp_path, real_tools)
+    if outcome is None:  # a refused plan writes nothing, so there is nothing to load
+        return
+    result, library = outcome
+    assert result.ok, result.issues
+    issues = _written_gate_issues(kicad_cli_path, custom_copy, library)
+    assert [i for i in issues if i.severity is Severity.ERROR] == [], issues
+
+
+@pytest.mark.kicad_cli
+def test_cli_second_install_is_noop(custom_copy, ul_package, tmp_path, real_tools, snapshot):
+    _, candidate = ul_package
+    layout = custom_copy
+    library = "IC_Magnetometer_Memsic"
+    plan, result = _install(candidate, layout, tmp_path, library=library, tools=real_tools)
+    assert result.ok and plan.normalised, result.issues
+    after_first = snapshot(layout.custom_dir)
+    backups = snapshot(tmp_path / "bk")
+
+    again = build_plan(candidate, InstallOptions(library=library), layout, real_tools)
+    assert again.is_noop, (again.ops, again.conflicts, again.issues)
+    second = apply_plan(again, backup_root=tmp_path / "bk")
+
+    assert second.ok and second.touched == ()
+    assert snapshot(layout.custom_dir) == after_first
+    assert snapshot(tmp_path / "bk") == backups
+
+
+@pytest.mark.skipif(not os.environ.get("KICAD_IMPORT_UAT_DIR"), reason="set KICAD_IMPORT_UAT_DIR to build the manual UAT scratch install")
+def test_uat_scratch_install(ul_package):
+    """Build the owner's KiCad 9 UAT scratch install (D-22) outside the repository; the real Custom/ is only read."""
+    uat = Path(os.environ["KICAD_IMPORT_UAT_DIR"]).resolve()
+    repo = REPO_ROOT.resolve()
+    # T-04-28: a folder inside (or containing) the checkout could land the scratch copy on the real Custom/
+    assert uat != repo and repo not in uat.parents and uat not in repo.parents, f"{uat} must lie outside the repository {repo}"
+    scratch = uat / "Custom"
+    assert not scratch.is_symlink(), f"{scratch} is a link"
+    uat.mkdir(parents=True, exist_ok=True)
+    if scratch.exists():
+        shutil.rmtree(scratch)
+    for name in ("Symbols", "Footprints", "3DModels"):
+        shutil.copytree(repo / "Custom" / name, scratch / name)
+
+    layout = RepoLayout.for_repo(uat)
+    assert layout.custom_dir.resolve().is_relative_to(uat)
+    tools = detect_tools(find_kicad_footprint_dir())
+    _, candidate = ul_package
+    plan, result = _install(candidate, layout, uat, tools=tools)
+    assert result.ok, result.issues
+
+    print(f"\nUAT scratch library:   {layout.symbols_dir / (LIBRARY + '.kicad_sym')}")
+    print(f"UAT scratch footprint: {layout.footprints_dir / (LIBRARY + '.pretty') / 'DQK0006B.kicad_mod'}")
+    print(f"UAT scratch model:     {layout.models_dir / (SYMBOL + '.stp')}")
+    print(f"UAT scratch pretty:    {layout.footprints_dir / (LIBRARY + '.pretty')}")
+    print(f"UAT scratch 3D folder: {layout.models_dir}")

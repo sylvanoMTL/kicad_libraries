@@ -105,6 +105,7 @@ CORE_MODULES = (
     "importer.planner",
     "importer.applier",
     "importer.verify",
+    "importer.kicad_cli",
 )
 
 FORBIDDEN_TOP = ("PySide6", "shiboken6", "kicad_lib_manager")
