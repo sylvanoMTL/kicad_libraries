@@ -27,7 +27,7 @@ created: "2026-10-20"
 
 Existing conventions that this phase reuses and must not contradict:
 
-- Primary button style from `main_window.py` `_build_ui` (accent fill `#0078D4`, white bold text, padding `6px 16px`).
+- Primary button style from `main_window.py` `_build_ui` (accent fill `#0078D4`, white bold text). Its existing padding `6px 16px` is replaced by `8px 16px` through `PRIMARY_BUTTON_QSS` (see Shared theme module); the Generate Tables button is updated with it.
 - `LogPanel` level colors and `Severity.value` as the color key.
 - Two `QTreeWidget` panes with `setAlternatingRowColors(True)`.
 - Window-modal dialogs, `QDialogButtonBox`, `Browse...` button labels (see `BackupDialog`).
@@ -52,16 +52,18 @@ Create `kicad_lib_manager/widgets/theme.py` (no Qt imports needed; plain constan
 | `SURFACE_HEADER` | `#EEF1F5` | Preview section-header rows (already used in help CSS). |
 | `BORDER` | `#C8C8C8` | 1px frames around conflict rows and the badge. |
 | `SP_XS, SP_SM, SP_MD, SP_LG, SP_XL` | `4, 8, 16, 24, 32` | Spacing scale, below. |
-| `PRIMARY_BUTTON_QSS` | see below | Used by Generate Tables and Install. |
+| `PRIMARY_BUTTON_QSS` | see below | Used by Generate Tables (main window) and Install Part (dialog). |
 
 `PRIMARY_BUTTON_QSS` (exact):
 
 ```
-QPushButton { background-color: #0078D4; color: white; padding: 6px 16px; font-weight: bold; min-height: 20px; }
+QPushButton { background-color: #0078D4; color: white; padding: 8px 16px; font-weight: bold; min-height: 12px; }
 QPushButton:disabled { background-color: #E1E1E1; color: #595959; }
 ```
 
-The existing Generate button has no `:disabled` rule, so it keeps its blue fill while `_set_scan_running(True)` disables it and looks clickable. Applying this shared string to Generate fixes that. Install must never look enabled while it is disabled, so the `:disabled` rule is mandatory for both.
+Vertical padding is `8px` (a multiple of 4; the earlier `6px` was not) and `min-height` is the 12px content box, so the button is 8 + 12 + 8 = 28px high, matching the 28px minimum control height in Layout rules.
+
+**Effect on the existing Generate Tables button (explicit):** `main_window.py` `_build_ui` currently styles Generate with `padding: 6px 16px` and `min-height: 20px` (32px total, no `:disabled` rule). Replacing that inline string with `PRIMARY_BUTTON_QSS` changes Generate in three ways: vertical padding 6px to 8px, total height 32px to 28px, and a new `:disabled` look. This is intended, so Generate and Install are identical in size and style. The existing Generate button has no `:disabled` rule, so it keeps its blue fill while `_set_scan_running(True)` disables it and looks clickable; the shared string fixes that. Install must never look enabled while it is disabled, so the `:disabled` rule is mandatory for both.
 
 ---
 
@@ -120,7 +122,7 @@ Layout rules:
 - `↺` buttons are 24x24.
 - Install progress bar: fixed height 16, width 240.
 
-Exceptions: 1px and 2px borders and 4px accent bars on conflict rows are outlines, not spacing. The main-window toolbar button keeps Qt's default toolbar spacing (the existing toolbar row has no declared scale); only new Phase 5 layouts must follow the table.
+Exceptions: 1px and 2px borders (including the 2px `fieldFrame` border) and 4px accent bars on conflict rows are outlines, not spacing. No layout margin, layout spacing or padding value in Phase 5 is below 4 or off the 4-multiple scale; `fieldFrame` layout margins are 0. The main-window toolbar button keeps Qt's default toolbar spacing (the existing toolbar row has no declared scale); only new Phase 5 layouts must follow the table.
 
 ---
 
@@ -152,11 +154,11 @@ Qt terms: the 60/30 surfaces come from the platform palette (do not hard-code th
 
 Accent reserved for (exhaustive):
 
-1. The **Install** primary button fill (`PRIMARY_BUTTON_QSS`).
+1. The primary button fill (`PRIMARY_BUTTON_QSS`), used by exactly two buttons: **Install Part** in the dialog and the existing **Generate Tables** in the main window.
 2. The install `QProgressBar` chunk.
 3. The checked fill of the **Rename** and **Skip** toggle buttons in a conflict row (white bold text on `#0078D4`, about 4.5:1).
 
-Everything else uses the system highlight for selection and focus. Links in the blocking-reason strip use `LINK #0057A0`, not the accent. The main-window **Generate Tables** button keeps its accent fill (existing) and the dialog is modal, so only one accent button is ever interactive at a time.
+Everything else uses the system highlight for selection and focus. Links in the blocking-reason strip use `LINK #0057A0`, not the accent. Because the import dialog is window-modal, only one of the two primary buttons is ever interactive at a time.
 
 Destructive `#CC0000` reserved for: the checked **Overwrite** toggle (red fill, white bold text) and its hint line; the failure banner when an install is rolled back; `Severity.ERROR` text and the `✖` glyph. Nothing else is red.
 
@@ -229,7 +231,7 @@ Page "Edit" (the normal working view)
 |  Conflicts                   |                                     |
 |   (one row per conflict)     |                                     |
 |--------------------------------------------------------------------|
-| Blocking reasons (clickable, wraps up to 3 lines)       [Install]  |
+| Blocking reasons (clickable, wraps up to 3 lines)  [Install Part]  |
 +--------------------------------------------------------------------+
    [R] = the ↺ restore-default button
 ```
@@ -281,14 +283,14 @@ Rows in this order. The first two are read-only.
 
 #### Amber blocked-field highlight (D-09)
 
-Do not restyle `QLineEdit` or `QComboBox` directly: a border stylesheet on those widgets drops the native drop-down arrow and look. Wrap each blockable control in a `QFrame` with `objectName="fieldFrame"`, layout margins 2, and set the dynamic property `blocked` (re-polish after changing it):
+Do not restyle `QLineEdit` or `QComboBox` directly: a border stylesheet on those widgets drops the native drop-down arrow and look. Wrap each blockable control in a `QFrame` with `objectName="fieldFrame"`, layout contents margins 0 (the frame's own 2px border already insets the child, so no spacing value is needed), and set the dynamic property `blocked` (re-polish after changing it):
 
 ```
 QFrame#fieldFrame { border: 2px solid transparent; border-radius: 2px; }
 QFrame#fieldFrame[blocked="true"] { border: 2px solid #8A5200; }
 ```
 
-The frame reserves its 2px at all times, so the layout does not shift when the highlight appears. Blockable controls: library combo, Footprint name, Value, MPN, each rename field, and the footprint list.
+The frame reserves its 2px border at all times (transparent when not blocked), so the layout does not shift when the highlight appears. Blockable controls: library combo, Footprint name, Value, MPN, each rename field, and the footprint list.
 
 #### Conflicts (D-12, D-14a, PREV-05)
 
@@ -343,7 +345,7 @@ Secondary `QDialog`, window-modal to the import dialog, 800x560, minimum 600x400
 
 #### Bottom row (D-09, D-10)
 
-A horizontal row, 8px spacing, 28px high controls: left, the **blocking-reason strip**; right, the **Install** button (`PRIMARY_BUTTON_QSS`, label `Install`, min width 96). Install is **not** the dialog's default button (`setAutoDefault(False)` and `setDefault(False)` on every button), because Enter inside a line edit must never trigger an install. `Ctrl+Return` (a `QShortcut` on the dialog) triggers Install only when it is enabled.
+A horizontal row, 8px spacing, 28px high controls: left, the **blocking-reason strip**; right, the **Install** button (`PRIMARY_BUTTON_QSS`, label `Install Part`, min width 112). Install is **not** the dialog's default button (`setAutoDefault(False)` and `setDefault(False)` on every button), because Enter inside a line edit must never trigger an install. `Ctrl+Return` (a `QShortcut` on the dialog) triggers Install only when it is enabled.
 
 Blocking-reason strip:
 
@@ -383,7 +385,7 @@ Main-window effects when the result view appears (D-16, D-17, D-18, no dialog ne
 A centered column (max width 560, top inset 32, 24px between blocks):
 
 1. Heading (10pt bold): `Choose a part package`.
-2. Body: `Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. Nothing is written until you click Install.`
+2. Body: `Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. Nothing is written until you click Install Part.`
 3. Downloads offer row: `Newest in Downloads: {name} ({age})` with the name elided in the middle, and an **Open** button. If there is no zip: `No .zip files found in your Downloads folder.` (`MUTED`, no button). If the Downloads folder cannot be found: `Downloads folder not found.` The offer is shown whatever the zip's age; the age text is the only signal (**default**; no stale cutoff). Age text: `just now`, `{n} minutes ago`, `{n} hours ago`, `{n} days ago`. The package is **never** opened automatically.
 4. Button row: **Browse zip...** and **Browse folder...** (plain buttons, 8px apart). Both open in `import/last_dir` (falling back to Downloads, then the home folder) and save the chosen parent folder back through the new `settings.py` helpers.
 5. Issue list (only after a refused or empty package): a `QListWidget` (max 160px high, then scrolls) of the package's ERROR and WARNING Issues, glyph-prefixed and severity-colored, above a closing `MUTED` line. The same Issues go to the main log.
@@ -405,7 +407,15 @@ While `open_package` / `detect_candidate` run, the Start page's buttons are disa
 | Result | n/a | n/a | n/a (`Close`) | n/a |
 | Install failed | enabled (after rebuild) | current | per rules above | banner on top |
 
-Tab order: Change... → Symbol → Footprint list → Make linked → Model → Target library → Footprint name → Value → Datasheet → Description → Manufacturer → MPN → conflict rows (buttons, then rename field) → preview tree → blocking-reason links → Install. Every `↺` button follows its field. Every input has an accessible name equal to its visible label.
+Tab order: Change... → Symbol → Footprint list → Make linked → Model → Target library → Footprint name → Value → Datasheet → Description → Manufacturer → MPN → conflict rows (buttons, then rename field) → preview tree → blocking-reason links → Install. Every `↺` button follows its field. Every input has an accessible name (`setAccessibleName`) equal to its visible label. Glyph-only buttons have no visible label, so their names are explicit:
+
+| Control | `accessibleName` |
+|---------|------------------|
+| `↺` next to Footprint name | `Restore default footprint name` |
+| `↺` next to Value / Datasheet / Description / Manufacturer / MPN | `Restore default {field}` (for example `Restore default Value`) |
+| `✕` failure-banner dismiss | `Dismiss failure message` |
+
+Initial keyboard focus (focal point) per page: Edit page, the Target library combo (the first decision the user must confirm); Result page, the **Close** button (default button on that page). Start page: the **Browse zip...** button.
 
 ---
 
@@ -413,9 +423,9 @@ Tab order: Change... → Symbol → Footprint list → Make linked → Model →
 
 | Element | Copy |
 |---------|------|
-| Primary CTA (dialog) | `Install` (progress state: `Installing...`) |
+| Primary CTA (dialog) | `Install Part` (verb + noun; progress state: `Installing...`) |
 | Entry point labels | Menu and toolbar: `Import Part...` |
-| Start step heading / body | `Choose a part package` / `Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. Nothing is written until you click Install.` |
+| Start step heading / body | `Choose a part package` / `Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. Nothing is written until you click Install Part.` |
 | Empty state: no zip in Downloads | `No .zip files found in your Downloads folder.` followed by the Browse buttons as the next step |
 | Empty state: nothing found in package | Heading `This package can't be imported`; body lists the package Issues, then `Check that you downloaded the KiCad format, then pick another file.` If detection found nothing and the package has no Issues: `No KiCad symbol or footprint was found in this package.` |
 | Refused package (hostile zip, KiCad 5 only) | Issue text from the service verbatim (the KiCad 5 text already says to re-download as KiCad v6+), closed by `Pick another file.` |
@@ -425,7 +435,7 @@ Tab order: Change... → Symbol → Footprint list → Make linked → Model →
 | No-op state | `Nothing to install: this part is already in {Lib}.` |
 | Token hint | `Amber parts are guesses or placeholders. Pick an existing library or type a real name.` |
 | Conflict hints | Overwrite: `Overwrite - replace the existing {kind} with the incoming one (a backup is kept)` · Rename: `Rename - install as {name} and leave the existing {kind} untouched` · Skip: `Skip - keep the existing {kind} and link it` |
-| Install failure banner | Title `Install failed. Every file was restored.` + the rollback reasons + `Fix the problem and click Install again.` If a restore itself failed: title `Install failed and some files could not be restored.` + the reasons + `The original files are in {backup_dir}.` |
+| Install failure banner | Title `Install failed. Every file was restored.` + the rollback reasons + `Fix the problem and click Install Part again.` If a restore itself failed: title `Install failed and some files could not be restored.` + the reasons + `The original files are in {backup_dir}.` |
 | Success banner | `✓ Installed {Symbol} into {Lib}` |
 | KiCad-running notice | `KiCad is running. Reopen KiCad's Symbol and Footprint editors to see {Lib}.` (same text goes to the log as WARNING) |
 | Table outcome lines | `Added {Lib} to sym-lib-table and fp-lib-table` · `Library tables not changed: {Lib} was already listed` · for an existing library absent from the tables, WARNING in the result view and log: `{Lib} is not in the library tables. Press Generate Tables to add it.` |
