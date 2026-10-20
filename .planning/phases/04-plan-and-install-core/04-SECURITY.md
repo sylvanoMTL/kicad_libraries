@@ -68,6 +68,19 @@ created: "2026-10-20"
 | T-04-26 | Tampering | case-only twins on Windows | medium | mitigate | Casefold comparison; overwrite records `listed_path` for rollback (case-sensitive-volume branch is a manual item in 04-VALIDATION.md) | closed |
 | T-04-27 | Tampering | e2e tests vs real Custom/ | high | mitigate | All installs on `custom_copy`; module-scoped `_real_custom_untouched` snapshot; `git status --porcelain Custom` empty after the suite | closed |
 | T-04-28 | Tampering | test_uat_scratch_install | high | mitigate | `KICAD_IMPORT_UAT_DIR` resolved and refused when equal to, inside or containing the repo; skipped when unset | closed |
+| T-04-29 | Tampering | apply_plan half-installed tree after an exception (CR-01) | high | mitigate | Whole transaction under `except BaseException`; `_rollback_once` undoes every recorded step; Exception -> ERROR `install.unexpected`, interrupts re-raised after rollback (applier.py; 04-11 tests) | closed |
+| T-04-30 | Denial of service | progress callback aborting the install | medium | mitigate | `_notify` catches Exception, drops the callback for the run, WARNING `install.progress_failed` (applier.py) | closed |
+| T-04-31 | Tampering | rollback step raising a non-OSError | medium | mitigate | `_rollback` catches Exception per step, reports `install.rollback_failed`, keeps undoing (applier.py) | closed |
+| T-04-32 | Tampering | prune deleting the running install's backup folder (WR-01) | medium | mitigate | `prune_install_backups(..., exclude=)` never deletes it and counts it toward the ten kept; UTC stamp (applier.py) | closed |
+| T-04-33 | Tampering | interrupt between an atomic replace and its undo entry | low | accept | See Accepted Risks Log AR-04-03 | closed |
+| T-04-34 | Repudiation | package-level warnings lost between intake and install (WR-03) | medium | mitigate | `detect_candidate` folds `Package.issues` into `ImportCandidate.issues` via `dict.fromkeys` (detect.py); folder and zip e2e tests | closed |
+| T-04-35 | Tampering | blank form fields erasing vendor values (WR-05) | medium | mitigate | `InstallOptions.__post_init__` maps blank `_TEXT_OVERRIDES` text to None (plan.py); `test_blank_option_keeps_ul_vendor_values` | closed |
+| T-04-36 | Tampering | target edited during the kicad-cli gate window (CR-02) | high | mitigate | Backup copy hashed against `op.base_sha256` after the gate, before the first write; mismatch -> ERROR `install.stale_plan`; backup bytes are the rollback pre-image (applier.py) | closed |
+| T-04-37 | Tampering | file created at a planned-create path after preflight | high | mitigate | `_name_taken` re-check after the gate and `_still_fresh` absence check before each create; a refused write adds no undo entry (applier.py) | closed |
+| T-04-38 | Tampering | target edited between the backup and its own write | high | mitigate | `_still_fresh` re-hash before every overwrite against the expected sha256 (applier.py) | closed |
+| T-04-39 | Tampering | change between the re-check read and `os.replace` | low | accept | See Accepted Risks Log AR-04-05 | closed |
+| T-04-40 | Tampering | interrupt landing inside `_rollback` itself | low | accept | See Accepted Risks Log AR-04-04 | closed |
+| T-04-41 | Tampering | deliberate blank edit in the Phase 5 preview installing the vendor value | low | transfer | Transferred to Phase 5 (PREV-04 explicit clear); user decision 2026-10-20 "Blank = not set; defer clear", 04-12-SUMMARY "Deferred to Phase 5" | closed |
 | T-04-SC | Tampering | npm/pip/cargo installs | high | accept | See Accepted Risks Log AR-04-02 | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -82,6 +95,9 @@ created: "2026-10-20"
 |---------|------------|-----------|-------------|------|
 | AR-04-01 | T-04-14 | Read errors in the name-search folders are skipped silently. The folders are the owner's repo and KiCad's own install, not vendor input, and the check is a soft WARNING that never blocks an install. | Plan 04-05 threat model (accept disposition) | 2026-10-20 |
 | AR-04-02 | T-04-SC | No package was installed in Phase 4. The only `pyproject.toml` change since the phase base is the `kicad_cli` pytest marker; `requirements*.txt` are unchanged. | Plans 04-01..04-10 threat models (accept disposition) | 2026-10-20 |
+| AR-04-03 | T-04-33 | An interrupt between a successful atomic replace and its undo entry leaves one whole file (atomic replace) with no undo record. Its pre-image is in the app-data backup folder, which with `git status` in `Custom` is the D-19 recovery path. | Plan 04-11 threat model (accept disposition) | 2026-10-20 |
+| AR-04-04 | T-04-40 | An interrupt inside `_rollback` stops the restore part-way and it is not retried (`rolled_back` is set first). Every pre-image is in the backup folder (D-19 recovery); documented above `_rollback_once`. | Plan 04-11 threat model (accept disposition) | 2026-10-20 |
+| AR-04-05 | T-04-39 | No OS file lock is available or used by KiCad; the window between the last re-check and `os.replace` is one atomic replace. Backup copy and `git status` are the D-19 recovery path; noted in a code comment. | Plan 04-13 threat model (accept disposition) | 2026-10-20 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -92,6 +108,7 @@ created: "2026-10-20"
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-20 | 29 | 29 | 0 | secure-phase (L1 grep evidence, short-circuit: register authored at plan time, ASVS 1) |
+| 2026-10-20 | 42 | 42 | 0 | secure-phase after gap plans 04-11..04-13 (T-04-29..T-04-41 added; L1 grep evidence, short-circuit: register authored at plan time, ASVS 1) |
 
 ---
 
@@ -103,3 +120,11 @@ created: "2026-10-20"
 - [x] `status: verified` set in frontmatter
 
 **Approval:** verified 2026-10-20
+
+## Security Audit 2026-10-20
+
+| Metric | Count |
+|---|---|
+| Threats found | 42 |
+| Closed | 42 |
+| Open | 0 |
