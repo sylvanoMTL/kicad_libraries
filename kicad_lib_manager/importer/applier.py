@@ -362,18 +362,36 @@ def _transaction(
     if rejected:
         return _result(plan, False, rejected)
 
+    # The gate can take minutes; a path that appeared meanwhile is refused before any backup or write
+    for op in plan.ops:
+        if op.base_sha256 is None and _name_taken(op.path):
+            return _result(plan, False, [_err("install.stale_plan", f"{op.path.name} appeared on disk while the install was being checked; rebuild the plan")])
+
     # D-19: every existing file the install changes is backed up before the first write
     housekeeping: list[Issue] = []
     if any(op.base_sha256 is not None for op in plan.ops):
         root = backup_root if backup_root is not None else fsutil.default_backup_dir()
         backup_dir = _backup_folder(root, plan.library)
         txn.backup_dir = backup_dir
-        for op in plan.ops:
+        for index, op in enumerate(plan.ops):
             if op.base_sha256 is None:
                 continue
             saved = fsutil.backup_file(op.listed_path or op.path, backup_dir)
             if isinstance(saved, Issue):
                 return _result(plan, False, [saved])
+            # The backup copy is the authority: it must still be the file the plan was built from
+            try:
+                copy = saved.read_bytes()
+            except OSError as e:
+                return _result(plan, False, [_err("fs.backup_failed", f"Could not read back the backup of {op.path.name}: {e.strerror or e}")], backup_dir=backup_dir)
+            if hashlib.sha256(copy).hexdigest() != op.base_sha256:
+                return _result(
+                    plan,
+                    False,
+                    [_err("install.stale_plan", f"{op.path.name} changed on disk while the install was being checked; rebuild the plan")],
+                    backup_dir=backup_dir,
+                )
+            pre_images[index] = copy
         housekeeping = prune_install_backups(backup_dir.parent, exclude=backup_dir)
 
     # Writes in plan order; an entry reaches the undo list only after its write succeeded
