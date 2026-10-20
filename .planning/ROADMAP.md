@@ -15,7 +15,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 1: Foundation** - Pinned dependencies, headless pytest harness, atomic writes and a lossless S-expression layer (completed 2026-10-18)
 - [x] **Phase 2: Hardening Existing Code** - Table generation, KiCad detection, scanning and config writes made safe on the new foundation (completed 2026-10-19)
 - [x] **Phase 3: Package Intake and Naming** - Headless, safe reading of Ultra Librarian and loose-file packages, plus library name suggestion and sanitisation (completed 2026-10-19)
-- [ ] **Phase 4: Plan and Install Core** - Headless, transactional install of a part into `Custom/` with linking, rollback and verification
+- [x] **Phase 4: Plan and Install Core** - Headless, transactional install of a part into `Custom/` with linking, rollback and verification (completed 2026-10-20)
 - [ ] **Phase 5: Import UI and Post-Install** - Import dialog with an editable preview, per-item conflict resolution, rescan and table refresh
 - [ ] **Phase 6: Git Commit Step** - Confirmed commit of exactly the imported files in `Custom/` plus the parent ref bump, never pushing
 - [ ] **Phase 7: SnapEDA and SamacSys Adapters** - Remaining vendor formats, gated on real downloads in `downloaded_examples/`
@@ -131,7 +131,7 @@ Plans:
   4. A failure injected on any write leaves every file the install touched exactly as it was, with no dangling symbol, orphan footprint or stray model, and the failure is logged. An existing model with the same SHA-256 is reused, and a different one is reported as a conflict instead of being overwritten.
   5. After install, verification re-parses the written files, resolves `<Lib>:<FP>` and confirms the model file exists. It warns when the part name already exists in another library or the symbol's pin numbers don't match the footprint's pad numbers. Importing the same package twice with the same choices changes nothing the second time.
 
-**Plans**: 13/13 plans executed (3 gap-closure plans pending)
+**Plans**: 13/13 plans complete (3 gap-closure plans pending)
 
 Plans:
 **Wave 1**
@@ -221,7 +221,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
-| 4. Plan and Install Core | 13/13 | In Progress | - |
+| 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |

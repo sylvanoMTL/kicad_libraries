@@ -36,12 +36,12 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 - [x] **INTK-05**: Packages containing only legacy KiCad 5 files (`.lib`, `.dcm`, `.mod`) are rejected with a clear "re-download as KiCad v6+" message
 - [x] **INTK-06**: Zips are read safely: no extraction into the repo, path traversal, absolute names and symlinks are rejected, and size and count limits stop zip bombs
 - [ ] **INTK-07**: When a package holds several symbols, footprints or models, the user picks which ones to import
-- [ ] **INTK-08**: A package with no 3D model can still be installed, and the preview and log warn that no model was found
+- [x] **INTK-08**: A package with no 3D model can still be installed, and the preview and log warn that no model was found
 
 ### Target Library
 
 - [x] **LIB-01**: User sees a suggested target library name following `<Type>_<SubCategory>_<Manufacturer>`, derived from existing `Custom/` libraries and part info (e.g. datasheet host `ti.com` → `TI`), and can edit it
-- [ ] **LIB-02**: User can choose an existing `Custom/` library from a list or create a new one, and a new library creates a matching `.kicad_sym` + `.pretty/` pair
+- [x] **LIB-02**: User can choose an existing `Custom/` library from a list or create a new one, and a new library creates a matching `.kicad_sym` + `.pretty/` pair
 - [x] **LIB-03**: Symbol, footprint and file names are sanitised (no `/`, `:`, Windows-reserved names or traversal; `.` and `-` kept), and the preview shows original vs sanitised names
 
 ### Preview & Editing
@@ -56,22 +56,22 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 
 ### Install
 
-- [ ] **INST-01**: The symbol is added to the target `.kicad_sym` without changing any other symbol or the library header
-- [ ] **INST-02**: Renaming a symbol also renames its unit sub-symbols (`<Name>_<u>_<s>`) and any `extends` reference, and never renames by substring
-- [ ] **INST-03**: The footprint is written to the target `.pretty/`, with filename, internal footprint name, value text, the symbol's Footprint field and `ki_fp_filters` all consistent
-- [ ] **INST-04**: The 3D model is copied into `Custom/3DModels/` as `<MPN>.<original ext>` (case kept). An identical existing file (same SHA-256) is reused silently; a different one is a preview conflict.
-- [ ] **INST-05**: The footprint references the model as `${CUSTOM_3DMODEL_DIR}/<file>`, rewriting an existing `(model ...)` path or inserting a model block when the vendor footprint has none
-- [ ] **INST-06**: When `kicad-cli` is available, the incoming symbol is normalised to the target library's format before merging (footprints are copied as-is, D-02). Without it, the symbol is merged as-is with a warning.
-- [ ] **INST-07**: If any write fails, every file touched by the install is restored to its previous state and the failure is logged
-- [ ] **INST-08**: After install, the result is verified: files re-parse, `<Lib>:<FP>` resolves, and the model file exists. Any failure is reported in the log.
-- [ ] **INST-09**: Importing the same package twice with the same choices changes nothing the second time
+- [x] **INST-01**: The symbol is added to the target `.kicad_sym` without changing any other symbol or the library header
+- [x] **INST-02**: Renaming a symbol also renames its unit sub-symbols (`<Name>_<u>_<s>`) and any `extends` reference, and never renames by substring
+- [x] **INST-03**: The footprint is written to the target `.pretty/`, with filename, internal footprint name, value text, the symbol's Footprint field and `ki_fp_filters` all consistent
+- [x] **INST-04**: The 3D model is copied into `Custom/3DModels/` as `<MPN>.<original ext>` (case kept). An identical existing file (same SHA-256) is reused silently; a different one is a preview conflict.
+- [x] **INST-05**: The footprint references the model as `${CUSTOM_3DMODEL_DIR}/<file>`, rewriting an existing `(model ...)` path or inserting a model block when the vendor footprint has none
+- [x] **INST-06**: When `kicad-cli` is available, the incoming symbol is normalised to the target library's format before merging (footprints are copied as-is, D-02). Without it, the symbol is merged as-is with a warning.
+- [x] **INST-07**: If any write fails, every file touched by the install is restored to its previous state and the failure is logged
+- [x] **INST-08**: After install, the result is verified: files re-parse, `<Lib>:<FP>` resolves, and the model file exists. Any failure is reported in the log.
+- [x] **INST-09**: Importing the same package twice with the same choices changes nothing the second time
 
 ### Post-Install
 
 - [ ] **POST-01**: After install, the library list rescans and the new or updated library is shown and selected
 - [ ] **POST-02**: When a new library was created, `sym-lib-table` / `fp-lib-table` are regenerated
-- [ ] **POST-03**: User is warned when the imported part name already exists in another library
-- [ ] **POST-04**: User is warned when the symbol's pin numbers don't match the footprint's pad numbers
+- [x] **POST-03**: User is warned when the imported part name already exists in another library
+- [x] **POST-04**: User is warned when the symbol's pin numbers don't match the footprint's pad numbers
 - [ ] **POST-05**: User is told to reopen KiCad's library editors if KiCad appears to be running
 
 ### Git
@@ -151,9 +151,9 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INTK-05 | Phase 3 | Complete |
 | INTK-06 | Phase 3 | Complete |
 | INTK-07 | Phase 5 | Pending |
-| INTK-08 | Phase 4 | Gaps Found |
+| INTK-08 | Phase 4 | Complete |
 | LIB-01 | Phase 3 | Complete |
-| LIB-02 | Phase 4 | Gaps Found |
+| LIB-02 | Phase 4 | Complete |
 | LIB-03 | Phase 3 | Complete |
 | PREV-01 | Phase 5 | Pending |
 | PREV-02 | Phase 5 | Pending |
@@ -162,19 +162,19 @@ Which phases cover which requirements. Updated during roadmap creation.
 | PREV-05 | Phase 5 | Pending |
 | PREV-06 | Phase 5 | Pending |
 | PREV-07 | Phase 5 | Pending |
-| INST-01 | Phase 4 | Gaps Found |
-| INST-02 | Phase 4 | Gaps Found |
-| INST-03 | Phase 4 | Gaps Found |
-| INST-04 | Phase 4 | Gaps Found |
-| INST-05 | Phase 4 | Gaps Found |
-| INST-06 | Phase 4 | Gaps Found |
-| INST-07 | Phase 4 | Gaps Found |
-| INST-08 | Phase 4 | Gaps Found |
-| INST-09 | Phase 4 | Gaps Found |
+| INST-01 | Phase 4 | Complete |
+| INST-02 | Phase 4 | Complete |
+| INST-03 | Phase 4 | Complete |
+| INST-04 | Phase 4 | Complete |
+| INST-05 | Phase 4 | Complete |
+| INST-06 | Phase 4 | Complete |
+| INST-07 | Phase 4 | Complete |
+| INST-08 | Phase 4 | Complete |
+| INST-09 | Phase 4 | Complete |
 | POST-01 | Phase 5 | Pending |
 | POST-02 | Phase 5 | Pending |
-| POST-03 | Phase 4 | Gaps Found |
-| POST-04 | Phase 4 | Gaps Found |
+| POST-03 | Phase 4 | Complete |
+| POST-04 | Phase 4 | Complete |
 | POST-05 | Phase 5 | Pending |
 | GIT-01 | Phase 6 | Pending |
 | GIT-02 | Phase 6 | Pending |

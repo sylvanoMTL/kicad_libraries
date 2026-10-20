@@ -1,43 +1,43 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 04
-current_phase_name: Plan and Install Core
-status: executing
-stopped_at: Completed 04-10-PLAN.md
-last_updated: "2026-10-20T10:43:57.542Z"
+current_phase: 5
+current_phase_name: Import UI and Post-Install
+status: planning
+stopped_at: Phase 04 complete, ready to plan Phase 5
+last_updated: "2026-10-20T12:36:32.476Z"
 last_activity: 2026-10-20
-last_activity_desc: Phase 04 execution started
-state_head: 9c5c47f5bb733a43459a4f4be52ed97bc9508f43
+last_activity_desc: Phase 04 complete, transitioned to Phase 5
+state_head: 75de40114980131a2a33c0c7accbd453d4187dfa
 progress:
   total_phases: 7
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 38
-  completed_plans: 35
-  percent: 43
+  completed_plans: 38
+  percent: 57
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-19)
+See: .planning/PROJECT.md (updated 2026-10-20)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 04 — Plan and Install Core
+**Current focus:** Phase 5 — Import UI and Post-Install
 
 ## Current Position
 
-Phase: 04 (Plan and Install Core) — EXECUTING
-Plan: 1 of 13
-Status: Executing Phase 04
-Last activity: 2026-10-20 — Phase 04 execution started
+Phase: 5 — Import UI and Post-Install
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-20 — Phase 04 complete, transitioned to Phase 5
 
-Progress: [████░░░░░░] 43%
+Progress: [██████░░░░] 57%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 25
+- Total plans completed: 38
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -48,6 +48,7 @@ Progress: [████░░░░░░] 43%
 | 01 | 6 | - | - |
 | 02 | 9 | - | - |
 | 03 | 10 | - | - |
+| 04 | 13 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -97,6 +98,7 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-09: symbol conflicts are judged against the block rendered with the surviving footprint names; a kept first footprint drops the incoming model; a skipped chosen symbol sets plan.linked_footprint to None
 - [Phase 04]: 04-10: test_uat_scratch_install is gated by KICAD_IMPORT_UAT_DIR and not marked kicad_cli, so -m kicad_cli shows 7 passed, 0 skipped
 - [Phase 04]: 04-10: INST-06 and ROADMAP criterion 3 amended for D-02 (only the incoming symbol is normalised; footprints are copied as-is)
+- [Phase 04]: 04-11..04-13 (gap closure): install is exception-safe (rollback, then install.unexpected or re-raise); freshness is re-checked after the kicad-cli gate and before every write; blank InstallOptions text means not set (explicit clear deferred to the Phase 5 preview)
 
 ### Pending Todos
 
@@ -106,8 +108,9 @@ None yet.
 
 - [Phase 2]: `Custom` `main` is 1 commit ahead of `origin/main` (485d530, HARD-09 cleanup). Owner must push it before removing this worktree.
 - [Phase 2, UI review]: Non-blocking UI fixes in `02-UI-REVIEW.md`: `populate()` `_updating` needs try/finally, the Symbols Status column is off-screen at default size, help text lacks Collision and Ctrl+Shift+R, Select All/Deselect All stay enabled during a scan. Fold into Phase 5 (Import UI).
-- [Phase 3, review]: Open review findings carried into Phase 4: `ImportCandidate` outlives its staged files, and package-level warnings never reach the candidate (03-REVIEW-DISPOSITION.md WR-04 / WR-05). Phase 4 must handle both when it consumes `ImportCandidate`.
-- [Phase 4]: Research flag. Verify that KiCad 9/10 loads a `20211014` symbol spliced into a `20241209` library, and check `kicad-cli` normalisation on a staging copy.
+- [Phase 3, review]: `ImportCandidate` outlives its staged files (03-REVIEW-DISPOSITION.md WR-04): the Phase 5 caller must keep the package open until install finishes. Package warnings now reach the candidate (fixed by 04-12), except when no candidate is found (see Phase 4 WR-06).
+- [Phase 4, review]: Open, non-blocking, for Phase 5 planning: WR-06 (no candidate found drops `package.issues`, so "nothing found" has no reason), IN-04 (blank footprint/symbol/model choices give confusing refusals), WR-02 (new library with no `Custom/Symbols` fails late), WR-04 (`build_plan` ~531 lines), IN-01/02/03/05. See 04-REVIEW-DISPOSITION.md.
+- [Phase 4]: KiCad 9 load of a mixed-version library verified by kicad-cli 9.0.9 and the owner's GUI UAT. KiCad 10 (format 20251024) and case-sensitive-volume rollback are deferred re-tests (ROADMAP backlog 999.1, 999.2).
 - [Phase 6]: Research flag. Spike git in this worktree early: detached HEAD, worktree-private module gitdir, and the owner's hooks on `commit -- Custom`.
 - [Phase 7]: Blocked until real SnapEDA and SamacSys/CSE downloads are added to `downloaded_examples/`. Check redistribution terms before committing fixtures.
 
@@ -121,6 +124,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-20T08:48:36.629Z
-Stopped at: Completed 04-10-PLAN.md
+Last session: 2026-10-20T12:40:00Z
+Stopped at: Phase 04 complete, ready to plan Phase 5
 Resume file: None

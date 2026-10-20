@@ -42,14 +42,21 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ Hostile packages are refused or skipped safely: zip slip, absolute names, symlinks, zip bombs, corrupt members, and oversized or string-heavy KiCad text bounded in memory (INTK-06) — Phase 3
 - ✓ A `<Type>_<SubCategory>_<Manufacturer>` library name is suggested from existing `Custom/` libraries and part info (LIB-01; editing arrives with the Phase 5 preview) — Phase 3
 - ✓ Symbol, footprint and file names are sanitised, with original and sanitised names both reported (LIB-03) — Phase 3
+- ✓ Symbol merged into the target `.kicad_sym` S-expression-aware: other symbols and the header stay byte-identical, renames follow sub-symbols and `extends` (INST-01, INST-02) — Phase 4
+- ✓ Footprint copied into the target `.pretty/`; filename, internal name, value, symbol Footprint field `<Lib>:<FP>` and `ki_fp_filters` agree (INST-03) — Phase 4
+- ✓ 3D model copied to `Custom/3DModels/<MPN>.<ext>` (same SHA-256 reused) and linked as `${CUSTOM_3DMODEL_DIR}/<file>`, rewriting or inserting the `(model ...)` block (INST-04, INST-05) — Phase 4
+- ✓ Packages with no 3D model install without one and warn (INTK-08) — Phase 4
+- ✓ A new library creates the matching `.kicad_sym` + `.pretty/` pair; an existing library header is never changed (LIB-02 install side; choosing in the UI arrives with Phase 5) — Phase 4
+- ✓ Install is one transaction: app-data backups, ordered atomic writes, verify, and rollback on any failure or exception; a target changed after planning is refused as stale; a second identical install is a no-op (INST-06..INST-09) — Phase 4
+- ✓ Post-install warnings for a name found in another library and for pin/pad mismatches (POST-03, POST-04) — Phase 4
 
 ### Active
 
 **Importer — input**
 - [ ] Browse to and open a vendor package: Ultra Librarian zip, SnapEDA zip, SamacSys/CSE zip, or a folder of loose `.kicad_sym` / `.kicad_mod` / `.step`/`.stp` files
 - [ ] Auto-detect the package format and locate the KiCad symbol, footprint(s) and 3D model inside it, whatever the folder depth or layout
-- [ ] Handle packages with no 3D model: install without one and log a warning
 - [ ] One package per import session
+- [ ] When detection finds no part, show the package-level reasons (for example a too-deep folder) instead of a bare "nothing found" (review WR-06, emerged in Phase 4; plus blank-string handling for footprint/symbol/model choices, IN-04)
 
 **Importer — target library**
 - [ ] Suggest a target library name following `<Type>_<SubCategory>_<Manufacturer>` (e.g. `Transistor_MOSFET_TI`) from the part's info, editable by the user
@@ -62,9 +69,6 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - [ ] Name conflicts with existing symbols or footprints are shown in the preview, and the user picks overwrite, rename or skip each time
 
 **Importer — install**
-- [ ] Merge the symbol into the target `.kicad_sym` without hand-editing (S-expression-aware, not regex-on-first-match)
-- [ ] Copy the footprint into the target `.pretty/` folder
-- [ ] Copy the 3D model into `Custom/3DModels/` and point the footprint at `${CUSTOM_3DMODEL_DIR}/<file>.step`. Rewrite the existing `(model ...)` path, or insert a model block when the vendor footprint has none.
 - [ ] After install: rescan and regenerate `sym-lib-table` / `fp-lib-table`
 - [ ] After install: ask for confirmation, then commit the new part in the `Custom` submodule and bump the parent repo's submodule ref. Commit only, never push.
 
@@ -120,6 +124,10 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | Replace regex parsing with an S-expression tokenizer | Needed for safe symbol merge and fixes the table-merge bug | ✓ Good — span-splicing layer round-trips the whole corpus byte-identically (Phase 1) |
 | Untrusted KiCad text is bounded before and during parsing: 8 MiB raw-byte cap, 1,000,000-node ceiling, and a linear windowed string scan; an over-cap file is skipped with a WARNING, never a whole-package refusal | Vendor packages are untrusted input; a single hostile file must not exhaust memory or hide the rest of the package | ✓ Good — CR-01/CR-03 closed, 8 MiB hostile strings read within 10× decoded size (Phase 3) |
 | Intake never extracts into the repo: zips are staged member-by-member into a temp folder outside the repo, folders are read in place | Keeps the "no write without preview" guarantee for the whole intake step | ✓ Good (Phase 3) |
+| Install is a transaction under `except BaseException`: any exception rolls back (`install.unexpected`), interrupts roll back then re-raise | A partial install in a curated library is the worst outcome; an Issue-only rollback missed exceptions (CR-01) | ✓ Good — gap closed and re-verified (Phase 4) |
+| Stale-plan check held from preflight to the last write: post-gate re-check, backup copy hashed and used as the rollback pre-image, re-check before every write | kicad-cli runs between preflight and the first write; an edit there was silently overwritten (CR-02) | ✓ Good — gap closed and re-verified (Phase 4) |
+| Blank preview text means "not set, keep the vendor value"; an explicit clear is a Phase 5 preview decision | A Qt line edit returns "" for untouched fields (WR-05) | — Pending (Phase 5 clear option) |
+| kicad-cli normalises only the incoming symbol, and only when its output version equals the target header; footprints are copied as-is | Never change a library's version header; mixed versions load in KiCad 9 (D-01, D-02) | ✓ Good — loads in kicad-cli 9.0.9; KiCad 10 re-test deferred (backlog 999.1) |
 
 ## Evolution
 
@@ -139,4 +147,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-19 after Phase 3*
+*Last updated: 2026-10-20 after Phase 4*
