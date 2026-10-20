@@ -1149,3 +1149,241 @@ def test_unit_real_cli_loads_in_kicad(tmp_path, new_library):
     footprints = [(op.path.stem, op.data) for op in plan.ops if op.kind == "footprint"]
     kwargs = {} if new_library else {"original_symbol_lib": original}
     assert kicad_cli.load_gate(tools.kicad_cli, library=library, symbol_lib=sym_op.data, footprints=footprints, **kwargs) == []
+
+
+# -- conflicts, the identical rule and stable keys (plan 04-09, task 1) ------------------
+
+SYM_KEY = f"symbol:{LIBRARY}:{VENDOR}"
+FP_KEY = f"footprint:{LIBRARY}:fp"
+MODEL_KEY = "model:part.step"
+
+
+def _pretty(layout):
+    return layout.footprints_dir / f"{LIBRARY}.pretty"
+
+
+def _put_footprint(layout, file_name="FP.kicad_mod", data=None):
+    """An existing footprint file in the target .pretty; the default differs from what the vendor footprint plans."""
+    (_pretty(layout) / file_name).write_bytes(vendor_footprint("FP", pads=("1",)) if data is None else data)
+
+
+def _put_model(layout, file_name="PART.step", data=b"some other model"):
+    layout.models_dir.mkdir(parents=True, exist_ok=True)
+    (layout.models_dir / file_name).write_bytes(data)
+
+
+def _clashing_layout(tmp_path, *, symbol=True, footprint=True, model=True, extra_names=()):
+    """A target library where the planned symbol, footprint and model each already exist with other content."""
+    names = ("EXISTING_A", *((VENDOR,) if symbol else ()), *extra_names)
+    layout = _target_layout(tmp_path, V6, names)
+    if footprint:
+        _put_footprint(layout)
+    if model:
+        _put_model(layout)
+    return layout
+
+
+def _apply(plan, tmp_path):
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert result.ok, result.issues
+    return result
+
+
+def _install(tmp_path, layout, tools=ToolContext(), symbol=None, options=None, **kwargs):
+    """Build and apply one plan while its package is open; returns the plan."""
+    with _open(tmp_path, _vendor(symbol, **kwargs)) as (_, candidate):
+        plan = build_plan(candidate, options or InstallOptions(library=LIBRARY), layout, tools)
+        _apply(plan, tmp_path)
+    return plan
+
+
+def test_noop_second_plan_after_apply(custom_copy, ul_package, tmp_path):
+    _, candidate = ul_package
+    options = InstallOptions(library=UL_LIBRARY)
+    first = build_plan(candidate, options, custom_copy)
+    assert not first.blocked and first.ops, first.issues
+    _apply(first, tmp_path)
+    second = build_plan(candidate, options, custom_copy)
+    assert second.ops == () and second.conflicts == ()
+    assert not second.blocked, second.issues
+    assert second.is_noop
+    # The symbol and footprint names are still reported, so a preview can show what is already there
+    assert second.symbol_names == ("CSD85301Q2",) and second.linked_footprint == "DQK0006B"
+    assert second.model_file == "CSD85301Q2.stp"
+
+
+@pytest.mark.kicad_cli
+def test_noop_second_plan_after_normalised_apply(tmp_path, ul_package):
+    tools = _real_tools()
+    layout = _target_layout(tmp_path, V9, ("EXISTING_A",))
+    _, candidate = ul_package
+    options = InstallOptions(library=LIBRARY)
+    first = build_plan(candidate, options, layout, tools)
+    assert not first.blocked and first.normalised, first.issues
+    _apply(first, tmp_path)
+    second = build_plan(candidate, options, layout, tools)
+    assert second.ops == () and second.conflicts == ()
+    assert second.is_noop, second.issues
+
+
+def test_noop_symbol_identical_is_not_spliced(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    _install(tmp_path, layout)
+    after_first = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
+    # Only the footprint and the model go missing again: the identical symbol must not be written a second time
+    (_pretty(layout) / "FP.kicad_mod").unlink()
+    (layout.models_dir / "PART.step").unlink()
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert not plan.blocked and plan.conflicts == (), plan.issues
+    assert [op.kind for op in plan.ops] == ["model", "footprint"]
+    assert (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes() == after_first
+
+
+def test_noop_eol_difference_is_identical(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    _install(tmp_path, layout)
+    path = layout.symbols_dir / f"{LIBRARY}.kicad_sym"
+    # The same library saved with other line endings still holds the same block (D-07)
+    path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n"))
+    assert b"\r\n" not in path.read_bytes()
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert plan.ops == () and plan.conflicts == () and plan.is_noop, plan.issues
+
+
+def test_conflict_symbol_different(tmp_path):
+    layout = _clashing_layout(tmp_path, footprint=False, model=False)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert [c.key for c in plan.conflicts] == [SYM_KEY]
+    conflict = plan.conflicts[0]
+    assert (conflict.kind, conflict.name, conflict.resolution) == ("symbol", VENDOR, None)
+    assert LIBRARY in conflict.existing and VENDOR in conflict.existing
+    assert plan.unresolved_conflicts == plan.conflicts and plan.blocked
+
+
+def test_conflict_symbol_case_twin_warns(tmp_path):
+    layout = _target_layout(tmp_path, V6, ("EXISTING_A", VENDOR.lower()))
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert plan.conflicts == () and not plan.blocked, plan.issues
+    clash = [i for i in plan.issues if i.code == "naming.case_clash"]
+    assert [i.severity for i in clash] == [Severity.WARNING]
+    assert VENDOR.lower() in clash[0].text
+    names = [s.name for s in find_symbols(parse_bytes(_op(plan, "symbol_lib").data, "lib").root)]
+    assert names == ["EXISTING_A", VENDOR.lower(), VENDOR]
+
+
+def test_conflict_footprint_bytes_differ(tmp_path):
+    layout = _clashing_layout(tmp_path, symbol=False, model=False)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert [c.key for c in plan.conflicts] == [FP_KEY]
+    conflict = plan.conflicts[0]
+    assert (conflict.kind, conflict.name, conflict.resolution) == ("footprint", "FP", None)
+    assert plan.blocked
+
+
+def test_conflict_footprint_case_twin(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    planned = _op(_plan(tmp_path, layout, ToolContext()), "footprint").data
+    # Identical bytes under a case-different file name still clash: Windows sees one file (D-10, INST-03/adjacency)
+    _put_footprint(layout, "fp.kicad_mod", planned)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert [c.key for c in plan.conflicts] == [FP_KEY]
+    assert "fp.kicad_mod" in plan.conflicts[0].existing
+    assert plan.blocked
+
+
+def test_conflict_footprint_identical_is_not_written(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    planned = _op(_plan(tmp_path, layout, ToolContext()), "footprint").data
+    _put_footprint(layout, "FP.kicad_mod", planned)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert plan.conflicts == () and not plan.blocked, plan.issues
+    assert not [op for op in plan.ops if op.kind == "footprint"]
+    assert plan.linked_footprint == "FP"
+    assert _value_of(plan, "Footprint") == f"{LIBRARY}:FP"
+
+
+def test_model_same_sha_reused(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    _put_model(layout, "PART.step", STEP_BYTES)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert plan.conflicts == () and not plan.blocked, plan.issues
+    assert not [op for op in plan.ops if op.kind == "model"]
+    assert plan.model_file == "PART.step"
+    footprint_op = _op(plan, "footprint")
+    paths = [m.path for m in find_models(footprint_name(parse_bytes(footprint_op.data, "fp").root).node)]
+    assert paths == ["${CUSTOM_3DMODEL_DIR}/PART.step"]
+
+
+def test_model_different_sha_conflict(tmp_path):
+    layout = _clashing_layout(tmp_path, symbol=False, footprint=False)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert [c.key for c in plan.conflicts] == [MODEL_KEY]
+    conflict = plan.conflicts[0]
+    assert (conflict.kind, conflict.name, conflict.resolution) == ("model", "PART.step", None)
+    assert not [op for op in plan.ops if op.kind == "model"]
+    assert plan.blocked
+
+
+def test_model_case_twin_conflict(tmp_path):
+    layout = _target_layout(tmp_path, V6)
+    # The same bytes under another spelling: the link would be case-wrong on Linux, so it clashes (D-10)
+    _put_model(layout, "part.STEP", STEP_BYTES)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert [c.key for c in plan.conflicts] == [MODEL_KEY]
+    assert "part.STEP" in plan.conflicts[0].existing
+    assert plan.blocked
+
+
+def test_conflict_keys_stable(tmp_path):
+    layout = _clashing_layout(tmp_path)
+    plain = _plan(tmp_path, layout, ToolContext())
+    changed = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY, value="OTHER", mpn=None))
+    assert [c.key for c in plain.conflicts] == [SYM_KEY, FP_KEY, MODEL_KEY]
+    assert [c.key for c in changed.conflicts] == [c.key for c in plain.conflicts]
+
+
+def test_conflict_suggested_names(tmp_path):
+    layout = _clashing_layout(tmp_path)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert {c.kind: c.suggested_name for c in plan.conflicts} == {
+        "symbol": "PART_2",
+        "footprint": "FP_2",
+        "model": "PART_2.step",
+    }
+    # Taken names are skipped: symbols compare exactly, files compare ignoring case
+    layout = _clashing_layout(tmp_path / "taken", extra_names=("PART_2", "part_3"))
+    _put_footprint(layout, "fp_2.kicad_mod")
+    _put_model(layout, "PART_2.STEP")
+    plan = _plan(tmp_path / "taken", layout, ToolContext())
+    assert {c.kind: c.suggested_name for c in plan.conflicts} == {
+        "symbol": "PART_3",
+        "footprint": "FP_3",
+        "model": "PART_3.step",
+    }
+
+
+def test_conflict_suggest_free_name_rules():
+    free = planner.suggest_free_name
+    assert free("A", set(), casefold=False) == "A_2"
+    assert free("A", {"A_2", "A_3"}, casefold=False) == "A_4"
+    assert free("A", {"a_2"}, casefold=False) == "A_2"
+    assert free("A", {"a_2"}, casefold=True) == "A_3"
+    assert free("A", {"a_2.STP"}, suffix=".stp", casefold=True) == "A_3.stp"
+    # The suffix survives the 64 character limit: the base is cut, not the number
+    long = "L" * 64
+    got = free(long, set(), casefold=False)
+    assert got.endswith("_2") and len(got) <= 64
+
+
+def test_conflict_unresolved_blocks(tmp_path, snapshot):
+    layout = _clashing_layout(tmp_path)
+    before = snapshot(layout.custom_dir)
+    plan = _plan(tmp_path, layout, ToolContext())
+    assert plan.blocked and len(plan.unresolved_conflicts) == 3
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert not result.ok and not result.touched
+    unresolved = [i for i in result.issues if i.code == "install.conflict_unresolved"]
+    assert len(unresolved) == 1
+    for key in (SYM_KEY, FP_KEY, MODEL_KEY):
+        assert key in unresolved[0].text
+    assert snapshot(layout.custom_dir) == before
