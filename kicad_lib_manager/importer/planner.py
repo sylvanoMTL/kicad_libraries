@@ -42,7 +42,7 @@ from ..kicad_files import (
     unit_library_text,
 )
 from ..models import Issue, Severity
-from ..sexpr import Edit, Node, apply_edits
+from ..sexpr import Edit, Node, apply_edits, parse
 from . import kicad_cli
 from . import package as _package
 from .adapters.base import MANUFACTURER_FIELDS, MPN_FIELDS
@@ -191,6 +191,29 @@ def _edit_symbol(
         # Zero-width inserts at one position keep their list order
         edits.append(property_insert_edit(text, node, block, eol))
     return edits, mpn
+
+
+def _unit_text(vendor: LoadedFile, unit: list[SymbolRef]) -> str:
+    """The vendor file cut down to the unit and ordered parent first, whatever order the vendor wrote.
+
+    KiCad refuses a library that places a derived symbol before its parent (spike S8), and
+    kicad-cli would fail on the unit text for that reason before any later step could fix it.
+    """
+    text = unit_library_text(vendor, keep={ref.name for ref in unit})
+    if len(unit) < 2:
+        return text
+    present = find_symbols(parse(text))
+    wanted = [ref.name for ref in unit]
+    if [ref.name for ref in present] == wanted:
+        return text
+    blocks = {ref.name: text[ref.node.start:ref.node.end] for ref in present}
+    gap = text[present[0].node.end:present[1].node.start]
+    return text[:present[0].node.start] + gap.join(blocks[name] for name in wanted) + text[present[-1].node.end:]
+
+
+def _resolves_in_library(path: str) -> bool:
+    """True for a model path that starts with a path variable other than the project folder (KiCad resolves it everywhere)."""
+    return path.startswith("${") and not path.startswith("${KIPRJMOD}")
 
 
 def _listing(folder: Path) -> list[str]:
@@ -514,8 +537,6 @@ def build_plan(
             "install.extends_parent_missing",
             f"{sym_item.name} extends {missing}, which {sym_item.file.member} does not hold; the parent symbol must be in the same file",
         ))
-    if len(unit) > 1:
-        return refuse(_err("install.extends_unsupported", f"{sym_item.name} extends another symbol, which cannot be installed yet"))
 
     step("Planning names", 3)
     sym_renames: list[Rename] = []
@@ -550,7 +571,7 @@ def build_plan(
         return refuse(_err("install.duplicate_name", f"Two chosen footprints would both be installed under one name: {_name_list(list(fp_names))}"))
 
     # D-01: the vendor text is normalised once, on the unrenamed unit, so later edits never re-run kicad-cli
-    unit_text = unit_library_text(vendor_sym, keep={ref.name for ref in unit})
+    unit_text = _unit_text(vendor_sym, unit)
     if target is not None:
         source, version_issues = _existing_source(vendor_sym, unit_text, sym_item.name, library, file_version(target.root), tools)
     else:
@@ -615,8 +636,15 @@ def build_plan(
         if any(i.code == "naming.empty" for i in named.issues):
             return refuse(_err("install.invalid_name", f"The part number {final_mpn!r} has no usable characters for a 3D model file name; enter another"))
         model_file = named.sanitized
+    elif candidate.models and options.no_model:
+        listed = _name_list([m.filename for m in candidate.models])
+        issues.append(Issue(Severity.INFO, "install.model_declined", f"The 3D model {listed} is not installed because it was declined"))
     else:
-        issues.append(Issue(Severity.WARNING, "install.no_model", "No 3D model will be installed"))
+        issues.append(Issue(
+            Severity.WARNING,
+            "install.no_model",
+            f"No 3D model found in {candidate.source.name}; the footprint installs without one",
+        ))
 
     edited = _loaded_text(apply_edits(work.source.text, all_edits), work.source.bom, "the edited symbol", "install.source_unreadable")
     if isinstance(edited, Issue):
@@ -628,7 +656,7 @@ def build_plan(
         sym_text = apply_edits(target.source.text, [symbol_insert_edit(target, block) for block in blocks])
         sym_bytes = fsutil.encode_source(sym_text, target.source.bom)
     else:
-        # A new library is the normalised unit file with the edited symbol
+        # A new library is the normalised unit file with the edited symbols, already in parent-first order
         sym_bytes = fsutil.encode_source(edited.source.text, edited.source.bom)
 
     fp_bytes: list[bytes] = []
@@ -637,14 +665,35 @@ def build_plan(
         if fp_ref is None:
             return refuse(_err("install.source_unreadable", f"{fp_item.file.member} is not a KiCad footprint"))
         fp_edits = [footprint_name_edit(fp_ref, fp_name), *footprint_value_edits(fp_ref.node, fp_name)]
+        existing = find_models(fp_ref.node)
         # The model belongs to the linked (first) footprint
         if model_file is not None and index == 0:
             model_path = f"{MODEL_DIR_VAR}/{model_file}"
-            existing = find_models(fp_ref.node)
             if existing:
                 fp_edits.append(retarget_model(existing[0], model_path))
+                if len(existing) > 1:
+                    issues.append(Issue(
+                        Severity.WARNING,
+                        "install.extra_models",
+                        f"{fp_name} has {len(existing)} 3D model blocks; the first now links {model_file} and the other {len(existing) - 1} are left unchanged",
+                    ))
             else:
                 fp_edits.append(model_insert_edit(vendor_fp.source.text, fp_ref.node, model_path, vendor_fp.source.eol))
+        else:
+            # Vendor model paths are never edited; one that cannot resolve from this library is reported
+            stale = next((m.path for m in existing if not _resolves_in_library(m.path)), None)
+            if stale is not None:
+                issues.append(Issue(
+                    Severity.WARNING,
+                    "install.stale_model_path",
+                    f"{fp_name} links the 3D model {stale!r}, which will not resolve from this library; the path is left unchanged",
+                ))
+        if fp_item.has_embedded_files:
+            issues.append(Issue(
+                Severity.WARNING,
+                "install.embedded_files",
+                f"{fp_name} contains embedded files; they are kept exactly as they are",
+            ))
         fp_bytes.append(fsutil.encode_source(apply_edits(vendor_fp.source.text, fp_edits), vendor_fp.source.bom))
 
     step("Checking for conflicts", 5)

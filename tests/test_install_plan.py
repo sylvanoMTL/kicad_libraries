@@ -1132,3 +1132,20 @@ def test_model_embedded_files_warn(layout, tmp_path):
     node = footprint_name(loaded.root).node
     embedded = [c for c in node.children if c.head == "embedded_files"]
     assert [loaded.source.text[c.start : c.end] for c in embedded] == ["(embedded_files)"]
+
+
+@pytest.mark.kicad_cli
+@pytest.mark.parametrize("new_library", [False, True], ids=["existing", "new"])
+def test_unit_real_cli_loads_in_kicad(tmp_path, new_library):
+    tools = _real_tools()
+    layout = _target_layout(tmp_path, V9, ("EXISTING_A",))
+    library = NEW_LIBRARY if new_library else LIBRARY
+    original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
+    options = InstallOptions(library=library, symbol=CHILD)
+    plan = _plan(tmp_path, layout, tools, extends_pair(PARENT, CHILD, child_first=True), options)
+    assert not plan.blocked, plan.issues
+    assert plan.symbol_names == (PARENT, CHILD)
+    sym_op = _op(plan, "symbol_lib")
+    footprints = [(op.path.stem, op.data) for op in plan.ops if op.kind == "footprint"]
+    kwargs = {} if new_library else {"original_symbol_lib": original}
+    assert kicad_cli.load_gate(tools.kicad_cli, library=library, symbol_lib=sym_op.data, footprints=footprints, **kwargs) == []
