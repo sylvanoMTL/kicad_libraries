@@ -860,3 +860,136 @@ def test_rollback_interrupt_in_a_write_is_reraised(hand_layout, snapshot, monkey
 
     assert state["raised"]
     assert snapshot(hand_layout.custom_dir) == before
+
+
+def test_rollback_unexpected_error_in_verify(hand_layout, snapshot, monkeypatch):
+    plan = _hand_plan(hand_layout, new_library=False)
+    original = plan.symbol_lib_path.read_bytes()
+    before = snapshot(hand_layout.custom_dir)
+
+    def explode(p):
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(applier.verify, "verify_install", explode)
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    assert not result.ok
+    assert _codes(_errors(result.issues)) == ["install.unexpected", "install.rolled_back"]
+    assert "RuntimeError" in _errors(result.issues)[0].text
+    assert snapshot(hand_layout.custom_dir) == before
+    assert result.backup_dir is not None
+    assert (result.backup_dir / f"{LIB}.kicad_sym_backup_1").read_bytes() == original
+
+
+def test_rollback_interrupt_in_verify_is_reraised(hand_layout, snapshot, monkeypatch):
+    plan = _hand_plan(hand_layout, new_library=False)
+    before = snapshot(hand_layout.custom_dir)
+
+    def interrupt(p):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(applier.verify, "verify_install", interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    assert snapshot(hand_layout.custom_dir) == before
+
+
+def test_unexpected_error_before_any_write(hand_layout, snapshot, monkeypatch):
+    plan = _with_cli(_hand_plan(hand_layout, new_library=False), FakeCli())
+    before = snapshot(hand_layout.custom_dir)
+
+    def explode(*args, **kwargs):
+        raise RuntimeError("injected")
+
+    monkeypatch.setattr(applier.kicad_cli, "load_gate", explode)
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    assert not result.ok
+    assert _codes(_errors(result.issues)) == ["install.unexpected"]
+    assert snapshot(hand_layout.custom_dir) == before
+    assert not (hand_layout.repo_root / "bk").exists()
+
+
+def test_progress_error_does_not_abort_the_install(hand_layout):
+    plan = _hand_plan(hand_layout, new_library=True)
+    seen = []
+
+    def progress(message, index, total):
+        seen.append(index)
+        if index == 2:
+            raise RuntimeError("display gone")
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk", progress=progress)
+
+    assert result.ok, result.issues
+    assert seen == [0, 1, 2]
+    pretty = hand_layout.footprints_dir / f"{LIB}.pretty"
+    assert pretty.is_dir()
+    assert (hand_layout.models_dir / "X.stp").is_file()
+    assert (pretty / "FP.kicad_mod").is_file()
+    assert plan.symbol_lib_path.is_file()
+    assert result.touched == (hand_layout.models_dir / "X.stp", pretty / "FP.kicad_mod", plan.symbol_lib_path)
+    (warning,) = [i for i in result.issues if i.code == "install.progress_failed"]
+    assert warning.severity is Severity.WARNING and "RuntimeError" in warning.text
+    assert _codes(result.issues)[-1] == "install.done"
+
+
+def test_rollback_interrupt_in_progress_is_reraised(hand_layout, snapshot):
+    plan = _hand_plan(hand_layout, new_library=True)
+    before = snapshot(hand_layout.custom_dir)
+
+    def progress(message, index, total):
+        if index == 2:
+            raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        apply_plan(plan, backup_root=hand_layout.repo_root / "bk", progress=progress)
+
+    # the model written at index 1 and the created .pretty folder are gone
+    assert not (hand_layout.models_dir / "X.stp").exists()
+    assert not (hand_layout.footprints_dir / f"{LIB}.pretty").exists()
+    assert snapshot(hand_layout.custom_dir) == before
+
+
+def test_make_folders_resolve_error_is_an_issue(hand_layout, monkeypatch):
+    plan = _hand_plan(hand_layout, new_library=True)
+    mkdir_op = plan.ops[0]
+    assert mkdir_op.kind == "mkdir"
+    undo = []
+
+    def refuse(self, *args, **kwargs):
+        raise OSError(5, "injected")
+
+    monkeypatch.setattr(Path, "resolve", refuse)
+
+    issue = applier._make_folders(plan, mkdir_op, undo)
+
+    assert isinstance(issue, Issue) and issue.code == "fs.write_failed"
+    assert undo == []
+    assert not mkdir_op.path.exists()
+
+
+def test_rollback_step_error_is_reported(hand_layout, monkeypatch):
+    plan = _hand_plan(hand_layout, new_library=True)
+    real_unlink = Path.unlink
+
+    def unlink(self, *args, **kwargs):
+        if self == plan.symbol_lib_path:
+            raise RuntimeError("injected")
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(applier.verify, "verify_install", lambda p: [Issue(Severity.ERROR, "verify.symbol_missing", "forced")])
+
+    result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
+
+    assert not result.ok
+    (left,) = [i for i in result.issues if i.code == "install.rollback_failed"]
+    assert left.severity is Severity.ERROR and str(plan.symbol_lib_path) in left.text
+    # the later undo steps still ran
+    assert not (hand_layout.footprints_dir / f"{LIB}.pretty").exists()
+    assert not (hand_layout.models_dir / "X.stp").exists()
