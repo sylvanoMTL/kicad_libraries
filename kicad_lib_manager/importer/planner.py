@@ -596,8 +596,11 @@ def build_plan(
     Every refusal is an ERROR Issue on a blocked plan with no operations. The Package that
     produced the candidate must stay open until apply_plan returns: the vendor files are read
     here and the model is read again when the plan is applied (WR-04).
+
+    candidate.issues already carries the package's own Issues (detect_candidate folds them in),
+    so package_issues is only for a caller holding extra Issues; an Issue in both appears once.
     """
-    # WR-05: package and candidate Issues lead the plan's Issues, an exact duplicate appearing once
+    # WR-03: extra, package and candidate Issues lead the plan's Issues, an exact duplicate appearing once
     issues: list[Issue] = list(dict.fromkeys([*package_issues, *candidate.issues]))
 
     def refuse(*problems: Issue) -> InstallPlan:

@@ -63,6 +63,13 @@ class ModelItem:
 
 @dataclass(frozen=True)
 class ImportCandidate:
+    """What detect_candidate found in one package.
+
+    issues holds the package's own Issues first (folder depth limit, unreadable files, skipped
+    links, ignored members), then the detection Issues. build_plan copies them into the plan,
+    so a caller never forwards them by hand (WR-03).
+    """
+
     vendor: str
     confidence: float
     source: Path
