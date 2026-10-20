@@ -131,7 +131,7 @@ Plans:
   4. A failure injected on any write leaves every file the install touched exactly as it was, with no dangling symbol, orphan footprint or stray model, and the failure is logged. An existing model with the same SHA-256 is reused, and a different one is reported as a conflict instead of being overwritten.
   5. After install, verification re-parses the written files, resolves `<Lib>:<FP>` and confirms the model file exists. It warns when the part name already exists in another library or the symbol's pin numbers don't match the footprint's pad numbers. Importing the same package twice with the same choices changes nothing the second time.
 
-**Plans**: 10/10 plans executed
+**Plans**: 10/13 plans executed (3 gap-closure plans pending)
 
 Plans:
 **Wave 1**
@@ -155,6 +155,14 @@ Plans:
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [x] 04-10-PLAN.md — Proof: success criteria 1-5 end to end, real kicad-cli load and version checks, KiCad 9 UAT scratch install, D-02 text amendment (wave 6)
+
+**Gap closure** *(04-VERIFICATION.md gaps 1-2 and 04-REVIEW.md CR-01, CR-02, WR-01, WR-03, WR-05)*
+**Gap wave 1**
+- [ ] 04-11-PLAN.md — Applier exception safety: guarded transaction rolls back on any exception (install.unexpected, interrupts re-raised after rollback), guarded progress callback, _make_folders resolve inside try; prune never deletes the running install's backup folder, UTC stamp (gap 1, CR-01, WR-01)
+- [ ] 04-12-PLAN.md — Planner/candidate: package-level Issues folded into ImportCandidate.issues and proven end to end; blank InstallOptions text fields mean not set (WR-03, WR-05)
+
+**Gap wave 2** *(blocked on gap wave 1 completion)*
+- [ ] 04-13-PLAN.md — Applier stale-plan guarantee across the kicad-cli gate window: backup copy hashed against the plan base and used as the rollback pre-image, per-write re-check, FakeCli on_call hook; review dispositions recorded (gap 2, CR-02)
 
 **Contract from Phase 3 (D-04)**: install is refused while `importer.suggest.placeholder_tokens(name)` is non-empty for the chosen target library name (a `Type`, `SubCategory` or `Manufacturer` placeholder is still in it).
 **Research flag**: Spike early. Check that KiCad 9/10 loads a `20211014` symbol spliced into a `20241209` library, and check how `kicad-cli sym upgrade` / `fp upgrade` behave on a staging copy. Also decide how vendor symbols that use `extends` are handled.
