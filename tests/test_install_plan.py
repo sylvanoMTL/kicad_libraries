@@ -260,6 +260,23 @@ def test_package_issues_come_first_then_candidate_issues(layout, tmp_path):
     assert len(plan.issues) == len(set(plan.issues))
 
 
+def test_candidate_carries_package_issues(layout, tmp_path):
+    members = [*_members(), ("readme.txt", b"notes")]
+    zip_path = make_zip(_src(tmp_path) / "pkg.zip", members)
+    with open_package(zip_path, REPO_ROOT) as package:
+        candidate, detection = detect_candidate(package)
+        assert candidate is not None
+        ignored = [i for i in package.issues if i.code == "intake.ignored_members"]
+        assert len(ignored) == 1 and ignored[0].severity is Severity.INFO
+        # WR-03: the package's own Issues lead the candidate's, with no caller forwarding
+        assert candidate.issues[0] == ignored[0]
+        # The list beside the candidate holds detection Issues only, so showing both never repeats one
+        assert "intake.ignored_members" not in [i.code for i in detection]
+        for extra in ((), package.issues):
+            plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, package_issues=extra)
+            assert [i.code for i in plan.issues].count("intake.ignored_members") == 1
+
+
 # -- Consistency of the installed names -----------------------------------------
 
 

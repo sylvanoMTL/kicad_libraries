@@ -20,7 +20,7 @@ from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import RepoLayout
-from kicad_lib_manager.importer.package import open_package
+from kicad_lib_manager.importer.package import MAX_FOLDER_DEPTH, open_package
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, InstallOptions, Resolution, ToolContext
 from kicad_lib_manager.importer.planner import build_plan, detect_tools
 from kicad_lib_manager.importer.verify import verify_install
@@ -243,6 +243,36 @@ def test_sc2_no_model_package(custom_copy, tmp_path):
     assert _tree_digest(layout.models_dir) == before
     footprint = load(layout.footprints_dir / f"{LIBRARY}.pretty" / "DQK0006B.kicad_mod")
     assert find_models(footprint_name(footprint.root).node) == []
+
+
+def test_package_issue_reaches_install_result_from_a_folder(custom_copy, tmp_path):
+    # WR-03: a package-level WARNING survives open_package -> detect_candidate -> build_plan -> apply_plan
+    folder = unpack_sample(tmp_path / "ul")
+    deep = folder
+    for level in range(MAX_FOLDER_DEPTH + 1):
+        deep = deep / f"d{level}"
+    deep.mkdir(parents=True)
+    (deep / "note.txt").write_bytes(b"too deep to be read")
+    with open_package(folder, REPO_ROOT) as package:
+        own = [i for i in package.issues if i.code == "intake.depth_limit"]
+        assert len(own) == 1 and own[0].severity is Severity.WARNING
+        candidate, _ = detect_candidate(package)
+        assert candidate is not None
+        plan, result = _install(candidate, custom_copy, tmp_path)
+    assert result.ok, result.issues
+    for issues in (plan.issues, result.issues):
+        found = [i for i in issues if i.code == "intake.depth_limit"]
+        assert found == own
+
+
+def test_package_issue_reaches_install_result_from_a_zip(custom_copy, ul_package, tmp_path):
+    package, candidate = ul_package
+    own = [i for i in package.issues if i.code == "intake.ignored_members"]
+    assert len(own) == 1 and own[0].severity is Severity.INFO
+    plan, result = _install(candidate, custom_copy, tmp_path)
+    assert result.ok, result.issues
+    assert [i for i in plan.issues if i.code == "intake.ignored_members"] == own
+    assert [i for i in result.issues if i.code == "intake.ignored_members"] == own
 
 
 def test_sc3_new_library_pair(custom_copy, ul_package, tmp_path):
