@@ -65,6 +65,8 @@ class _Transaction:
     leftovers: list[Issue] = field(default_factory=list)
     notes: list[Issue] = field(default_factory=list)
     progress: Callable | None = None
+    # casefolded on-disk spelling -> sha256 the file must have right now, or None when it must not exist
+    expected: dict[str, str | None] = field(default_factory=dict)
 
 
 def _drop_twin(step: _Undo) -> None:
@@ -399,7 +401,7 @@ def _transaction(
     total = len(plan.ops)
     for index, op in enumerate(plan.ops):
         _notify(txn, f"Writing {op.path.name}", index, total)
-        problem = _write(plan, op, sources.get(index), txn.undo, txn.touched, pre_images.get(index))
+        problem = _write(plan, op, sources.get(index), txn.undo, txn.touched, pre_images.get(index), txn.expected)
         if problem is not None:
             failures.append(problem)
             break
@@ -455,6 +457,23 @@ def _make_folders(plan: InstallPlan, op: FileOp, undo: list[_Undo]) -> Issue | N
     return None
 
 
+def _still_fresh(op: FileOp, expected: dict[str, str | None]) -> Issue | None:
+    """None when the target is still what this install expects: absent, or the hash it last saw or wrote."""
+    key = str(op.listed_path or op.path).casefold()
+    want = expected.get(key, op.base_sha256)
+    if want is None:
+        if _name_taken(op.path):
+            return _err("install.stale_plan", f"{op.path.name} appeared on disk while the install was running; rebuild the plan")
+        return None
+    try:
+        current = (op.listed_path or op.path).read_bytes()
+    except OSError:
+        current = None
+    if current is None or hashlib.sha256(current).hexdigest() != want:
+        return _err("install.stale_plan", f"{op.path.name} changed on disk while the install was running; rebuild the plan")
+    return None
+
+
 def _write(
     plan: InstallPlan,
     op: FileOp,
@@ -462,6 +481,7 @@ def _write(
     undo: list[_Undo],
     touched: list[Path],
     pre_image: bytes | None,
+    expected: dict[str, str | None],
 ) -> Issue | None:
     """Perform one op and record how to undo it; return an Issue when it failed."""
     if op.kind == "mkdir":
@@ -469,9 +489,16 @@ def _write(
     data = source_bytes if source_bytes is not None else op.data
     if data is None:
         return _err("fs.write_failed", f"Could not write {op.path.name}: the plan carries no content for it")
+    # A refused write adds no undo entry, so the rollback never touches the other process's file.
+    # The window left is the single os.replace inside fsutil.atomic_write_bytes.
+    stale = _still_fresh(op, expected)
+    if stale is not None:
+        return stale
     problem = fsutil.atomic_write_bytes(op.path, data)
     if problem is not None:
         return problem
+    # What this install wrote is what a second write of the same path must find
+    expected[str(op.listed_path or op.path).casefold()] = hashlib.sha256(data).hexdigest()
     # The pre-image goes back under the spelling the file had on disk
     undo.append(_Undo("file", op.listed_path or op.path, op.path, pre_image))
     touched.append(op.path)
