@@ -131,7 +131,7 @@ Plans:
   4. A failure injected on any write leaves every file the install touched exactly as it was, with no dangling symbol, orphan footprint or stray model, and the failure is logged. An existing model with the same SHA-256 is reused, and a different one is reported as a conflict instead of being overwritten.
   5. After install, verification re-parses the written files, resolves `<Lib>:<FP>` and confirms the model file exists. It warns when the part name already exists in another library or the symbol's pin numbers don't match the footprint's pad numbers. Importing the same package twice with the same choices changes nothing the second time.
 
-**Plans**: 8/10 plans executed
+**Plans**: 9/10 plans executed
 
 Plans:
 **Wave 1**
@@ -151,7 +151,7 @@ Plans:
 - [x] 04-08-PLAN.md — Planner: Manufacturer/MPN and field rules, exact renames, caller footprint names, extends units, several footprints, no-model path (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 04-09-PLAN.md — Planner: conflict detection, identical-is-no-op, stable keys, overwrite/rename/skip resolutions (wave 5)
+- [x] 04-09-PLAN.md — Planner: conflict detection, identical-is-no-op, stable keys, overwrite/rename/skip resolutions (wave 5)
 
 **Wave 6** *(blocked on Wave 5 completion)*
 - [ ] 04-10-PLAN.md — Proof: success criteria 1-5 end to end, real kicad-cli load and version checks, KiCad 9 UAT scratch install, D-02 text amendment (wave 6)
@@ -213,7 +213,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 1. Foundation | 6/6 | Complete    | 2026-10-18 |
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
-| 4. Plan and Install Core | 8/10 | In Progress | - |
+| 4. Plan and Install Core | 9/10 | In Progress | - |
 | 5. Import UI and Post-Install | 0/TBD | Not started | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |

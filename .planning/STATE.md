@@ -3,16 +3,16 @@ gsd_state_version: "1.0"
 current_phase: 04
 current_phase_name: Plan and Install Core
 status: executing
-stopped_at: Completed 04-08-PLAN.md
-last_updated: "2026-10-20T08:15:57.575Z"
+stopped_at: Completed 04-09-PLAN.md
+last_updated: "2026-10-20T08:38:29.738Z"
 last_activity: 2026-10-19
 last_activity_desc: Phase 04 execution started
-state_head: f85bd918c3f5b07e9ea1b2abadad13e28960cd67
+state_head: 422520160071194539f48687f24d8697335052d9
 progress:
   total_phases: 7
   completed_phases: 3
   total_plans: 35
-  completed_plans: 33
+  completed_plans: 34
   percent: 43
 ---
 
@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-10-19)
 ## Current Position
 
 Phase: 04 (Plan and Install Core) — EXECUTING
-Plan: 9 of 10
+Plan: 10 of 10
 Status: Ready to execute
 Last activity: 2026-10-19 — Phase 04 execution started
 
@@ -63,6 +63,7 @@ Progress: [████░░░░░░] 43%
 | Phase 04 P06 | 10 min | 2 tasks | 2 files |
 | Phase 04 P07 | 14 min | 3 tasks | 2 files |
 | Phase 04 P08 | 14 min | 2 tasks | 2 files |
+| Phase 04 P09 | 19 min | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -92,6 +93,7 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-07: apply_plan keeps soft verify WARNINGs in InstallResult.issues and emits install.cli_not_found once
 - [Phase 04]: 04-08: new symbol properties follow the block's own format; Manufacturer is unit-wide, mpn/value/datasheet/description overrides apply to the chosen symbol only
 - [Phase 04]: 04-08: a vendor model path is stale unless it starts with a path variable other than KIPRJMOD; extends unit text is ordered parent first before kicad-cli runs
+- [Phase 04]: 04-09: symbol conflicts are judged against the block rendered with the surviving footprint names; a kept first footprint drops the incoming model; a skipped chosen symbol sets plan.linked_footprint to None
 
 ### Pending Todos
 
@@ -116,6 +118,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-20T08:15:56.525Z
-Stopped at: Completed 04-08-PLAN.md
+Last session: 2026-10-20T08:38:28.802Z
+Stopped at: Completed 04-09-PLAN.md
 Resume file: None
