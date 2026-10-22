@@ -179,7 +179,32 @@ Plans:
   4. Every conflict with an existing symbol, footprint or 3D model appears in the preview with its own overwrite / rename / skip choice. There is no "overwrite all" option.
   5. After install, the library list rescans and shows the new or updated library selected. `sym-lib-table` / `fp-lib-table` are regenerated when a new library was created. If KiCad appears to be running, the user is told to reopen KiCad's library editors.
 
-**Plans**: TBD
+**Plans**: 11 plans
+
+Plans:
+**Wave 1**
+- [ ] 05-01-PLAN.md — Tracer: File > Import Part... -> worker open/detect -> real plan -> Files preview -> Install of that exact plan -> Result page -> quiet post-install rescan that checks the library; generation counter, Package ownership (WR-04), forward layering registration (wave 1)
+- [ ] 05-02-PLAN.md — Phase 4 delta: InstallOptions.cleared (D-13 explicit empty), explicit-empty Manufacturer, empty Value/MPN refused, WR-02 early refusal for missing Custom folders (wave 1)
+- [ ] 05-03-PLAN.md — widgets/theme.py, AMBER in the log and trees, populate try/finally, visible Status column with tooltips, LibraryTableWidget.reveal() (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 05-04-PLAN.md — POST-02: add-only add_library_entries for a new library plus path-variable sync; Generate hint for an existing library; reveal after the rescan (wave 2)
+- [ ] 05-05-PLAN.md — UX-02 start step: newest Downloads zip offer (never auto-opened), Browse in import/last_dir, refused/empty package list (D-05, WR-06), package header and Change... (wave 2)
+- [ ] 05-06-PLAN.md — PREV-01/06: all six preview sections (unchanged rows, old→new rewrites, format action), styled PreviewTree with expand/scroll restore, content-view component (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 05-07-PLAN.md — INTK-07 item picker; PREV-02/03/04 footprint name, plan-driven Footprint field, five fields with defaults equivalence and clear semantics, text debounce (wave 3)
+- [ ] 05-08-PLAN.md — UX-01 drag and drop, toolbar button, busy state incl. Select/Deselect All, primary button style, help pages (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 05-09-PLAN.md — Target library combo with badge and token line, Updating indicators, clickable blocking-reason strip with amber field frames, Phase 3 D-04 placeholder block, Ctrl+Return (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 05-10-PLAN.md — PREV-05 per-conflict Overwrite/Rename/Skip rows kept by key (D-14a), no bulk control; content view from file rows and conflicts through one serial build queue (wave 5)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 05-11-PLAN.md — Install progress and lock, failure banner with rebuild, Result view (warnings, KiCad-running notice POST-05, live status rows, backup, commitSlot for Phase 6), git-free check, full suite and owner UAT (wave 6)
+
 **UI hint**: yes
 **Contract from Phase 3 (D-04)**: the Install button stays disabled, with the reason shown, while `importer.suggest.placeholder_tokens(name)` is non-empty for the edited target library name.
 
@@ -222,7 +247,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
-| 5. Import UI and Post-Install | 0/TBD | Not started | - |
+| 5. Import UI and Post-Install | 0/11 | Planned | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
 
