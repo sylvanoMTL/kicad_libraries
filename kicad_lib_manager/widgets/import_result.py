@@ -19,6 +19,7 @@ from . import theme
 _FILES_ROWS = 8  # Files written rows shown before the list scrolls
 _STATUS_TITLES = {"library_list": "Library list", "tables": "Library tables"}
 _NO_WARNINGS = "No warnings."
+_QWIDGETSIZE_MAX = 16777215  # Qt's "no maximum height"
 
 
 class ElidedLabel(QLabel):
@@ -107,7 +108,7 @@ class ImportResultView(QWidget):
 
     From top to bottom: the success banner, the KiCad-running notice (hidden until the dialog finds
     KiCad running), Warnings, the post-install status rows the main window updates, Files written,
-    the backup folder, an empty hidden slot for the Phase 6 commit step, and Close.
+    the backup folder, the commit slot (hidden until the dialog puts the Phase 6 commit panel in it), and Close.
     """
 
     file_activated = Signal(object)  # the absolute Path of a written file, on double click or Enter
@@ -186,9 +187,12 @@ class ImportResultView(QWidget):
         self._backup_row.hide()
         lay.addWidget(self._backup_row)
 
-        # Phase 6 puts its commit step here: empty, hidden and zero height until then
+        # The Phase 6 commit step lives here: hidden at zero height until set_commit_panel puts a panel in
         self.commit_slot = QWidget()
         self.commit_slot.setObjectName("commitSlot")
+        slot_lay = QVBoxLayout(self.commit_slot)
+        slot_lay.setContentsMargins(0, 0, 0, 0)
+        self._commit_panel: QWidget | None = None
         self.commit_slot.setFixedHeight(0)
         self.commit_slot.hide()
         lay.addWidget(self.commit_slot)
@@ -207,6 +211,7 @@ class ImportResultView(QWidget):
 
     def show_result(self, result: InstallResult, plan: InstallPlan, repo_root: Path):
         """Fill every block from a successful install. The status rows start without a state."""
+        self.clear_commit_panel()
         self._banner.setText(f"✓ Installed {plan.symbol_name} into {result.library}")
         self._kicad_notice.hide()
         self._set_warnings(result.issues)
@@ -218,6 +223,26 @@ class ImportResultView(QWidget):
         else:
             self._backup_label.set_full_text(f"Backup folder: {result.backup_dir}")
             self._backup_row.show()
+
+    def set_commit_panel(self, panel: QWidget):
+        """Put the Phase 6 commit panel into the slot and open the slot to its natural height."""
+        self.clear_commit_panel()
+        self._commit_panel = panel
+        self.commit_slot.layout().addWidget(panel)
+        self.commit_slot.setMinimumHeight(0)
+        self.commit_slot.setMaximumHeight(_QWIDGETSIZE_MAX)
+        self.commit_slot.show()
+
+    def clear_commit_panel(self):
+        """Remove any panel and collapse the slot again: hidden, zero height (a failed or empty install has none)."""
+        panel, self._commit_panel = self._commit_panel, None
+        if panel is not None:
+            self.commit_slot.layout().removeWidget(panel)
+            panel.hide()
+            panel.setParent(None)
+            panel.deleteLater()
+        self.commit_slot.setFixedHeight(0)
+        self.commit_slot.hide()
 
     def _set_warnings(self, issues):
         for label in self._warning_labels:

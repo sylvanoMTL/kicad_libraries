@@ -1,0 +1,230 @@
+"""The only module that starts a git process (Phase 6, GIT-05).
+
+Every git call goes through run_git: a fixed argv shape, no shell, no inherited GIT_* variables
+and a subcommand allow-list that holds nothing which talks to another repository.
+Hooks always run and --no-verify is never passed (D-06). Decisions use exit codes and plumbing
+output, never stderr text. Qt-free; imports only models.
+"""
+
+import os
+import shutil
+import subprocess
+import tempfile
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
+
+from .models import Issue, Severity
+
+ALLOWED_SUBCOMMANDS = frozenset({
+    "--version", "rev-parse", "symbolic-ref", "status", "merge-base", "rev-list", "log", "ls-tree",
+    "cat-file", "var", "add", "reset", "switch", "commit", "ls-files", "diff-tree", "check-ignore",
+})
+DEFAULT_TIMEOUT = 30.0
+COMMIT_TIMEOUT = 300.0  # hooks can be slow
+
+
+@dataclass(frozen=True)
+class GitContext:
+    """The git executable to run and, for tests, a stand-in for subprocess.run."""
+
+    exe: Path
+    runner: Callable | None = None
+
+
+@dataclass(frozen=True)
+class GitRun:
+    returncode: int
+    stdout: str
+    stderr: str
+    raw: bytes = b""  # the undecoded stdout
+
+    @property
+    def output(self) -> str:
+        """Stdout and stderr together; hook output arrives on stderr."""
+        return "\n".join(part for part in (self.stdout.strip(), self.stderr.strip()) if part)
+
+
+def find_git(repo_root: Path, *, which: Callable[[str], str | None] = shutil.which) -> Path | Issue:
+    """Resolve git once; a git found inside the repository is refused, never run."""
+    found = which("git")
+    if not found:
+        return Issue(Severity.WARNING, "git.not_found", "git was not found on PATH")
+    path = Path(found).resolve()
+    root = Path(repo_root).resolve()
+    if path == root or root in path.parents:
+        return Issue(
+            Severity.WARNING, "git.inside_repo", f"the git found on PATH is inside the repository ({path}); it is not run"
+        )
+    return path
+
+
+def _env() -> dict[str, str]:
+    """The app's environment without any GIT_* variable (a stray GIT_DIR or GIT_INDEX_FILE would redirect every call)."""
+    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_EDITOR": "true", "LC_ALL": "C"})
+    return env
+
+
+def _text(data) -> str:
+    if data is None:
+        return ""
+    return data.decode("utf-8", errors="replace") if isinstance(data, bytes) else str(data)
+
+
+def run_git(
+    ctx: GitContext, repo: Path, *args: str, input: bytes | None = None, timeout: float = DEFAULT_TIMEOUT
+) -> GitRun | Issue:
+    """Run one git command in repo; any exit code comes back as a GitRun, a timeout or OS error as an Issue.
+
+    Raises ValueError, before anything starts, for a subcommand outside ALLOWED_SUBCOMMANDS.
+    """
+    if not args or args[0] not in ALLOWED_SUBCOMMANDS:
+        raise ValueError(f"git {args[0] if args else ''} is not allowed")
+    argv = [str(ctx.exe), "--literal-pathspecs", "-c", "core.quotepath=false", "-C", str(repo), *args]
+    run = ctx.runner or subprocess.run
+    options = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+    try:
+        done = run(
+            argv,
+            capture_output=True,
+            env=_env(),
+            timeout=timeout,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            **options,
+        )
+    except subprocess.TimeoutExpired:
+        return Issue(Severity.ERROR, "git.timeout", f"git {args[0]} did not finish within {timeout:g} s")
+    except OSError as e:
+        return Issue(Severity.ERROR, "git.not_run", f"Could not run git: {e.strerror or e}")
+    raw = done.stdout if isinstance(done.stdout, bytes) else _text(done.stdout).encode("utf-8")
+    return GitRun(done.returncode, _text(done.stdout), _text(done.stderr), raw)
+
+
+# -- read-only primitives: each returns None (or an Issue) on failure and never raises ---------------
+
+
+def _ok(run: GitRun | Issue) -> bool:
+    return isinstance(run, GitRun) and run.returncode == 0
+
+
+def show_toplevel(ctx: GitContext, path: Path) -> Path | None:
+    run = run_git(ctx, path, "rev-parse", "--show-toplevel")
+    return Path(run.stdout.strip()) if _ok(run) and run.stdout.strip() else None
+
+
+def current_branch(ctx: GitContext, repo: Path) -> str | None:
+    """The checked-out branch name; None for a detached HEAD (symbolic-ref exits 1)."""
+    run = run_git(ctx, repo, "symbolic-ref", "-q", "--short", "HEAD")
+    return run.stdout.strip() or None if _ok(run) else None
+
+
+def head_commit(ctx: GitContext, repo: Path) -> str | None:
+    run = run_git(ctx, repo, "rev-parse", "-q", "--verify", "HEAD")
+    return run.stdout.strip() or None if _ok(run) else None
+
+
+def short_hash(ctx: GitContext, repo: Path, rev: str = "HEAD") -> str | None:
+    run = run_git(ctx, repo, "rev-parse", "--short", rev)
+    return run.stdout.strip() or None if _ok(run) else None
+
+
+def committed_gitlink(ctx: GitContext, parent: Path, rel: str) -> str | None:
+    """The commit the parent's HEAD records for the submodule at rel; None when HEAD has no such entry."""
+    run = run_git(ctx, parent, "ls-tree", "-z", "HEAD", "--", rel)
+    if not _ok(run):
+        return None
+    meta = run.stdout.split("\0", 1)[0].partition("\t")[0].split()
+    return meta[2] if len(meta) == 3 and meta[1] == "commit" else None
+
+
+def tracked_paths(ctx: GitContext, repo: Path, rels) -> set[str] | Issue:
+    """Which of rels git already tracks."""
+    rels = list(rels)
+    if not rels:
+        return set()
+    run = run_git(ctx, repo, "ls-files", "-z", "--", *rels)
+    if isinstance(run, Issue):
+        return run
+    if run.returncode != 0:
+        return Issue(Severity.ERROR, "git.failed", f"git ls-files failed (git exit {run.returncode})\n{run.output}")
+    return {name for name in run.stdout.split("\0") if name}
+
+
+def log_range(ctx: GitContext, repo: Path, old: str, new: str) -> list[tuple[str, str]] | None:
+    """(short hash, subject) of the commits in old..new, oldest first; None when git cannot list them."""
+    run = run_git(ctx, repo, "log", "--reverse", "--format=%h%x09%s", f"{old}..{new}")
+    if not _ok(run):
+        return None
+    pairs = []
+    for line in run.stdout.splitlines():
+        short, _, subject = line.partition("\t")
+        if short:
+            pairs.append((short, subject))
+    return pairs
+
+
+def upstream_ahead(ctx: GitContext, repo: Path) -> tuple[str, int] | None:
+    """(upstream name, commits HEAD is ahead of it according to the local tracking ref); None without an upstream."""
+    name = run_git(ctx, repo, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    if not _ok(name) or not name.stdout.strip():
+        return None
+    count = run_git(ctx, repo, "rev-list", "--count", "@{u}..HEAD")
+    if not _ok(count):
+        return None
+    try:
+        return name.stdout.strip(), int(count.stdout.strip())
+    except ValueError:
+        return None
+
+
+# -- writes: only the listed paths, nothing else ----------------------------------------------------
+
+
+def _nul_paths(rels) -> bytes:
+    return b"".join(rel.encode("utf-8") + b"\0" for rel in rels)
+
+
+def add_intent(ctx: GitContext, repo: Path, rels) -> GitRun | Issue:
+    """Record intent-to-add for new files, so `commit --only` knows them."""
+    return run_git(ctx, repo, "add", "-N", "--pathspec-from-file=-", "--pathspec-file-nul", input=_nul_paths(rels))
+
+
+def unstage(ctx: GitContext, repo: Path, rels) -> GitRun | Issue:
+    """Undo an intent-to-add for exactly these paths; the files on disk are untouched."""
+    return run_git(ctx, repo, "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", input=_nul_paths(rels))
+
+
+def _commit_with_message(
+    ctx: GitContext, repo: Path, message: str, args: tuple[str, ...], input: bytes | None, timeout: float
+) -> GitRun | Issue:
+    """Run `git commit -F <message file> <args>`; the message goes through a temp file outside the repo."""
+    try:
+        with tempfile.NamedTemporaryFile("wb", suffix=".txt", delete=False) as handle:
+            handle.write(message.encode("utf-8"))
+            name = handle.name
+    except OSError as e:
+        return Issue(Severity.ERROR, "git.not_run", f"Could not write the commit message: {e.strerror or e}")
+    try:
+        return run_git(ctx, repo, "commit", "--only", "-F", name, *args, input=input, timeout=timeout)
+    finally:
+        try:
+            os.unlink(name)
+        except OSError:
+            pass
+
+
+def commit_paths(
+    ctx: GitContext, repo: Path, message: str, rels, *, timeout: float = COMMIT_TIMEOUT
+) -> GitRun | Issue:
+    """Commit exactly rels from the working tree; other staged or changed files stay as they are."""
+    return _commit_with_message(
+        ctx, repo, message, ("--pathspec-from-file=-", "--pathspec-file-nul"), _nul_paths(rels), timeout
+    )
+
+
+def commit_gitlink(
+    ctx: GitContext, parent: Path, message: str, rel: str, *, timeout: float = COMMIT_TIMEOUT
+) -> GitRun | Issue:
+    """Commit only the submodule entry at rel in the parent repo."""
+    return _commit_with_message(ctx, parent, message, ("--", rel), None, timeout)
