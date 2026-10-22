@@ -1699,7 +1699,7 @@ def test_strip_link_focuses_library_and_footprint_list(qtbot, make_item_dialog, 
     wait_current(qtbot, dialog)
     dialog._fp_name_edit.setFocus()
     dialog._strip.linkActivated.emit(strip_links(dialog)[PLACEHOLDER_REASON])
-    assert dialog.focusWidget() is dialog._library_combo.lineEdit()
+    assert dialog.focusWidget() is dialog._library_combo  # its line edit takes the cursor through the focus proxy
 
 
 def test_strip_link_ignores_unknown_href(qtbot, make_item_dialog):
@@ -1707,7 +1707,7 @@ def test_strip_link_ignores_unknown_href(qtbot, make_item_dialog):
     dialog._library_combo.setFocus()
     for href in ("reason:99", "reason:x", "http://evil.example/", "reason:-1", ""):
         dialog._strip.linkActivated.emit(href)  # nothing is opened, nothing breaks
-    assert dialog.focusWidget() is dialog._library_combo.lineEdit()
+    assert dialog.focusWidget() is dialog._library_combo
 
 
 def test_strip_escapes_markup(qtbot, make_item_dialog):

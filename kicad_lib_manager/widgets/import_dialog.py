@@ -16,11 +16,13 @@ Three rules shape this module:
 import html
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QStandardPaths, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QFont, QResizeEvent, QShowEvent
+from PySide6.QtGui import (
+    QCloseEvent, QColor, QFont, QKeySequence, QPalette, QResizeEvent, QShortcut, QShowEvent,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListView, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea,
@@ -32,8 +34,8 @@ from ..importer.candidate import ImportCandidate
 from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
 from ..importer.form import (
-    FIELD_LABELS, FIELD_NAMES, FieldDefaults, FormValues, build_options, field_defaults,
-    library_badge, library_tokens,
+    FIELD_LABELS, FIELD_NAMES, UPDATING_REASON, FieldDefaults, FormStatus, FormValues, Reason,
+    blocking_reasons, build_options, field_defaults, library_badge, library_tokens, noop_text, ready_text,
 )
 from ..importer.layout import RepoLayout, list_existing_libraries
 from ..importer.package import Package, open_package
@@ -46,7 +48,8 @@ from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
 from .preview_tree import PreviewTree
 from .theme import (
-    AMBER, BORDER, ERROR, HEADING_PT, MONO_FAMILY, MONO_PT, MUTED, SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
+    AMBER, AMBER_TINT, BORDER, ERROR, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY, MONO_PT, MUTED,
+    SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
 )
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
@@ -247,6 +250,12 @@ class ImportDialog(QDialog):
         self._edited: set[str] = set()  # field names the user changed; only these reach the planner
         self._fp_name_edited = False
         self._resolutions: dict[str, Resolution] = {}  # conflict choices; plan 05-10 fills them
+        # Blocked-field highlight (D-09): a reason's target names the control to focus and its amber frame.
+        # Keys: "library", "footprint_name", "footprints", the field names; plan 05-10 adds
+        # "conflict:{key}" and "rename:{key}" entries and removes them with their rows.
+        self._reason_targets: dict[str, QWidget] = {}
+        self._field_frames: dict[str, QFrame] = {}
+        self._strip_reasons: list[Reason] = []  # the reasons the strip links point at
         self._first_plan_seen = False
         self._syncing = False  # True while the dialog sets control values itself
         self._dirty = False  # a text edit waits for its debounce, so the plan on screen is not current
@@ -281,9 +290,13 @@ class ImportDialog(QDialog):
         self._build_result_page()
         self._stack.setCurrentWidget(self._start_page)
 
+        # Enter inside a line edit must never install: no button is a default or auto-default (D-10).
+        # Ctrl+Return is the keyboard way to Install, and only when Install is enabled (T-05-29).
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
             button.setDefault(False)
+        self._install_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self._install_shortcut.activated.connect(self._on_install_shortcut)
 
         self._update_install_state()
         if package_path is not None:
@@ -499,14 +512,27 @@ class ImportDialog(QDialog):
 
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
+        # The strip is rich text only while it lists blocking reasons (every string escaped, internal
+        # reason: links only); a status line is plain text. 8 px padding, at most 3 lines (D-09).
         self._strip = QLabel()
         self._strip.setTextFormat(Qt.TextFormat.PlainText)
         self._strip.setWordWrap(True)
+        self._strip.setOpenExternalLinks(False)
+        self._strip.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
+        )
+        self._strip.setContentsMargins(SP_SM, SP_SM, SP_SM, SP_SM)
+        self._strip.setMaximumHeight(3 * self._strip.fontMetrics().lineSpacing() + 2 * SP_SM)
+        self._strip.setAccessibleName("Install status")
+        palette = self._strip.palette()
+        palette.setColor(QPalette.ColorRole.Link, QColor(LINK))
+        self._strip.setPalette(palette)
+        self._strip.linkActivated.connect(self._on_reason_link)
         bottom.addWidget(self._strip, stretch=1)
         self._install_btn = QPushButton("Install Part")
         self._install_btn.setMinimumWidth(112)
         self._install_btn.clicked.connect(self._on_install_clicked)
-        bottom.addWidget(self._install_btn)
+        bottom.addWidget(self._install_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(bottom)
 
         self._edit_page = page
@@ -542,6 +568,25 @@ class ImportDialog(QDialog):
         font.setBold(True)
         label.setFont(font)
         return label
+
+    def _framed(self, widget: QWidget, key: str) -> QFrame:
+        """Wrap a blockable control in a QFrame#fieldFrame and register it under a reason target (D-09).
+
+        A border stylesheet on a QLineEdit or QComboBox itself would drop the native look, so the amber
+        border sits on the frame. The frame reserves its 2 px border at all times (transparent until
+        the "blocked" property is set), so the layout does not move when the highlight appears.
+        """
+        frame = QFrame()
+        frame.setObjectName("fieldFrame")
+        frame.setStyleSheet(FIELD_FRAME_QSS)
+        frame.setProperty("blocked", False)
+        frame_lay = QVBoxLayout(frame)
+        frame_lay.setContentsMargins(0, 0, 0, 0)
+        frame_lay.setSpacing(0)
+        frame_lay.addWidget(widget)
+        self._field_frames[key] = frame
+        self._reason_targets[key] = widget
+        return frame
 
     @staticmethod
     def _restore_button(accessible: str) -> QToolButton:
@@ -587,7 +632,7 @@ class ImportDialog(QDialog):
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
         row.setSpacing(SP_SM)
-        row.addWidget(combo, 1)
+        row.addWidget(self._framed(combo, "library"), 1)
         self._library_badge = QLabel()
         self._library_badge.setTextFormat(Qt.TextFormat.PlainText)
         # Wraps at its spaces when the pane is narrow, so the combo keeps room and the badge is never cut
@@ -631,7 +676,7 @@ class ImportDialog(QDialog):
         self._fp_name_edit.setAccessibleName("Footprint name")
         self._fp_name_edit.setMinimumHeight(28)
         self._fp_name_edit.textEdited.connect(self._on_fp_name_edited)
-        row_lay.addWidget(self._fp_name_edit, 1)
+        row_lay.addWidget(self._framed(self._fp_name_edit, "footprint_name"), 1)
         self._fp_name_restore = self._restore_button("Restore default footprint name")
         self._fp_name_restore.clicked.connect(self._on_fp_name_restore)
         row_lay.addWidget(self._fp_name_restore)
@@ -663,7 +708,8 @@ class ImportDialog(QDialog):
         self._fp_field.setFont(QFont(MONO_FAMILY, MONO_PT))
         self._fp_field.setAccessibleName("Footprint")
         self._fp_field.setMinimumHeight(28)
-        form.addRow("Footprint", self._aligned_row(self._fp_field))
+        # In a frame too, so it lines up with the editable rows (it is never blocked)
+        form.addRow("Footprint", self._aligned_row(self._framed(self._fp_field, "footprint_field")))
 
         self._field_edits: dict[str, QLineEdit] = {}
         self._field_restore: dict[str, QToolButton] = {}
@@ -683,7 +729,8 @@ class ImportDialog(QDialog):
             edit.textEdited.connect(lambda text, n=name: self._on_field_edited(n, text))
             restore = self._restore_button(f"Restore default {label}")
             restore.clicked.connect(lambda _checked=False, n=name: self._restore_field(n))
-            row_lay.addWidget(edit, 1)
+            # All five sit in a frame so the rows line up; only Value and MPN can be blocked
+            row_lay.addWidget(self._framed(edit, name), 1)
             row_lay.addWidget(restore)
             form.addRow(label, row)
             self._field_edits[name] = edit
@@ -1035,6 +1082,9 @@ class ImportDialog(QDialog):
         self._symbol_combo = self._model_combo = None
         self._symbol_label = self._fp_label = self._model_label = None
         self._fp_list = self._make_linked_btn = None
+        # The checklist and its frame are deleted with their row
+        self._field_frames.pop("footprints", None)
+        self._reason_targets.pop("footprints", None)
         self._extends_note = None
         self._linked_fp = None
         while self._items_form.rowCount():
@@ -1183,7 +1233,7 @@ class ImportDialog(QDialog):
         # At most six rows tall, then the list scrolls vertically
         row = lst.sizeHintForRow(0)
         lst.setFixedHeight(row * min(len(names), _CHECKLIST_ROWS) + 2 * lst.frameWidth())
-        lay.addWidget(lst)
+        lay.addWidget(self._framed(lst, "footprints"))
         button = QPushButton("Make linked")
         button.setAutoDefault(False)
         button.setDefault(False)
@@ -1519,16 +1569,49 @@ class ImportDialog(QDialog):
         if self._updating_shown:
             self._busy_bar.show()
 
+    def _form_status(self) -> FormStatus:
+        """The controls as blocking_reasons reads them. "Updating" means a rebuild is dirty, running, queued or lost."""
+        plan = self._plan
+        current = plan is not None and self._plan_gen == self._gen
+        several = self._fp_list is not None
+        return FormStatus(
+            updating=self._updating() or (not current and not self._build_failed),
+            build_failed=self._build_failed,
+            library=self._library_combo.currentText(),
+            value_text=self._field_edits["value"].text(),
+            mpn_text=self._field_edits["mpn"].text(),
+            several_footprints=several,
+            footprints_checked=len(self._checked_footprints()) if several else 0,
+            resolutions=dict(self._resolutions),
+        )
+
+    def _set_strip(self, text: str, *, rich: bool = False, style: str = "", tooltip: str = ""):
+        """Set the strip's format first, then its text (a status line is plain, the reason list is rich)."""
+        strip = self._strip
+        strip.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
+        strip.setStyleSheet(style)
+        strip.setText(text)
+        strip.setToolTip(tooltip)
+
     def _update_install_state(self):
         self._sync_updating()
         if self.is_installing():
             return
         plan = self._plan
         current = plan is not None and self._plan_gen == self._gen
+        shown = plan if current else None
+        reasons: list[Reason] = []
+        detail: list[Reason] = []
+        if self._candidate is not None:
+            status = self._form_status()
+            reasons = blocking_reasons(status, shown)
+            # The amber frames follow the live text, so they hold while a rebuild catches up
+            detail = blocking_reasons(replace(status, updating=False), shown) if status.updating else reasons
+        self._apply_blocked_frames({r.target for r in detail})
         ready = (
-            current
-            and not self._updating()
-            and not self._build_failed
+            self._candidate is not None
+            and current
+            and not reasons
             and not plan.blocked
             and not plan.is_noop
         )
@@ -1537,32 +1620,65 @@ class ImportDialog(QDialog):
         # The choices wait for the first plan; a failed first build must not lock the user out
         self._left_scroll.setEnabled(self._first_plan_seen or self._build_failed)
         self._change_btn.setEnabled(True)
-        prefix = f"{self._install_failure}  " if self._install_failure else ""
-        self._strip.setText(prefix + self._status_text(plan, current))
+        self._render_strip(reasons, plan if current else None)
 
-    def _status_text(self, plan: InstallPlan | None, current: bool) -> str:
+    def _apply_blocked_frames(self, targets: set[str]):
+        """Turn each field frame amber while a reason targets it; re-polish so the stylesheet applies."""
+        for key, frame in self._field_frames.items():
+            blocked = key in targets
+            if bool(frame.property("blocked")) != blocked:
+                frame.setProperty("blocked", blocked)
+                frame.style().unpolish(frame)
+                frame.style().polish(frame)
+
+    def _render_strip(self, reasons: list[Reason], plan: InstallPlan | None):
+        """The bottom-left line: why Install is off (links), or the ready or no-op line (D-09)."""
+        failure = self._install_failure
+        self._strip_reasons = reasons
         if self._candidate is None:
-            return ""
-        if self._updating():
-            return "Updating preview..."
-        if self._build_failed:
-            return "⚠ Install is blocked: Error: Preview could not be built - see the log"
-        if not current:
-            return "Updating preview..."
-        if plan.blocked:
-            reasons = [i.text for i in plan.issues if i.severity is Severity.ERROR]
-            reasons += [
-                f"Choose Overwrite, Rename or Skip for {c.kind} {c.name}"
-                for c in plan.unresolved_conflicts
-            ]
-            return "⚠ Install is blocked: " + " · ".join(reasons)
-        if plan.is_noop:
-            return f"Nothing to install: this part is already in {plan.library}."
-        counts = file_counts(plan, self._candidate, self._plan_options)
-        return (
-            f"✓ Ready to install: {counts.new} new, {counts.modified} modified, "
-            f"{counts.unchanged} unchanged files"
-        )
+            self._set_strip(failure)
+        elif reasons and reasons[0].text == UPDATING_REASON:
+            self._set_strip(f"{failure}  {UPDATING_REASON}" if failure else UPDATING_REASON, style=f"color: {MUTED};")
+        elif reasons:
+            links = " · ".join(
+                f'<a href="reason:{i}" style="color:{LINK}">{html.escape(reason.text)}</a>'
+                for i, reason in enumerate(reasons)
+            )
+            body = f"⚠ Install is blocked: {links}"
+            if failure:
+                body = f"{html.escape(failure)}  {body}"
+            tooltip = "<br>".join(html.escape(reason.text) for reason in reasons)
+            self._set_strip(body, rich=True, style=f"background-color: {AMBER_TINT};", tooltip=tooltip)
+        elif plan is None:
+            self._set_strip(failure)
+        elif plan.is_noop:
+            self._set_strip(f"{failure}  {noop_text(plan.library)}" if failure else noop_text(plan.library), style=f"color: {MUTED};")
+        else:
+            counts = file_counts(plan, self._candidate, self._plan_options)
+            text = ready_text(counts)
+            self._set_strip(f"{failure}  {text}" if failure else text, style=f"color: {SUCCESS};")
+
+    def _on_reason_link(self, href: str):
+        """A reason in the strip was clicked: focus the control that fixes it and scroll it into view."""
+        prefix = "reason:"
+        if not href.startswith(prefix) or not href[len(prefix):].isdigit():
+            return  # only this dialog's own links do anything (T-05-27)
+        index = int(href[len(prefix):])
+        if index >= len(self._strip_reasons):
+            return
+        target = self._strip_reasons[index].target
+        widget = self._preview if target == "plan" else self._reason_targets.get(target)
+        if widget is None:
+            return
+        widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        left = self._left_scroll.widget()
+        if left is not None and left.isAncestorOf(widget):
+            self._left_scroll.ensureWidgetVisible(widget)
+
+    def _on_install_shortcut(self):
+        """Ctrl+Return: Install, but only when the button is enabled (it checks that itself)."""
+        if self._stack.currentWidget() is self._edit_page:
+            self._on_install_clicked()
 
     # -- install ------------------------------------------------------------------
 
@@ -1582,7 +1698,7 @@ class ImportDialog(QDialog):
         self._change_btn.setEnabled(False)
         self._install_btn.setEnabled(False)
         self._install_btn.setText("Installing...")
-        self._strip.setText("Installing...")
+        self._set_strip("Installing...")
         worker.progress.connect(self._on_install_progress)
         worker.result.connect(lambda result, w=worker, p=plan: self._on_install_done(w, p, result))
         worker.failed.connect(lambda text, w=worker: self._on_install_failed(w, text))
@@ -1590,7 +1706,7 @@ class ImportDialog(QDialog):
 
     def _on_install_progress(self, message: str, current: int, total: int):
         if self.is_installing():
-            self._strip.setText(message)
+            self._set_strip(message)
 
     def _on_install_done(self, worker: TaskWorker, plan: InstallPlan, result: InstallResult):
         if self._install_worker is worker:
