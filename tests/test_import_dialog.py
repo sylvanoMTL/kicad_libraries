@@ -112,9 +112,10 @@ def test_tracer_ul_import_end_to_end(qtbot, make_dialog, custom_copy):
     assert result.ok
     assert plan is dialog._plan
     assert dialog._stack.currentWidget() is dialog._result_page
-    assert dialog._banner.text() == "✓ Installed CSD85301Q2 into IC_Battery_Charger_TI"
+    assert dialog._result_view._banner.text() == "✓ Installed CSD85301Q2 into IC_Battery_Charger_TI"
     assert dialog.result is result
-    listed = [dialog._result_list.item(i).text() for i in range(dialog._result_list.count())]
+    files = dialog._result_view._files_list
+    listed = [files.item(i).text() for i in range(files.count())]
     assert "Custom/3DModels/CSD85301Q2.stp" in listed
     pretty = custom_copy.footprints_dir / f"{LIB}.pretty"
     assert (pretty / "DQK0006B.kicad_mod").is_file()
@@ -2663,3 +2664,314 @@ def test_progress_stall_holds_value(qtbot, make_install_dialog, gates):
     assert dialog._install_step.full_text() == "Writing b"
     gates[0].set()
     qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+
+
+# -- plan 05-11 Task 2: the Result view, KiCad notice, status rows and the Phase 6 slot (D-15 to D-18) ----
+
+import ast  # noqa: E402
+import subprocess  # noqa: E402
+import types  # noqa: E402
+
+from PySide6.QtCore import QUrl  # noqa: E402
+from PySide6.QtGui import QDesktopServices  # noqa: E402
+
+from kicad_lib_manager.widgets.import_result import ImportResultView  # noqa: E402
+from kicad_lib_manager.widgets.theme import MONO_FAMILY  # noqa: E402
+
+KICAD_NOTICE = f"KiCad is running. Reopen KiCad's Symbol and Footprint editors to see {LIB}."
+PACKAGE_ROOT = REPO_ROOT / "kicad_lib_manager"
+UL_REL = [
+    "Custom/3DModels/CSD85301Q2.stp",
+    "Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod",
+    "Custom/Symbols/IC_Battery_Charger_TI.kicad_sym",
+]
+
+
+def install_ul(qtbot, dialog: ImportDialog) -> InstallResult:
+    """Click Install and wait for the Result view."""
+    with qtbot.waitSignal(dialog.installed, timeout=60000) as blocker:
+        dialog._install_btn.click()
+    return blocker.args[0]
+
+
+def finish_workers(qtbot, dialog: ImportDialog) -> None:
+    """Wait until every worker thread ended and its queued result signal was delivered."""
+    qtbot.waitUntil(lambda: not any(w.isRunning() for w in dialog._workers), timeout=30000)
+    qtbot.wait(50)
+
+
+def fake_result(tmp_path: Path, issues=(), touched=2, backup=True) -> InstallResult:
+    paths = tuple(tmp_path / "Custom" / "Symbols" / f"f{n}.kicad_sym" for n in range(touched))
+    return InstallResult(
+        ok=True, library=LIB, new_library=False, touched=paths, issues=tuple(issues),
+        backup_dir=(tmp_path / "bk") if backup else None,
+    )
+
+
+def result_view(qtbot, tmp_path: Path, **kwargs) -> tuple[ImportResultView, InstallResult]:
+    view = ImportResultView()
+    qtbot.addWidget(view)
+    result = fake_result(tmp_path, **kwargs)
+    plan = types.SimpleNamespace(symbol_name="CSD85301Q2", library=LIB)
+    view.show_result(result, plan, tmp_path)
+    return view, result
+
+
+def warning_lines(view: ImportResultView) -> list[str]:
+    return [label.text() for label in view._warning_labels]
+
+
+def test_result_view_success_ul(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    result = install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    view = dialog._result_view
+
+    assert dialog._stack.currentWidget() is view is dialog._result_page
+    assert view._banner.text() == "✓ Installed CSD85301Q2 into IC_Battery_Charger_TI"
+    assert view._banner.font().bold() and view._banner.font().pointSize() == 12
+    assert SUCCESS.lower() in view._banner.styleSheet().lower()
+    assert view._files_heading.text() == "Files written (3)"
+    shown = [view._files_list.item(i).text() for i in range(view._files_list.count())]
+    assert sorted(shown) == UL_REL
+    assert result.backup_dir is not None  # the .kicad_sym was modified
+    assert view._backup_row.isVisible()
+    assert view._backup_label.full_text() == f"Backup folder: {result.backup_dir}"
+    assert view._backup_label.font().family() == MONO_FAMILY
+    assert view._backup_label.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
+    assert not view._kicad_notice.isVisible()
+    slot = view.findChild(QWidget, "commitSlot")
+    assert slot is view.commit_slot and slot.isHidden() and slot.height() == 0 and slot.maximumHeight() == 0
+    assert dialog.result is result
+    assert dialog.result_plan is dialog._plan
+    assert view.close_button.isDefault() and dialog.focusWidget() is view.close_button
+    assert not dialog._install_btn.isDefault()
+
+
+def test_result_view_warnings_and_none(qtbot, tmp_path):
+    warn = Issue(Severity.WARNING, "verify.pin_pad_mismatch", "Pin 3 has no pad")
+    info = Issue(Severity.INFO, "install.nothing_to_do", "Nothing to do for the model")
+    boom = Issue(Severity.ERROR, "verify.name_elsewhere", "Name is also used in Wurth")
+    ok = Issue(Severity.SUCCESS, "table.entries_added", "Added")
+    view, _ = result_view(qtbot, tmp_path, issues=(info, warn, boom, ok))
+    assert warning_lines(view) == ["⚠ Pin 3 has no pad", "✖ Name is also used in Wurth"]
+    assert AMBER.lower() in view._warning_labels[0].styleSheet().lower()
+    assert ERROR.lower() in view._warning_labels[1].styleSheet().lower()
+    assert all(label.wordWrap() and label.textFormat() == Qt.TextFormat.PlainText for label in view._warning_labels)
+    assert view._warnings_heading.text() == "Warnings"
+
+    view, _ = result_view(qtbot, tmp_path, issues=(info,))
+    assert warning_lines(view) == ["No warnings."]
+    assert MUTED.lower() in view._warning_labels[0].styleSheet().lower()
+
+    view, _ = result_view(qtbot, tmp_path)
+    assert warning_lines(view) == ["No warnings."]
+
+
+def test_result_view_warnings_are_plain_text(qtbot, tmp_path):
+    hostile = Issue(Severity.WARNING, "verify.name_elsewhere", "<b>bold</b> & <a href='x'>link</a>")
+    view, _ = result_view(qtbot, tmp_path, issues=(hostile,))
+    assert warning_lines(view) == ["⚠ <b>bold</b> & <a href='x'>link</a>"]
+    assert view._warning_labels[0].textFormat() == Qt.TextFormat.PlainText
+
+
+def test_result_view_show_result_twice_replaces_content(qtbot, tmp_path):
+    view, _ = result_view(qtbot, tmp_path, issues=(Issue(Severity.WARNING, "a.b", "one"),))
+    view.show_result(fake_result(tmp_path, touched=1), types.SimpleNamespace(symbol_name="S", library=LIB), tmp_path)
+    assert warning_lines(view) == ["No warnings."]
+    assert view._files_list.count() == 1 and view._files_heading.text() == "Files written (1)"
+
+
+def test_kicad_running_notice(qtbot, make_install_dialog):
+    seen = {}
+
+    def running():
+        seen["thread"] = threading.get_ident()
+        return ["eeschema"]
+
+    dialog = make_install_dialog(kicad_running=running)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    install_ul(qtbot, dialog)
+    view = dialog._result_view
+    qtbot.waitUntil(lambda: view._kicad_notice.isVisible(), timeout=30000)
+    assert view._kicad_notice.text() == f"⚠ {KICAD_NOTICE}"
+    assert view._kicad_notice.textFormat() == Qt.TextFormat.PlainText
+    assert AMBER_TINT.lower() in view._kicad_notice.styleSheet().lower()
+    assert seen["thread"] != threading.get_ident()
+    notices = [i for i in logged if i.code == "import.kicad_running"]
+    assert [(i.severity, i.text) for i in notices] == [(Severity.WARNING, KICAD_NOTICE)]
+
+
+def test_kicad_running_empty_or_failing_shows_nothing(qtbot, make_install_dialog):
+    called = threading.Event()
+
+    def empty():
+        called.set()
+        return []
+
+    dialog = make_install_dialog(kicad_running=empty)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    install_ul(qtbot, dialog)
+    assert called.wait(30)
+    finish_workers(qtbot, dialog)
+    assert not dialog._result_view._kicad_notice.isVisible()
+    assert [i for i in logged if i.code.startswith("import.")] == []
+
+
+def test_kicad_running_failure_shows_nothing_and_logs_nothing(qtbot, make_install_dialog):
+    called = threading.Event()
+
+    def broken():
+        called.set()
+        raise OSError("tasklist is gone")
+
+    dialog = make_install_dialog(kicad_running=broken)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    install_ul(qtbot, dialog)
+    assert called.wait(30)
+    finish_workers(qtbot, dialog)
+    assert not dialog._result_view._kicad_notice.isVisible()
+    assert [i for i in logged if i.code.startswith("import.")] == []
+
+
+def test_post_install_status_rows(qtbot, tmp_path):
+    view, _ = result_view(qtbot, tmp_path)
+    assert view.status_text("library_list").startswith("Library list")
+    assert view.status_text("tables").startswith("Library tables")
+    assert view._status_labels["generate_hint"].isHidden()
+
+    view.set_status("library_list", "Rescanning...", Severity.INFO)
+    view.set_status("tables", "Added X to sym-lib-table and fp-lib-table", Severity.SUCCESS)
+    assert view.status_text("library_list") == "Library list: Rescanning..."
+    assert view.status_text("tables") == "Library tables: Added X to sym-lib-table and fp-lib-table"
+    assert SUCCESS.lower() in view._status_labels["tables"].styleSheet().lower()
+    view.set_status("library_list", "Rescan failed - see the log", Severity.ERROR)
+    assert ERROR.lower() in view._status_labels["library_list"].styleSheet().lower()
+    view.set_status("library_list", "Updated", Severity.WARNING)
+    assert AMBER.lower() in view._status_labels["library_list"].styleSheet().lower()
+    view.set_status("generate_hint", "⚠ X is not in the library tables. Press Generate Tables to add it.", Severity.WARNING)
+    assert not view._status_labels["generate_hint"].isHidden()
+    assert view.status_text("generate_hint") == "⚠ X is not in the library tables. Press Generate Tables to add it."
+    assert all(label.textFormat() == Qt.TextFormat.PlainText for label in view._status_labels.values())
+
+
+def test_dialog_forwards_post_install_status(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    dialog.set_post_install_status("tables", "Updating...", Severity.INFO)
+    assert dialog._result_view.status_text("tables") == "Library tables: Updating..."
+
+
+def test_result_backup_hidden_without_backup_dir(qtbot, tmp_path):
+    view, _ = result_view(qtbot, tmp_path, backup=False)
+    view.show()
+    assert view._backup_row.isHidden()
+    assert not view.open_folder_button.isVisible()
+
+
+def test_open_folder_only_backup_dir(qtbot, make_install_dialog, monkeypatch):
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", staticmethod(lambda url: opened.append(url) or True))
+    dialog = make_install_dialog()
+    result = install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    view = dialog._result_view
+    assert view.open_folder_button.text() == "Open folder"
+
+    view.open_folder_button.click()
+    assert opened == [QUrl.fromLocalFile(str(result.backup_dir))]
+
+    # a written file opens in the read-only content view, never in the operating system
+    row = next(i for i in range(view._files_list.count()) if view._files_list.item(i).text().endswith(".kicad_mod"))
+    item = view._files_list.item(row)
+    QTest.mouseDClick(
+        view._files_list.viewport(), Qt.MouseButton.LeftButton, pos=view._files_list.visualItemRect(item).center()
+    )
+    shown = wait_view(qtbot, dialog)
+    assert shown.windowTitle() == f"{item.text()} - written"
+    assert "(footprint" in shown._text.toPlainText()
+    assert opened == [QUrl.fromLocalFile(str(result.backup_dir))]
+
+
+def test_result_files_list_caps_and_elides(qtbot, tmp_path):
+    view, _ = result_view(qtbot, tmp_path, touched=12)
+    view.resize(500, 700)
+    view.show()
+    qtbot.waitExposed(view)
+    files = view._files_list
+    row = files.sizeHintForRow(0)
+    assert files.height() == files.maximumHeight() == files.minimumHeight() == 8 * row + 2 * files.frameWidth()
+    assert files.verticalScrollBar().maximum() > 0
+    assert files.textElideMode() == Qt.TextElideMode.ElideMiddle
+    assert files.editTriggers() == files.EditTrigger.NoEditTriggers
+    assert [files.item(i).toolTip() for i in (0, 11)] == [files.item(0).text(), files.item(11).text()]
+    assert files.item(0).text() == "Custom/Symbols/f0.kicad_sym"
+
+    few, _ = result_view(qtbot, tmp_path, touched=3)
+    few.show()
+    assert few._files_list.height() == 3 * row + 2 * few._files_list.frameWidth()
+
+
+def test_backup_path_elides_with_tooltip(qtbot, tmp_path):
+    view, result = result_view(qtbot, tmp_path)
+    view._backup_label.set_full_text("Backup folder: " + "x" * 400)
+    view.resize(500, 600)
+    view.show()
+    qtbot.waitExposed(view)
+    assert "…" in view._backup_label.text()
+    assert view._backup_label.toolTip() == "Backup folder: " + "x" * 400
+
+
+def test_file_activated_signal_carries_absolute_path(qtbot, tmp_path):
+    view, result = result_view(qtbot, tmp_path)
+    view.show()
+    qtbot.waitExposed(view)
+    with qtbot.waitSignal(view.file_activated, timeout=2000) as blocker:
+        view._files_list.itemActivated.emit(view._files_list.item(1))
+    assert blocker.args == [result.touched[1]]
+
+
+def source_imports(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def test_import_flow_modules_do_not_import_subprocess():
+    modules = (
+        "widgets/import_dialog.py", "widgets/import_result.py", "widgets/conflict_row.py",
+        "importer/preview.py", "importer/form.py", "importer/content.py", "importer/downloads.py",
+    )
+    for module in modules:
+        assert "subprocess" not in source_imports(PACKAGE_ROOT / module), module
+
+
+def test_import_flow_never_runs_git(qtbot, make_install_dialog, monkeypatch):
+    calls = []
+    real_run, real_popen = subprocess.run, subprocess.Popen
+
+    def run(args, *a, **kw):
+        calls.append(args)
+        return real_run(args, *a, **kw)
+
+    class Popen(real_popen):
+        def __init__(self, args, *a, **kw):
+            calls.append(args)
+            super().__init__(args, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", Popen)
+    dialog = make_install_dialog()
+    install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    names = [Path(str(a[0] if isinstance(a, (list, tuple)) else a).split()[0]).name.lower() for a in calls]
+    assert not [n for n in names if "git" in n], names
