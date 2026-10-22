@@ -1377,3 +1377,188 @@ def test_emptied_mpn_blocks_install(qtbot, make_item_dialog):
     dialog._field_restore["mpn"].click()
     wait_current(qtbot, dialog)
     assert dialog._install_btn.isEnabled()
+
+
+# -- plan 05-09 Task 1: Target library combo, badge, token line and the Updating indicators ---------
+
+from PySide6.QtWidgets import QProgressBar  # noqa: E402
+
+from kicad_lib_manager.importer.candidate import ExistingLibrary  # noqa: E402
+from kicad_lib_manager.importer.suggest import RankedLibrary  # noqa: E402
+from kicad_lib_manager.widgets.theme import SUCCESS  # noqa: E402
+
+NEW_BADGE = "new - creates .kicad_sym + .pretty"
+TOKEN_HINT = "Amber parts are guesses or placeholders. Pick an existing library or type a real name."
+
+
+def _with_alternatives(meta, existing=()):
+    base = real_suggest_library(meta, existing)
+    return replace(
+        base,
+        alternatives=(
+            RankedLibrary("IC_IMU_TDK", 5, (), True, False),
+            RankedLibrary("Connector_USB_GCT", 3, (), True, True),
+        ),
+    )
+
+
+def combo_items(dialog: ImportDialog) -> list[str]:
+    """The library combo's entries, a separator shown as '---'."""
+    combo = dialog._library_combo
+    return [
+        "---" if combo.itemData(i, Qt.ItemDataRole.AccessibleDescriptionRole) == "separator" else combo.itemText(i)
+        for i in range(combo.count())
+    ]
+
+
+def test_library_combo_lists_alternatives_then_existing(qtbot, make_item_dialog):
+    reads = {"n": 0}
+    existing = [ExistingLibrary("Zed_Part_X", True, True), ExistingLibrary("Alpha_Part_X", True, False)]
+
+    def read_libraries(layout):
+        reads["n"] += 1
+        return list(existing)
+
+    dialog = make_item_dialog(
+        UL_ZIP, show=True, suggest_library=_with_alternatives, list_existing_libraries=read_libraries
+    )
+    wait_current(qtbot, dialog)
+    # pre-filled with the suggestion; the dropdown holds the alternatives in rank order, a separator, then every library
+    assert dialog._library_combo.currentText() == dialog._suggestion.name
+    assert combo_items(dialog) == ["IC_IMU_TDK", "Connector_USB_GCT", "---", "Zed_Part_X", "Alpha_Part_X"]
+    assert reads["n"] == 1
+
+    # the list is read again each time a package is opened
+    dialog._on_change()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    assert reads["n"] == 2
+
+
+def test_library_typing_debounced_pick_immediate(qtbot, make_item_dialog, recorded):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    edit = dialog._library_combo.lineEdit()
+    before = len(recorded)
+
+    type_text(qtbot, edit, "IC_Typed_TI")  # several textEdited events within a few milliseconds
+    assert dialog._dirty and dialog._debounce.isActive()
+    assert len(recorded) == before
+    assert not dialog._install_btn.isEnabled()
+    qtbot.waitUntil(lambda: len(recorded) == before + 1, timeout=30000)
+    assert recorded[-1].library == "IC_Typed_TI"
+    wait_current(qtbot, dialog)
+    qtbot.wait(450)
+    assert len(recorded) == before + 1  # one rebuild for the whole word
+
+    # picking from the list builds at once and cancels a pending timer
+    type_text(qtbot, edit, "X")
+    assert dialog._debounce.isActive()
+    dialog._library_combo.setEditText("IC_Battery_Charger_TI")
+    dialog._library_combo.textActivated.emit("IC_Battery_Charger_TI")
+    assert not dialog._debounce.isActive() and not dialog._dirty
+    qtbot.waitUntil(lambda: len(recorded) == before + 2, timeout=30000)
+    assert recorded[-1].library == "IC_Battery_Charger_TI"
+    wait_current(qtbot, dialog)
+    qtbot.wait(450)
+    assert len(recorded) == before + 2
+
+
+def test_library_badge_and_token_line(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True)  # the real suggestion: a placeholder name
+    wait_current(qtbot, dialog)
+    name = dialog._suggestion.name
+    assert "SubCategory" in name
+    assert dialog._library_combo.currentText() == name
+    # the token line shows the name with the placeholder in bold amber, and the hint explains why
+    html_text = dialog._token_line.text()
+    assert f'<span style="color:{AMBER};font-weight:bold">SubCategory</span>' in html_text
+    assert not dialog._token_hint.isHidden()
+    assert dialog._token_hint.text() == TOKEN_HINT
+    assert dialog._token_hint.textFormat() == Qt.TextFormat.PlainText
+    assert dialog._library_badge.text() == NEW_BADGE
+
+    edit = dialog._library_combo.lineEdit()
+    type_text(qtbot, edit, "IC_Battery_Charger_TI")
+    assert dialog._library_badge.text() == "existing"  # follows the keystrokes at once, before any rebuild
+    assert SUCCESS in dialog._library_badge.styleSheet()
+    assert "SubCategory" not in dialog._token_line.text()
+    assert dialog._token_hint.isHidden()
+    type_text(qtbot, edit, "IC_New_TI")
+    assert dialog._library_badge.text() == NEW_BADGE
+    type_text(qtbot, edit, "ic_battery_charger_ti")  # a case twin is not the existing library
+    assert dialog._library_badge.text() == NEW_BADGE
+    type_text(qtbot, edit, "")
+    assert dialog._library_badge.isHidden()
+    assert dialog._token_hint.isHidden()
+
+
+def test_library_token_line_escapes_markup(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True)
+    wait_current(qtbot, dialog)
+    type_text(qtbot, dialog._library_combo.lineEdit(), "<b>x</b>_&")
+    text = dialog._token_line.text()
+    assert "&lt;b&gt;x&lt;/b&gt;" in text and "&amp;" in text
+    assert "<b>" not in text
+
+
+def test_updating_label_and_busy_strip(qtbot, make_item_dialog, gates):
+    """Edge E9/loading: Updating... at once, the busy strip only after 150 ms, both gone with the result."""
+    state = {"n": 0}
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        state["n"] += 1
+        if state["n"] >= 2:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = ul_dialog(make_item_dialog, qtbot, build_plan=gated_build)
+    assert dialog._updating_label.isHidden() and dialog._busy_bar.isHidden()
+    assert isinstance(dialog._busy_bar, QProgressBar) and dialog._busy_bar.maximumHeight() == 4
+    first_tree = files_rows(dialog)
+
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert dialog._updating_label.isVisible()
+    assert dialog._updating_label.text() == "Updating..."
+    assert AMBER.lower() in dialog._updating_label.styleSheet().lower()
+    assert dialog._busy_bar.isHidden()  # not before 150 ms
+    assert files_rows(dialog) == first_tree  # the previous tree stays
+    qtbot.wait(250)
+    assert dialog._busy_bar.isVisible()
+    gates[0].set()
+    wait_current(qtbot, dialog)
+    assert dialog._updating_label.isHidden() and dialog._busy_bar.isHidden()
+
+    # a quick text edit shows the label from the first keystroke
+    type_text(qtbot, dialog._fp_name_edit, "Q")
+    assert dialog._updating_label.isVisible()
+    qtbot.waitUntil(lambda: len(gates) == 2, timeout=30000)
+    gates[1].set()
+    wait_current(qtbot, dialog)
+    assert dialog._updating_label.isHidden() and dialog._busy_bar.isHidden()
+
+
+def test_library_long_name_geometry(qtbot, make_item_dialog):
+    """Backstop (UI E6/long-text): a 60-character library name keeps the badge and token line inside the pane."""
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    dialog.resize(900, 600)
+    wait_current(qtbot, dialog)
+    long_name = ("IC_" + "Averylongtokenabc_" * 3 + "Zlast_TI")[:60]
+    assert len(long_name) == 60 and not long_name.endswith("_")
+    type_text(qtbot, dialog._library_combo.lineEdit(), long_name)
+    qtbot.wait(50)
+    scroll = dialog._left_scroll
+    viewport = scroll.viewport()
+    left = scroll.widget()
+    assert not scroll.horizontalScrollBar().isVisible()
+    assert left.width() <= viewport.width()
+    for widget in (dialog._library_combo, dialog._library_badge, dialog._token_line, dialog._token_hint):
+        if widget.isVisible():
+            right = widget.mapTo(left, QPoint(widget.width(), 0)).x()
+            assert right <= viewport.width(), (widget, right, viewport.width())
+    assert dialog._library_badge.isVisible()
+    assert dialog._token_line.toolTip() == long_name
+    # the token line wraps instead of widening the pane
+    assert dialog._token_line.height() >= dialog._token_line.fontMetrics().height()
