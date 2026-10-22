@@ -50,7 +50,7 @@ from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
 from .conflict_row import ConflictRow
 from .content_view import ContentViewDialog
-from .import_result import ElidedLabel
+from .import_result import ElidedLabel, ImportResultView, kicad_running_text
 from .preview_tree import PreviewTree
 from .theme import (
     AMBER, AMBER_TINT, BORDER, DISPLAY_PT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY,
@@ -682,27 +682,13 @@ class ImportDialog(QDialog):
         self._fit_failure_body()
 
     def _build_result_page(self):
-        page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setSpacing(8)
-        self._banner = QLabel()
-        self._banner.setTextFormat(Qt.TextFormat.PlainText)
-        font = self._banner.font()
-        font.setBold(True)
-        font.setPointSize(12)
-        self._banner.setFont(font)
-        lay.addWidget(self._banner)
-        lay.addWidget(self._heading("Files written"))
-        self._result_list = QListWidget()
-        lay.addWidget(self._result_list, stretch=1)
-        close_row = QHBoxLayout()
-        close_row.addStretch()
-        self._close_btn = QPushButton("Close")
-        self._close_btn.clicked.connect(self.accept)
-        close_row.addWidget(self._close_btn)
-        lay.addLayout(close_row)
-        self._result_page = page
-        self._stack.addWidget(page)
+        """The Result view replaces the Edit page in place after a successful install (D-15)."""
+        view = ImportResultView()
+        view.close_button.clicked.connect(self.accept)
+        view.file_activated.connect(self._on_written_file_activated)
+        self._result_view = view
+        self._result_page = view
+        self._stack.addWidget(view)
 
     @staticmethod
     def _heading(text: str) -> QLabel:
@@ -2103,17 +2089,53 @@ class ImportDialog(QDialog):
         self._request_rebuild()
 
     def _show_result(self, plan: InstallPlan, result: InstallResult):
-        self._banner.setText(f"✓ Installed {plan.symbol_name} into {result.library}")
-        self._result_list.clear()
-        for path in result.touched:
-            try:
-                shown = Path(path).relative_to(self._repo_root).as_posix()
-            except ValueError:
-                shown = Path(path).as_posix()
-            self._result_list.addItem(shown)
-        self._stack.setCurrentWidget(self._result_page)
-        self._close_btn.setAutoDefault(True)
-        self._close_btn.setDefault(True)
+        view = self._result_view
+        view.show_result(result, plan, self._repo_root)
+        self._stack.setCurrentWidget(view)
+        # Close is the default button on this page only (Enter closes it; the Edit page has none)
+        view.close_button.setAutoDefault(True)
+        view.close_button.setDefault(True)
+        view.close_button.setFocus()
+        self._start_kicad_check(result.library)
+
+    def set_post_install_status(self, row: str, text: str, severity: Severity):
+        """Set a status row of the Result view: library_list, tables or generate_hint (D-16, D-17)."""
+        self._result_view.set_status(row, text, severity)
+
+    def _start_kicad_check(self, library: str):
+        """Look for a running KiCad off the GUI thread; the notice is a best-effort hint (POST-05, D-18)."""
+        core = self._core
+        worker = self._spawn(lambda progress: core.kicad_running())
+        worker.result.connect(lambda names, lib=library: self._on_kicad_running(lib, names))
+        worker.failed.connect(lambda text: None)  # a failed check shows nothing and logs nothing
+        worker.start()
+
+    def _on_kicad_running(self, library: str, names):
+        if self._closing or not names:
+            return
+        self._result_view.set_kicad_running(library)
+        self.issues_logged.emit([Issue(Severity.WARNING, "import.kicad_running", kicad_running_text(library))])
+
+    def _on_written_file_activated(self, path: Path):
+        """A Files written row was opened: show what the install wrote, read-only, in the content view (D-15)."""
+        plan = self.result_plan
+        if plan is None or self._closing:
+            return
+        op = next((candidate for candidate in plan.ops if candidate.path == path), None)
+        if op is None:
+            return
+        core, repo_root = self._core, self._repo_root
+        try:
+            rel = path.relative_to(repo_root).as_posix()
+        except ValueError:
+            rel = path.as_posix()
+        # base_sha256 None reads as "a new file": the text the install wrote, or the size and hash of a model
+        written = replace(op, base_sha256=None)
+
+        def build() -> ContentText:
+            return replace(core.op_content(written, repo_root), title=f"{rel} - written")
+
+        self._run_content(build)
 
     # -- Change... (D-02): back to the Start page, nothing is asked ------------------
 

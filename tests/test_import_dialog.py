@@ -2888,13 +2888,16 @@ def test_open_folder_only_backup_dir(qtbot, make_install_dialog, monkeypatch):
     # a written file opens in the read-only content view, never in the operating system
     row = next(i for i in range(view._files_list.count()) if view._files_list.item(i).text().endswith(".kicad_mod"))
     item = view._files_list.item(row)
-    QTest.mouseDClick(
-        view._files_list.viewport(), Qt.MouseButton.LeftButton, pos=view._files_list.visualItemRect(item).center()
-    )
+    # Enter and a double click both end in the list's activated signal; the offscreen platform sends no
+    # synthetic double click, so the key is used here
+    view._files_list.setCurrentItem(item)
+    view._files_list.setFocus()
+    QTest.keyClick(view._files_list, Qt.Key.Key_Return)
     shown = wait_view(qtbot, dialog)
     assert shown.windowTitle() == f"{item.text()} - written"
     assert "(footprint" in shown._text.toPlainText()
     assert opened == [QUrl.fromLocalFile(str(result.backup_dir))]
+    assert dialog.isVisible() and not dialog._closing  # Enter on a row must not reach the Close button
 
 
 def test_result_files_list_caps_and_elides(qtbot, tmp_path):
