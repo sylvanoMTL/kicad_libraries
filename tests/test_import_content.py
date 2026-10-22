@@ -15,6 +15,7 @@ from kicad_lib_manager.importer.content import (
     MAX_LINES,
     ContentText,
     cap_lines,
+    diff_text,
     op_content,
     unchanged_content,
 )
@@ -76,7 +77,9 @@ def test_modified_diff_shows_only_hunk(tmp_path):
     assert sum(1 for line in lines if line.startswith("@@")) == 1
     assert [line for line in lines if line.startswith("+") and not line.startswith("+++")] == ["+(symbol added)"]
     assert not [line for line in lines if line.startswith("-") and not line.startswith("---")]
-    assert " line 27" in lines and " line 33" in lines  # 3 lines of context each side
+    # 3 lines of context each side of the added line, and nothing further away
+    assert " line 28" in lines and " line 33" in lines
+    assert " line 27" not in lines and " line 34" not in lines
     assert " line 5" not in lines and " line 55" not in lines
 
 
@@ -111,6 +114,11 @@ def test_diff_truncated_at_512_kib(tmp_path):
     assert 0 < kept < MAX_LINES
     assert lines[-1] == f"Diff truncated: showing the first {kept} of {total} lines."
     assert sum(len(line.encode()) + 1 for line in lines[:-1]) <= MAX_BYTES
+
+
+def test_diff_text_uses_the_given_labels_and_ignores_a_bom():
+    body = diff_text(b"\xef\xbb\xbfone\ntwo\n", b"one\nthree\n", "old", "new")
+    assert body.split("\n") == ["--- old", "+++ new", "@@ -1,2 +1,2 @@", " one", "-two", "+three"]
 
 
 def test_cap_lines_leaves_a_small_text_alone():
