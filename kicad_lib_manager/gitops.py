@@ -255,6 +255,14 @@ def head_blob(ctx: GitContext, repo: Path, rel: str) -> bytes | None:
     return run.raw if _ok(run) else None
 
 
+def commit_files(ctx: GitContext, repo: Path, rev: str = "HEAD") -> list[str] | None:
+    """The paths a commit changed (`diff-tree --root`, NUL-separated and unquoted); None when git cannot list them."""
+    run = run_git(ctx, repo, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", rev)
+    if not _ok(run):
+        return None
+    return [name for name in run.raw.decode("utf-8", errors="replace").split("\0") if name]
+
+
 def status_entries(ctx: GitContext, repo: Path) -> list[str] | Issue:
     """The path of every changed or untracked file (`status --porcelain=v1 -z -uall`), each counted once.
 

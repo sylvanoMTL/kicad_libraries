@@ -14,7 +14,8 @@ from pathlib import Path
 from .. import gitops
 from ..gitops import GitContext, GitRun
 from ..models import Issue, Severity
-from .commit_plan import CommitPlan, changed_since_install, parent_message, subject_of
+from .commit_plan import CommitPlan, changed_since_install, parent_message, pre_install_bytes, subject_of
+from .content import ContentText, binary_text, diff_text
 
 
 @dataclass(frozen=True)
@@ -369,6 +370,65 @@ def _custom_failure(run: GitRun | Issue, *, committing: bool) -> CommitOutcome:
     return _failed("commit.custom_failed", text, output)
 
 
+def commit_parent_ref(
+    ctx: GitContext, cplan: CommitPlan, subject: str
+) -> tuple[str | None, str, GitRun | Issue | None, tuple[Issue, ...]]:
+    """Commit only the Custom gitlink in the parent repo, after Custom's own commit exists.
+
+    Returns (short parent hash, final message, failing run, issues). The message is built here, from
+    the gitlink the parent committed before and Custom's HEAD now, so it lists every Custom commit
+    the bump covers, the earlier ones included (D-13). When the parent already points at Custom's
+    HEAD no commit is made and an INFO issue says so (RESEARCH Pitfall 12). The gitlink is read with
+    ls-tree, never parsed from diff output (Pitfall 13).
+    """
+    parent, custom = cplan.repo_root, cplan.custom_dir
+    old = gitops.committed_gitlink(ctx, parent, cplan.custom_rel)
+    new = gitops.head_commit(ctx, custom) or ""
+    if old is not None and old == new:
+        text = f"The parent repo already points at Custom {new[:7]}; no parent commit was needed"
+        return None, "", None, (Issue(Severity.INFO, "commit.parent_skipped", text),)
+    commits = gitops.log_range(ctx, custom, old, new) if old else []
+    message = parent_message(subject, cplan.custom_rel, old, new, commits or [], listed=commits is not None)
+    run = gitops.commit_gitlink(ctx, parent, message, cplan.custom_rel)
+    if _run_failed(run):
+        return None, message, run, ()
+    return gitops.short_hash(ctx, parent) or "?", message, None, ()
+
+
+def pre_import_diff(cplan: CommitPlan, rel: str, *, git: GitContext | None = None) -> ContentText:
+    """The D-09 view of one file: what HEAD holds against what the work tree held before the import.
+
+    The pre-import side is the Phase 4 backup copy whose hash is base_sha256. Reads files and runs
+    read-only git only.
+    """
+    cfile = next((f for f in cplan.files if f.rel == rel), None)
+    if cfile is None:
+        return ContentText(f"{rel} - HEAD vs before this import", rel, f"{rel} is not part of this commit.", "error")
+    shown = cfile.display
+    title = f"{shown} - HEAD vs before this import"
+    if cfile.base_sha256 is None:
+        return ContentText(title, shown, "This file did not exist before this import.", "text")
+    pre = pre_install_bytes(cfile, cplan.backup_dir)
+    if pre is None:
+        where = str(cplan.backup_dir) if cplan.backup_dir is not None else "(no backup folder was recorded)"
+        return ContentText(title, shown, f"The copy from before this import was not found in {where}.", "error")
+    ctx = _context(cplan, git)
+    if isinstance(ctx, Issue):
+        return ContentText(title, shown, f"Could not read HEAD: {ctx.text}.", "error")
+    head = gitops.head_blob(ctx, cplan.custom_dir, rel)
+    if head is not None and head == pre:
+        return ContentText(title, shown, "The file matched HEAD before this import.", "unchanged")
+    if cfile.kind == "model":
+        before = binary_text(f"{shown} (before this import)", len(pre), hashlib.sha256(pre).hexdigest())
+        if head is None:
+            return ContentText(title, shown, f"{shown} (not in HEAD)\n\n{before}", "binary")
+        at_head = binary_text(f"{shown} (HEAD)", len(head), hashlib.sha256(head).hexdigest())
+        return ContentText(title, shown, f"{at_head}\n\n{before}", "binary")
+    old_label = f"{shown} (HEAD)" if head is not None else f"{shown} (not in HEAD)"
+    body = diff_text(head or b"", pre, old_label, f"{shown} (before this import)")
+    return ContentText(title, shown, body, "diff")
+
+
 def run_commit(
     cplan: CommitPlan,
     message: str,
@@ -423,20 +483,27 @@ def run_commit(
         "custom_upstream": upstream[0] if upstream else None,
         "custom_ahead": upstream[1] if upstream else None,
     }
+    # the commit holds exactly the planned files, or the user is told it does not (RESEARCH Pitfall 1)
+    planned = set(rels)
+    committed_files = gitops.commit_files(ctx, custom)
+    if committed_files is not None and set(committed_files) != planned:
+        extra, missing = sorted(set(committed_files) - planned), sorted(planned - set(committed_files))
+        stop = " The parent repo was not updated." if bump_parent else ""
+        issues.append(Issue(
+            Severity.ERROR, "commit.unexpected_files",
+            f"The Custom commit {short} was made, but its files differ from the list shown: "
+            f"{extra} added, {missing} missing.{stop}",
+        ))
+        return CommitOutcome(issues=tuple(issues), **fields)
     if not bump_parent:
         return CommitOutcome(issues=tuple(issues), **fields)
 
     step("Committing Custom ref in parent...", 1, 2)
     parent = cplan.repo_root
-    old = gitops.committed_gitlink(ctx, parent, cplan.custom_rel)
-    new_head = gitops.head_commit(ctx, custom) or ""
-    commits = gitops.log_range(ctx, custom, old, new_head) if old else []
-    text = parent_message(
-        subject_of(message), cplan.custom_rel, old, new_head, commits or [], listed=commits is not None
-    )
+    parent_short, text, parent_run, parent_issues = commit_parent_ref(ctx, cplan, subject_of(message))
     fields["parent_message"] = text
-    parent_run = gitops.commit_gitlink(ctx, parent, text, cplan.custom_rel)
-    if _run_failed(parent_run):
+    issues.extend(parent_issues)
+    if parent_run is not None:
         subject = text.splitlines()[0].replace('"', '\\"')
         manual = f'git -C "{parent.as_posix()}" commit -m "{subject}" -- {cplan.custom_rel}'
         output = parent_run.text if isinstance(parent_run, Issue) else parent_run.output
@@ -446,8 +513,9 @@ def run_commit(
             f"{output}\nFinish it by hand: {manual}",
         ))
         return CommitOutcome(manual_command=manual, output=output, issues=tuple(issues), **fields)
+    if parent_short is None:  # the parent already points at Custom's HEAD: nothing to commit (D-13)
+        return CommitOutcome(issues=tuple(issues), **fields)
 
-    parent_short = gitops.short_hash(ctx, parent) or "?"
     parent_branch = gitops.current_branch(ctx, parent) or "HEAD"
     parent_upstream = gitops.upstream_ahead(ctx, parent)
     issues.append(Issue(
