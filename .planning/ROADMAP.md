@@ -203,7 +203,7 @@ Plans:
 - [ ] 05-10-PLAN.md — PREV-05 per-conflict Overwrite/Rename/Skip rows kept by key (D-14a), no bulk control; content view from file rows and conflicts through one serial build queue (wave 5)
 
 **Wave 6** *(blocked on Wave 5 completion)*
-- [ ] 05-11-PLAN.md — Install progress and lock, failure banner with rebuild, Result view (warnings, KiCad-running notice POST-05, live status rows, backup, commitSlot for Phase 6), git-free check, full suite and owner UAT (wave 6)
+- [ ] 05-11-PLAN.md — Install progress and lock, failure banner with rebuild, Result view (warnings, KiCad-running notice POST-05, live status rows, backup, commitSlot for Phase 6), git-free check, help-page accuracy check against the finished widgets, full suite and owner UAT (wave 6)
 
 **UI hint**: yes
 **Contract from Phase 3 (D-04)**: the Install button stays disabled, with the reason shown, while `importer.suggest.placeholder_tokens(name)` is non-empty for the edited target library name.
