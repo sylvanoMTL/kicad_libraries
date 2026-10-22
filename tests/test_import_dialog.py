@@ -502,3 +502,262 @@ def test_start_page_offer_elides_long_name_and_keeps_full_path(qtbot, make_start
     assert shown.endswith(" (3 days ago)")
     assert "…" in shown
     assert dialog._offer_label.toolTip() == str(path)
+
+
+# -- Browse, refused or empty packages, package header (plan 05-05 task 2) -----------------------
+
+from kicad_lib_manager.widgets import import_dialog as import_dialog_module  # noqa: E402
+from kicad_lib_manager.widgets.theme import AMBER, ERROR  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+
+
+def issue_rows(dialog: ImportDialog) -> list[str]:
+    return [dialog._issue_list.item(i).text() for i in range(dialog._issue_list.count())]
+
+
+def wait_issue_box(qtbot, dialog: ImportDialog) -> None:
+    qtbot.waitUntil(lambda: dialog._issue_box.isVisible(), timeout=30000)
+
+
+def nothing_found_core(issues=(), **changes) -> dict:
+    """Core fields for a package that opens fine but yields no candidate."""
+    return {
+        "open_package": lambda path, repo_root, progress=None: fake_package(path, issues),
+        "detect_candidate": lambda package: (None, []),
+        **changes,
+    }
+
+
+def test_start_page_browse_uses_last_dir(qtbot, make_start_dialog, downloads, tmp_path, monkeypatch):
+    opened: list[Path] = []
+
+    def recording_open(path, repo_root, progress=None):
+        opened.append(Path(path))
+        return fake_package(path)
+
+    dialog = make_start_dialog(open_package=recording_open, detect_candidate=lambda package: (None, []))
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    settings.save_import_dir(saved)
+    picked = tmp_path / "picked"
+    picked.mkdir()
+    zip_path = picked / "p.zip"
+    zip_path.write_bytes(b"PK")
+    folder_path = picked / "loose_files"
+    folder_path.mkdir()
+    starts: list[str] = []
+
+    def fake_open_file(parent, caption, directory, file_filter):
+        starts.append(directory)
+        return str(zip_path), ""
+
+    def fake_open_dir(parent, caption, directory):
+        starts.append(directory)
+        return str(folder_path)
+
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getOpenFileName", staticmethod(fake_open_file))
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getExistingDirectory", staticmethod(fake_open_dir))
+
+    def idle():
+        return dialog._open_worker is None and dialog._browse_btn.isEnabled()
+
+    dialog._browse_btn.click()
+    qtbot.waitUntil(lambda: opened == [zip_path] and idle(), timeout=30000)
+    assert starts == [str(saved)]
+    assert settings.load_import_dir() == picked
+
+    # nothing saved: the dialog starts in the Downloads folder
+    settings.get_settings().remove("import/last_dir")
+    dialog._browse_btn.click()
+    qtbot.waitUntil(lambda: len(opened) == 2 and idle(), timeout=30000)
+    assert starts[-1] == str(downloads)
+
+    # Browse folder... saves the picked folder's parent and opens the folder
+    settings.get_settings().remove("import/last_dir")
+    dialog._browse_folder_btn.click()
+    qtbot.waitUntil(lambda: len(opened) == 3 and idle(), timeout=30000)
+    assert opened[-1] == folder_path
+    assert settings.load_import_dir() == picked
+
+
+def test_start_page_browse_falls_back_to_home(qtbot, make_start_dialog, monkeypatch):
+    dialog = make_start_dialog(downloads_dir=lambda: None, **nothing_found_core())
+    starts: list[str] = []
+
+    def fake_open_file(parent, caption, directory, file_filter):
+        starts.append(directory)
+        return "", ""
+
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getOpenFileName", staticmethod(fake_open_file))
+    dialog._browse_btn.click()
+    assert starts == [str(Path.home())]
+    assert dialog._open_worker is None  # cancelling opens nothing
+
+
+def test_start_page_refused_zip_lists_issues(qtbot, make_start_dialog, tmp_path):
+    from zipfixtures import LEGACY_DCM_BYTES, LEGACY_LIB_BYTES, LEGACY_MOD_BYTES, make_zip
+
+    legacy = make_zip(
+        tmp_path / "kicad5_only.zip",
+        [("part.lib", LEGACY_LIB_BYTES), ("part.dcm", LEGACY_DCM_BYTES), ("part.mod", LEGACY_MOD_BYTES)],
+    )
+    packages: list[Package] = []
+
+    def capturing_open(path, repo_root, progress=None):
+        package = real_open_package(path, repo_root, progress)
+        packages.append(package)
+        return package
+
+    dialog = make_start_dialog(open_package=capturing_open)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    dialog.open_path(legacy)
+    wait_issue_box(qtbot, dialog)
+
+    assert dialog._stack.currentWidget() is dialog._start_page
+    assert dialog._issue_heading.text() == "This package can't be imported"
+    rows = issue_rows(dialog)
+    assert rows and all(row.startswith("✖ ") for row in rows)
+    assert any("re-download as KiCad v6+" in row for row in rows)
+    assert dialog._issue_closing.text() == "Pick another file."
+    assert [f"✖ {i.text}" for i in logged if i.severity is Severity.ERROR] == rows
+    assert dialog._issue_list.item(0).foreground().color().name().lower() == ERROR.lower()
+    assert dialog._package is None
+    assert packages and packages[0].staging_dir is None  # the package was closed
+
+
+def test_nothing_found_shows_package_warnings(qtbot, make_start_dialog):
+    warning = Issue(Severity.WARNING, "intake.test_warning", "Skipped 2 unreadable files")
+    dialog = make_start_dialog(**nothing_found_core([warning]))
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["⚠ Skipped 2 unreadable files"]
+    assert dialog._issue_list.item(0).foreground().color().name().lower() == AMBER.lower()
+    assert dialog._issue_closing.text() == (
+        "Check that you downloaded the KiCad format, then pick another file."
+    )
+    assert logged == [warning]
+
+
+def test_nothing_found_merges_package_and_detection_issues_once(qtbot, make_start_dialog):
+    shared = Issue(Severity.WARNING, "intake.shared", "Shared note")
+    detect_only = Issue(Severity.WARNING, "intake.detect", "Detection note")
+    dialog = make_start_dialog(
+        **nothing_found_core([shared], detect_candidate=lambda package: (None, [shared, detect_only]))
+    )
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["⚠ Shared note", "⚠ Detection note"]
+    assert logged == [shared, detect_only]
+
+
+def test_nothing_found_no_issues_message(qtbot, make_start_dialog):
+    dialog = make_start_dialog(**nothing_found_core())
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["No KiCad symbol or footprint was found in this package."]
+    assert dialog._issue_closing.text() == (
+        "Check that you downloaded the KiCad format, then pick another file."
+    )
+
+
+def test_issue_text_is_plain(qtbot, make_start_dialog):
+    markup = Issue(Severity.WARNING, "intake.markup", "<b>bold</b> <a href='http://x'>link</a>")
+    dialog = make_start_dialog(**nothing_found_core([markup]))
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["⚠ <b>bold</b> <a href='http://x'>link</a>"]
+    assert dialog._issue_closing.textFormat() == Qt.TextFormat.PlainText
+
+
+def test_start_page_list_hidden_and_cleared(qtbot, make_start_dialog, gates):
+    calls = {"n": 0}
+    warning = Issue(Severity.WARNING, "intake.test_warning", "First package warning")
+
+    def open_second_gated(path, repo_root, progress=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return fake_package(path, [warning])
+        gate = threading.Event()
+        gates.append(gate)
+        progress("Reading member 3 of 9", 3, 9)
+        assert gate.wait(30)
+        return fake_package(path)
+
+    dialog = make_start_dialog(
+        open_package=open_second_gated, detect_candidate=lambda package: (None, [])
+    )
+    assert not dialog._issue_box.isVisible()  # hidden before any package is read
+    dialog.open_path(Path("first.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["⚠ First package warning"]
+
+    dialog.open_path(Path("second.zip"))
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    qtbot.waitUntil(lambda: dialog._reading_label.text() == "Reading member 3 of 9", timeout=30000)
+    assert not dialog._issue_box.isVisible()
+    assert dialog._issue_list.count() == 0
+    assert dialog._reading_box.isVisible()
+    assert not dialog._offer_row.isVisible()
+    assert not dialog._browse_btn.isEnabled()
+    assert not dialog._browse_folder_btn.isEnabled()
+    gates[0].set()
+    wait_issue_box(qtbot, dialog)
+    assert dialog._browse_btn.isEnabled()
+    assert not dialog._reading_box.isVisible()
+
+
+def test_issue_list_caps_height_and_wraps(qtbot, make_start_dialog):
+    many = [Issue(Severity.WARNING, f"intake.w{i}", f"Warning number {i} " + "word " * 40) for i in range(20)]
+    dialog = make_start_dialog(**nothing_found_core(many))
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert dialog._issue_list.count() == 20
+    assert dialog._issue_list.maximumHeight() == 160
+    assert dialog._issue_list.wordWrap()
+    assert dialog._issue_list.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+
+
+def test_change_returns_to_start_and_closes_package(qtbot, make_start_dialog):
+    closed: list[str] = []
+
+    def recording_open(path, repo_root, progress=None):
+        package = real_open_package(path, repo_root, progress)
+        original = package.close
+
+        def close():
+            closed.append("close")
+            original()
+
+        package.close = close
+        return package
+
+    dialog = make_start_dialog(open_package=recording_open)
+    dialog.open_path(UL_ZIP)
+    wait_plan(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert dialog._vendor_label.text() == "Ultra Librarian"
+    assert dialog.windowTitle() == "Import Part - ul_CSD85301Q2.zip"
+    assert closed == []
+
+    dialog._change_btn.click()
+    assert dialog._stack.currentWidget() is dialog._start_page
+    assert dialog.windowTitle() == "Import Part"
+    assert dialog._building is None and dialog._queued is None
+    assert dialog._plan is None and dialog._candidate is None
+    assert closed == ["close"]
+    assert dialog._browse_btn.isEnabled()
+    assert not dialog._issue_box.isVisible()
+
+
+@pytest.mark.parametrize(
+    ("vendor", "label"),
+    [("UltraLibrarian", "Ultra Librarian"), ("Loose", "Loose files"), ("Unknown", "Unknown vendor"), ("Odd", "Odd")],
+)
+def test_vendor_labels(vendor, label):
+    assert import_dialog_module.vendor_label(vendor) == label
