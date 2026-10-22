@@ -11,7 +11,9 @@ from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
 from .importer.layout import RepoLayout
 from .library_scanner import scan_all, find_kicad_footprint_dir, sync_kicad_path_vars
-from .table_generator import write_tables, restore_backup_pair, table_info, TableInfo
+from .table_generator import (
+    add_library_entries, write_tables, restore_backup_pair, table_info, TableInfo,
+)
 from .models import Issue, ScanResult, Severity
 from .settings import (
     load_kicad_fp_dir, save_kicad_fp_dir,
@@ -394,9 +396,10 @@ class MainWindow(QMainWindow):
             pending = self._pending_post_install
             if pending is not None and pending.scan_started:
                 self._apply_post_install_selection(result, pending)
-                self._pending_post_install = None
 
             self._tree.populate(result)
+            if pending is not None and pending.scan_started:
+                self._finish_post_install(result)
 
             self._log_issues(result.issues)
 
@@ -543,9 +546,6 @@ class MainWindow(QMainWindow):
         try:
             if self._progress is not None:
                 self._progress.close()
-            pending = self._pending_post_install
-            if pending is not None and pending.scan_started:
-                self._pending_post_install = None
             self._log.log(f"Scan error: {error_msg}", "error")
             if self._startup_pending:
                 self._log.log(
@@ -554,6 +554,9 @@ class MainWindow(QMainWindow):
                     "(restart the app to pre-select from the tables).",
                     "info",
                 )
+            pending = self._pending_post_install
+            if pending is not None and pending.scan_started:
+                self._finish_post_install(None)
         finally:
             self._finish_scan()
 
@@ -581,6 +584,52 @@ class MainWindow(QMainWindow):
                         "and has the same nickname",
                         "info",
                     )
+
+    def _finish_post_install(self, result: ScanResult | None):
+        """Last post-install step: reveal the library, then tables or a Generate hint.
+
+        Runs after the selection step, whether the rescan succeeded (result) or failed
+        (None): the table entries come from the install plan, not from the scan. Only the
+        installed library's own entries are written, never the tree's ungenerated
+        selection (D-17), so write_tables is deliberately not used here.
+        """
+        pending, self._pending_post_install = self._pending_post_install, None
+        if pending is None:
+            return
+
+        if result is not None:
+            self._tree.reveal(pending.sym_rel_path, pending.fp_rel_path)
+
+        dest = Path(self._dest_combo.currentText())
+        if not dest.is_dir():
+            self._log.log(f"Destination folder does not exist: {dest}", "error")
+            return
+
+        if pending.new_library:
+            self._log_issues(add_library_entries(
+                dest, pending.library, pending.sym_rel_path, pending.fp_rel_path
+            ))
+            # Same rule as Generate: the path variables follow every table write
+            self._log_issues(sync_kicad_path_vars(REPO_ROOT))
+            return
+
+        listed = True
+        for name, rel_path in (
+            ("sym-lib-table", pending.sym_rel_path),
+            ("fp-lib-table", pending.fp_rel_path),
+        ):
+            info = table_info(dest / name)
+            if isinstance(info, Issue):
+                self._log.log_issue(info)
+                listed = False
+            elif info is None or rel_path not in info.managed:
+                listed = False
+        if not listed:
+            self._log_issues([Issue(
+                Severity.WARNING,
+                "import.not_in_tables",
+                f"{pending.library} is not in the library tables. Press Generate Tables to add it.",
+            )])
 
     def _open_import(self, path: Path | None = None):
         """Open the Import Part dialog, optionally with a package already chosen."""
