@@ -141,6 +141,20 @@ def test_rows_reimport_shows_unchanged(ul_package, ul_layout, tmp_path):
     assert file_counts(plan, candidate, options) == FileCounts(new=0, modified=0, unchanged=3)
 
 
+def test_rows_reimport_into_the_real_custom_library(ul_package, custom_copy, tmp_path):
+    # The same round trip against a copy of the real Custom/ library (skipped without the submodule)
+    first, candidate, options = _ul_plan(ul_package, custom_copy)
+    assert not first.blocked, first.issues
+    files = _sections(first, candidate, options)["Files"]
+    assert [r.text[0] for r in files.rows] == ["+", "+", "~"]
+    assert apply_plan(first, backup_root=tmp_path / "backups").ok
+    plan = build_plan(candidate, options, custom_copy, ToolContext())
+    assert plan.is_noop
+    again = _sections(plan, candidate, options)["Files"]
+    assert [r.text[0] for r in again.rows] == ["=", "=", "="]
+    assert file_counts(plan, candidate, options) == FileCounts(0, 0, 3)
+
+
 def test_rows_case_twin_is_conflict_not_unchanged(ul_package, ul_layout):
     twin = ul_layout.footprints_dir / f"{UL_LIBRARY}.pretty" / "dqk0006b.kicad_mod"
     twin.write_bytes(b"(footprint \"different\")\n")

@@ -355,19 +355,20 @@ def test_preview_sections_follow_plan_ops(ul_package, custom_copy):
         model=candidate.models[0].filename,
     )
     plan = real_build_plan(candidate, options, custom_copy)
-    (files,) = preview_sections(plan, candidate, options)
+    files = preview_sections(plan, candidate, options)[0]  # plan 05-06 added the other sections after Files
     assert files.title == "Files (3)"
     assert [r.text for r in files.rows] == [
         "+ Custom/3DModels/CSD85301Q2.stp",
         "+ Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod",
         "~ Custom/Symbols/IC_Battery_Charger_TI.kicad_sym",
     ]
-    assert [r.detail for r in files.rows] == ["new", "new", "modified"]
+    assert files.rows[0].detail.startswith("new, ") and files.rows[0].detail.endswith(" KiB")
+    assert [r.detail for r in files.rows[1:]] == ["new", "modified"]
     assert [r.op_index for r in files.rows] == [0, 1, 2]
     counts = file_counts(plan, candidate, options)
     assert (counts.new, counts.modified, counts.unchanged) == (2, 1, 0)
 
     fresh = real_build_plan(candidate, replace(options, library="A_x_TI"), custom_copy)
-    (fresh_files,) = preview_sections(fresh, candidate, options)
+    fresh_files = preview_sections(fresh, candidate, options)[0]
     assert fresh_files.rows[0].text == "+ Custom/Footprints/A_x_TI.pretty/"
     assert file_counts(fresh, candidate, options).new == 3
