@@ -602,19 +602,36 @@ class MainWindow(QMainWindow):
         pending, self._pending_post_install = self._pending_post_install, None
         if pending is None:
             return
+        library = pending.library
 
-        if result is not None:
+        # The Result view's rows follow each step (D-16); the dialog may already be closed
+        if result is None:
+            self._set_import_status("library_list", "Rescan failed - see the log", Severity.ERROR)
+        else:
             self._tree.reveal(pending.sym_rel_path, pending.fp_rel_path)
+            if any(lib.rel_path == pending.sym_rel_path for lib in result.symbol_libs):
+                self._set_import_status("library_list", f"Updated; {library} is selected", Severity.SUCCESS)
+            else:
+                self._set_import_status(
+                    "library_list", f"Updated; {library} was not found in the scan", Severity.WARNING
+                )
 
         dest = Path(self._dest_combo.currentText())
         if not dest.is_dir():
             self._log.log(f"Destination folder does not exist: {dest}", "error")
+            if pending.new_library:
+                self._set_import_status(
+                    "tables", f"Destination folder does not exist: {dest}", Severity.ERROR
+                )
             return
 
         if pending.new_library:
-            self._log_issues(add_library_entries(
-                dest, pending.library, pending.sym_rel_path, pending.fp_rel_path
-            ))
+            issues = add_library_entries(
+                dest, library, pending.sym_rel_path, pending.fp_rel_path
+            )
+            self._log_issues(issues)
+            text, severity = self._tables_outcome(library, issues)
+            self._set_import_status("tables", text, severity)
             # Same rule as Generate: the path variables are offered for change after every
             # table write, never written silently
             self._sync_path_vars()
@@ -632,11 +649,33 @@ class MainWindow(QMainWindow):
             elif info is None or rel_path not in info.managed:
                 listed = False
         if not listed:
-            self._log_issues([Issue(
-                Severity.WARNING,
-                "import.not_in_tables",
-                f"{pending.library} is not in the library tables. Press Generate Tables to add it.",
-            )])
+            hint = f"{library} is not in the library tables. Press Generate Tables to add it."
+            self._log_issues([Issue(Severity.WARNING, "import.not_in_tables", hint)])
+            self._set_import_status("generate_hint", f"⚠ {hint}", Severity.WARNING)
+
+    def _set_import_status(self, row: str, text: str, severity: Severity):
+        """Update a status row of the Result view; nothing happens once the dialog is closed."""
+        dialog = self._import_dialog
+        if dialog is not None:
+            dialog.set_post_install_status(row, text, severity)
+
+    @staticmethod
+    def _tables_outcome(library: str, issues: list[Issue]) -> tuple[str, Severity]:
+        """The Library tables row for a new library, from the Issues of add_library_entries (D-17)."""
+        errors = [issue for issue in issues if issue.severity is Severity.ERROR]
+        if errors:
+            return errors[0].text, Severity.ERROR
+        codes = [issue.code for issue in issues]
+        if "table.entries_added" in codes:
+            return f"Added {library} to sym-lib-table and fp-lib-table", Severity.SUCCESS
+        warned = any(issue.severity is Severity.WARNING for issue in issues)
+        if codes.count("table.already_listed") == 1 and "table.entry_added" not in codes and not warned:
+            return f"Not changed: {library} was already in the tables", Severity.INFO
+        parts = [
+            issue.text for issue in issues
+            if issue.code in ("table.entry_added", "table.already_listed", "table.external_clash")
+        ]
+        return "; ".join(parts) or f"Library tables checked for {library}", Severity.WARNING if warned else Severity.INFO
 
     def _import_busy(self) -> bool:
         """True while a scan runs or the import dialog is open (D-19)."""
@@ -728,6 +767,12 @@ class MainWindow(QMainWindow):
             sym_rel_path=plan.symbol_lib_path.relative_to(root).as_posix(),
             fp_rel_path=plan.pretty_path.relative_to(root).as_posix(),
         )
+        self.statusBar().showMessage(f"Installed {plan.symbol_name} into {result.library}", 5000)
+        self._set_import_status("library_list", "Rescanning...", Severity.INFO)
+        if plan.new_library:
+            self._set_import_status("tables", "Updating...", Severity.INFO)
+        else:
+            self._set_import_status("tables", "Not needed: existing library", Severity.INFO)
         if self._worker is None:
             self._start_scan(show_progress=False)
         # else: _finish_scan starts the post-install scan when the running one ends
@@ -873,6 +918,14 @@ class MainWindow(QMainWindow):
         about.exec()
 
     def closeEvent(self, event: QCloseEvent):
+        # An install cannot be interrupted: the window stays until it ends (D-10, T-05-33)
+        dialog = self._import_dialog
+        if dialog is not None:
+            if dialog.is_installing():
+                event.ignore()
+                return
+            # Waits for the dialog's workers and closes the opened package first
+            dialog.reject()
         # Never destroy a running QThread
         if self._worker is not None:
             self._worker.wait()

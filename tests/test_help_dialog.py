@@ -1,9 +1,16 @@
 """Help dialog content tests (plan 05-08): import flow page, Collision status, shortcuts."""
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QTreeWidgetItem
+import html as html_module
+import re
+import types
 
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLabel, QPushButton, QTreeWidgetItem
+
+from kicad_lib_manager.importer.plan import Conflict, InstallResult
+from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
+from kicad_lib_manager.widgets.import_result import ImportResultView
 from kicad_lib_manager.widgets.theme import AMBER
 
 
@@ -49,6 +56,57 @@ def test_help_shortcuts_complete():
     ):
         assert shortcut in page, shortcut
         assert action in page, action
+
+
+def _page_text(key: str) -> str:
+    """A help page as the reader sees it: tags removed, entities decoded, whitespace collapsed."""
+    text = html_module.unescape(re.sub(r"<[^>]+>", "", HELP_PAGES[key]))
+    return re.sub(r"\s+", " ", text)
+
+
+def test_help_import_page_matches_finished_flow(qtbot, tmp_path):
+    page = _page_text("importing")
+
+    # every resolution button a real conflict row shows is named on the page
+    row = ConflictRow(Conflict(
+        key="footprint:IC_Test_TI:fp", kind="footprint", name="FP",
+        existing="IC_Test_TI.pretty already holds a different FP.kicad_mod", suggested_name="FP_1",
+    ))
+    qtbot.addWidget(row)
+    buttons = [b.text() for b in row.findChildren(QPushButton) if b.isCheckable()]
+    assert sorted(buttons) == ["Overwrite", "Rename", "Skip"]
+    for text in buttons:
+        assert text in page, text
+
+    # every section label a real Result view shows is named on the page
+    view = ImportResultView()
+    qtbot.addWidget(view)
+    result = InstallResult(
+        ok=True, library="IC_Test_TI", new_library=False,
+        touched=(tmp_path / "Custom" / "Symbols" / "IC_Test_TI.kicad_sym", tmp_path / "Custom" / "3DModels" / "x.stp"),
+        issues=(), backup_dir=tmp_path / "bk",
+    )
+    view.show_result(result, types.SimpleNamespace(symbol_name="X", library="IC_Test_TI"), tmp_path)
+    shown = [w.text() for w in view.findChildren(QLabel)] + [w.text() for w in view.findChildren(QPushButton)]
+    for label in ("Warnings", "Library list", "Library tables", "Files written", "Backup folder", "Open folder"):
+        assert any(text.startswith(label) for text in shown), f"the view no longer shows {label!r}"
+        assert label in page, label
+
+
+def test_help_import_page_failure_and_tables_claims():
+    page = _page_text("importing").lower()
+    for claim in (
+        "every file is restored",  # a failed install
+        "click install part again",
+        "there is no overwrite-all",
+        "reopen kicad's symbol and footprint editors",
+        "no warnings",
+        "is added to sym-lib-table and fp-lib-table",
+        "missing from the tables shows a hint to press generate tables",
+        "cannot be closed or cancelled",
+        "keeps a backup of the replaced file",
+    ):
+        assert claim in page, claim
 
 
 def test_help_dialog_opens_importing_page(qtbot):

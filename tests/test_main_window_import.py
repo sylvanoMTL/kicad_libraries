@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
+from PySide6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QKeySequence
 from PySide6.QtWidgets import QMessageBox
 
 from kicad_lib_manager import library_scanner, main_window, settings
@@ -642,3 +642,227 @@ def test_toolbar_import_button_first(qtbot, make_window, monkeypatch):
 def test_generate_button_primary_style(make_window):
     w = make_window([scan_with()])
     assert w._generate_btn.styleSheet() == theme.PRIMARY_BUTTON_QSS
+
+
+# -- plan 05-11 Task 1: the main window cannot close an installing dialog (D-10, T-05-33) -------------
+
+def test_main_window_close_ignored_while_installing(make_window):
+    w = make_window([scan_with()])
+    w._import_dialog = types.SimpleNamespace(is_installing=lambda: True, reject=lambda: pytest.fail("rejected"))
+    try:
+        event = QCloseEvent()
+        w.closeEvent(event)
+        assert not event.isAccepted()
+    finally:
+        w._import_dialog = None
+
+
+# -- plan 05-11 Task 2: the status rows of the Result view (POST-01, POST-02, D-16, D-17) ----------------
+
+class RecordingDialog:
+    """Stands in for the import dialog: records the post-install status rows the main window sets."""
+
+    def __init__(self):
+        self.calls = []
+
+    def is_installing(self):
+        return False
+
+    def reject(self):
+        pass
+
+    def set_post_install_status(self, row, text, severity):
+        self.calls.append((row, text, severity))
+
+    @property
+    def rows(self):
+        return {row: (text, severity) for row, text, severity in self.calls}
+
+
+def installed_for(lib: str, new_library: bool) -> InstallResult:
+    return InstallResult(ok=True, library=lib, new_library=new_library, touched=(), issues=())
+
+
+def run_install(qtbot, w, repo, lib, new_library):
+    """Report an install to the window with a recording dialog; return the dialog and the rows seen at once."""
+    dialog = RecordingDialog()
+    w._import_dialog = dialog
+    try:
+        w._on_import_installed(installed_for(lib, new_library), stub_plan(repo, lib, new_library=new_library))
+        at_once = dict(dialog.rows)
+        qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+    finally:
+        w._import_dialog = None
+    return dialog, at_once
+
+
+def test_status_rows_new_library_settle(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    dialog, at_once = run_install(qtbot, w, repo, NEW_LIB, True)
+
+    assert at_once == {
+        "library_list": ("Rescanning...", Severity.INFO),
+        "tables": ("Updating...", Severity.INFO),
+    }
+    assert dialog.rows == {
+        "library_list": (f"Updated; {NEW_LIB} is selected", Severity.SUCCESS),
+        "tables": (f"Added {NEW_LIB} to sym-lib-table and fp-lib-table", Severity.SUCCESS),
+    }
+    assert w.statusBar().currentMessage() == f"Installed CSD85301Q2 into {NEW_LIB}"
+
+
+def test_status_rows_existing_library_hint(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
+
+    dialog, at_once = run_install(qtbot, w, repo, LIB, False)
+
+    assert at_once == {
+        "library_list": ("Rescanning...", Severity.INFO),
+        "tables": ("Not needed: existing library", Severity.INFO),
+    }
+    assert dialog.rows == {
+        "library_list": (f"Updated; {LIB} is selected", Severity.SUCCESS),
+        "tables": ("Not needed: existing library", Severity.INFO),
+        "generate_hint": (
+            f"⚠ {LIB} is not in the library tables. Press Generate Tables to add it.", Severity.WARNING,
+        ),
+    }
+
+
+def test_status_rows_existing_library_listed_has_no_hint(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo, _managed(LIB, SYM_REL), _managed(LIB, FP_REL))
+    w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
+
+    dialog, _ = run_install(qtbot, w, repo, LIB, False)
+
+    assert "generate_hint" not in dialog.rows
+    assert dialog.rows["tables"] == ("Not needed: existing library", Severity.INFO)
+
+
+def test_status_rows_new_library_already_listed(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo, _managed(NEW_LIB, NEW_SYM_REL), _managed(NEW_LIB, NEW_FP_REL))
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    dialog, _ = run_install(qtbot, w, repo, NEW_LIB, True)
+
+    assert dialog.rows["tables"] == (f"Not changed: {NEW_LIB} was already in the tables", Severity.INFO)
+
+
+def test_status_rows_library_not_in_scan(qtbot, make_window, tmp_path):
+    w = make_window([scan_with(with_installed=False), scan_with(with_installed=False)])
+
+    dialog, _ = run_install(qtbot, w, make_window.repo, LIB, False)
+
+    assert dialog.rows["library_list"] == (f"Updated; {LIB} was not found in the scan", Severity.WARNING)
+
+
+def test_status_rows_rescan_failed_and_table_error(qtbot, make_window, tmp_path):
+    import os
+    import stat
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo)
+
+    def failing():
+        raise RuntimeError("scan boom")
+
+    w = make_window([scan_with(with_installed=False), failing], repo=repo)
+    os.chmod(repo / "sym-lib-table", stat.S_IREAD)
+    try:
+        dialog, _ = run_install(qtbot, w, repo, NEW_LIB, True)
+    finally:
+        os.chmod(repo / "sym-lib-table", stat.S_IREAD | stat.S_IWRITE)
+
+    assert dialog.rows["library_list"] == ("Rescan failed - see the log", Severity.ERROR)
+    text, severity = dialog.rows["tables"]
+    assert severity is Severity.ERROR
+    assert not text.startswith("Added")
+    assert text in log_text(w)  # the same failure line is in the log
+
+
+def test_status_rows_destination_missing(qtbot, make_window, tmp_path):
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)])
+    gone = tmp_path / "gone"
+    w._dest_combo.setCurrentText(str(gone))
+
+    dialog, _ = run_install(qtbot, w, make_window.repo, NEW_LIB, True)
+
+    assert dialog.rows["tables"] == (f"Destination folder does not exist: {gone}", Severity.ERROR)
+
+
+def test_status_rows_skipped_after_dialog_closed(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+    dialog = RecordingDialog()
+    w._import_dialog = dialog
+    w._on_import_installed(installed_for(NEW_LIB, True), stub_plan(repo, NEW_LIB, new_library=True))
+    w._import_dialog = None  # the dialog is closed before the rescan ends
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert set(dialog.rows) == {"library_list", "tables"}
+    assert dialog.rows["library_list"] == ("Rescanning...", Severity.INFO)  # nothing was set after the close
+    assert f"Added {NEW_LIB} to sym-lib-table and fp-lib-table" in log_text(w)  # the steps still ran
+    assert w._pending_post_install is None
+
+
+def test_post_install_steps_never_run_git(qtbot, make_window, tmp_path, monkeypatch):
+    import subprocess
+
+    calls = []
+    real_run, real_popen = subprocess.run, subprocess.Popen
+
+    def run(args, *a, **kw):
+        calls.append(args)
+        return real_run(args, *a, **kw)
+
+    class Popen(real_popen):
+        def __init__(self, args, *a, **kw):
+            calls.append(args)
+            super().__init__(args, *a, **kw)
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", Popen)
+
+    run_install(qtbot, w, repo, NEW_LIB, True)
+
+    names = [Path(str(a[0] if isinstance(a, (list, tuple)) else a).split()[0]).name.lower() for a in calls]
+    assert not [n for n in names if "git" in n], names
+
+
+def test_main_window_close_closes_idle_dialog_first(qtbot, make_window, tmp_path):
+    w = make_window([scan_with()])
+    w._open_import()
+    dialog = w._import_dialog
+    assert isinstance(dialog, ImportDialog)
+    order = []
+    real_reject = dialog.reject
+    dialog.reject = lambda: (order.append("dialog"), real_reject())
+    real_save = main_window.save_window_geometry
+    main_window.save_window_geometry = lambda geometry: (order.append("geometry"), real_save(geometry))
+    try:
+        event = QCloseEvent()
+        w.closeEvent(event)
+    finally:
+        main_window.save_window_geometry = real_save
+    assert event.isAccepted()
+    assert order == ["dialog", "geometry"]
+    assert w._import_dialog is None
+    assert dialog._closing
