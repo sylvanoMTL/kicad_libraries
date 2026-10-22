@@ -763,3 +763,264 @@ def test_change_returns_to_start_and_closes_package(qtbot, make_start_dialog):
 )
 def test_vendor_labels(vendor, label):
     assert import_dialog_module.vendor_label(vendor) == label
+
+
+# -- Item picker (plan 05-07 task 1): synthetic Custom layout and synthetic zips, so these run without
+# the Custom submodule ----------------------------------------------------------------------------
+
+from kicad_lib_manager.importer.candidate import ImportCandidate  # noqa: E402
+from kicad_lib_manager.importer.plan import InstallOptions  # noqa: E402
+from kicad_lib_manager.widgets.theme import MUTED  # noqa: E402
+
+_DATASHEET = {"Datasheet": "https://example.com/part"}
+
+
+@pytest.fixture
+def item_layout(tmp_path):
+    from zipfixtures import CURRENT_CUSTOM_FOOTPRINT_LIBS, CURRENT_CUSTOM_SYMBOL_LIBS, write_custom_layout
+
+    repo = write_custom_layout(tmp_path / "item_repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    return RepoLayout.for_repo(repo)
+
+
+@pytest.fixture
+def recorded():
+    """Every InstallOptions the dialog handed to build_plan, in call order."""
+    return []
+
+
+def recording_build(recorded: list, inner=None):
+    def build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        recorded.append(options)
+        return (inner or real_build_plan)(candidate, options, layout, tools, **kwargs)
+
+    return build
+
+
+@pytest.fixture
+def make_item_dialog(qtbot, item_layout, gates, recorded):
+    def make(package: Path = UL_ZIP, show: bool = False, **changes) -> ImportDialog:
+        fields = {
+            "detect_tools": lambda kicad_fp_dir: ToolContext(),
+            "downloads_dir": lambda: None,
+            "build_plan": recording_build(recorded),
+            **changes,
+        }
+        dialog = ImportDialog(item_layout.repo_root, item_layout, core=replace(ImportCore(), **fields))
+        qtbot.addWidget(dialog)
+        if show:
+            dialog.show()
+        dialog.open_path(package)
+        return dialog
+
+    return make
+
+
+def wait_current(qtbot, dialog: ImportDialog, timeout: int = 30000) -> None:
+    """Wait until the newest request has been built and accepted and nothing is pending."""
+    qtbot.waitUntil(
+        lambda: dialog._plan is not None
+        and dialog._plan_gen == dialog._gen
+        and dialog._building is None
+        and dialog._queued is None
+        and not dialog._dirty,
+        timeout=timeout,
+    )
+
+
+def multi_zip(tmp_path: Path, *, symbols=("S1", "S2"), footprints=("F1", "F2", "F3"), models=("a.step", "b.step")) -> Path:
+    from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib
+
+    members = [("part.kicad_sym", symbol_lib(symbols, props=_DATASHEET))]
+    members += [(f"{name}.kicad_mod", footprint(name)) for name in footprints]
+    members += [(name, STEP_BYTES) for name in models]
+    return make_zip(tmp_path / "multi.zip", members)
+
+
+def assert_vendor_choices(options: InstallOptions, candidate: ImportCandidate) -> None:
+    """IN-04: the UI passes vendor item names or nothing, never a blank choice."""
+    assert options.symbol is None or options.symbol in {s.name for s in candidate.symbols}
+    assert options.model is None or options.model in {m.filename for m in candidate.models}
+    assert set(options.footprints) <= {f.name for f in candidate.footprints}
+    assert "" not in (options.symbol, options.model, *options.footprints)
+
+
+def test_picker_several_items_build_options(qtbot, make_item_dialog, recorded, tmp_path):
+    dialog = make_item_dialog(multi_zip(tmp_path), show=True)
+    wait_current(qtbot, dialog)
+    first = recorded[-1]
+    assert first.symbol == "S1"
+    assert first.footprints == ("F1", "F2", "F3")
+    assert first.model == "a.step"
+    assert first.no_model is False
+
+    # a combo for the symbols, a checklist for the footprints, a combo ending in "No model" for the models
+    assert dialog._symbol_combo is not None and dialog._symbol_combo.count() == 2
+    assert dialog._fp_list is not None and dialog._fp_list.count() == 3
+    assert dialog._model_combo is not None and dialog._model_combo.count() == 3
+    assert dialog._model_combo.itemText(2) == "No model"
+
+    dialog._symbol_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].symbol == "S2"
+
+    dialog._model_combo.setCurrentIndex(2)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].no_model is True and recorded[-1].model is None
+    dialog._model_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].model == "b.step" and recorded[-1].no_model is False
+
+    # F1 is linked at first; unchecking it moves "linked" to F2
+    assert dialog._fp_list.item(0).text().endswith("(linked)")
+    dialog._fp_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].footprints == ("F2", "F3")
+    assert dialog._fp_list.item(1).text().endswith("(linked)")
+    assert not dialog._fp_list.item(0).text().endswith("(linked)")
+
+    # Make linked on F3 puts it first
+    dialog._fp_list.setCurrentRow(2)
+    assert dialog._make_linked_btn.isEnabled()
+    dialog._make_linked_btn.click()
+    wait_current(qtbot, dialog)
+    assert recorded[-1].footprints == ("F3", "F2")
+    row = dialog._fp_list.item(2)
+    assert row.text().endswith("(linked)")
+    assert row.font().bold()
+    assert not dialog._fp_list.item(1).font().bold()
+    assert not dialog._make_linked_btn.isEnabled()  # the current row is the linked one now
+
+    # re-checking F1 keeps the linked footprint and lists the others in list order
+    dialog._fp_list.item(0).setCheckState(Qt.CheckState.Checked)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].footprints == ("F3", "F1", "F2")
+
+
+def test_picker_checklist_shows_six_rows_then_scrolls(qtbot, make_item_dialog, tmp_path):
+    names = tuple(f"F{n}" for n in range(1, 9))
+    dialog = make_item_dialog(multi_zip(tmp_path, footprints=names), show=True)
+    wait_current(qtbot, dialog)
+    fp_list = dialog._fp_list
+    assert fp_list.count() == 8
+    row = fp_list.sizeHintForRow(0)
+    assert fp_list.maximumHeight() == row * 6 + 2 * fp_list.frameWidth()
+    assert fp_list.verticalScrollBar().maximum() > 0
+    assert fp_list.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+
+
+def test_picker_single_items_are_labels(qtbot, make_item_dialog, recorded):
+    dialog = make_item_dialog()
+    wait_current(qtbot, dialog)
+    candidate = dialog._candidate
+    assert dialog._symbol_combo is None and dialog._fp_list is None and dialog._model_combo is None
+    assert dialog._symbol_label.full_text() == candidate.symbols[0].name
+    assert dialog._fp_label.full_text() == "DQK0006B"
+    assert dialog._model_label.full_text() == candidate.models[0].filename
+    first = recorded[-1]
+    assert first.symbol == candidate.symbols[0].name
+    assert first.footprints == ("DQK0006B",)
+    assert first.model == candidate.models[0].filename
+    assert dialog._extends_note.isHidden()
+
+
+def test_picker_labels_elide_with_full_name_tooltip(qtbot, make_item_dialog, tmp_path):
+    long_name = "L" * 60
+    dialog = make_item_dialog(
+        multi_zip(tmp_path, symbols=(long_name,), footprints=("FP",), models=("m.step",)), show=True
+    )
+    wait_current(qtbot, dialog)
+    assert dialog._symbol_label.full_text() == long_name
+    assert dialog._symbol_label.toolTip() == long_name
+
+
+def test_picker_no_model_and_no_footprint_labels(qtbot, make_item_dialog, recorded, tmp_path):
+    from zipfixtures import footprint, make_zip, symbol_lib
+
+    no_model = make_zip(
+        tmp_path / "no_model.zip",
+        [("part.kicad_sym", symbol_lib(("S1",), props=_DATASHEET)), ("FP.kicad_mod", footprint("FP"))],
+    )
+    dialog = make_item_dialog(no_model)
+    wait_current(qtbot, dialog)
+    assert dialog._model_label.full_text() == "No 3D model in this package"
+    assert AMBER.lower() in dialog._model_label.styleSheet().lower()
+    assert recorded[-1].model is None and recorded[-1].no_model is False
+    assert "install.no_model" in [i.code for i in dialog._plan.issues]
+
+    no_footprint = make_zip(
+        tmp_path / "no_footprint.zip", [("part.kicad_sym", symbol_lib(("S1",), props=_DATASHEET))]
+    )
+    second = make_item_dialog(no_footprint)
+    wait_current(qtbot, second)
+    assert second._fp_label.full_text() == "No footprint in this package"
+    assert AMBER.lower() in second._fp_label.styleSheet().lower()
+    assert recorded[-1].footprints == ()
+
+
+def test_picker_extends_note(qtbot, make_item_dialog, tmp_path):
+    from installfixtures import extends_pair, vendor_footprint
+    from zipfixtures import make_zip
+
+    zip_path = make_zip(
+        tmp_path / "extends.zip",
+        [("pair.kicad_sym", extends_pair("PARENT_X", "CHILD_Y")), ("FP.kicad_mod", vendor_footprint("FP"))],
+    )
+    dialog = make_item_dialog(zip_path)
+    wait_current(qtbot, dialog)
+    names = [dialog._symbol_combo.itemText(i) for i in range(dialog._symbol_combo.count())]
+    assert names == ["PARENT_X", "CHILD_Y"]
+    assert dialog._extends_note.isHidden()  # a parent has no parent of its own
+
+    dialog._symbol_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    assert dialog._plan.symbol_names == ("PARENT_X", "CHILD_Y")
+    assert not dialog._extends_note.isHidden()
+    assert dialog._extends_note.text() == "extends parent PARENT_X is included automatically"
+
+    dialog._symbol_combo.setCurrentIndex(0)
+    wait_current(qtbot, dialog)
+    assert dialog._extends_note.isHidden()
+
+
+def test_picker_never_passes_blank(qtbot, make_item_dialog, recorded, tmp_path):
+    dialog = make_item_dialog(multi_zip(tmp_path))
+    wait_current(qtbot, dialog)
+    dialog._symbol_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    dialog._model_combo.setCurrentIndex(2)
+    wait_current(qtbot, dialog)
+    dialog._fp_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    wait_current(qtbot, dialog)
+    for row in (1, 2):
+        dialog._fp_list.item(row).setCheckState(Qt.CheckState.Unchecked)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].footprints == ()
+    assert len(recorded) >= 5
+    for options in recorded:
+        assert_vendor_choices(options, dialog._candidate)
+
+    single = make_item_dialog()
+    wait_current(qtbot, single)
+    assert_vendor_choices(recorded[-1], single._candidate)
+
+
+def test_left_pane_disabled_until_first_plan(qtbot, make_item_dialog, gates):
+    started = threading.Event()
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_item_dialog(build_plan=gated_build)
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    assert not dialog._left_scroll.isEnabled()
+    assert dialog._preview_stack.currentWidget() is dialog._building_page
+    assert not dialog._install_btn.isEnabled()
+    gates[0].set()
+    wait_current(qtbot, dialog)
+    assert dialog._left_scroll.isEnabled()
+    assert dialog._preview_stack.currentWidget() is dialog._preview
