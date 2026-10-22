@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtWidgets import (
@@ -8,6 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
+from .importer.layout import RepoLayout
 from .library_scanner import scan_all, find_kicad_footprint_dir, sync_kicad_path_vars
 from .table_generator import write_tables, restore_backup_pair, table_info, TableInfo
 from .models import Issue, ScanResult, Severity
@@ -20,9 +22,14 @@ from .widgets.library_table import LibraryTableWidget
 from .widgets.log_panel import LogPanel
 from .widgets.backup_dialog import BackupDialog
 from .widgets.help_dialog import HelpDialog
+from .widgets.import_dialog import ImportCore, ImportDialog
 
 APP_TITLE = "KiCad External Lib Manager"
 REPO_ROOT = Path(__file__).parent.parent.resolve()
+
+# Test seams (monkeypatched like REPO_ROOT): None means the real import core and backup folder
+IMPORT_CORE: ImportCore | None = None
+IMPORT_BACKUP_ROOT: Path | None = None
 
 
 def _selected_count(result: ScanResult) -> int:
@@ -30,6 +37,18 @@ def _selected_count(result: ScanResult) -> int:
         sum(1 for lib in result.symbol_libs if lib.selected)
         + sum(1 for lib in result.footprint_libs if lib.selected)
     )
+
+
+@dataclass
+class _PostInstall:
+    """What the next scan must select once an install has finished (POST-01)."""
+
+    library: str
+    new_library: bool
+    symbol: str
+    sym_rel_path: str
+    fp_rel_path: str
+    scan_started: bool = False
 
 
 class ScanWorker(QThread):
@@ -72,6 +91,9 @@ class MainWindow(QMainWindow):
         # however that scan ended. Only that scan pre-selects from the tables.
         self._startup_pending = True
         self._kicad_fp_dir: Path | None = None
+        self._progress: QProgressDialog | None = None
+        self._import_dialog: ImportDialog | None = None
+        self._pending_post_install: _PostInstall | None = None
         self._build_menu()
         self._build_ui()
         self.statusBar()  # Enable status bar for menu hints
@@ -87,6 +109,14 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu("&File")
 
         # Kept as attributes: _set_scan_running toggles them while a scan runs
+        self._act_import = QAction("&Import Part...", self)
+        self._act_import.setShortcut(QKeySequence("Ctrl+I"))
+        self._act_import.setToolTip("Import a vendor package (.zip or folder) into Custom/")
+        self._act_import.setStatusTip("Import a vendor package (.zip or folder) into Custom/")
+        self._act_import.triggered.connect(lambda: self._open_import())
+        file_menu.addAction(self._act_import)
+        file_menu.addSeparator()
+
         self._act_generate = QAction("&Generate Tables", self)
         self._act_generate.setShortcut(QKeySequence("Ctrl+G"))
         self._act_generate.setToolTip("Generate sym-lib-table and fp-lib-table from selected libraries")
@@ -275,12 +305,15 @@ class MainWindow(QMainWindow):
         """Disable the controls that must not act while a scan is in flight."""
         for control in (
             self._rescan_btn, self._act_rescan, self._act_set_kicad_path,
-            self._act_generate, self._generate_btn,
+            self._act_generate, self._generate_btn, self._act_import,
         ):
             control.setEnabled(not running)
 
-    def _start_scan(self):
+    def _start_scan(self, show_progress: bool = True):
         """Start a scan; every scan request must go through here.
+
+        show_progress=False runs the scan quietly (no QProgressDialog); only the
+        post-install rescan uses it, so the trees update behind the import dialog.
 
         Refuses while a worker exists, because a disabled control does not stop a
         programmatic caller (the post-import rescan included). The guard keys on
@@ -292,17 +325,22 @@ class MainWindow(QMainWindow):
             return
 
         self._set_scan_running(True)
-        self._progress = QProgressDialog(
-            "Scanning libraries...", None, 0, 100, self
-        )
-        self._progress.setWindowTitle("Loading Libraries")
-        self._progress.setWindowModality(Qt.WindowModality.WindowModal)
-        self._progress.setMinimumDuration(0)
-        self._progress.setAutoClose(True)
-        self._progress.setAutoReset(True)
-        self._progress.setCancelButton(None)
-        self._progress.setValue(0)
-        self._progress.show()
+        if show_progress:
+            self._progress = QProgressDialog(
+                "Scanning libraries...", None, 0, 100, self
+            )
+            self._progress.setWindowTitle("Loading Libraries")
+            self._progress.setWindowModality(Qt.WindowModality.WindowModal)
+            self._progress.setMinimumDuration(0)
+            self._progress.setAutoClose(True)
+            self._progress.setAutoReset(True)
+            self._progress.setCancelButton(None)
+            self._progress.setValue(0)
+            self._progress.show()
+        else:
+            self._progress = None
+        if self._pending_post_install is not None:
+            self._pending_post_install.scan_started = True
 
         self._log.log("Scanning repository...", "info")
 
@@ -313,8 +351,9 @@ class MainWindow(QMainWindow):
         self._worker.start()
 
     def _on_scan_progress(self, message: str, percentage: int):
-        self._progress.setLabelText(message)
-        self._progress.setValue(min(percentage, 99))
+        if self._progress is not None:
+            self._progress.setLabelText(message)
+            self._progress.setValue(min(percentage, 99))
 
     def _finish_scan(self):
         """Release the worker and re-enable the controls; always runs after a scan."""
@@ -323,10 +362,15 @@ class MainWindow(QMainWindow):
             self._worker.wait()
             self._worker = None
         self._set_scan_running(False)
+        pending = self._pending_post_install
+        if pending is not None and not pending.scan_started:
+            # An install finished while another scan ran; scan again now, quietly
+            self._start_scan(show_progress=False)
 
     def _on_scan_finished(self, result: ScanResult):
         try:
-            self._progress.setValue(100)
+            if self._progress is not None:
+                self._progress.setValue(100)
             startup = self._startup_pending
             previous = self._scan_result
             self._scan_result = result
@@ -347,6 +391,10 @@ class MainWindow(QMainWindow):
             if startup:
                 # Peers are settled, so linked footprints can be added safely
                 self._select_linked_footprints(result)
+            pending = self._pending_post_install
+            if pending is not None and pending.scan_started:
+                self._apply_post_install_selection(result, pending)
+                self._pending_post_install = None
 
             self._tree.populate(result)
 
@@ -493,7 +541,11 @@ class MainWindow(QMainWindow):
 
     def _on_scan_error(self, error_msg: str):
         try:
-            self._progress.close()
+            if self._progress is not None:
+                self._progress.close()
+            pending = self._pending_post_install
+            if pending is not None and pending.scan_started:
+                self._pending_post_install = None
             self._log.log(f"Scan error: {error_msg}", "error")
             if self._startup_pending:
                 self._log.log(
@@ -504,6 +556,69 @@ class MainWindow(QMainWindow):
                 )
         finally:
             self._finish_scan()
+
+    def _apply_post_install_selection(self, result: ScanResult, pending: _PostInstall):
+        """Check the freshly installed library in the new scan result (POST-01, D-16).
+
+        Matches by rel_path only. A selected same-nickname peer elsewhere is unchecked so
+        one library per nickname stays selected. A library the scan does not list is skipped.
+        """
+        for libs, rel_path in (
+            (result.symbol_libs, pending.sym_rel_path),
+            (result.footprint_libs, pending.fp_rel_path),
+        ):
+            by_path = {lib.rel_path: lib for lib in libs}
+            lib = by_path.get(rel_path)
+            if lib is None:
+                continue
+            lib.selected = True
+            for peer_path in lib.collision_peers:
+                peer = by_path.get(peer_path)
+                if peer is not None and peer.selected:
+                    peer.selected = False
+                    self._log.log(
+                        f"Unchecked {peer.rel_path}: {pending.library} was just installed "
+                        "and has the same nickname",
+                        "info",
+                    )
+
+    def _open_import(self, path: Path | None = None):
+        """Open the Import Part dialog, optionally with a package already chosen."""
+        if self._worker is not None or self._import_dialog is not None:
+            return
+        dialog = ImportDialog(
+            REPO_ROOT,
+            RepoLayout.for_repo(REPO_ROOT),
+            kicad_fp_dir=self._kicad_fp_dir,
+            package_path=path,
+            core=IMPORT_CORE,
+            backup_root=IMPORT_BACKUP_ROOT,
+            parent=self,
+        )
+        dialog.installed.connect(self._on_import_installed)
+        dialog.issues_logged.connect(self._log_issues)
+        dialog.finished.connect(self._on_import_dialog_finished)
+        self._import_dialog = dialog
+        dialog.open()
+
+    def _on_import_dialog_finished(self, _result: int):
+        dialog, self._import_dialog = self._import_dialog, None
+        if dialog is not None:
+            dialog.deleteLater()
+
+    def _on_import_installed(self, result, plan):
+        """An install finished: rescan quietly and select the installed library."""
+        root = plan.layout.repo_root
+        self._pending_post_install = _PostInstall(
+            library=plan.library,
+            new_library=plan.new_library,
+            symbol=plan.symbol_name,
+            sym_rel_path=plan.symbol_lib_path.relative_to(root).as_posix(),
+            fp_rel_path=plan.pretty_path.relative_to(root).as_posix(),
+        )
+        if self._worker is None:
+            self._start_scan(show_progress=False)
+        # else: _finish_scan starts the post-install scan when the running one ends
 
     def _log_issues(self, issues: list[Issue]):
         for issue in issues:
