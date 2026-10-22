@@ -107,6 +107,11 @@ ALLOWED: dict[str, set[str]] = {
     },
     "importer.content": {"models", "fsutil", "importer.plan"},
     "importer.downloads": set(),
+    # Phase 6 commit step. commit_plan is pure (no git); commit_step is the orchestration and may use
+    # gitops (a top-level foundation module). importer.content is a forward registration for
+    # pre_import_diff in plan 06-07.
+    "importer.commit_plan": {"models", "importer.plan"},
+    "importer.commit_step": {"models", "gitops", "importer.plan", "importer.commit_plan", "importer.content"},
 }
 
 CORE_MODULES = (
