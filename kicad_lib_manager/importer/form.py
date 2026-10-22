@@ -6,13 +6,14 @@ write into each field when nothing is set, so the form shows the real result (RE
 Keeping the rules here means they are tested without a display, and the dialog holds only widgets.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
 from ..kicad_files import replace_exact_tokens
+from ..models import Issue, Severity
 from .candidate import ImportCandidate
-from .plan import InstallOptions, Resolution
-from .suggest import manufacturer_choice
+from .plan import Conflict, InstallOptions, InstallPlan, Resolution
+from .suggest import LibrarySuggestion, manufacturer_choice, placeholder_tokens
 
 # The five symbol fields the dialog lets the user edit; the names are the InstallOptions text overrides
 FIELD_NAMES = ("value", "datasheet", "description", "manufacturer", "mpn")
@@ -56,6 +57,180 @@ class FormValues:
     footprint_name: str | None
     fields: Mapping[str, str] = field(default_factory=dict)
     resolutions: Mapping[str, Resolution] = field(default_factory=dict)
+
+
+NEW_LIBRARY_BADGE = "new - creates .kicad_sym + .pretty"
+
+# -- the blocking reasons (D-09, PREV-07) ----------------------------------------------------------
+
+UPDATING_REASON = "Updating preview..."
+BUILD_FAILED_REASON = "Error: Preview could not be built - see the log"
+_KIND_LABELS = {"symbol": "symbol", "footprint": "footprint", "model": "3D model"}
+
+
+def kind_label(kind: str) -> str:
+    """The word for a conflict kind in the user's copy."""
+    return _KIND_LABELS.get(kind, kind)
+
+
+@dataclass(frozen=True)
+class Reason:
+    """One reason Install is off, and the control that fixes it.
+
+    target is "plan" (no control), "library", "footprint_name", "value", "mpn", "footprints",
+    "conflict:{key}" or "rename:{key}".
+    """
+
+    text: str
+    target: str
+
+
+@dataclass(frozen=True)
+class FormStatus:
+    """What the dialog's controls say right now, for blocking_reasons."""
+
+    updating: bool
+    build_failed: bool
+    library: str
+    value_text: str
+    mpn_text: str
+    several_footprints: bool
+    footprints_checked: int
+    resolutions: Mapping[str, Resolution]
+
+
+def _blank_renames(status: FormStatus, plan: InstallPlan | None) -> list[Conflict]:
+    """The plan's conflicts whose chosen Rename has no text yet, in plan order."""
+    if plan is None:
+        return []
+    blank = []
+    for conflict in plan.conflicts:
+        chosen = status.resolutions.get(conflict.key)
+        if chosen is not None and chosen.action == "rename" and not (chosen.rename_to or "").strip():
+            blank.append(conflict)
+    return blank
+
+
+def _issue_target(issue: Issue) -> str:
+    """The control a plan ERROR is about; "plan" when it is about no single control."""
+    code, text = issue.code, issue.text
+    if code in ("install.placeholder_library", "install.invalid_library", "install.library_case_clash"):
+        return "library"
+    if code == "install.empty_required":
+        return "mpn" if text.startswith("MPN") else "value"
+    if code == "install.invalid_name":
+        lowered = text.lower()
+        if "footprint name" in lowered:
+            return "footprint_name"
+        if "part number" in lowered:
+            return "mpn"
+    if code == "install.choice_required" and "footprints" in text:
+        return "footprints"
+    return "plan"
+
+
+def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reason]:
+    """Every reason Install is off, in the UI-SPEC order, without repeating one a form reason already gives.
+
+    Order: Updating (alone, the others could be stale); the build failure or the plan's ERROR Issues;
+    the library name; Value and MPN; the footprint selection; unresolved conflicts in plan order;
+    empty rename names. A plan ERROR is dropped when the form reason beside it says the same thing
+    (placeholder library, empty library name, empty Value or MPN, no footprint checked, empty rename).
+    """
+    if status.updating:
+        return [Reason(UPDATING_REASON, "plan")]
+    library = status.library.strip()
+    placeholders = placeholder_tokens(library)
+    value_blank = not status.value_text.strip()
+    mpn_blank = not status.mpn_text.strip()
+    no_footprint = status.several_footprints and status.footprints_checked == 0
+    # A failed build leaves the previous plan on screen; what it said could be stale
+    plan = None if status.build_failed else plan
+    renames = _blank_renames(status, plan)
+
+    def explained(issue: Issue) -> bool:
+        code, text = issue.code, issue.text
+        if code == "install.placeholder_library":
+            return bool(placeholders)
+        if code == "install.invalid_library":
+            return not library
+        if code == "install.empty_required":
+            return mpn_blank if text.startswith("MPN") else value_blank
+        if code == "install.choice_required":
+            return no_footprint and "footprints" in text
+        if code == "install.bad_rename":
+            return any(text.startswith(f"{c.key}:") for c in renames)
+        return False
+
+    reasons: list[Reason] = []
+    if status.build_failed:
+        reasons.append(Reason(BUILD_FAILED_REASON, "plan"))
+    elif plan is not None:
+        for issue in plan.issues:
+            if issue.severity is Severity.ERROR and not explained(issue):
+                reasons.append(Reason(f"Error: {issue.text}", _issue_target(issue)))
+    if not library:
+        reasons.append(Reason("Library name is empty", "library"))
+    elif placeholders:
+        reasons.append(Reason(
+            f"Library name still contains a placeholder ({', '.join(placeholders)}). "
+            "Pick an existing library or type a real name.",
+            "library",
+        ))
+    if value_blank:
+        reasons.append(Reason("Value is empty", "value"))
+    if mpn_blank:
+        reasons.append(Reason("MPN is empty - it names the 3D model file", "mpn"))
+    if no_footprint:
+        reasons.append(Reason("Select at least one footprint", "footprints"))
+    if plan is not None:
+        skipped = {c.key for c in renames}  # a Rename was chosen: it needs a name, not a choice
+        for conflict in plan.unresolved_conflicts:
+            if conflict.key not in skipped:
+                reasons.append(Reason(
+                    f"Choose Overwrite, Rename or Skip for {kind_label(conflict.kind)} {conflict.name}",
+                    f"conflict:{conflict.key}",
+                ))
+        for conflict in renames:
+            reasons.append(Reason(
+                f"Enter a new name for {kind_label(conflict.kind)} {conflict.name}", f"rename:{conflict.key}"
+            ))
+    return reasons
+
+
+def ready_text(counts) -> str:
+    """The strip line for a plan that can be installed; counts is a preview.FileCounts."""
+    return f"✓ Ready to install: {counts.new} new, {counts.modified} modified, {counts.unchanged} unchanged files"
+
+
+def noop_text(library: str) -> str:
+    return f"Nothing to install: this part is already in {library}."
+
+
+def library_tokens(name: str, suggestion: LibrarySuggestion | None) -> list[tuple[str, bool]]:
+    """Split a library name on "_" into (token, amber) pairs for the token line (D-11).
+
+    A placeholder token (Phase 3 D-04) is always amber. While the text still equals the suggestion,
+    a token of a low-confidence part of that suggestion is amber too; once the user edits the name
+    that counts as confirmation of the rest, so only placeholders stay amber.
+    """
+    if not name:
+        return []
+    placeholders = {token.casefold() for token in placeholder_tokens(name)}
+    guesses: set[str] = set()
+    if suggestion is not None and name == suggestion.name:
+        for choice in (suggestion.type, suggestion.subcategory, suggestion.manufacturer):
+            if not choice.confident:
+                guesses.update(choice.token.split("_"))
+    return [(token, token.casefold() in placeholders or token in guesses) for token in name.split("_")]
+
+
+def library_badge(name: str, existing: Collection[str]) -> str:
+    """"existing" for an exact match, the "new" text otherwise, "" for a blank name (a case twin is new)."""
+    name = name.strip()
+    if not name:
+        return ""
+    return "existing" if name in existing else NEW_LIBRARY_BADGE
 
 
 def field_defaults(candidate: ImportCandidate, symbol_name: str, final_name: str | None = None) -> FieldDefaults:

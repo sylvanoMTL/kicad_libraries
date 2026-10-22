@@ -13,13 +13,16 @@ Three rules shape this module:
 - Nothing is written before Install Part. Opening and rebuilding are read-only.
 """
 
+import html
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QStandardPaths, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QFont, QResizeEvent, QShowEvent
+from PySide6.QtGui import (
+    QCloseEvent, QColor, QFont, QKeySequence, QPalette, QResizeEvent, QShortcut, QShowEvent,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListView, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea,
@@ -31,7 +34,8 @@ from ..importer.candidate import ImportCandidate
 from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
 from ..importer.form import (
-    FIELD_LABELS, FIELD_NAMES, FieldDefaults, FormValues, build_options, field_defaults,
+    FIELD_LABELS, FIELD_NAMES, UPDATING_REASON, FieldDefaults, FormStatus, FormValues, Reason,
+    blocking_reasons, build_options, field_defaults, library_badge, library_tokens, noop_text, ready_text,
 )
 from ..importer.layout import RepoLayout, list_existing_libraries
 from ..importer.package import Package, open_package
@@ -43,7 +47,10 @@ from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
 from .preview_tree import PreviewTree
-from .theme import AMBER, ERROR, HEADING_PT, MONO_FAMILY, MONO_PT, MUTED, SP_LG, SP_MD, SP_XL, SP_XS
+from .theme import (
+    AMBER, AMBER_TINT, BORDER, ERROR, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY, MONO_PT, MUTED,
+    SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
+)
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
 _SEVERITY_COLOR = {Severity.ERROR: ERROR, Severity.WARNING: AMBER}
@@ -56,6 +63,9 @@ _LINKED_SUFFIX = "  (linked)"
 _NO_MODEL = "No model"
 _BLANK_FIELD_HINT = "Empty - the field will be written blank"
 _NO_FOOTPRINT_FIELD = "(none)"
+_TOKEN_HINT = "Amber parts are guesses or placeholders. Pick an existing library or type a real name."
+_BUSY_DELAY_MS = 150  # the busy strip shows only if a rebuild takes longer than this (no flicker)
+_ZWSP = "​"  # lets a long library name wrap after each "_"
 
 # Vendor names of the adapters (importer/adapters) as shown in the package header
 _VENDOR_LABELS = {"UltraLibrarian": "Ultra Librarian", "Loose": "Loose files", "Unknown": "Unknown vendor"}
@@ -224,7 +234,6 @@ class ImportDialog(QDialog):
         self._plan_gen = -1
         self._plan_options: InstallOptions | None = None
         self._build_failed = False
-        self._last_requested_library = ""
         self._install_failure = ""
 
         # Left-pane choices (plan 05-07). The item controls exist only for the package that is open.
@@ -241,6 +250,12 @@ class ImportDialog(QDialog):
         self._edited: set[str] = set()  # field names the user changed; only these reach the planner
         self._fp_name_edited = False
         self._resolutions: dict[str, Resolution] = {}  # conflict choices; plan 05-10 fills them
+        # Blocked-field highlight (D-09): a reason's target names the control to focus and its amber frame.
+        # Keys: "library", "footprint_name", "footprints", the field names; plan 05-10 adds
+        # "conflict:{key}" and "rename:{key}" entries and removes them with their rows.
+        self._reason_targets: dict[str, QWidget] = {}
+        self._field_frames: dict[str, QFrame] = {}
+        self._strip_reasons: list[Reason] = []  # the reasons the strip links point at
         self._first_plan_seen = False
         self._syncing = False  # True while the dialog sets control values itself
         self._dirty = False  # a text edit waits for its debounce, so the plan on screen is not current
@@ -248,6 +263,12 @@ class ImportDialog(QDialog):
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(300)  # D-06: the quiet period after the last keystroke, in ms
         self._debounce.timeout.connect(self._on_debounce)
+        # The Updating indicator (D-06): the label shows at once, the busy strip only after a delay
+        self._updating_shown = False
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setSingleShot(True)
+        self._busy_timer.setInterval(_BUSY_DELAY_MS)
+        self._busy_timer.timeout.connect(self._on_busy_timeout)
 
         self._workers: list[TaskWorker] = []
         self._open_worker: TaskWorker | None = None
@@ -269,9 +290,13 @@ class ImportDialog(QDialog):
         self._build_result_page()
         self._stack.setCurrentWidget(self._start_page)
 
+        # Enter inside a line edit must never install: no button is a default or auto-default (D-10).
+        # Ctrl+Return is the keyboard way to Install, and only when Install is enabled (T-05-29).
         for button in self.findChildren(QPushButton):
             button.setAutoDefault(False)
             button.setDefault(False)
+        self._install_shortcut = QShortcut(QKeySequence("Ctrl+Return"), self)
+        self._install_shortcut.activated.connect(self._on_install_shortcut)
 
         self._update_install_state()
         if package_path is not None:
@@ -427,14 +452,7 @@ class ImportDialog(QDialog):
         left_lay.addWidget(self._items_host)
         left_lay.addSpacing(SP_MD)
         left_lay.addWidget(self._heading("Target library"))
-        self._library_combo = QComboBox()
-        self._library_combo.setEditable(True)
-        self._library_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._library_combo.setAccessibleName("Target library")
-        # Not currentTextChanged: that fires on every keystroke of a typed name
-        self._library_combo.textActivated.connect(self._on_library_activated)
-        self._library_combo.lineEdit().editingFinished.connect(self._on_library_edited)
-        left_lay.addWidget(self._library_combo)
+        self._build_library_section(left_lay)
         left_lay.addSpacing(SP_MD)
         self._build_footprint_section(left_lay)
         left_lay.addSpacing(SP_MD)
@@ -450,7 +468,27 @@ class ImportDialog(QDialog):
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(8)
-        right_lay.addWidget(self._heading("Preview"))
+        title_row = QHBoxLayout()
+        title_row.setSpacing(SP_SM)
+        title_row.addWidget(self._heading("Preview"))
+        self._updating_label = QLabel("Updating...")
+        self._updating_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._updating_label.setStyleSheet(f"color: {AMBER};")
+        self._updating_label.hide()
+        title_row.addWidget(self._updating_label)
+        title_row.addStretch(1)
+        right_lay.addLayout(title_row)
+        # A 4 px indeterminate strip that keeps its room when hidden, so the tree does not jump
+        self._busy_bar = QProgressBar()
+        self._busy_bar.setRange(0, 0)
+        self._busy_bar.setTextVisible(False)
+        self._busy_bar.setFixedHeight(4)
+        self._busy_bar.setAccessibleName("Preview is updating")
+        policy = self._busy_bar.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self._busy_bar.setSizePolicy(policy)
+        self._busy_bar.hide()
+        right_lay.addWidget(self._busy_bar)
         self._preview_stack = QStackedWidget()
         building = QWidget()
         building_lay = QVBoxLayout(building)
@@ -474,14 +512,27 @@ class ImportDialog(QDialog):
 
         bottom = QHBoxLayout()
         bottom.setSpacing(8)
+        # The strip is rich text only while it lists blocking reasons (every string escaped, internal
+        # reason: links only); a status line is plain text. 8 px padding, at most 3 lines (D-09).
         self._strip = QLabel()
         self._strip.setTextFormat(Qt.TextFormat.PlainText)
         self._strip.setWordWrap(True)
+        self._strip.setOpenExternalLinks(False)
+        self._strip.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
+        )
+        self._strip.setContentsMargins(SP_SM, SP_SM, SP_SM, SP_SM)
+        self._strip.setMaximumHeight(3 * self._strip.fontMetrics().lineSpacing() + 2 * SP_SM)
+        self._strip.setAccessibleName("Install status")
+        palette = self._strip.palette()
+        palette.setColor(QPalette.ColorRole.Link, QColor(LINK))
+        self._strip.setPalette(palette)
+        self._strip.linkActivated.connect(self._on_reason_link)
         bottom.addWidget(self._strip, stretch=1)
         self._install_btn = QPushButton("Install Part")
         self._install_btn.setMinimumWidth(112)
         self._install_btn.clicked.connect(self._on_install_clicked)
-        bottom.addWidget(self._install_btn)
+        bottom.addWidget(self._install_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(bottom)
 
         self._edit_page = page
@@ -518,6 +569,25 @@ class ImportDialog(QDialog):
         label.setFont(font)
         return label
 
+    def _framed(self, widget: QWidget, key: str) -> QFrame:
+        """Wrap a blockable control in a QFrame#fieldFrame and register it under a reason target (D-09).
+
+        A border stylesheet on a QLineEdit or QComboBox itself would drop the native look, so the amber
+        border sits on the frame. The frame reserves its 2 px border at all times (transparent until
+        the "blocked" property is set), so the layout does not move when the highlight appears.
+        """
+        frame = QFrame()
+        frame.setObjectName("fieldFrame")
+        frame.setStyleSheet(FIELD_FRAME_QSS)
+        frame.setProperty("blocked", False)
+        frame_lay = QVBoxLayout(frame)
+        frame_lay.setContentsMargins(0, 0, 0, 0)
+        frame_lay.setSpacing(0)
+        frame_lay.addWidget(widget)
+        self._field_frames[key] = frame
+        self._reason_targets[key] = widget
+        return frame
+
     @staticmethod
     def _restore_button(accessible: str) -> QToolButton:
         """The 24x24 glyph button that puts a default back; its tooltip is set when the default is known."""
@@ -539,6 +609,57 @@ class ImportDialog(QDialog):
         lay.addSpacing(24 + SP_XS)
         return row
 
+    def _build_library_section(self, left_lay: QVBoxLayout):
+        """The editable library combo with its existing/new badge, the token line and the amber hint (D-11)."""
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        # The typed name is used exactly as typed: inline completion would change its letter case,
+        # and a case twin of an existing library has to stay visible as such
+        combo.setCompleter(None)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(12)
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        combo.setAccessibleName("Target library")
+        # Picking from the list rebuilds at once; typing waits for the quiet period (D-06). Not
+        # currentTextChanged for the rebuild: that fires on every keystroke of a typed name
+        combo.textActivated.connect(self._on_library_activated)
+        line = combo.lineEdit()
+        line.textEdited.connect(self._on_library_text_edited)
+        line.textChanged.connect(self._refresh_library_labels)
+        self._library_combo = combo
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(SP_SM)
+        row.addWidget(self._framed(combo, "library"), 1)
+        self._library_badge = QLabel()
+        self._library_badge.setTextFormat(Qt.TextFormat.PlainText)
+        # Wraps at its spaces when the pane is narrow, so the combo keeps room and the badge is never cut
+        self._library_badge.setWordWrap(True)
+        self._library_badge.setAccessibleName("Library status")
+        self._library_badge.hide()
+        row.addWidget(self._library_badge)
+        left_lay.addLayout(row)
+
+        # Rich text, but only the spans this dialog writes (every token is html.escape()d); no links
+        self._token_line = QLabel()
+        self._token_line.setTextFormat(Qt.TextFormat.RichText)
+        self._token_line.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self._token_line.setFont(QFont(MONO_FAMILY, MONO_PT))
+        self._token_line.setWordWrap(True)
+        # Ignored: a long name wraps at its underscores instead of widening the pane
+        self._token_line.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._token_line.setAccessibleName("Library name parts")
+        self._token_line.hide()
+        left_lay.addWidget(self._token_line)
+        self._token_hint = QLabel(_TOKEN_HINT)
+        self._token_hint.setTextFormat(Qt.TextFormat.PlainText)
+        self._token_hint.setWordWrap(True)
+        self._token_hint.setStyleSheet(f"color: {MUTED};")
+        self._token_hint.hide()
+        left_lay.addWidget(self._token_hint)
+
     def _build_footprint_section(self, left_lay: QVBoxLayout):
         """The footprint name (D-14, PREV-02): pre-filled with the linked footprint's sanitised vendor name."""
         left_lay.addWidget(self._heading("Footprint"))
@@ -555,7 +676,7 @@ class ImportDialog(QDialog):
         self._fp_name_edit.setAccessibleName("Footprint name")
         self._fp_name_edit.setMinimumHeight(28)
         self._fp_name_edit.textEdited.connect(self._on_fp_name_edited)
-        row_lay.addWidget(self._fp_name_edit, 1)
+        row_lay.addWidget(self._framed(self._fp_name_edit, "footprint_name"), 1)
         self._fp_name_restore = self._restore_button("Restore default footprint name")
         self._fp_name_restore.clicked.connect(self._on_fp_name_restore)
         row_lay.addWidget(self._fp_name_restore)
@@ -587,7 +708,8 @@ class ImportDialog(QDialog):
         self._fp_field.setFont(QFont(MONO_FAMILY, MONO_PT))
         self._fp_field.setAccessibleName("Footprint")
         self._fp_field.setMinimumHeight(28)
-        form.addRow("Footprint", self._aligned_row(self._fp_field))
+        # In a frame too, so it lines up with the editable rows (it is never blocked)
+        form.addRow("Footprint", self._aligned_row(self._framed(self._fp_field, "footprint_field")))
 
         self._field_edits: dict[str, QLineEdit] = {}
         self._field_restore: dict[str, QToolButton] = {}
@@ -607,7 +729,8 @@ class ImportDialog(QDialog):
             edit.textEdited.connect(lambda text, n=name: self._on_field_edited(n, text))
             restore = self._restore_button(f"Restore default {label}")
             restore.clicked.connect(lambda _checked=False, n=name: self._restore_field(n))
-            row_lay.addWidget(edit, 1)
+            # All five sit in a frame so the rows line up; only Value and MPN can be blocked
+            row_lay.addWidget(self._framed(edit, name), 1)
             row_lay.addWidget(restore)
             form.addRow(label, row)
             self._field_edits[name] = edit
@@ -830,18 +953,64 @@ class ImportDialog(QDialog):
         self._browse_btn.setFocus()
 
     def _fill_library_combo(self):
+        """Pre-fill with the suggestion; the list holds the ranked alternatives, a separator, then every library (D-11)."""
         suggestion = self._suggestion
-        names = [suggestion.name, *(a.name for a in suggestion.alternatives)]
-        names.extend(lib.name for lib in self._existing)
-        unique = list(dict.fromkeys(names))
-        self._library_combo.blockSignals(True)
+        combo = self._library_combo
+        alternatives = [a.name for a in suggestion.alternatives]
+        existing = [lib.name for lib in self._existing]
+        combo.blockSignals(True)
         try:
-            self._library_combo.clear()
-            self._library_combo.addItems(unique)
-            self._library_combo.setCurrentIndex(0)
-            self._library_combo.setEditText(suggestion.name)
+            combo.clear()
+            combo.addItems(alternatives)
+            if alternatives and existing:
+                combo.insertSeparator(combo.count())
+            combo.addItems(existing)
+            combo.setCurrentIndex(-1)
+            combo.setEditText(suggestion.name)
         finally:
-            self._library_combo.blockSignals(False)
+            combo.blockSignals(False)
+        # The popup shows every full name even when the closed combo is narrower
+        combo.view().setMinimumWidth(combo.view().sizeHintForColumn(0) + 32)
+        self._refresh_library_labels()
+
+    def _clear_library_section(self):
+        """Forget the library list, the typed name and the badge, token line and hint (a new or discarded package)."""
+        self._existing = ()
+        combo = self._library_combo
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.setEditText("")
+        finally:
+            combo.blockSignals(False)
+        self._refresh_library_labels()
+
+    def _refresh_library_labels(self, _text: str = ""):
+        """Badge, token line and hint follow the typed name against the library list, at every keystroke.
+
+        The badge reads "existing" or "new - creates .kicad_sym + .pretty" (form.library_badge).
+        """
+        name = self._library_combo.currentText()
+        badge = library_badge(name, [lib.name for lib in self._existing])
+        self._library_badge.setVisible(bool(badge))
+        self._library_badge.setText(badge)
+        if badge == "existing":
+            self._library_badge.setStyleSheet(f"border: 1px solid {BORDER}; padding: 4px 8px; color: {SUCCESS};")
+        else:
+            self._library_badge.setStyleSheet(
+                f"border: 1px solid {BORDER}; padding: 4px 8px; font-weight: bold;"
+            )
+        tokens = library_tokens(name, self._suggestion)
+        parts = [
+            f'<span style="color:{AMBER};font-weight:bold">{html.escape(token)}</span>'
+            if amber
+            else html.escape(token)
+            for token, amber in tokens
+        ]
+        self._token_line.setText(f"_{_ZWSP}".join(parts))
+        self._token_line.setToolTip(name)
+        self._token_line.setVisible(bool(tokens))
+        self._token_hint.setVisible(any(amber for _, amber in tokens))
 
     # -- the rebuild coordinator (PREV-07, D-06) -------------------------------
 
@@ -851,6 +1020,7 @@ class ImportDialog(QDialog):
         self._dirty = False
         self._candidate = None
         self._suggestion = None
+        self._clear_library_section()
         self._tools = None
         self._queued = None
         self._plan = None
@@ -912,6 +1082,9 @@ class ImportDialog(QDialog):
         self._symbol_combo = self._model_combo = None
         self._symbol_label = self._fp_label = self._model_label = None
         self._fp_list = self._make_linked_btn = None
+        # The checklist and its frame are deleted with their row
+        self._field_frames.pop("footprints", None)
+        self._reason_targets.pop("footprints", None)
         self._extends_note = None
         self._linked_fp = None
         while self._items_form.rowCount():
@@ -1060,7 +1233,7 @@ class ImportDialog(QDialog):
         # At most six rows tall, then the list scrolls vertically
         row = lst.sizeHintForRow(0)
         lst.setFixedHeight(row * min(len(names), _CHECKLIST_ROWS) + 2 * lst.frameWidth())
-        lay.addWidget(lst)
+        lay.addWidget(self._framed(lst, "footprints"))
         button = QPushButton("Make linked")
         button.setAutoDefault(False)
         button.setDefault(False)
@@ -1286,14 +1459,14 @@ class ImportDialog(QDialog):
             self._request_rebuild()
 
     def _on_library_activated(self, _text: str = ""):
+        """A library picked from the list: no quiet period, the pending typing timer is superseded."""
+        self._refresh_library_labels()
         self._request_rebuild()
 
-    def _on_library_edited(self):
-        # editingFinished also fires on plain focus loss; only a changed name needs a rebuild
-        if self._candidate is not None and (
-            self._library_combo.currentText().strip() != self._last_requested_library
-        ):
-            self._request_rebuild()
+    def _on_library_text_edited(self, _text: str):
+        """User typing in the library name (textEdited): the labels already follow; the rebuild waits 300 ms."""
+        if self._candidate is not None:
+            self._mark_dirty()
 
     def _request_rebuild(self):
         """Ask for a plan for the current choices; at most one build runs and the latest request wins.
@@ -1306,7 +1479,6 @@ class ImportDialog(QDialog):
             return
         self._gen += 1
         options = self._snapshot_options()
-        self._last_requested_library = options.library
         if self._building is not None:
             self._queued = options
         else:
@@ -1371,15 +1543,75 @@ class ImportDialog(QDialog):
     def _updating(self) -> bool:
         return self._building is not None or self._queued is not None or self._dirty
 
+    def _sync_updating(self):
+        """Show "Updating..." beside the Preview title while a rebuild is pending; the busy strip joins after 150 ms.
+
+        Only while the previous tree is on screen: the first build has its own Building page.
+        """
+        active = (
+            self._candidate is not None
+            and not self._closing
+            and not self.is_installing()
+            and self._updating()
+            and self._preview_stack.currentWidget() is self._preview
+        )
+        if active and not self._updating_shown:
+            self._updating_shown = True
+            self._updating_label.show()
+            self._busy_timer.start()
+        elif not active and self._updating_shown:
+            self._updating_shown = False
+            self._busy_timer.stop()
+            self._updating_label.hide()
+            self._busy_bar.hide()
+
+    def _on_busy_timeout(self):
+        if self._updating_shown:
+            self._busy_bar.show()
+
+    def _form_status(self) -> FormStatus:
+        """The controls as blocking_reasons reads them. "Updating" means a rebuild is dirty, running, queued or lost."""
+        plan = self._plan
+        current = plan is not None and self._plan_gen == self._gen
+        several = self._fp_list is not None
+        return FormStatus(
+            updating=self._updating() or (not current and not self._build_failed),
+            build_failed=self._build_failed,
+            library=self._library_combo.currentText(),
+            value_text=self._field_edits["value"].text(),
+            mpn_text=self._field_edits["mpn"].text(),
+            several_footprints=several,
+            footprints_checked=len(self._checked_footprints()) if several else 0,
+            resolutions=dict(self._resolutions),
+        )
+
+    def _set_strip(self, text: str, *, rich: bool = False, style: str = "", tooltip: str = ""):
+        """Set the strip's format first, then its text (a status line is plain, the reason list is rich)."""
+        strip = self._strip
+        strip.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
+        strip.setStyleSheet(style)
+        strip.setText(text)
+        strip.setToolTip(tooltip)
+
     def _update_install_state(self):
+        self._sync_updating()
         if self.is_installing():
             return
         plan = self._plan
         current = plan is not None and self._plan_gen == self._gen
+        shown = plan if current else None
+        reasons: list[Reason] = []
+        detail: list[Reason] = []
+        if self._candidate is not None:
+            status = self._form_status()
+            reasons = blocking_reasons(status, shown)
+            # The amber frames follow the live text, so they hold while a rebuild catches up
+            detail = blocking_reasons(replace(status, updating=False), shown) if status.updating else reasons
+        self._apply_blocked_frames({r.target for r in detail})
         ready = (
-            current
-            and not self._updating()
-            and not self._build_failed
+            self._candidate is not None
+            and current
+            and not reasons
             and not plan.blocked
             and not plan.is_noop
         )
@@ -1388,32 +1620,65 @@ class ImportDialog(QDialog):
         # The choices wait for the first plan; a failed first build must not lock the user out
         self._left_scroll.setEnabled(self._first_plan_seen or self._build_failed)
         self._change_btn.setEnabled(True)
-        prefix = f"{self._install_failure}  " if self._install_failure else ""
-        self._strip.setText(prefix + self._status_text(plan, current))
+        self._render_strip(reasons, plan if current else None)
 
-    def _status_text(self, plan: InstallPlan | None, current: bool) -> str:
+    def _apply_blocked_frames(self, targets: set[str]):
+        """Turn each field frame amber while a reason targets it; re-polish so the stylesheet applies."""
+        for key, frame in self._field_frames.items():
+            blocked = key in targets
+            if bool(frame.property("blocked")) != blocked:
+                frame.setProperty("blocked", blocked)
+                frame.style().unpolish(frame)
+                frame.style().polish(frame)
+
+    def _render_strip(self, reasons: list[Reason], plan: InstallPlan | None):
+        """The bottom-left line: why Install is off (links), or the ready or no-op line (D-09)."""
+        failure = self._install_failure
+        self._strip_reasons = reasons
         if self._candidate is None:
-            return ""
-        if self._updating():
-            return "Updating preview..."
-        if self._build_failed:
-            return "⚠ Install is blocked: Error: Preview could not be built - see the log"
-        if not current:
-            return "Updating preview..."
-        if plan.blocked:
-            reasons = [i.text for i in plan.issues if i.severity is Severity.ERROR]
-            reasons += [
-                f"Choose Overwrite, Rename or Skip for {c.kind} {c.name}"
-                for c in plan.unresolved_conflicts
-            ]
-            return "⚠ Install is blocked: " + " · ".join(reasons)
-        if plan.is_noop:
-            return f"Nothing to install: this part is already in {plan.library}."
-        counts = file_counts(plan, self._candidate, self._plan_options)
-        return (
-            f"✓ Ready to install: {counts.new} new, {counts.modified} modified, "
-            f"{counts.unchanged} unchanged files"
-        )
+            self._set_strip(failure)
+        elif reasons and reasons[0].text == UPDATING_REASON:
+            self._set_strip(f"{failure}  {UPDATING_REASON}" if failure else UPDATING_REASON, style=f"color: {MUTED};")
+        elif reasons:
+            links = " · ".join(
+                f'<a href="reason:{i}" style="color:{LINK}">{html.escape(reason.text)}</a>'
+                for i, reason in enumerate(reasons)
+            )
+            body = f"⚠ Install is blocked: {links}"
+            if failure:
+                body = f"{html.escape(failure)}  {body}"
+            tooltip = "<br>".join(html.escape(reason.text) for reason in reasons)
+            self._set_strip(body, rich=True, style=f"background-color: {AMBER_TINT};", tooltip=tooltip)
+        elif plan is None:
+            self._set_strip(failure)
+        elif plan.is_noop:
+            self._set_strip(f"{failure}  {noop_text(plan.library)}" if failure else noop_text(plan.library), style=f"color: {MUTED};")
+        else:
+            counts = file_counts(plan, self._candidate, self._plan_options)
+            text = ready_text(counts)
+            self._set_strip(f"{failure}  {text}" if failure else text, style=f"color: {SUCCESS};")
+
+    def _on_reason_link(self, href: str):
+        """A reason in the strip was clicked: focus the control that fixes it and scroll it into view."""
+        prefix = "reason:"
+        if not href.startswith(prefix) or not href[len(prefix):].isdigit():
+            return  # only this dialog's own links do anything (T-05-27)
+        index = int(href[len(prefix):])
+        if index >= len(self._strip_reasons):
+            return
+        target = self._strip_reasons[index].target
+        widget = self._preview if target == "plan" else self._reason_targets.get(target)
+        if widget is None:
+            return
+        widget.setFocus(Qt.FocusReason.OtherFocusReason)
+        left = self._left_scroll.widget()
+        if left is not None and left.isAncestorOf(widget):
+            self._left_scroll.ensureWidgetVisible(widget)
+
+    def _on_install_shortcut(self):
+        """Ctrl+Return: Install, but only when the button is enabled (it checks that itself)."""
+        if self._stack.currentWidget() is self._edit_page:
+            self._on_install_clicked()
 
     # -- install ------------------------------------------------------------------
 
@@ -1433,7 +1698,7 @@ class ImportDialog(QDialog):
         self._change_btn.setEnabled(False)
         self._install_btn.setEnabled(False)
         self._install_btn.setText("Installing...")
-        self._strip.setText("Installing...")
+        self._set_strip("Installing...")
         worker.progress.connect(self._on_install_progress)
         worker.result.connect(lambda result, w=worker, p=plan: self._on_install_done(w, p, result))
         worker.failed.connect(lambda text, w=worker: self._on_install_failed(w, text))
@@ -1441,7 +1706,7 @@ class ImportDialog(QDialog):
 
     def _on_install_progress(self, message: str, current: int, total: int):
         if self.is_installing():
-            self._strip.setText(message)
+            self._set_strip(message)
 
     def _on_install_done(self, worker: TaskWorker, plan: InstallPlan, result: InstallResult):
         if self._install_worker is worker:
@@ -1513,6 +1778,7 @@ class ImportDialog(QDialog):
         """Wait for every open and build worker, then close the package; idempotent."""
         self._closing = True
         self._debounce.stop()
+        self._busy_timer.stop()
         for worker in list(self._workers):
             worker.wait()
         for worker in list(self._workers):
