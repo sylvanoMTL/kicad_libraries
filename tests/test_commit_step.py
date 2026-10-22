@@ -24,6 +24,7 @@ from gitfixtures import (
     start_merge_conflict,
 )
 
+from kicad_lib_manager import gitops
 from kicad_lib_manager.gitops import GitContext
 from kicad_lib_manager.importer import commit_step
 from kicad_lib_manager.models import Severity
@@ -472,3 +473,159 @@ def test_probe_and_commit_in_linked_worktree(tmp_path):
     assert wt.git(wt.parent, "show", "--name-only", "--format=", "HEAD").split() == ["Custom"]
     assert wt.git(wt.parent, "rev-parse", "HEAD:Custom").strip() == wt.git(wt.custom, "rev-parse", "HEAD").strip()
     assert repos.git(repos.parent, "rev-parse", "HEAD").strip() != wt.git(wt.parent, "rev-parse", "HEAD").strip()
+
+
+# -- what was already there before the import (D-09, D-10, D-13) ---------------
+
+MODEL_OLD = "3DModels/old.step"
+KEEP = "3DModels/.gitkeep"
+
+
+def _edit_in_place(repos, rel, suffix=b"; edited before the import\n"):
+    path = repos.custom / rel
+    path.write_bytes(path.read_bytes() + suffix)
+
+
+@requires_git
+@pytest.mark.parametrize("autocrlf", [True, False])
+def test_dirty_before_flags_preexisting_edit(tmp_path, autocrlf):
+    repos = make_superproject(tmp_path / "git", autocrlf=autocrlf)
+    _edit_in_place(repos, SYM_FFC)
+    plan = import_files(repos, {SYM_FFC: (repos.custom / SYM_FFC).read_bytes() + b"; imported\n"})
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.state == "ready"
+    assert probe.dirty_before == frozenset({SYM_FFC})
+
+
+@requires_git
+@pytest.mark.parametrize("autocrlf", [True, False])
+def test_dirty_before_clean_file_not_flagged(tmp_path, autocrlf):
+    repos = make_superproject(tmp_path / "git", autocrlf=autocrlf)
+    plan = import_files(repos, {SYM_FFC: (repos.custom / SYM_FFC).read_bytes() + b"; imported\n"})
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.state == "ready"
+    assert probe.dirty_before == frozenset()
+
+
+@requires_git
+def test_dirty_before_preexisting_untracked_flagged(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    (repos.custom / MODEL_OLD).write_bytes(b"old model\n")
+    plan = import_files(repos, {MODEL_OLD: b"new model\n"})
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.dirty_before == frozenset({MODEL_OLD})
+
+
+@requires_git
+def test_new_file_never_dirty(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    (repos.custom / KEEP).unlink()  # HEAD still holds this path, but the install creates the file
+    plan = import_files(repos, {KEEP: b"created by the install\n", FP_NEW: b'(footprint "FP1")\n'})
+    assert all(f.base_sha256 is None for f in plan.files)
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.dirty_before == frozenset()
+
+
+@requires_git
+def test_other_changes_counts_each_untracked_file(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (repos.custom / "scratch" / name).parent.mkdir(exist_ok=True)
+        (repos.custom / "scratch" / name).write_bytes(b"x\n")
+    (repos.custom / "staged.txt").write_bytes(b"staged\n")
+    repos.git(repos.custom, "add", "staged.txt")
+    _edit_in_place(repos, ".gitignore", b"*.log\n")
+    plan = import_files(repos, {FP_NEW: b'(footprint "FP1")\n', SYM_USB: (repos.custom / SYM_USB).read_bytes() + b"; x\n"})
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.other_changes == 5
+
+
+@requires_git
+def test_other_changes_zero_when_only_the_import_changed(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.other_changes == 0
+
+
+@requires_git
+def test_status_entries_rename_counts_once(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    repos.git(repos.custom, "mv", SYM_FFC, "Symbols/Renamed.kicad_sym")
+    (repos.custom / "plain.txt").write_bytes(b"x\n")
+
+    entries = gitops.status_entries(_ctx(), repos.custom)
+
+    assert sorted(entries) == ["Symbols/Renamed.kicad_sym", "plain.txt"]
+
+
+@requires_git
+def test_earlier_commits_listed_oldest_first(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    first = commit_file(repos, repos.custom, "one.txt", b"1\n", "First")
+    second = commit_file(repos, repos.custom, "two.txt", b"2\n", "Second")
+
+    def short(rev):
+        return repos.git(repos.custom, "rev-parse", "--short", rev).strip()
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.earlier == ((short(first), "First"), (short(second), "Second"))
+    assert probe.earlier_listed is True
+
+
+@requires_git
+def test_earlier_commits_none_when_gitlink_equals_head(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.gitlink_old == _head(repos)
+    assert probe.earlier == () and probe.earlier_listed is True
+
+
+@requires_git
+def test_earlier_commits_unlisted_when_old_unknown(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    unknown = "1" * 40
+    repos.git(repos.parent, "update-index", "--cacheinfo", f"160000,{unknown},Custom")
+    repos.git(repos.parent, "commit", "-m", "Point Custom at a commit it does not have")
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "ready" and probe.gitlink_old == unknown
+    assert probe.earlier == () and probe.earlier_listed is False
+
+
+@requires_git
+def test_offer_switch_probe_also_reports_preexisting_state(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    _two_commits_on_main(repos)
+    detach(repos, "main~2")
+    (repos.custom / "scratch.txt").write_bytes(b"x\n")
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "offer_switch"
+    assert probe.other_changes == 1
+    assert probe.earlier_listed is True and probe.dirty_before == frozenset()
+
+
+@requires_git
+def test_unavailable_probe_leaves_defaults(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    probe = commit_step.probe_commit(_plan(repos), git=_answering({"var": (128, b"")}))
+
+    assert probe.state == "unavailable"
+    assert probe.dirty_before == frozenset() and probe.other_changes == 0 and probe.earlier == ()
