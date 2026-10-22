@@ -99,6 +99,7 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-10: test_uat_scratch_install is gated by KICAD_IMPORT_UAT_DIR and not marked kicad_cli, so -m kicad_cli shows 7 passed, 0 skipped
 - [Phase 04]: 04-10: INST-06 and ROADMAP criterion 3 amended for D-02 (only the incoming symbol is normalised; footprints are copied as-is)
 - [Phase 04]: 04-11..04-13 (gap closure): install is exception-safe (rollback, then install.unexpected or re-raise); freshness is re-checked after the kicad-cli gate and before every write; blank InstallOptions text means not set (explicit clear deferred to the Phase 5 preview)
+- [Quick 261022-gnn]: KiCad path variables are never written silently: `sync_kicad_path_vars` writes only after `confirm(changes)` returns True (no callback = no write); a git worktree (`.git` is a file) or a checkout other than a non-empty configured `KICAD_LIB_GITHUB` (normalised compare) is refused with a WARNING and never prompts. Later phases must not add a silent caller.
 
 ### Pending Todos
 
