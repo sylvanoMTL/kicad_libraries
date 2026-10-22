@@ -615,3 +615,121 @@ def test_log_panel_warning_is_amber(qtbot):
     qtbot.addWidget(panel)
     panel.log_issue(Issue(Severity.WARNING, "x.y", "careful"))
     assert "#8a5200" in panel._text.toHtml().lower()
+
+
+# ── Robust populate, visible Status column, reveal() (02-UI-REVIEW fixes 1-2, D-16) ──
+
+
+def test_populate_resets_updating_after_error(qtbot, monkeypatch, scan):
+    w = LibraryTableWidget()
+    qtbot.addWidget(w)
+
+    def boom(self, lib):
+        raise RuntimeError("tip failed")
+
+    monkeypatch.setattr(LibraryTableWidget, "_collision_tip", boom)
+    with pytest.raises(RuntimeError):
+        w.populate(_collision_scan())
+    assert w._updating is False
+
+    monkeypatch.undo()
+    w.populate(scan)
+    assert w._updating is False
+
+    _sym_item(w, SYM_C).setCheckState(0, Qt.CheckState.Checked)
+    assert scan.symbol_libs[0].selected is True
+
+
+def test_symbol_tree_columns_fit(qtbot, scan):
+    from PySide6.QtWidgets import QHeaderView
+
+    w = _make_widget(qtbot, scan)
+    sym_header = w._sym_tree.header()
+    fp_header = w._fp_tree.header()
+    mode = QHeaderView.ResizeMode
+
+    assert [sym_header.sectionResizeMode(i) for i in range(4)] == [
+        mode.Interactive, mode.Interactive, mode.Stretch, mode.ResizeToContents,
+    ]
+    assert [fp_header.sectionResizeMode(i) for i in range(3)] == [
+        mode.Interactive, mode.Interactive, mode.ResizeToContents,
+    ]
+    for header in (sym_header, fp_header):
+        assert (header.sectionSize(0), header.sectionSize(1)) == (240, 100)
+
+    w.resize(1100, 500)
+    w.show()
+    qtbot.waitExposed(w)
+    viewport_width = w._sym_tree.viewport().width()
+    assert sym_header.sectionPosition(3) < viewport_width
+    assert sym_header.sectionPosition(3) + sym_header.sectionSize(3) <= viewport_width
+
+
+def test_status_cell_tooltip(qtbot):
+    scan = ScanResult(
+        symbol_libs=[
+            SymbolLibrary(
+                "Gone_Sym", "Custom/Symbols/Gone_Sym.kicad_sym", "Custom",
+                footprint_refs=[FootprintRef("Gone", "A", False)],
+            ),
+            SymbolLibrary("Fine", "Custom/Symbols/Fine.kicad_sym", "Custom"),
+            SymbolLibrary(
+                "Same", SAME_SYM_C, "Custom",
+                footprint_refs=[FootprintRef("Gone", "A", False)],
+                collision_peers=[SAME_SYM_W],
+            ),
+            SymbolLibrary("Same", SAME_SYM_W, "WurthElektronik", collision_peers=[SAME_SYM_C]),
+        ],
+        footprint_libs=[
+            FootprintLibrary("Same", SAME_FP_C, "Custom", collision_peers=[SAME_FP_W]),
+            FootprintLibrary("Same", SAME_FP_W, "WurthElektronik", collision_peers=[SAME_FP_C]),
+            FootprintLibrary("Own_C", OWN_FP_C, "Custom"),
+        ],
+    )
+    w = _make_widget(qtbot, scan)
+
+    assert _sym_item(w, "Custom/Symbols/Gone_Sym.kicad_sym").toolTip(3) == "Missing FP"
+    assert _sym_item(w, "Custom/Symbols/Fine.kicad_sym").toolTip(3) == "OK"
+
+    collided_sym = _sym_item(w, SAME_SYM_C)
+    assert SAME_SYM_W in collided_sym.toolTip(3)
+    assert collided_sym.toolTip(3).endswith("; Missing FP")
+    assert SAME_SYM_C in _sym_item(w, SAME_SYM_W).toolTip(3)
+
+    collided_fp = _fp_item(w, SAME_FP_C)
+    assert SAME_FP_W in collided_fp.toolTip(2)
+    assert _fp_item(w, OWN_FP_C).toolTip(2) == "OK"
+
+
+def test_reveal_makes_rows_current_and_visible(qtbot, scan):
+    w = _make_widget(qtbot, scan)
+    w._sym_tree.collapseAll()
+    w._fp_tree.collapseAll()
+    scan.symbol_libs[1].selected = True
+    states_before = {
+        key: item.checkState(0)
+        for items in (w._sym_items, w._fp_items) for key, item in items.items()
+    }
+    selected_before = [lib.selected for lib in [*scan.symbol_libs, *scan.footprint_libs]]
+
+    w.reveal(SYM_C, FP_C)
+
+    sym_item, fp_item = _sym_item(w, SYM_C), _fp_item(w, FP_C)
+    assert w._sym_tree.currentItem() is sym_item
+    assert w._fp_tree.currentItem() is fp_item
+    assert sym_item.parent().isExpanded()
+    assert fp_item.parent().isExpanded()
+    # only the revealed source opens; the other group stays collapsed
+    assert not _sym_item(w, SYM_W).parent().isExpanded()
+    assert not _fp_item(w, FP_W).parent().isExpanded()
+    assert states_before == {
+        key: item.checkState(0)
+        for items in (w._sym_items, w._fp_items) for key, item in items.items()
+    }
+    assert selected_before == [lib.selected for lib in [*scan.symbol_libs, *scan.footprint_libs]]
+    assert w._updating is False
+
+    # unknown or absent paths are skipped silently
+    w.reveal("missing", None)
+    w.reveal(None, "missing")
+    w.reveal(None, None)
