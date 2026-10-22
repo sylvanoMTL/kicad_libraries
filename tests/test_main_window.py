@@ -15,6 +15,7 @@ import pytest
 from PySide6.QtCore import QSettings, Qt
 
 from kicad_lib_manager import library_scanner, main_window, settings
+from kicad_lib_manager.widgets.log_panel import COLORS
 from kicad_lib_manager.models import (
     FootprintLibrary, FootprintRef, Issue, ScanResult, Severity, SymbolLibrary,
 )
@@ -236,7 +237,7 @@ def test_generate_without_kicad_config_warns_and_still_writes_both_tables(make_w
     assert text.count("Could not find KiCad config directory") == 1
     html = w._log._text.toHtml()
     line = next(ln for ln in html.splitlines() if "Could not find KiCad config directory" in ln)
-    assert "#cc7700" in line.lower()
+    assert COLORS["warning"].lower() in line.lower()
     assert (repo / "sym-lib-table").exists()
     assert (repo / "fp-lib-table").exists()
 
@@ -371,7 +372,7 @@ def test_scan_issue_is_logged_in_its_severity_colour(make_window):
     assert "No warnings." not in _log_text(w)
     html = w._log._text.toHtml()
     line = next(ln for ln in html.splitlines() if "[x] warn" in ln)
-    assert "#cc7700" in line.lower()
+    assert COLORS["warning"].lower() in line.lower()
 
 
 def test_close_while_scanning_waits_for_worker(make_window):
@@ -605,7 +606,7 @@ def test_startup_collision_trim_keeps_one_peer_and_warns_once_per_group(
         if "only one library per nickname" in ln
     ]
     assert len(html_lines) == 2
-    assert all("#cc7700" in ln.lower() for ln in html_lines)
+    assert all(COLORS["warning"].lower() in ln.lower() for ln in html_lines)
     _assert_one_selected_per_nickname(w)
 
 
