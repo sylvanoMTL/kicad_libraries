@@ -219,16 +219,16 @@ Plans:
   3. If `Custom` is on a detached HEAD that lies on `main`'s history, the user is offered a switch to `main` before committing. Otherwise the commit is refused with an explanation and nothing is committed.
   4. No importer code path pushes. After a commit, the local branches are ahead of their remotes and no remote has changed.
 
-**Plans**: 1/8 plans executed
+**Plans**: 4/8 plans executed
 
 Plans:
 **Wave 1**
 - [x] 06-01-PLAN.md — Tracer: install the UL sample into a throwaway superproject, click Commit, get exactly the part in Custom and only the gitlink in the parent; run_git choke point with a fixed allow-list, fixed CommitPlan/CommitProbe/CommitOutcome/CommitPanel contracts (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 06-02-PLAN.md — GIT-05 guards (exact allow-list, argv/env, AST scan, remote refs unchanged after a full commit, gitops layering) and the detached-HEAD policy with switch to main and the owner's refuse-if-stale rule (GIT-03) (wave 2)
-- [ ] 06-03-PLAN.md — CommitPanel full state machine: every probe state, fixed file list with amber rows, parent checkbox and live read-only parent message, locks while committing, done/partial/refused outcomes and git output (wave 2)
-- [ ] 06-04-PLAN.md — Commit plan and messages without git: files only, on-disk spelling, outside-Custom refusal, D-11 stale check, D-09 backup lookup, D-18 messages with sanitised provenance trailers and no local paths (GIT-04) (wave 2)
+- [x] 06-02-PLAN.md — GIT-05 guards (exact allow-list, argv/env, AST scan, remote refs unchanged after a full commit, gitops layering) and the detached-HEAD policy with switch to main and the owner's refuse-if-stale rule (GIT-03) (wave 2)
+- [x] 06-03-PLAN.md — CommitPanel full state machine: every probe state, fixed file list with amber rows, parent checkbox and live read-only parent message, locks while committing, done/partial/refused outcomes and git output (wave 2)
+- [x] 06-04-PLAN.md — Commit plan and messages without git: files only, on-disk spelling, outside-Custom refusal, D-11 stale check, D-09 backup lookup, D-18 messages with sanitised provenance trailers and no local paths (GIT-04) (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 06-05-PLAN.md — Probe pre-checks on real git: unavailable cases (git missing/old, uninitialised Custom, busy, identity), parent pre-checks, worktree-private gitdir, D-09 amber files, D-10 count, D-13 earlier commits (wave 3)
@@ -268,7 +268,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
-| 6. Git Commit Step | 1/8 | In Progress | - |
+| 6. Git Commit Step | 4/8 | In Progress | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
 
 ## Backlog
