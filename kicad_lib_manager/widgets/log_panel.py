@@ -5,13 +5,14 @@ from PySide6.QtWidgets import QVBoxLayout, QWidget, QTextEdit, QLabel
 from PySide6.QtGui import QFont
 
 from ..models import Issue
+from .theme import AMBER, ERROR, SUCCESS
 
 
 COLORS = {
     "info": "#000000",
-    "warning": "#CC7700",
-    "error": "#CC0000",
-    "success": "#007700",
+    "warning": AMBER,
+    "error": ERROR,
+    "success": SUCCESS,
 }
 
 

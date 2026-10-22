@@ -7,6 +7,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 
 from kicad_lib_manager.models import FootprintLibrary, FootprintRef, ScanResult, SymbolLibrary
+from kicad_lib_manager.widgets import theme
 from kicad_lib_manager.widgets.library_table import LibraryTableWidget
 
 SYM_C = "Custom/Symbols/Sym_C.kicad_sym"

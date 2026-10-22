@@ -3,9 +3,10 @@ from PySide6.QtWidgets import (
     QLabel, QMenu,
 )
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush, QColor
+from PySide6.QtGui import QBrush, QColor, QFont
 
 from ..models import ScanResult, SymbolLibrary, FootprintLibrary
+from .theme import AMBER, HEADING_PT
 
 
 class LibraryTableWidget(QWidget):
@@ -17,7 +18,7 @@ class LibraryTableWidget(QWidget):
         # Left: Symbols
         sym_col = QVBoxLayout()
         sym_label = QLabel("Symbols")
-        sym_label.setStyleSheet("font-weight: bold; font-size: 13px;")
+        sym_label.setFont(self._heading_font())
         sym_col.addWidget(sym_label)
         self._sym_tree = QTreeWidget()
         self._sym_tree.setHeaderLabels(["Library Name", "Source", "Linked Footprints", "Status"])
@@ -37,7 +38,7 @@ class LibraryTableWidget(QWidget):
         # Right: Footprints
         fp_col = QVBoxLayout()
         fp_label = QLabel("Footprints")
-        fp_label.setStyleSheet("font-weight: bold; font-size: 13px;")
+        fp_label.setFont(self._heading_font())
         fp_col.addWidget(fp_label)
         self._fp_tree = QTreeWidget()
         self._fp_tree.setHeaderLabels(["Library Name", "Source", "Status"])
@@ -61,6 +62,13 @@ class LibraryTableWidget(QWidget):
 
         self._sym_tree.itemChanged.connect(self._on_sym_item_changed)
         self._fp_tree.itemChanged.connect(self._on_fp_item_changed)
+
+    @staticmethod
+    def _heading_font() -> QFont:
+        font = QFont()
+        font.setPointSize(HEADING_PT)
+        font.setBold(True)
+        return font
 
     def populate(self, scan_result: ScanResult):
         self._updating = True
@@ -112,7 +120,7 @@ class LibraryTableWidget(QWidget):
                 item.setData(0, Qt.ItemDataRole.UserRole, lib)
                 if lib.collision_peers or has_missing:
                     item.setIcon(3, warn_icon)
-                    orange = QBrush(QColor("#CC7700"))
+                    orange = QBrush(QColor(AMBER))
                     for col in range(item.columnCount()):
                         item.setForeground(col, orange)
                 if lib.collision_peers:
@@ -145,7 +153,7 @@ class LibraryTableWidget(QWidget):
                 item.setData(0, Qt.ItemDataRole.UserRole, lib)
                 if lib.collision_peers:
                     item.setIcon(2, warn_icon)
-                    orange = QBrush(QColor("#CC7700"))
+                    orange = QBrush(QColor(AMBER))
                     for col in range(item.columnCount()):
                         item.setForeground(col, orange)
                     item.setToolTip(0, self._collision_tip(lib))
