@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSettings, Qt
+from PySide6.QtWidgets import QMessageBox
 
 from kicad_lib_manager import library_scanner, main_window, settings
 from kicad_lib_manager.widgets.log_panel import COLORS
@@ -55,9 +56,12 @@ def make_window(qtbot, monkeypatch, tmp_path):
             config_file.parent.mkdir(exist_ok=True)
             config_file.write_text('{"environment": {"vars": null}}\n', encoding="utf-8")
 
-        def fake_sync(repo_root):
+        # A caller passing config_base/backup_root/running itself makes a duplicate-keyword
+        # TypeError here, so nothing can reach the real KiCad config
+        def fake_sync(repo_root, **kwargs):
             return library_scanner.sync_kicad_path_vars(
                 repo_root,
+                **kwargs,
                 config_base=config_base,
                 backup_root=tmp_path / "backups",
                 running=lambda: [],
@@ -78,6 +82,16 @@ def make_window(qtbot, monkeypatch, tmp_path):
 
     make.calls = []
     make.repo = None
+
+    # Patched at fixture level so no test can block on a real modal dialog;
+    # tests set make.answer to choose the reply and read make.questions for the calls
+    def fake_question(*args):
+        make.questions.append(args)
+        return make.answer
+
+    monkeypatch.setattr(main_window.QMessageBox, "question", fake_question)
+    make.answer = QMessageBox.StandardButton.Yes
+    make.questions = []
     return make
 
 
@@ -225,6 +239,55 @@ def test_generate_with_read_only_sym_table_logs_one_error_and_finishes(
     assert config["environment"]["vars"]["KICAD_LIB_GITHUB"] == str(repo).replace("\\", "/")
     assert any("Updated" in ln for ln in lines)
     assert w._dest_combo.itemText(0) == str(repo)
+
+
+def test_generate_declined_leaves_kicad_config_untouched(make_window, tmp_path):
+    make_window.answer = QMessageBox.StandardButton.No
+    w = make_window([_new_lib_scan()])
+    repo = make_window.repo
+    config_before = make_window.config_file.read_bytes()
+
+    w._on_generate()
+
+    assert (repo / "sym-lib-table").exists()
+    assert (repo / "fp-lib-table").exists()
+    assert len(make_window.questions) == 1
+    assert make_window.config_file.read_bytes() == config_before
+    assert not (tmp_path / "backups").exists()
+    assert "KiCad path variables left unchanged" in w._log._text.toPlainText()
+
+
+def test_generate_from_worktree_refuses_without_asking(make_window, tmp_path):
+    w = make_window([_new_lib_scan()])
+    repo = make_window.repo
+    (repo / ".git").write_text("gitdir: elsewhere\n")
+    config_before = make_window.config_file.read_bytes()
+
+    w._on_generate()
+
+    assert make_window.questions == []
+    assert make_window.config_file.read_bytes() == config_before
+    assert not (tmp_path / "backups").exists()
+    assert (repo / "sym-lib-table").exists()
+    assert (repo / "fp-lib-table").exists()
+    html = w._log._text.toHtml()
+    line = next(ln for ln in html.splitlines() if "git worktree" in ln)
+    assert COLORS["warning"].lower() in line.lower()
+
+
+def test_generate_confirmed_shows_old_and_new_values(make_window):
+    w = make_window([_new_lib_scan()])
+    repo_str = str(make_window.repo).replace("\\", "/")
+
+    w._on_generate()
+
+    (args,) = make_window.questions
+    assert args[0] is w
+    assert f"KICAD_LIB_GITHUB: (not set) -> {repo_str}" in args[2]
+    assert f"CUSTOM_3DMODEL_DIR: (not set) -> {repo_str}/Custom/3DModels" in args[2]
+    assert args[4] == QMessageBox.StandardButton.No
+    config = json.loads(make_window.config_file.read_text(encoding="utf-8"))
+    assert config["environment"]["vars"]["KICAD_LIB_GITHUB"] == repo_str
 
 
 def test_generate_without_kicad_config_warns_and_still_writes_both_tables(make_window):

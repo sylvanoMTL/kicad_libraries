@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
+from PySide6.QtWidgets import QMessageBox
 
 from kicad_lib_manager import library_scanner, main_window, settings
 from kicad_lib_manager.importer.layout import RepoLayout
@@ -66,9 +67,12 @@ def make_window(qtbot, monkeypatch, tmp_path):
         config_file.parent.mkdir(exist_ok=True)
         config_file.write_text('{"environment": {"vars": null}}\n', encoding="utf-8")
 
-        def fake_sync(repo_root):
+        # A caller passing config_base/backup_root/running itself makes a duplicate-keyword
+        # TypeError here, so nothing can reach the real KiCad config
+        def fake_sync(repo_root, **kwargs):
             return library_scanner.sync_kicad_path_vars(
                 repo_root,
+                **kwargs,
                 config_base=config_base,
                 backup_root=tmp_path / "backups",
                 running=lambda: [],
@@ -89,6 +93,16 @@ def make_window(qtbot, monkeypatch, tmp_path):
 
     make.calls = []
     make.repo = None
+
+    # Patched at fixture level so no test can block on a real modal dialog;
+    # tests set make.answer to choose the reply and read make.questions for the calls
+    def fake_question(*args):
+        make.questions.append(args)
+        return make.answer
+
+    monkeypatch.setattr(main_window.QMessageBox, "question", fake_question)
+    make.answer = QMessageBox.StandardButton.Yes
+    make.questions = []
     return make
 
 
@@ -337,10 +351,36 @@ def test_tables_new_library_add_only(qtbot, make_window, tmp_path):
     assert b"Connector_FFC_GCT" not in sym_new and b"Connector_FFC_GCT" not in fp_new
     assert make_window.config_file.read_text(encoding="utf-8") != config_before
     assert "KICAD_LIB_GITHUB" in make_window.config_file.read_text(encoding="utf-8")
+    # the post-install path asks through the same helper as Generate
+    assert len(make_window.questions) == 1
     assert "Added IC_New_TI to sym-lib-table and fp-lib-table" in log_text(w)
     assert w._pending_post_install is None
     # the ungenerated selection is still only in the GUI
     assert selected(w._scan_result, FFC_SYM_REL)
+
+
+def test_tables_new_library_declined_keeps_kicad_config(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo)
+    first = scan_with(with_installed=False, with_ffc=True)
+    second = scan_with(lib=NEW_LIB, with_ffc=True)
+    make_window.answer = QMessageBox.StandardButton.No
+    w = make_window([first, second], repo=repo)
+    deselect_all_but_ffc(w)
+    config_before = make_window.config_file.read_bytes()
+
+    w._on_import_installed(install_result(), stub_plan(repo, NEW_LIB, new_library=True))
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    sym_line = _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8")
+    fp_line = _managed(NEW_LIB, NEW_FP_REL).encode("utf-8")
+    assert (repo / "sym-lib-table").read_bytes() == old_sym[:-2] + sym_line + b")\n"
+    assert (repo / "fp-lib-table").read_bytes() == old_fp[:-2] + fp_line + b")\n"
+    assert make_window.config_file.read_bytes() == config_before
+    assert not (tmp_path / "backups").exists()
+    assert len(make_window.questions) == 1
+    assert "KiCad path variables left unchanged" in log_text(w)
 
 
 def test_tables_existing_library_not_in_tables_warns(qtbot, make_window, tmp_path):

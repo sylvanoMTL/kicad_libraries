@@ -110,14 +110,50 @@ def _prune_backups(backup_dir: Path, name: str, keep: int) -> list[Issue]:
     return issues
 
 
+def _norm_path(text: str) -> str:
+    """Compare key for a path string: ignores slash direction, a trailing separator and
+    (on Windows) case. Pure string work, the path need not exist."""
+    return os.path.normcase(os.path.normpath(text.strip().replace("\\", "/")))
+
+
+def _path_var_refusal(repo_root: Path, repo_str: str, old_vars: dict) -> Issue | None:
+    """A WARNING when this app must not change the path variables, else None."""
+    configured = old_vars.get("KICAD_LIB_GITHUB")
+    is_configured = isinstance(configured, str) and bool(configured.strip())
+    if (repo_root / ".git").is_file():
+        shown = configured if is_configured else "(not set)"
+        return Issue(
+            Severity.WARNING,
+            "config.worktree_refused",
+            f"Not changing KiCad path variables: this app runs from a git worktree "
+            f"({repo_str}). KICAD_LIB_GITHUB stays {shown}. Run the app from the "
+            f"library checkout to update them.",
+        )
+    if is_configured and _norm_path(configured) != _norm_path(repo_str):
+        return Issue(
+            Severity.WARNING,
+            "config.other_checkout_refused",
+            f"Not changing KiCad path variables: KICAD_LIB_GITHUB is set to {configured}, "
+            f"but this app runs from {repo_str}. Run the app from {configured}, or change "
+            f"KICAD_LIB_GITHUB in KiCad Preferences > Configure Paths if you meant to "
+            f"switch checkouts.",
+        )
+    return None
+
+
 def sync_kicad_path_vars(
     repo_root: Path,
     *,
     config_base: Path | None = None,
     backup_root: Path | None = None,
     running: Callable[[], list[str]] | None = None,
+    confirm: Callable[[list[tuple[str, str | None, str]]], bool] | None = None,
 ) -> list[Issue]:
     """Set KICAD_LIB_GITHUB and CUSTOM_3DMODEL_DIR in the newest kicad_common.json.
+
+    Nothing is written unless the values would change and confirm(changes) returns
+    True. changes lists only the variables that would change, as (variable, old value
+    or None, new value). A missing confirm writes nothing.
 
     The file is backed up first, re-parsed to prove only environment.vars changed,
     then replaced atomically. Older KiCad versions are never touched.
@@ -176,8 +212,11 @@ def sync_kicad_path_vars(
 
     issues: list[Issue] = []
     set_issues: list[Issue] = []
+    changes: list[tuple[str, str | None, str]] = []
     for key, value in desired.items():
         old = old_vars.get(key)
+        if old != value:
+            changes.append((key, old, value))
         if old == value:
             issues.append(Issue(
                 Severity.INFO, "config.var_ok", f"KiCad path '{key}' already set correctly"
@@ -194,6 +233,22 @@ def sync_kicad_path_vars(
             ))
     if not set_issues:
         return issues
+
+    refusal = _path_var_refusal(repo_root, repo_str, old_vars)
+    if refusal is not None:
+        return issues + [refusal]
+    if confirm is None:
+        return issues + [Issue(
+            Severity.WARNING,
+            "config.confirm_required",
+            "Not changing KiCad path variables: no confirmation step was provided",
+        )]
+    if not confirm(changes):
+        return issues + [Issue(
+            Severity.INFO,
+            "config.declined",
+            "KiCad path variables left unchanged (change declined)",
+        )]
 
     new_config = copy.deepcopy(config)
     new_config.setdefault("environment", {})["vars"] = {**old_vars, **desired}

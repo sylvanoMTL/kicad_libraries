@@ -197,6 +197,12 @@ HELP_PAGES["generating"] = _wrap(
     "<li>New table files are written with only the selected libraries</li>"
     "<li>Backup numbers increment automatically "
     "(<code>_backup_1</code>, <code>_backup_2</code>, ...)</li>"
+    "<li>If <code>KICAD_LIB_GITHUB</code> or <code>CUSTOM_3DMODEL_DIR</code> in KiCad's "
+    "settings needs to change, the app first shows the old and new values and asks. "
+    "Answering No leaves KiCad's settings unchanged while the tables are still written. "
+    "When the app runs from a git worktree, or from a checkout other than the one "
+    "<code>KICAD_LIB_GITHUB</code> points at, it never changes them and the log says "
+    "why</li>"
     "</ul>"
     "<p>The log panel at the bottom confirms what was written.</p>"
 )

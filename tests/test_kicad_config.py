@@ -7,6 +7,7 @@ app-data backup folder: every call passes config_base, backup_root and running.
 import json
 import os
 import stat
+import sys
 from pathlib import Path
 
 import pytest
@@ -140,10 +141,22 @@ def _write_config(base, version, obj, *, crlf=False, bom=False):
     return path
 
 
-def _sync(repo, cfg, backups, running=lambda: []):
+def _sync(repo, cfg, backups, running=lambda: [], confirm=lambda changes: True):
     return library_scanner.sync_kicad_path_vars(
-        repo, config_base=cfg, backup_root=backups, running=running
+        repo, config_base=cfg, backup_root=backups, running=running, confirm=confirm
     )
+
+
+def _recorder(answer=True):
+    """A confirm callback that records every list of changes it is asked about."""
+    calls = []
+
+    def confirm(changes):
+        calls.append(changes)
+        return answer
+
+    confirm.calls = calls
+    return confirm
 
 
 def _codes(issues):
@@ -182,7 +195,10 @@ def test_null_vars_is_rewritten_with_only_vars_changed(repo, cfg, backups):
 
 
 def test_populated_vars_keep_other_entries_and_report_update(repo, cfg, backups):
-    original = {"environment": {"vars": {"WE_3DMODEL_DIR": "D:/we", "KICAD_LIB_GITHUB": "C:/old"}}}
+    # The same checkout in backslash spelling: a change, but not another checkout (which
+    # would be refused)
+    old = str(repo).replace("/", "\\")
+    original = {"environment": {"vars": {"WE_3DMODEL_DIR": "D:/we", "KICAD_LIB_GITHUB": old}}}
     path = _write_config(cfg, "10.0", original)
 
     issues = _sync(repo, cfg, backups)
@@ -191,7 +207,7 @@ def test_populated_vars_keep_other_entries_and_report_update(repo, cfg, backups)
     assert vars_["WE_3DMODEL_DIR"] == "D:/we"
     assert vars_["KICAD_LIB_GITHUB"] == _desired(repo)["KICAD_LIB_GITHUB"]
     (updated,) = [i for i in issues if "updated:" in i.text]
-    assert "C:/old" in updated.text and _desired(repo)["KICAD_LIB_GITHUB"] in updated.text
+    assert old in updated.text and _desired(repo)["KICAD_LIB_GITHUB"] in updated.text
 
 
 def test_environment_without_vars_key_gets_vars(repo, cfg, backups):
@@ -396,3 +412,155 @@ def test_unremovable_old_backup_warns_without_failing_the_sync(repo, cfg, backup
     (warn,) = _by_code(issues, "config.prune_failed")
     assert warn.severity is Severity.WARNING
     assert "kicad_common.json_backup_1" in warn.text
+
+
+# -- Quick 261022-gnn: path variables are never written silently ------------------
+
+
+def test_declined_change_writes_nothing_and_makes_no_backup(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    before = path.read_bytes()
+    confirm = _recorder(answer=False)
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    assert len(confirm.calls) == 1
+    _assert_untouched(path, before, backups)
+    (declined,) = _by_code(issues, "config.declined")
+    assert declined.severity is Severity.INFO
+    assert declined.text.startswith("KiCad path variables left unchanged")
+    assert not _by_code(issues, "config.var_set")
+    assert not _by_code(issues, "config.written")
+
+
+def test_unchanged_values_never_ask(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", {"environment": {"vars": _desired(repo)}})
+    before = path.read_bytes()
+    confirm = _recorder()
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    assert confirm.calls == []
+    assert _codes(issues) == ["config.var_ok", "config.var_ok"]
+    _assert_untouched(path, before, backups)
+
+
+def test_confirm_gets_only_the_changing_variables(repo, cfg, backups):
+    repo_str = _desired(repo)["KICAD_LIB_GITHUB"]
+    _write_config(cfg, "10.0", _null_vars_config())
+    confirm = _recorder()
+    _sync(repo, cfg, backups, confirm=confirm)
+    assert confirm.calls == [[
+        ("KICAD_LIB_GITHUB", None, repo_str),
+        ("CUSTOM_3DMODEL_DIR", None, repo_str + "/Custom/3DModels"),
+    ]]
+
+    _write_config(cfg, "10.0", {"environment": {"vars": {"KICAD_LIB_GITHUB": repo_str}}})
+    confirm = _recorder()
+    _sync(repo, cfg, backups, confirm=confirm)
+    assert confirm.calls == [[("CUSTOM_3DMODEL_DIR", None, repo_str + "/Custom/3DModels")]]
+
+
+def test_missing_confirm_writes_nothing(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    before = path.read_bytes()
+
+    issues = library_scanner.sync_kicad_path_vars(
+        repo, config_base=cfg, backup_root=backups, running=lambda: [], confirm=None
+    )
+
+    (warn,) = _by_code(issues, "config.confirm_required")
+    assert warn.severity is Severity.WARNING
+    _assert_untouched(path, before, backups)
+
+
+# -- Quick 261022-gnn: worktree and other-checkout refusals -----------------------
+
+
+def _other_checkout(tmp_path):
+    return str(tmp_path / "main checkout").replace("\\", "/")
+
+
+@pytest.mark.parametrize("configured", ["other", None])
+def test_worktree_refuses_without_asking_or_writing(repo, cfg, backups, tmp_path, configured):
+    (repo / ".git").write_text("gitdir: elsewhere\n")
+    vars_ = {"KICAD_LIB_GITHUB": _other_checkout(tmp_path)} if configured else None
+    path = _write_config(cfg, "10.0", {"environment": {"vars": vars_}})
+    before = path.read_bytes()
+    confirm = _recorder()
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    (refused,) = _by_code(issues, "config.worktree_refused")
+    assert refused.severity is Severity.WARNING
+    assert _desired(repo)["KICAD_LIB_GITHUB"] in refused.text
+    assert (_other_checkout(tmp_path) if configured else "(not set)") in refused.text
+    assert confirm.calls == []
+    _assert_untouched(path, before, backups)
+
+
+def test_other_checkout_refuses_without_asking_or_writing(repo, cfg, backups, tmp_path):
+    other = _other_checkout(tmp_path)
+    path = _write_config(cfg, "10.0", {"environment": {"vars": {"KICAD_LIB_GITHUB": other}}})
+    before = path.read_bytes()
+    confirm = _recorder()
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    (refused,) = _by_code(issues, "config.other_checkout_refused")
+    assert refused.severity is Severity.WARNING
+    assert other in refused.text and _desired(repo)["KICAD_LIB_GITHUB"] in refused.text
+    assert "Configure Paths" in refused.text
+    assert confirm.calls == []
+    _assert_untouched(path, before, backups)
+
+
+_SPELLINGS = [
+    pytest.param(lambda repo, s: str(repo).replace("/", "\\"), id="backslashes"),
+    pytest.param(lambda repo, s: s + "/", id="trailing-slash"),
+    pytest.param(lambda repo, s: str(repo) + "\\", id="trailing-backslash"),
+    pytest.param(
+        lambda repo, s: s.upper(),
+        id="upper-case",
+        marks=pytest.mark.skipif(sys.platform != "win32", reason="case is only ignored on Windows"),
+    ),
+]
+
+
+@pytest.mark.parametrize("spell", _SPELLINGS)
+def test_same_checkout_in_another_spelling_is_not_refused(repo, cfg, backups, spell):
+    repo_str = _desired(repo)["KICAD_LIB_GITHUB"]
+    path = _write_config(
+        cfg, "10.0", {"environment": {"vars": {"KICAD_LIB_GITHUB": spell(repo, repo_str)}}}
+    )
+    confirm = _recorder()
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    assert len(confirm.calls) == 1
+    assert not _by_code(issues, "config.other_checkout_refused")
+    assert json.loads(path.read_text(encoding="utf-8"))["environment"]["vars"] == _desired(repo)
+
+
+def test_empty_configured_value_asks_for_confirmation(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", {"environment": {"vars": {"KICAD_LIB_GITHUB": ""}}})
+    confirm = _recorder()
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    assert confirm.calls[0][0] == ("KICAD_LIB_GITHUB", "", _desired(repo)["KICAD_LIB_GITHUB"])
+    assert _by_code(issues, "config.written")
+    assert json.loads(path.read_text(encoding="utf-8"))["environment"]["vars"] == _desired(repo)
+
+
+def test_git_directory_is_not_a_worktree(repo, cfg, backups):
+    (repo / ".git").mkdir()
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    confirm = _recorder()
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    assert len(confirm.calls) == 1
+    assert not _by_code(issues, "config.worktree_refused")
+    assert _by_code(issues, "config.written")
+    assert json.loads(path.read_text(encoding="utf-8"))["environment"]["vars"] == _desired(repo)
