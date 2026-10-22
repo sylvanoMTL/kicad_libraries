@@ -317,3 +317,186 @@ def test_cli_runs_once_across_rebuilds(eq_layout):
             plan = build_plan(candidate, options, eq_layout, tools)
             assert not plan.blocked, plan.issues
     assert upgrades() == 1, cli.calls
+
+
+# -- plan 05-09 Task 2: the blocking reasons, in the UI-SPEC order ------------------------------------
+
+from kicad_lib_manager.importer.form import FormStatus, Reason, blocking_reasons, noop_text, ready_text  # noqa: E402
+from kicad_lib_manager.importer.plan import Conflict, InstallPlan  # noqa: E402
+from kicad_lib_manager.importer.preview import FileCounts  # noqa: E402
+from kicad_lib_manager.models import Issue, Severity  # noqa: E402
+
+ERR = Severity.ERROR
+
+
+def status(**changes) -> FormStatus:
+    base = {
+        "updating": False,
+        "build_failed": False,
+        "library": "IC_Test_TI",
+        "value_text": "V",
+        "mpn_text": "M",
+        "several_footprints": False,
+        "footprints_checked": 1,
+        "resolutions": {},
+    }
+    base.update(changes)
+    return FormStatus(**base)
+
+
+def fake_plan(issues=(), conflicts=()) -> InstallPlan:
+    """A plan carrying only what blocking_reasons reads: its Issues and Conflicts."""
+    return InstallPlan(
+        vendor="Test",
+        source=Path("pkg.zip"),
+        layout=None,
+        tools=ToolContext(),
+        library="IC_Test_TI",
+        new_symbol_lib=False,
+        new_footprint_lib=False,
+        symbol_names=("S",),
+        footprint_names=("F1",),
+        linked_footprint="F1",
+        model_file=None,
+        source_version=None,
+        target_version=None,
+        normalised=False,
+        ops=(),
+        conflicts=tuple(conflicts),
+        renames=(),
+        issues=tuple(issues),
+    )
+
+
+def pairs(reasons: list[Reason]) -> list[tuple[str, str]]:
+    return [(r.text, r.target) for r in reasons]
+
+
+def test_kind_label():
+    assert [form.kind_label(k) for k in ("symbol", "footprint", "model")] == ["symbol", "footprint", "3D model"]
+
+
+def test_blocking_reasons_order():
+    plan = fake_plan(
+        issues=(
+            Issue(Severity.WARNING, "install.no_model", "A warning is not a reason"),
+            Issue(ERR, "install.no_symbol", "The package holds no symbol to install"),
+        ),
+        conflicts=(
+            Conflict("footprint:Lib:f1", "footprint", "F1", "Lib.pretty"),
+            Conflict("model:m.step", "model", "m.step", "3DModels"),
+            Conflict("symbol:S", "symbol", "S", "Lib.kicad_sym", resolution=Resolution("skip")),
+        ),
+    )
+    reasons = blocking_reasons(status(value_text="", several_footprints=True, footprints_checked=0), plan)
+    assert pairs(reasons) == [
+        ("Error: The package holds no symbol to install", "plan"),
+        ("Value is empty", "value"),
+        ("Select at least one footprint", "footprints"),
+        ("Choose Overwrite, Rename or Skip for footprint F1", "conflict:footprint:Lib:f1"),
+        ("Choose Overwrite, Rename or Skip for 3D model m.step", "conflict:model:m.step"),
+    ]
+    # the library and MPN reasons sit between the plan Issues and the footprint check
+    reasons = blocking_reasons(status(library="", mpn_text="  "), None)
+    assert pairs(reasons) == [("Library name is empty", "library"), ("MPN is empty - it names the 3D model file", "mpn")]
+    assert blocking_reasons(status(), fake_plan()) == []
+    assert blocking_reasons(status(), None) == []
+
+
+def test_blocking_reasons_updating_alone():
+    plan = fake_plan(issues=(Issue(ERR, "install.no_symbol", "x"),))
+    reasons = blocking_reasons(status(updating=True, value_text="", library=""), plan)
+    assert reasons == [Reason("Updating preview...", "plan")]
+
+
+def test_blocking_reasons_build_failed():
+    plan = fake_plan(issues=(Issue(ERR, "install.no_symbol", "stale plan error"),))
+    reasons = blocking_reasons(status(build_failed=True, value_text=""), plan)
+    assert pairs(reasons) == [
+        ("Error: Preview could not be built - see the log", "plan"),
+        ("Value is empty", "value"),
+    ]
+
+
+def test_blocking_reasons_dedup():
+    """A plan ERROR that a form reason already explains is not repeated (D-09)."""
+    conflict = Conflict("footprint:F1", "footprint", "F1", "Lib.pretty")
+    cases = [
+        # placeholder library
+        (
+            status(library="IC_SubCategory_TI"),
+            Issue(ERR, "install.placeholder_library", "Library name IC_SubCategory_TI still contains the placeholder token(s) SubCategory"),
+            [("Library name still contains a placeholder (SubCategory). Pick an existing library or type a real name.", "library")],
+        ),
+        # empty library name
+        (status(library=""), Issue(ERR, "install.invalid_library", "'' is not a valid library name"), [("Library name is empty", "library")]),
+        # empty Value and empty MPN
+        (status(value_text=""), Issue(ERR, "install.empty_required", "Value cannot be empty; enter a value"), [("Value is empty", "value")]),
+        (
+            status(mpn_text=""),
+            Issue(ERR, "install.empty_required", "MPN cannot be empty: it names the 3D model file; enter a part number"),
+            [("MPN is empty - it names the 3D model file", "mpn")],
+        ),
+        # no footprint checked of several
+        (
+            status(several_footprints=True, footprints_checked=0),
+            Issue(ERR, "install.choice_required", "The package holds several footprints; choose from: F1, F2"),
+            [("Select at least one footprint", "footprints")],
+        ),
+    ]
+    for form_status, issue, expected in cases:
+        assert pairs(blocking_reasons(form_status, fake_plan(issues=(issue,)))) == expected, issue.code
+
+    # an empty rename key: the bad_rename Issue and the plain conflict reason give way to "Enter a new name"
+    blank = status(resolutions={"footprint:F1": Resolution("rename", rename_to="  ")})
+    bad = Issue(ERR, "install.bad_rename", "footprint:F1: '' has no usable characters; enter another name")
+    assert pairs(blocking_reasons(blank, fake_plan(issues=(bad,), conflicts=(conflict,)))) == [
+        ("Enter a new name for footprint F1", "rename:footprint:F1")
+    ]
+    # a bad_rename for a name that is typed but taken is a different problem and stays
+    taken = status(resolutions={"footprint:F1": Resolution("rename", rename_to="Other")})
+    taken_issue = Issue(ERR, "install.bad_rename", "footprint:F1: Lib.pretty already holds Other, so Other is not free; enter another name")
+    assert pairs(blocking_reasons(taken, fake_plan(issues=(taken_issue,), conflicts=(conflict,)))) == [
+        ("Error: " + taken_issue.text, "plan"),
+        ("Choose Overwrite, Rename or Skip for footprint F1", "conflict:footprint:F1"),
+    ]
+
+
+def test_blocking_reasons_issue_targets_link_the_control():
+    """A plan ERROR about the library, the footprint name or a field links to that control."""
+    clash = Issue(ERR, "install.library_case_clash", "ic_x differs from the existing library IC_x only by letter case")
+    assert pairs(blocking_reasons(status(), fake_plan(issues=(clash,)))) == [("Error: " + clash.text, "library")]
+    bad_name = Issue(ERR, "install.invalid_name", "The footprint name '' has no usable characters; enter another name")
+    assert pairs(blocking_reasons(status(), fake_plan(issues=(bad_name,)))) == [("Error: " + bad_name.text, "footprint_name")]
+    invalid = Issue(ERR, "install.invalid_library", "'IC x' is not a valid library name; use 'IC_x'")
+    assert pairs(blocking_reasons(status(library="IC x"), fake_plan(issues=(invalid,)))) == [("Error: " + invalid.text, "library")]
+
+
+def test_blocking_reasons_placeholder_text():
+    reasons = blocking_reasons(status(library="IC_SubCategory_TI"), None)
+    assert pairs(reasons) == [
+        ("Library name still contains a placeholder (SubCategory). Pick an existing library or type a real name.", "library")
+    ]
+    two = blocking_reasons(status(library="Type_SubCategory_TI"), None)
+    assert two[0].text.startswith("Library name still contains a placeholder (Type, SubCategory).")
+
+
+def test_blocking_reasons_empty_rename():
+    conflict = Conflict("footprint:F1", "footprint", "F1", "Lib.pretty")
+    key = conflict.key
+    reasons = blocking_reasons(status(resolutions={key: Resolution("rename", rename_to="  ")}), fake_plan(conflicts=(conflict,)))
+    assert pairs(reasons) == [("Enter a new name for footprint F1", f"rename:{key}")]
+    # a rename with text, a skip and a rename for a key the plan no longer has give no reason
+    fine = status(resolutions={key: Resolution("rename", rename_to="G"), "model:gone": Resolution("rename", rename_to="")})
+    assert blocking_reasons(fine, fake_plan(conflicts=(replace_resolution(conflict, Resolution("rename", rename_to="G")),))) == []
+
+
+def replace_resolution(conflict: Conflict, resolution: Resolution) -> Conflict:
+    from dataclasses import replace
+
+    return replace(conflict, resolution=resolution)
+
+
+def test_ready_and_noop_text():
+    assert ready_text(FileCounts(2, 1, 0)) == "✓ Ready to install: 2 new, 1 modified, 0 unchanged files"
+    assert noop_text("Lib") == "Nothing to install: this part is already in Lib."

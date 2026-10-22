@@ -1562,3 +1562,363 @@ def test_library_long_name_geometry(qtbot, make_item_dialog):
     assert dialog._token_line.toolTip() == long_name
     # the token line wraps instead of widening the pane
     assert dialog._token_line.height() >= dialog._token_line.fontMetrics().height()
+
+
+# -- plan 05-09 Task 2: the clickable blocking-reason strip, amber frames, ready and no-op lines ----
+
+import html as html_module  # noqa: E402
+import re  # noqa: E402
+
+from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+
+from kicad_lib_manager.widgets.theme import AMBER_TINT, LINK, SP_SM  # noqa: E402
+
+PLACEHOLDER_REASON = "Library name still contains a placeholder (SubCategory). Pick an existing library or type a real name."
+
+
+def strip_links(dialog: ImportDialog) -> dict[str, str]:
+    """reason text (unescaped) -> href, read from the strip's rich text."""
+    found = re.findall(r'<a href="([^"]*)"[^>]*>(.*?)</a>', dialog._strip.text())
+    return {html_module.unescape(text): href for href, text in found}
+
+
+def frame_blocked(dialog: ImportDialog, key: str) -> bool:
+    return bool(dialog._field_frames[key].property("blocked"))
+
+
+def with_issues(*issues):
+    """A build_plan fake that adds ERROR Issues to the real plan."""
+
+    def build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        plan = real_build_plan(candidate, options, layout, tools, **kwargs)
+        return replace(plan, issues=(*plan.issues, *issues))
+
+    return build
+
+
+def test_placeholder_blocks_install(qtbot, make_item_dialog):
+    """Phase 3 D-04: the UL sample opens blocked on its placeholder library name until a real one is picked."""
+    dialog = make_item_dialog(UL_ZIP, show=True)
+    wait_current(qtbot, dialog)
+    assert "SubCategory" in dialog._library_combo.currentText()
+    assert not dialog._install_btn.isEnabled()
+    assert PLACEHOLDER_REASON in strip_links(dialog)
+    assert dialog._strip.text().startswith("⚠ Install is blocked: ")
+    assert frame_blocked(dialog, "library")
+    # the planner's own refusal is not repeated as a second reason
+    assert not any(text.startswith("Error:") for text in strip_links(dialog))
+
+    set_library(dialog, LIB)
+    wait_current(qtbot, dialog)
+    assert dialog._strip.text() == "✓ Ready to install: 2 new, 1 modified, 0 unchanged files"
+    assert dialog._install_btn.isEnabled()
+    assert not frame_blocked(dialog, "library")
+
+
+def test_empty_library_name_blocks(qtbot, make_item_dialog):
+    """UI E6/empty: an empty name shows the amber frame and 'Library name is empty'."""
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._library_combo.lineEdit(), "")
+    assert frame_blocked(dialog, "library")  # from the first keystroke, while the rebuild waits
+    wait_current(qtbot, dialog)
+    assert "Library name is empty" in strip_links(dialog)
+    assert not any(text.startswith("Error:") for text in strip_links(dialog))
+    assert frame_blocked(dialog, "library")
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_case_twin_and_invalid_name_show_the_plan_issue(qtbot, make_item_dialog):
+    """UI E6/error: a case twin and a name sanitize_name changes show the plan's Issue and the amber frame."""
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._library_combo.lineEdit(), "ic_battery_charger_ti")
+    wait_current(qtbot, dialog)
+    codes = [i.code for i in dialog._plan.issues]
+    assert "install.library_case_clash" in codes
+    errors = [text for text in strip_links(dialog) if text.startswith("Error:")]
+    assert len(errors) == 1 and "letter case" in errors[0]
+    assert frame_blocked(dialog, "library")
+    assert not dialog._install_btn.isEnabled()
+    assert any("letter case" in dialog._preview.topLevelItem(i).child(j).text(0)
+               for i in range(dialog._preview.topLevelItemCount())
+               for j in range(dialog._preview.topLevelItem(i).childCount()))
+
+    type_text(qtbot, dialog._library_combo.lineEdit(), "IC New TI")
+    wait_current(qtbot, dialog)
+    assert "install.invalid_library" in [i.code for i in dialog._plan.issues]
+    assert any(text.startswith("Error:") and "not a valid library name" in text for text in strip_links(dialog))
+    assert frame_blocked(dialog, "library")
+
+
+def test_strip_link_focuses_field(qtbot, make_item_dialog):
+    """UI E7/error: the reason is a link; activating it puts the cursor in the field."""
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["value"], "")
+    wait_current(qtbot, dialog)
+    assert frame_blocked(dialog, "value") and not frame_blocked(dialog, "mpn")
+    links = strip_links(dialog)
+    assert "Value is empty" in links and "MPN is empty - it names the 3D model file" not in links
+    dialog._library_combo.setFocus()
+    dialog._strip.linkActivated.emit(links["Value is empty"])
+    assert dialog.focusWidget() is dialog._field_edits["value"]
+
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    wait_current(qtbot, dialog)
+    assert frame_blocked(dialog, "value") and frame_blocked(dialog, "mpn")
+    links = strip_links(dialog)
+    dialog._strip.linkActivated.emit(links["MPN is empty - it names the 3D model file"])
+    assert dialog.focusWidget() is dialog._field_edits["mpn"]
+    # a restored field unblocks its frame
+    dialog._field_restore["value"].click()
+    dialog._field_restore["mpn"].click()
+    wait_current(qtbot, dialog)
+    assert not frame_blocked(dialog, "value") and not frame_blocked(dialog, "mpn")
+    assert dialog._install_btn.isEnabled()
+
+
+def test_strip_link_focuses_library_and_footprint_list(qtbot, make_item_dialog, tmp_path):
+    dialog = make_item_dialog(multi_zip(tmp_path), show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    for row in range(dialog._fp_list.count()):
+        dialog._fp_list.item(row).setCheckState(Qt.CheckState.Unchecked)
+    wait_current(qtbot, dialog)
+    # UI E5/error: the last footprint unchecked adds the reason and the amber frame, once
+    links = strip_links(dialog)
+    assert "Select at least one footprint" in links
+    assert not any(text.startswith("Error:") for text in links)
+    assert frame_blocked(dialog, "footprints")
+    assert not dialog._install_btn.isEnabled()
+    dialog._library_combo.setFocus()
+    dialog._strip.linkActivated.emit(links["Select at least one footprint"])
+    assert dialog.focusWidget() is dialog._fp_list
+    dialog._fp_list.item(0).setCheckState(Qt.CheckState.Checked)
+    wait_current(qtbot, dialog)
+    assert not frame_blocked(dialog, "footprints")
+    assert dialog._install_btn.isEnabled()
+
+    set_library(dialog, "IC_SubCategory_TI")
+    wait_current(qtbot, dialog)
+    dialog._fp_name_edit.setFocus()
+    dialog._strip.linkActivated.emit(strip_links(dialog)[PLACEHOLDER_REASON])
+    assert dialog.focusWidget() is dialog._library_combo.lineEdit()
+
+
+def test_strip_link_ignores_unknown_href(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    dialog._library_combo.setFocus()
+    for href in ("reason:99", "reason:x", "http://evil.example/", "reason:-1", ""):
+        dialog._strip.linkActivated.emit(href)  # nothing is opened, nothing breaks
+    assert dialog.focusWidget() is dialog._library_combo.lineEdit()
+
+
+def test_strip_escapes_markup(qtbot, make_item_dialog):
+    """T-05-27: every interpolated string is escaped and only internal reason: links exist."""
+    evil = Issue(Severity.ERROR, "install.test_markup", "<b>x</b><a href='http://evil.example/'>y</a>")
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(evil))
+    wait_current(qtbot, dialog)
+    text = dialog._strip.text()
+    assert "&lt;b&gt;x&lt;/b&gt;" in text
+    assert "<b>" not in text and "<a href='http" not in text and 'href="http' not in text
+    hrefs = re.findall(r'href="([^"]*)"', text)
+    assert hrefs and all(h.startswith("reason:") for h in hrefs)
+    assert dialog._strip.openExternalLinks() is False
+    assert LINK in text  # the links are LINK-coloured
+
+
+def test_strip_look(qtbot, make_item_dialog):
+    """The blocked strip: AMBER_TINT, 8 px padding, rich text, a leading warning and ' · ' between reasons."""
+    one = Issue(Severity.ERROR, "install.test_a", "First problem")
+    two = Issue(Severity.ERROR, "install.test_b", "Second problem")
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(one, two))
+    wait_current(qtbot, dialog)
+    strip = dialog._strip
+    assert strip.textFormat() == Qt.TextFormat.RichText and strip.wordWrap()
+    assert AMBER_TINT.lower() in strip.styleSheet().lower()
+    margins = strip.contentsMargins()
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (SP_SM, SP_SM, SP_SM, SP_SM)
+    assert strip.text().startswith("⚠ Install is blocked: ")
+    assert list(strip_links(dialog)) == ["Error: First problem", "Error: Second problem"]
+    assert " · " in strip.text()
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_strip_caps_three_lines_with_tooltip(qtbot, make_item_dialog):
+    """UI E11/overflow and long-text: at most 3 lines, the tooltip lists every reason."""
+    issues = [Issue(Severity.ERROR, f"install.test_{n}", f"Reason number {n} " + "with a rather long explanation " * 4) for n in range(10)]
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(*issues))
+    dialog.resize(900, 600)
+    wait_current(qtbot, dialog)
+    strip = dialog._strip
+    limit = 3 * strip.fontMetrics().lineSpacing() + 2 * SP_SM
+    assert strip.maximumHeight() <= limit + 2
+    assert strip.height() <= strip.maximumHeight()
+    tooltip = strip.toolTip()
+    for n in range(10):
+        assert f"Reason number {n} " in tooltip
+
+
+def test_ready_line_and_install_enabled(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    counts = file_counts(dialog._plan, dialog._candidate, dialog._plan_options)
+    assert dialog._strip.text() == (
+        f"✓ Ready to install: {counts.new} new, {counts.modified} modified, {counts.unchanged} unchanged files"
+    )
+    assert SUCCESS in dialog._strip.styleSheet()
+    assert dialog._strip.textFormat() == Qt.TextFormat.PlainText
+    assert dialog._install_btn.isEnabled()
+    assert all(not frame.property("blocked") for frame in dialog._field_frames.values())
+
+
+def test_noop_strip(qtbot, make_item_dialog):
+    """A plan with nothing to write reads 'Nothing to install' in MUTED and keeps Install off."""
+
+    def noop_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        return replace(real_build_plan(candidate, options, layout, tools, **kwargs), ops=())
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=noop_build)
+    wait_current(qtbot, dialog)
+    assert dialog._plan.is_noop
+    assert dialog._strip.text() == f"Nothing to install: this part is already in {LIB}."
+    assert MUTED.lower() in dialog._strip.styleSheet().lower()
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_updating_reason_replaces_the_others(qtbot, make_item_dialog, gates):
+    """UI E11/loading: while a rebuild is pending the single reason 'Updating preview...' stands alone."""
+    state = {"n": 0}
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        state["n"] += 1
+        if state["n"] >= 3:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = ul_dialog(make_item_dialog, qtbot, build_plan=gated_build)
+    type_text(qtbot, dialog._field_edits["value"], "")
+    wait_current(qtbot, dialog)
+    assert "Value is empty" in strip_links(dialog)
+    type_text(qtbot, dialog._field_edits["mpn"], "")  # a rebuild starts and is held
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert dialog._strip.text() == "Updating preview..."
+    assert not dialog._install_btn.isEnabled()
+    assert strip_links(dialog) == {}
+    assert frame_blocked(dialog, "value") and frame_blocked(dialog, "mpn")  # the frames follow the live text
+    gates[0].set()
+    wait_current(qtbot, dialog)
+    assert "MPN is empty - it names the 3D model file" in strip_links(dialog)
+
+
+def test_build_failure_reason_and_retry(qtbot, make_item_dialog):
+    """UI E9/error: the previous tree stays, the strip says why, the next edit retries."""
+    count = {"n": 0}
+
+    def flaky_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if count["n"] == 2:
+            raise RuntimeError("boom")
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = ul_dialog(make_item_dialog, qtbot, build_plan=flaky_build)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    first_tree = files_rows(dialog)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: count["n"] == 2 and dialog._building is None, timeout=30000)
+    assert files_rows(dialog) == first_tree
+    assert "Error: Preview could not be built - see the log" in strip_links(dialog)
+    assert not dialog._install_btn.isEnabled()
+    assert dialog._updating_label.isHidden()
+    assert any(i.text.startswith("Import step failed: RuntimeError: boom") for i in logged)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    assert dialog._strip.text().startswith("✓ Ready to install")
+
+
+def test_field_frames_reserve_their_border(qtbot, make_item_dialog):
+    """The frame always holds its 2 px border, so turning the amber highlight on does not move anything."""
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    frame = dialog._field_frames["value"]
+    assert frame.objectName() == "fieldFrame"
+    assert "2px solid transparent" in frame.styleSheet()
+    assert dialog._field_edits["value"].parentWidget() is frame
+    assert dialog._library_combo.parentWidget() is dialog._field_frames["library"]
+    assert dialog._fp_name_edit.parentWidget() is dialog._field_frames["footprint_name"]
+    before = (frame.geometry(), dialog._field_edits["value"].geometry())
+    type_text(qtbot, dialog._field_edits["value"], "")
+    assert frame_blocked(dialog, "value")
+    qtbot.wait(20)
+    assert (frame.geometry(), dialog._field_edits["value"].geometry()) == before
+
+
+def test_ctrl_return_and_no_default_buttons(qtbot, make_item_dialog):
+    """T-05-29: Enter in a line edit never installs; Ctrl+Return installs only when Install is enabled."""
+    applied = []
+
+    def recording_apply(plan, *, backup_root=None, progress=None):
+        applied.append(plan)
+        return real_apply_plan(plan, backup_root=backup_root, progress=progress)
+
+    dialog = ul_dialog(make_item_dialog, qtbot, apply_plan=recording_apply)
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    for button in dialog.findChildren(QPushButton):
+        assert not button.autoDefault() and not button.isDefault(), button.text()
+    assert dialog._install_btn.isEnabled()
+
+    qtbot.keyClick(dialog._field_edits["value"], Qt.Key.Key_Return)
+    qtbot.keyClick(dialog._library_combo.lineEdit(), Qt.Key.Key_Return)
+    qtbot.wait(100)
+    assert applied == [] and dialog._stack.currentWidget() is dialog._edit_page
+
+    # not enabled (a rebuild is pending): Ctrl+Return does nothing
+    type_text(qtbot, dialog._field_edits["datasheet"], "https://example.com/x")
+    assert not dialog._install_btn.isEnabled()
+    qtbot.keyClick(dialog, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    qtbot.wait(100)
+    assert applied == []
+
+    wait_current(qtbot, dialog)
+    assert dialog._install_btn.isEnabled()
+    with qtbot.waitSignal(dialog.installed, timeout=60000):
+        qtbot.keyClick(dialog, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    assert len(applied) == 1 and applied[0] is dialog._plan
+
+
+def test_ctrl_return_shortcut_is_registered(qtbot, make_item_dialog):
+    from PySide6.QtGui import QKeySequence, QShortcut
+
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    keys = [s.key().toString() for s in dialog.findChildren(QShortcut)]
+    assert QKeySequence("Ctrl+Return").toString() in keys
+
+
+def test_one_build_at_a_time(qtbot, make_item_dialog, gates):
+    """Edge PREV-06/concurrency: edits during a running build queue; two builds never overlap."""
+    running = {"now": 0, "max": 0, "calls": 0}
+    lock = threading.Lock()
+
+    def counting_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        with lock:
+            running["now"] += 1
+            running["calls"] += 1
+            running["max"] = max(running["max"], running["now"])
+        try:
+            if running["calls"] == 2:
+                gate = threading.Event()
+                gates.append(gate)
+                assert gate.wait(30)
+            return real_build_plan(candidate, options, layout, tools, **kwargs)
+        finally:
+            with lock:
+                running["now"] -= 1
+
+    dialog = ul_dialog(make_item_dialog, qtbot, build_plan=counting_build)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    for name in ("A_x_TI", "B_x_TI", "C_x_TI"):
+        set_library(dialog, name)
+    gates[0].set()
+    wait_current(qtbot, dialog)
+    assert running["max"] == 1
+    assert dialog._plan.library == "C_x_TI"
