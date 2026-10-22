@@ -295,3 +295,188 @@ def test_panel_text_is_plain(qtbot, tmp_path):
     assert labels(panel)
     assert all(label.textFormat() == Qt.TextFormat.PlainText for label in labels(panel))
     assert isinstance(panel._switch_button, QPushButton) and isinstance(panel._files_list.item(0), QListWidgetItem)
+
+
+
+# -- Task 2: committing, outcomes, git output, long text -----------------------------------------
+
+
+def ready_panel(qtbot, tmp_path, **probe_fields):
+    panel, cplan = new_panel(qtbot, tmp_path, make_probe(**probe_fields))
+    assert panel.state() == "ready"
+    return panel, cplan
+
+
+def issue(severity: Severity, code: str, text: str) -> Issue:
+    return Issue(severity, code, text)
+
+
+def test_panel_committing_locks_inputs(qtbot, tmp_path):
+    from PySide6.QtCore import QSize
+    from PySide6.QtWidgets import QProgressBar
+
+    panel, _ = ready_panel(qtbot, tmp_path)
+    requests = []
+    panel.commit_requested.connect(lambda text, bump: requests.append((text, bump)))
+
+    panel.commit_button.click()
+    assert requests == [(panel.message(), True)]
+    panel.set_committing()
+
+    assert panel.state() == "committing"
+    assert panel._message.isReadOnly()
+    assert not panel._parent_check.isEnabled()
+    assert panel.commit_button.text() == "Committing..." and not panel.commit_button.isEnabled()
+    assert not panel._step_row.isHidden()
+    bar = panel._step_row.findChild(QProgressBar)
+    assert bar.minimum() == bar.maximum() == 0
+    assert bar.minimumSize() == bar.maximumSize() == QSize(240, 16)
+    panel.commit_button.click()
+    panel._on_commit_clicked()
+    assert len(requests) == 1
+
+
+def test_panel_step_text(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+
+    panel.set_step("Committing Custom ref in parent...")
+
+    assert panel._step.text() == "Committing Custom ref in parent..."
+    assert theme.MUTED in panel._step.styleSheet()
+
+
+def test_panel_done_read_only(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+    outcome = make_outcome(
+        custom_commit="abc1234",
+        parent_commit="def5678",
+        issues=(
+            issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom"),
+            issue(Severity.INFO, "commit.not_pushed", "Not pushed — Custom is 1 commit ahead of origin/main (as last fetched)"),
+            issue(Severity.SUCCESS, "commit.parent_done", "Committed def5678 on main in the parent repo"),
+            issue(Severity.INFO, "commit.not_pushed", "Not pushed — the parent repo is 3 commits ahead of origin/main (as last fetched)"),
+        ),
+    )
+
+    panel.show_outcome(outcome)
+
+    assert panel.state() == "done"
+    assert panel.outcome_lines() == [
+        "✓ Committed abc1234 on main in Custom",
+        "Not pushed — Custom is 1 commit ahead of origin/main (as last fetched)",
+        "✓ Committed def5678 on main in the parent repo",
+        "Not pushed — the parent repo is 3 commits ahead of origin/main (as last fetched)",
+    ]
+    assert panel._message.isReadOnly()
+    assert not panel._parent_check.isEnabled()
+    assert panel.commit_button.text() == "Committed" and not panel.commit_button.isEnabled()
+    assert panel.committed()
+    assert panel._step_row.isHidden()
+    assert theme.SUCCESS in panel._outcome_labels[0].styleSheet()
+
+
+def test_panel_partial_failure_keeps_hash_no_retry(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+    manual = 'git -C "C:/x" commit -m "Update Custom: Add P to L" -- Custom'
+    failure = (
+        "The Custom commit abc1234 was kept, but the parent commit failed (git exit 1).\n"
+        f"hook said no\nFinish it by hand: {manual}"
+    )
+    outcome = make_outcome(
+        custom_commit="abc1234",
+        manual_command=manual,
+        output="hook said no",
+        issues=(
+            issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom"),
+            issue(Severity.ERROR, "commit.parent_failed", failure),
+        ),
+    )
+
+    panel.show_outcome(outcome)
+
+    assert panel.state() == "failed"
+    lines = panel.outcome_lines()
+    assert "✓ Committed abc1234 on main in Custom" in lines
+    assert "✖ The Custom commit abc1234 was kept, but the parent commit failed (git exit 1)." in lines
+    assert panel._manual_label.text() == f"Finish it by hand: {manual}"
+    assert not panel._manual_label.isHidden()
+    assert panel._manual_label.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
+    assert not panel.commit_button.isEnabled()
+    assert not [b for b in panel.findChildren(QPushButton) if "retry" in b.text().lower()]
+    assert panel._output.toPlainText() == "hook said no"
+
+
+def test_panel_refusal_returns_to_ready(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+    text = "Not committed: Custom/Symbols/A.kicad_sym changed after the install"
+
+    panel.show_outcome(make_outcome(issues=(issue(Severity.ERROR, "commit.stale_file", text),)))
+
+    assert panel.state() == "ready"
+    assert panel.outcome_lines() == [f"✖ {text}"]
+    assert not panel._message.isReadOnly()
+    assert panel._parent_check.isEnabled()
+    assert panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit"
+    assert not panel.committed()
+
+
+def test_panel_hook_output_box_capped_and_filtered(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    lines = [f"hook line {index}" for index in range(20)]
+    lines[3] = "warning: in the working copy of 'a.kicad_sym', LF will be replaced by CRLF"
+    lines[9] = "warning: in the working copy of 'b.kicad_mod', LF will be replaced by CRLF"
+    panel.set_committing()
+    failed = issue(Severity.ERROR, "commit.custom_failed", "Commit in Custom failed (git exit 1); nothing was committed")
+
+    panel.show_outcome(make_outcome(output="\n".join(lines), issues=(failed,)))
+
+    box = panel._output
+    shown = box.toPlainText().splitlines()
+    assert len(shown) == 18 and not any(line.startswith("warning: in the working copy of") for line in shown)
+    assert box.isReadOnly() and not box.isHidden()
+    assert box.minimumHeight() == box.maximumHeight() >= 8 * box.fontMetrics().lineSpacing()
+    assert box.minimumHeight() < 18 * box.fontMetrics().lineSpacing()
+
+    panel.show_outcome(make_outcome(issues=(failed,)))
+    assert box.isHidden()
+
+
+def test_panel_switching_and_switch_failed(qtbot, tmp_path):
+    probe = CommitProbe(state="offer_switch", head="abc1234def", reason="Custom is on a detached HEAD at abc1234.")
+    panel, _ = new_panel(qtbot, tmp_path, probe)
+
+    panel.set_switching()
+    assert panel.state() == "switching"
+    assert not panel._switch_button.isEnabled() and not panel._switch_button.isHidden()
+    assert panel._strip.text() == "Switching Custom to main..."
+    assert not panel.commit_button.isEnabled()
+
+    panel.show_switch_failed(
+        "git refused to switch Custom to main; nothing was committed\nerror: Your local changes would be overwritten"
+    )
+    assert panel.state() == "offer_switch"
+    assert panel._switch_button.isEnabled()
+    assert panel.outcome_lines() == ["✖ git refused to switch Custom to main; nothing was committed"]
+    assert theme.ERROR in panel._outcome_labels[0].styleSheet()
+    assert panel._output.toPlainText() == "error: Your local changes would be overwritten"
+    assert panel._strip.text().endswith("Switch to main before committing.")
+
+
+def test_panel_long_paths_elide_with_tooltip(qtbot, tmp_path):
+    long_parent = tmp_path / ("p" * 200)
+    long_name = "Custom/Symbols/" + "x" * 150 + ".kicad_sym"
+    panel = CommitPanel()
+    qtbot.addWidget(panel)
+    cplan = make_cplan(tmp_path)
+    long_file = CommitFile("Symbols/" + "x" * 150 + ".kicad_sym", long_name, tmp_path / long_name, "symbol", "0" * 64, None)
+    panel.show_plan(make_cplan(tmp_path, files=(long_file, *cplan.files[1:])))
+    panel.apply_probe(make_probe(parent_dir=long_parent))
+
+    assert panel.sizeHint().width() <= 600
+    assert panel._parent_label.full_text().startswith("Parent repo: ") and "p" * 200 in panel._parent_label.full_text()
+    assert "p" * 200 in panel._parent_label.toolTip()
+    assert long_name in panel._files_list.item(0).toolTip()
