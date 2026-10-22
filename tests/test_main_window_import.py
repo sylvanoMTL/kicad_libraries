@@ -167,7 +167,7 @@ def test_post_install_select_checks_installed_library(qtbot, make_window):
     before = len(make_window.calls)
 
     w._on_import_installed(install_result(), stub_plan(make_window.repo))
-    assert len(make_window.calls) == before + 1
+    assert w._worker is not None  # the scan starts at once (the fake scan itself runs on the worker)
     assert w._progress is None
     qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
 
