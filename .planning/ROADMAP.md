@@ -219,21 +219,26 @@ Plans:
   3. If `Custom` is on a detached HEAD that lies on `main`'s history, the user is offered a switch to `main` before committing. Otherwise the commit is refused with an explanation and nothing is committed.
   4. No importer code path pushes. After a commit, the local branches are ahead of their remotes and no remote has changed.
 
-**Plans**: 5 plans
+**Plans**: 8 plans
 
 Plans:
 **Wave 1**
-- [ ] 06-01-PLAN.md — Tracer: install the UL sample into a throwaway superproject, click Commit, get exactly the part in Custom and only the gitlink in the parent; run_git choke point with a fixed allow-list, remote-refs and AST guards (GIT-05), fixed CommitPlan/CommitProbe/CommitOutcome/CommitPanel contracts (wave 1)
+- [ ] 06-01-PLAN.md — Tracer: install the UL sample into a throwaway superproject, click Commit, get exactly the part in Custom and only the gitlink in the parent; run_git choke point with a fixed allow-list, fixed CommitPlan/CommitProbe/CommitOutcome/CommitPanel contracts (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 06-02-PLAN.md — Probe states on real git: detached-HEAD policy with switch to main and the owner's refuse-if-stale rule (GIT-03), unavailable cases (git missing/old, uninitialised Custom, busy, identity), parent pre-checks, worktree-private gitdir, D-09 amber files, D-10 count, D-13 earlier commits (wave 2)
+- [ ] 06-02-PLAN.md — GIT-05 guards (exact allow-list, argv/env, AST scan, remote refs unchanged after a full commit, gitops layering) and the detached-HEAD policy with switch to main and the owner's refuse-if-stale rule (GIT-03) (wave 2)
 - [ ] 06-03-PLAN.md — CommitPanel full state machine: every probe state, fixed file list with amber rows, parent checkbox and live read-only parent message, locks while committing, done/partial/refused outcomes and git output (wave 2)
+- [ ] 06-04-PLAN.md — Commit plan and messages without git: files only, on-disk spelling, outside-Custom refusal, D-11 stale check, D-09 backup lookup, D-18 messages with sanitised provenance trailers and no local paths (GIT-04) (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 06-04-PLAN.md — Exact commit: D-18 messages with sanitised provenance trailers (GIT-04), refusals before any write (D-11 stale file, changed branch, parent re-check, ignored path), hook/lock/timeout handling (D-06, D-03), bystanders untouched, awkward names, final parent message, D-09 diff content (wave 3)
+- [ ] 06-05-PLAN.md — Probe pre-checks on real git: unavailable cases (git missing/old, uninitialised Custom, busy, identity), parent pre-checks, worktree-private gitdir, D-09 amber files, D-10 count, D-13 earlier commits (wave 3)
+- [ ] 06-06-PLAN.md — Main-window close guard while a git job runs, and the Commit section of the Importing Parts help page checked against a real CommitPanel (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 06-05-PLAN.md — Dialog and main-window wiring: switch round trip with re-probe, Close lock, the D-02 log line, D-09 diff view, click-gated git, WR-04 fix, scrolling Result view, help page, full suite and owner UAT on the real repo (wave 4)
+- [ ] 06-07-PLAN.md — Exact commit on real git: refusals before any write (D-11 stale file, changed branch, parent re-check, ignored path), hook/lock/timeout handling (D-06, D-03), bystanders untouched, awkward names, trailers round trip, final parent message, D-09 diff content (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 06-08-PLAN.md — Dialog wiring: switch round trip with re-probe, Close lock, the D-02 log line, D-09 diff view, click-gated git, scrolling Result view, WR-04 fix, full suite and owner UAT on the real repo (wave 5)
 
 **UI hint**: yes
 **Research flag**: Spike early. `Custom` is on a detached HEAD, and its gitdir is worktree-private (`.git/worktrees/Kicad_Libraries-importer/modules/Custom`). How `git commit -- Custom` behaves in the parent under the owner's hooks is unverified.
@@ -263,7 +268,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
-| 6. Git Commit Step | 0/5 | Not started | - |
+| 6. Git Commit Step | 0/8 | Not started | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
 
 ## Backlog
