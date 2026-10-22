@@ -92,6 +92,21 @@ ALLOWED: dict[str, set[str]] = {
         "importer.verify",
         "importer.layout",
     },
+    # Phase 5 Qt-free helpers. importer.preview is created by plan 05-01; form, content and downloads
+    # are forward registrations for plans 05-05, 05-06 and 05-07 (layering_errors only checks modules
+    # found on disk, so those plans add their modules without touching this file). They stay out of
+    # CORE_MODULES: test_importer_modules_load_no_qt already imports every discovered module.
+    "importer.preview": {"models", "importer.plan", "importer.candidate", "importer.layout"},
+    "importer.form": {
+        "models",
+        "kicad_files",
+        "importer.plan",
+        "importer.candidate",
+        "importer.suggest",
+        "importer.naming",
+    },
+    "importer.content": {"models", "fsutil", "importer.plan"},
+    "importer.downloads": set(),
 }
 
 CORE_MODULES = (
