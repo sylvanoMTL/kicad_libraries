@@ -1,8 +1,13 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
 
 from kicad_lib_manager.models import FootprintLibrary, FootprintRef, ScanResult, SymbolLibrary
+from kicad_lib_manager.widgets import theme
 from kicad_lib_manager.widgets.library_table import LibraryTableWidget
 
 SYM_C = "Custom/Symbols/Sym_C.kicad_sym"
@@ -327,7 +332,7 @@ def test_collided_symbol_is_marked_with_collision_status_and_tooltip(qtbot):
         assert not item.icon(3).isNull()
         assert peer in item.toolTip(0)
         for col in range(item.columnCount()):
-            assert item.foreground(col).color().name().upper() == "#CC7700"
+            assert item.foreground(col).color().name().upper() == theme.AMBER.upper()
 
     # A non-collided symbol keeps the normal status
     assert _sym_item(w, OWN_SYM_C).text(3) == "OK"
@@ -344,7 +349,7 @@ def test_collided_footprint_is_marked_with_collision_status_and_tooltip(qtbot):
         assert not item.icon(2).isNull()
         assert peer in item.toolTip(0)
         for col in range(item.columnCount()):
-            assert item.foreground(col).color().name().upper() == "#CC7700"
+            assert item.foreground(col).color().name().upper() == theme.AMBER.upper()
 
     assert _fp_item(w, OWN_FP_C).text(2) == "OK"
 
@@ -540,3 +545,191 @@ def test_collision_handling_never_renames_a_library(qtbot):
     assert [lib.nickname for lib in scan.symbol_libs] == ["Same", "Own_C", "Same", "Own_W"]
     assert [lib.nickname for lib in scan.footprint_libs] == ["Same", "Own_C", "Same", "Own_W"]
     _assert_invariants(w, scan)
+
+
+# ── Phase 5 shared theme (UI-SPEC "Shared theme module") ──
+
+
+def test_theme_constants_match_ui_spec():
+    from kicad_lib_manager.widgets import theme
+
+    expected = {
+        "AMBER": "#8A5200",
+        "AMBER_TINT": "#FFF8E1",
+        "ERROR": "#CC0000",
+        "ERROR_TINT": "#FDECEA",
+        "SUCCESS": "#007700",
+        "SUCCESS_TINT": "#E6F4EA",
+        "ACCENT": "#0078D4",
+        "LINK": "#0057A0",
+        "MUTED": "#595959",
+        "SURFACE": "#F5F7FA",
+        "SURFACE_HEADER": "#EEF1F5",
+        "BORDER": "#C8C8C8",
+    }
+    for name, value in expected.items():
+        assert getattr(theme, name) == value, name
+    assert (theme.SP_XS, theme.SP_SM, theme.SP_MD, theme.SP_LG, theme.SP_XL) == (4, 8, 16, 24, 32)
+    assert (theme.HEADING_PT, theme.DISPLAY_PT) == (10, 12)
+    assert (theme.MONO_FAMILY, theme.MONO_PT) == ("Consolas", 9)
+    assert theme.PRIMARY_BUTTON_QSS == (
+        "QPushButton { background-color: #0078D4; color: white; padding: 8px 16px; "
+        "font-weight: bold; min-height: 12px; }\n"
+        "QPushButton:disabled { background-color: #E1E1E1; color: #595959; }"
+    )
+    assert "padding: 8px 16px" in theme.PRIMARY_BUTTON_QSS
+    assert "QPushButton:disabled" in theme.PRIMARY_BUTTON_QSS
+    assert 'QFrame#fieldFrame[blocked="true"]' in theme.FIELD_FRAME_QSS
+    assert "QFrame#fieldFrame {" in theme.FIELD_FRAME_QSS
+    assert "#8A5200" in theme.FIELD_FRAME_QSS
+
+
+def test_theme_imports_no_qt():
+    code = (
+        "import sys, importlib.util\n"
+        "spec = importlib.util.spec_from_file_location('theme_probe', sys.argv[1])\n"
+        "mod = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(mod)\n"
+        "print([n for n in sorted(sys.modules) if n.split('.')[0] in ('PySide6', 'shiboken6')])\n"
+    )
+    theme_file = Path(__file__).resolve().parent.parent / "kicad_lib_manager" / "widgets" / "theme.py"
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(theme_file)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"
+
+
+def test_log_panel_warning_is_amber(qtbot):
+    from kicad_lib_manager.models import Issue, Severity
+    from kicad_lib_manager.widgets import theme
+    from kicad_lib_manager.widgets.log_panel import COLORS, LogPanel
+
+    assert COLORS["warning"] == theme.AMBER == "#8A5200"
+    assert COLORS["info"] == "#000000"
+    assert COLORS["error"] == "#CC0000"
+    assert COLORS["success"] == "#007700"
+
+    panel = LogPanel()
+    qtbot.addWidget(panel)
+    panel.log_issue(Issue(Severity.WARNING, "x.y", "careful"))
+    assert "#8a5200" in panel._text.toHtml().lower()
+
+
+# ── Robust populate, visible Status column, reveal() (02-UI-REVIEW fixes 1-2, D-16) ──
+
+
+def test_populate_resets_updating_after_error(qtbot, monkeypatch, scan):
+    w = LibraryTableWidget()
+    qtbot.addWidget(w)
+
+    def boom(self, lib):
+        raise RuntimeError("tip failed")
+
+    monkeypatch.setattr(LibraryTableWidget, "_collision_tip", boom)
+    with pytest.raises(RuntimeError):
+        w.populate(_collision_scan())
+    assert w._updating is False
+
+    monkeypatch.undo()
+    w.populate(scan)
+    assert w._updating is False
+
+    _sym_item(w, SYM_C).setCheckState(0, Qt.CheckState.Checked)
+    assert scan.symbol_libs[0].selected is True
+
+
+def test_symbol_tree_columns_fit(qtbot, scan):
+    from PySide6.QtWidgets import QHeaderView
+
+    w = _make_widget(qtbot, scan)
+    sym_header = w._sym_tree.header()
+    fp_header = w._fp_tree.header()
+    mode = QHeaderView.ResizeMode
+
+    assert [sym_header.sectionResizeMode(i) for i in range(4)] == [
+        mode.Interactive, mode.Interactive, mode.Stretch, mode.ResizeToContents,
+    ]
+    assert [fp_header.sectionResizeMode(i) for i in range(3)] == [
+        mode.Interactive, mode.Interactive, mode.ResizeToContents,
+    ]
+    for header in (sym_header, fp_header):
+        assert (header.sectionSize(0), header.sectionSize(1)) == (240, 100)
+
+    w.resize(1100, 500)
+    w.show()
+    qtbot.waitExposed(w)
+    viewport_width = w._sym_tree.viewport().width()
+    assert sym_header.sectionPosition(3) < viewport_width
+    assert sym_header.sectionPosition(3) + sym_header.sectionSize(3) <= viewport_width
+
+
+def test_status_cell_tooltip(qtbot):
+    scan = ScanResult(
+        symbol_libs=[
+            SymbolLibrary(
+                "Gone_Sym", "Custom/Symbols/Gone_Sym.kicad_sym", "Custom",
+                footprint_refs=[FootprintRef("Gone", "A", False)],
+            ),
+            SymbolLibrary("Fine", "Custom/Symbols/Fine.kicad_sym", "Custom"),
+            SymbolLibrary(
+                "Same", SAME_SYM_C, "Custom",
+                footprint_refs=[FootprintRef("Gone", "A", False)],
+                collision_peers=[SAME_SYM_W],
+            ),
+            SymbolLibrary("Same", SAME_SYM_W, "WurthElektronik", collision_peers=[SAME_SYM_C]),
+        ],
+        footprint_libs=[
+            FootprintLibrary("Same", SAME_FP_C, "Custom", collision_peers=[SAME_FP_W]),
+            FootprintLibrary("Same", SAME_FP_W, "WurthElektronik", collision_peers=[SAME_FP_C]),
+            FootprintLibrary("Own_C", OWN_FP_C, "Custom"),
+        ],
+    )
+    w = _make_widget(qtbot, scan)
+
+    assert _sym_item(w, "Custom/Symbols/Gone_Sym.kicad_sym").toolTip(3) == "Missing FP"
+    assert _sym_item(w, "Custom/Symbols/Fine.kicad_sym").toolTip(3) == "OK"
+
+    collided_sym = _sym_item(w, SAME_SYM_C)
+    assert SAME_SYM_W in collided_sym.toolTip(3)
+    assert collided_sym.toolTip(3).endswith("; Missing FP")
+    assert SAME_SYM_C in _sym_item(w, SAME_SYM_W).toolTip(3)
+
+    collided_fp = _fp_item(w, SAME_FP_C)
+    assert SAME_FP_W in collided_fp.toolTip(2)
+    assert _fp_item(w, OWN_FP_C).toolTip(2) == "OK"
+
+
+def test_reveal_makes_rows_current_and_visible(qtbot, scan):
+    w = _make_widget(qtbot, scan)
+    w._sym_tree.collapseAll()
+    w._fp_tree.collapseAll()
+    scan.symbol_libs[1].selected = True
+    states_before = {
+        key: item.checkState(0)
+        for items in (w._sym_items, w._fp_items) for key, item in items.items()
+    }
+    selected_before = [lib.selected for lib in [*scan.symbol_libs, *scan.footprint_libs]]
+
+    w.reveal(SYM_C, FP_C)
+
+    sym_item, fp_item = _sym_item(w, SYM_C), _fp_item(w, FP_C)
+    assert w._sym_tree.currentItem() is sym_item
+    assert w._fp_tree.currentItem() is fp_item
+    assert sym_item.parent().isExpanded()
+    assert fp_item.parent().isExpanded()
+    # only the revealed source opens; the other group stays collapsed
+    assert not _sym_item(w, SYM_W).parent().isExpanded()
+    assert not _fp_item(w, FP_W).parent().isExpanded()
+    assert states_before == {
+        key: item.checkState(0)
+        for items in (w._sym_items, w._fp_items) for key, item in items.items()
+    }
+    assert selected_before == [lib.selected for lib in [*scan.symbol_libs, *scan.footprint_libs]]
+    assert w._updating is False
+
+    # unknown or absent paths are skipped silently
+    w.reveal("missing", None)
+    w.reveal(None, "missing")
+    w.reveal(None, None)
