@@ -10,8 +10,8 @@ import types
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QSettings, Qt
-from PySide6.QtGui import QKeySequence
+from PySide6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
+from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
 
 from kicad_lib_manager import library_scanner, main_window, settings
 from kicad_lib_manager.importer.layout import RepoLayout
@@ -19,6 +19,7 @@ from kicad_lib_manager.importer.plan import InstallResult
 from kicad_lib_manager.models import (
     FootprintLibrary, Issue, ScanResult, Severity, SymbolLibrary,
 )
+from kicad_lib_manager.widgets import theme
 from kicad_lib_manager.widgets.import_dialog import ImportDialog
 
 LIB = "IC_Battery_Charger_TI"
@@ -427,3 +428,177 @@ def test_tables_missing_destination_logs_error(qtbot, make_window, tmp_path):
     assert f"Destination folder does not exist: {gone}" in log_text(w)
     assert not gone.exists()
     assert w._pending_post_install is None
+
+
+# -- drag and drop, toolbar button and busy state (plan 05-08, UX-01, D-03, D-19) -------------
+
+BUSY_TEXT = "Import is unavailable while a scan is running."
+
+
+def _mime(*paths) -> QMimeData:
+    mime = QMimeData()
+    mime.setUrls([QUrl.fromLocalFile(str(p)) for p in paths])
+    return mime
+
+
+def _drop_event(mime: QMimeData) -> QDropEvent:
+    event = QDropEvent(
+        QPointF(10, 10), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+    )
+    event.setAccepted(False)
+    return event
+
+
+def _enter_event(mime: QMimeData) -> QDragEnterEvent:
+    event = QDragEnterEvent(
+        QPoint(10, 10), Qt.DropAction.CopyAction, mime,
+        Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+    )
+    event.setAccepted(False)
+    return event
+
+
+@pytest.fixture
+def opened(monkeypatch):
+    """Record the path each _open_import call receives."""
+    calls = []
+    monkeypatch.setattr(
+        main_window.MainWindow, "_open_import", lambda self, path=None: calls.append(path)
+    )
+    return calls
+
+
+def test_drop_one_zip_opens_dialog(make_window, opened, tmp_path):
+    w = make_window([scan_with()])
+    zip_path = tmp_path / "Part.ZIP"
+    zip_path.write_bytes(b"PK")
+    mime = _mime(zip_path)
+    event = _drop_event(mime)
+    w.dropEvent(event)
+    assert opened == [zip_path]
+    assert event.isAccepted()
+
+    folder = tmp_path / "vendor_folder"
+    folder.mkdir()
+    mime2 = _mime(folder)
+    w.dropEvent(_drop_event(mime2))
+    assert opened == [zip_path, folder]
+
+
+def test_drop_several_paths_refused(make_window, opened, tmp_path):
+    w = make_window([scan_with()])
+    one = tmp_path / "a.zip"
+    two = tmp_path / "b.zip"
+    one.write_bytes(b"PK")
+    two.write_bytes(b"PK")
+    mime = _mime(one, two)
+    event = _drop_event(mime)
+    w.dropEvent(event)
+    assert opened == []
+    assert not event.isAccepted()
+    log = w._log._text.toPlainText()
+    assert "Drop ignored: drop one .zip file or one folder at a time." in log
+    assert theme.AMBER.lower() in w._log._text.toHtml().lower()  # logged at warning level
+
+
+def test_drop_wrong_type_refused(make_window, opened, tmp_path):
+    w = make_window([scan_with()])
+    deep = tmp_path / "some" / "very" / "long" / "folder"
+    deep.mkdir(parents=True)
+    notes = deep / "notes.txt"
+    notes.write_text("x", encoding="utf-8")
+    mime = _mime(notes)
+    event = _drop_event(mime)
+    w.dropEvent(event)
+    assert opened == []
+    assert not event.isAccepted()
+    log = w._log._text.toPlainText()
+    assert "Drop ignored: 'notes.txt' is not a .zip file or a folder." in log
+    assert "very" not in log  # base name only
+
+
+def test_drop_refused_while_busy(make_window, opened, tmp_path):
+    w = make_window([scan_with()])
+    zip_path = tmp_path / "Part.zip"
+    zip_path.write_bytes(b"PK")
+    mime = _mime(zip_path)
+
+    w._worker = object()  # a scan is running
+    try:
+        enter = _enter_event(mime)
+        w.dragEnterEvent(enter)
+        assert not enter.isAccepted()
+        assert w.statusBar().currentMessage() == BUSY_TEXT
+        w.statusBar().clearMessage()
+        drop = _drop_event(mime)
+        w.dropEvent(drop)
+        assert not drop.isAccepted()
+        assert w.statusBar().currentMessage() == BUSY_TEXT
+    finally:
+        w._worker = None
+
+    w.statusBar().clearMessage()
+    w._import_dialog = object()  # the import dialog is open
+    try:
+        enter = _enter_event(mime)
+        w.dragEnterEvent(enter)
+        assert not enter.isAccepted()
+        assert w.statusBar().currentMessage() == BUSY_TEXT
+        drop = _drop_event(mime)
+        w.dropEvent(drop)
+        assert not drop.isAccepted()
+    finally:
+        w._import_dialog = None
+    assert opened == []
+
+
+def test_drag_enter_accepts_urls_when_idle(make_window, tmp_path):
+    w = make_window([scan_with()])
+    zip_path = tmp_path / "Part.zip"
+    zip_path.write_bytes(b"PK")
+    with_urls = _mime(zip_path)
+    enter = _enter_event(with_urls)
+    w.dragEnterEvent(enter)
+    assert enter.isAccepted()
+
+    text_only = QMimeData()
+    text_only.setText("hello")
+    enter = _enter_event(text_only)
+    w.dragEnterEvent(enter)
+    assert not enter.isAccepted()
+
+
+def test_busy_state_controls(qtbot, make_window):
+    w = make_window([scan_with()])
+    controls = (
+        w._act_import, w._import_btn, w._select_all_btn, w._deselect_all_btn,
+        w._rescan_btn, w._act_rescan, w._act_set_kicad_path, w._act_generate,
+        w._generate_btn,
+    )
+    w._set_scan_running(True)
+    assert [c.isEnabled() for c in controls] == [False] * len(controls)
+    w._set_scan_running(False)
+    assert [c.isEnabled() for c in controls] == [True] * len(controls)
+
+
+def test_toolbar_import_button_first(qtbot, make_window, monkeypatch):
+    w = make_window([scan_with()])
+    toolbar = w.centralWidget().layout().itemAt(0).layout()
+    assert toolbar.itemAt(0).widget() is w._import_btn
+    assert w._import_btn.text() == "Import Part..."
+    assert w._import_btn.toolTip() == "Import a vendor package (Ctrl+I)"
+    assert toolbar.itemAt(1).spacerItem() is not None
+    assert toolbar.itemAt(1).spacerItem().sizeHint().width() == 16
+    assert toolbar.itemAt(2).widget() is w._select_all_btn
+    assert w._import_btn.styleSheet() == ""
+
+    calls = []
+    monkeypatch.setattr(w, "_open_import", lambda *args: calls.append(args))
+    w._import_btn.click()
+    assert calls == [()]
+
+
+def test_generate_button_primary_style(make_window):
+    w = make_window([scan_with()])
+    assert w._generate_btn.styleSheet() == theme.PRIMARY_BUTTON_QSS

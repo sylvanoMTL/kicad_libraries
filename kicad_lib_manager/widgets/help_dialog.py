@@ -4,6 +4,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from .theme import AMBER
+
 CSS = """
 body {
     font-family: "Segoe UI", Arial, sans-serif;
@@ -157,10 +159,11 @@ HELP_PAGES["library_tree"] = _wrap(
     "<li><b>Source</b> &mdash; which top-level folder the library comes from</li>"
     "<li><b>Linked Footprints</b> (symbols only) &mdash; the footprint references "
     "found in the symbol file</li>"
-    "<li><b>Status</b> &mdash; <i>OK</i> or <i>Missing FP</i> with a warning icon</li>"
+    "<li><b>Status</b> &mdash; <i>OK</i>, <i>Missing FP</i> or <i>Collision</i> "
+    "(same nickname as another library; only one can be selected)</li>"
     "</ul>"
     "<p>Libraries with missing footprint references are highlighted in "
-    "<span style='color:#CC7700;font-weight:bold'>orange</span>.</p>"
+    f"<span style='color:{AMBER};font-weight:bold'>amber</span>.</p>"
 )
 
 HELP_PAGES["selecting"] = _wrap(
@@ -196,6 +199,41 @@ HELP_PAGES["generating"] = _wrap(
     "(<code>_backup_1</code>, <code>_backup_2</code>, ...)</li>"
     "</ul>"
     "<p>The log panel at the bottom confirms what was written.</p>"
+)
+
+HELP_PAGES["importing"] = _wrap(
+    "<h2>Importing Parts</h2>"
+    "<p>Import a vendor package (Ultra Librarian, SnapEDA, SamacSys) into a "
+    "<code>Custom/</code> library without editing any KiCad file by hand.</p>"
+    "<h3>Start</h3>"
+    "<p>Open <b>File &rarr; Import Part...</b> (<code>Ctrl+I</code>) or click the "
+    "<b>Import Part...</b> toolbar button. You can also drop one <b>.zip</b> file or "
+    "one <b>folder</b> onto the main window; the dialog then opens with that package "
+    "loaded. The newest zip in your Downloads folder is offered, but it is never "
+    "opened by itself.</p>"
+    "<h3>Items</h3>"
+    "<p>Pick the symbol, the footprints and the 3D model to import. The first "
+    "checked footprint is the one linked to the symbol.</p>"
+    "<h3>Target library</h3>"
+    "<p>Choose an existing <code>Custom/</code> library or type a new name. Amber "
+    "parts of a suggested name are guesses. Install stays blocked while the name "
+    "still contains one of the generic words <i>Type</i>, <i>SubCategory</i> or "
+    "<i>Manufacturer</i>.</p>"
+    "<h3>Fields</h3>"
+    "<p>Edit the footprint name and the Value, Datasheet, Description, Manufacturer "
+    "and MPN fields. An emptied optional field is written blank. Value and MPN "
+    "cannot be empty.</p>"
+    "<h3>Conflicts</h3>"
+    "<p>When a part already exists in the library, choose <b>Overwrite</b>, "
+    "<b>Rename</b> or <b>Skip</b> for each conflict. There is no overwrite-all.</p>"
+    "<h3>Install and result</h3>"
+    "<p>Nothing is written until you click <b>Install Part</b>. If the install "
+    "fails, every file is restored. After a successful install the library list "
+    "rescans and the installed library is selected.</p>"
+    "<h3>Library tables</h3>"
+    "<p>A new library is added to <code>sym-lib-table</code> and "
+    "<code>fp-lib-table</code> without changing any other entry. An existing "
+    "library that is missing from the tables needs <b>Generate Tables</b>.</p>"
 )
 
 HELP_PAGES["restoring"] = _wrap(
@@ -244,8 +282,10 @@ HELP_PAGES["shortcuts"] = _wrap(
     "<h2>Keyboard Shortcuts</h2>"
     "<table>"
     "<tr><th>Shortcut</th><th>Action</th></tr>"
+    "<tr><td><code>Ctrl+I</code></td><td>Import Part</td></tr>"
     "<tr><td><code>Ctrl+G</code></td><td>Generate Tables</td></tr>"
     "<tr><td><code>Ctrl+R</code></td><td>Restore Backup</td></tr>"
+    "<tr><td><code>Ctrl+Shift+R</code></td><td>Rescan Libraries</td></tr>"
     "<tr><td><code>Ctrl+K</code></td><td>Set KiCad Footprint Path</td></tr>"
     "<tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>"
     "<tr><td><code>F1</code></td><td>Open this User Guide</td></tr>"
@@ -285,6 +325,7 @@ TOC_STRUCTURE: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("library_tree", "Library Tree"),
         ("selecting", "Selecting Libraries"),
         ("generating", "Generating Tables"),
+        ("importing", "Importing Parts"),
         ("restoring", "Restoring Backups"),
     ]),
     ("filter", "Footprint Filter", []),

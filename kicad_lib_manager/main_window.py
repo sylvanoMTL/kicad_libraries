@@ -25,6 +25,7 @@ from .widgets.log_panel import LogPanel
 from .widgets.backup_dialog import BackupDialog
 from .widgets.help_dialog import HelpDialog
 from .widgets.import_dialog import ImportCore, ImportDialog
+from .widgets.theme import PRIMARY_BUTTON_QSS
 
 APP_TITLE = "KiCad External Lib Manager"
 REPO_ROOT = Path(__file__).parent.parent.resolve()
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
         self._progress: QProgressDialog | None = None
         self._import_dialog: ImportDialog | None = None
         self._pending_post_install: _PostInstall | None = None
+        self.setAcceptDrops(True)
         self._build_menu()
         self._build_ui()
         self.statusBar()  # Enable status bar for menu hints
@@ -185,6 +187,12 @@ class MainWindow(QMainWindow):
         # Toolbar row
         toolbar = QHBoxLayout()
 
+        self._import_btn = QPushButton("Import Part...")
+        self._import_btn.setToolTip("Import a vendor package (Ctrl+I)")
+        self._import_btn.clicked.connect(lambda: self._open_import())
+        toolbar.addWidget(self._import_btn)
+        toolbar.addSpacing(16)
+
         self._select_all_btn = QPushButton("Select All")
         self._select_all_btn.clicked.connect(self._on_select_all)
         toolbar.addWidget(self._select_all_btn)
@@ -215,10 +223,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._rescan_btn)
 
         self._generate_btn = QPushButton("Generate Tables")
-        self._generate_btn.setStyleSheet(
-            "QPushButton { background-color: #0078D4; color: white; "
-            "padding: 6px 16px; font-weight: bold; }"
-        )
+        self._generate_btn.setStyleSheet(PRIMARY_BUTTON_QSS)
         self._generate_btn.clicked.connect(self._on_generate)
         toolbar.addWidget(self._generate_btn)
 
@@ -308,6 +313,7 @@ class MainWindow(QMainWindow):
         for control in (
             self._rescan_btn, self._act_rescan, self._act_set_kicad_path,
             self._act_generate, self._generate_btn, self._act_import,
+            self._import_btn, self._select_all_btn, self._deselect_all_btn,
         ):
             control.setEnabled(not running)
 
@@ -631,9 +637,65 @@ class MainWindow(QMainWindow):
                 f"{pending.library} is not in the library tables. Press Generate Tables to add it.",
             )])
 
+    def _import_busy(self) -> bool:
+        """True while a scan runs or the import dialog is open (D-19)."""
+        return self._worker is not None or self._import_dialog is not None
+
+    def _refuse_busy_drag(self, event) -> bool:
+        """Ignore a drag or drop while busy and say why; True when refused."""
+        if not self._import_busy():
+            return False
+        event.ignore()
+        self.statusBar().showMessage("Import is unavailable while a scan is running.", 3000)
+        return True
+
+    def dragEnterEvent(self, event):
+        if self._refuse_busy_drag(event):
+            return
+        # Accept any URL drag so dropEvent can explain a refusal
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if self._import_busy() or not event.mimeData().hasUrls():
+            event.ignore()
+        else:
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        # A scan can start between dragEnterEvent and the drop
+        if self._refuse_busy_drag(event):
+            return
+        urls = event.mimeData().urls()
+        if len(urls) != 1:
+            self._log.log(
+                "Drop ignored: drop one .zip file or one folder at a time.", "warning"
+            )
+            event.ignore()
+            return
+        url = urls[0]
+        if not url.isLocalFile():
+            self._log.log(
+                f"Drop ignored: '{url.fileName()}' is not a .zip file or a folder.",
+                "warning",
+            )
+            event.ignore()
+            return
+        path = Path(url.toLocalFile())
+        if path.is_dir() or (path.is_file() and path.suffix.casefold() == ".zip"):
+            event.acceptProposedAction()
+            self._open_import(path)
+            return
+        self._log.log(
+            f"Drop ignored: '{path.name}' is not a .zip file or a folder.", "warning"
+        )
+        event.ignore()
+
     def _open_import(self, path: Path | None = None):
         """Open the Import Part dialog, optionally with a package already chosen."""
-        if self._worker is not None or self._import_dialog is not None:
+        if self._import_busy():
             return
         dialog = ImportDialog(
             REPO_ROOT,
