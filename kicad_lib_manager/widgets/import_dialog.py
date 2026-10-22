@@ -32,7 +32,9 @@ from PySide6.QtWidgets import (
 from ..importer.applier import apply_plan
 from ..importer.candidate import ImportCandidate
 from ..importer.commit_plan import CommitPlan, build_commit_plan
-from ..importer.commit_step import CommitOutcome, CommitProbe, probe_commit, run_commit
+from ..importer.commit_step import (
+    CommitOutcome, CommitProbe, SwitchOutcome, pre_import_diff, probe_commit, run_commit, switch_to_main,
+)
 from ..importer.content import ContentText, op_content, unchanged_content
 from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
@@ -212,6 +214,8 @@ class ImportCore:
     unchanged_content: Callable = unchanged_content
     probe_commit: Callable = probe_commit
     run_commit: Callable = run_commit
+    switch_to_main: Callable = switch_to_main
+    pre_import_diff: Callable = pre_import_diff
 
 
 @dataclass(frozen=True)
@@ -319,6 +323,8 @@ class ImportDialog(QDialog):
         self._commit_plan: CommitPlan | None = None
         self._commit_probe: CommitProbe | None = None
         self._git_worker: TaskWorker | None = None
+        self._close_had_focus = False  # Close held the focus when a git job disabled it
+        self._not_committed_logged = False  # the D-02 line is logged once per dialog
         self._closing = False
 
         self.setWindowTitle("Import Part")
@@ -2112,8 +2118,28 @@ class ImportDialog(QDialog):
     # -- commit step (Phase 6): nothing is committed before the user clicks Commit ---------------------
 
     def is_committing(self) -> bool:
-        """True while a git job (the probe or the commit) runs; the dialog cannot close then (D-07)."""
+        """True while a git job (the probe, the switch or the commit) runs; the dialog cannot close then (D-07)."""
         return self._git_worker is not None
+
+    def _set_git_worker(self, worker: TaskWorker | None):
+        """Record the running git job, or None when it ended; Close is disabled while one runs (D-07).
+
+        Qt moves the focus off a button when it is disabled, and Close starts out as the Result page's
+        focus, so when Close held the focus it gets it back once git is idle again.
+        """
+        self._git_worker = worker
+        button = self._result_view.close_button
+        busy = worker is not None
+        if busy == (not button.isEnabled()):
+            return
+        if busy:
+            self._close_had_focus = button.hasFocus()
+            button.setEnabled(False)
+            return
+        button.setEnabled(True)
+        if self._close_had_focus:
+            button.setFocus()
+        self._close_had_focus = False
 
     def _start_commit_step(self, plan: InstallPlan, result: InstallResult):
         """Show the commit panel for the part that was just installed and probe git for it (D-01, D-08)."""
@@ -2123,19 +2149,29 @@ class ImportDialog(QDialog):
         cplan = build_commit_plan(result, plan, vendor_label=vendor_label(result.vendor))
         panel = CommitPanel()
         panel.commit_requested.connect(self._on_commit_requested)
+        panel.switch_requested.connect(self._on_switch_requested)
+        panel.file_activated.connect(self._on_commit_file_activated)
         self._commit_panel, self._commit_plan = panel, cplan
         self._result_view.set_commit_panel(panel)
+        self._start_probe()
+
+    def _start_probe(self):
+        """Probe git for the current commit plan; runs again after a switch so no state from before it stays on screen (D-15)."""
+        panel, cplan = self._commit_panel, self._commit_plan
+        if panel is None or cplan is None or self._closing:
+            return
+        self._commit_probe = None
         panel.show_plan(cplan)
         core = self._core
         worker = self._spawn(lambda progress, cp=cplan: core.probe_commit(cp))
-        self._git_worker = worker
+        self._set_git_worker(worker)
         worker.result.connect(lambda probe, w=worker: self._on_probe_done(w, probe))
         worker.failed.connect(lambda text, w=worker: self._on_probe_failed(w, text))
         worker.start()
 
     def _on_probe_done(self, worker: TaskWorker, probe: CommitProbe):
         if self._git_worker is worker:
-            self._git_worker = None
+            self._set_git_worker(None)
         if self._closing or self._commit_panel is None:
             return
         self._commit_probe = probe
@@ -2145,12 +2181,54 @@ class ImportDialog(QDialog):
 
     def _on_probe_failed(self, worker: TaskWorker, text: str):
         if self._git_worker is worker:
-            self._git_worker = None
+            self._set_git_worker(None)
         if self._closing or self._commit_panel is None:
             return
         issue = Issue(Severity.ERROR, "commit.step_failed", f"Commit step failed: {text}")
         self.issues_logged.emit([issue])
         self._commit_panel.apply_probe(CommitProbe(state="unavailable", reason=text))
+
+    def _on_switch_requested(self):
+        """Switch Custom to main on a worker (D-15); only the click on Switch to main gets here."""
+        panel, cplan = self._commit_panel, self._commit_plan
+        if self._git_worker is not None or self._closing or panel is None or cplan is None:
+            return
+        core = self._core
+        panel.set_switching()
+        worker = self._spawn(lambda progress, cp=cplan: core.switch_to_main(cp))
+        self._set_git_worker(worker)
+        worker.result.connect(lambda outcome, w=worker: self._on_switch_done(w, outcome))
+        worker.failed.connect(lambda text, w=worker: self._on_switch_failed(w, text))
+        worker.start()
+
+    def _on_switch_done(self, worker: TaskWorker, outcome: SwitchOutcome):
+        if self._git_worker is worker:
+            self._set_git_worker(None)
+        if self._closing or self._commit_panel is None:
+            return
+        self.issues_logged.emit(list(outcome.issues))
+        if outcome.ok:
+            self._start_probe()
+            return
+        texts = [i.text for i in outcome.issues if i.severity is Severity.ERROR] or [i.text for i in outcome.issues]
+        self._commit_panel.show_switch_failed(texts[0] if texts else "git could not switch Custom to main")
+
+    def _on_switch_failed(self, worker: TaskWorker, text: str):
+        if self._git_worker is worker:
+            self._set_git_worker(None)
+        if self._closing or self._commit_panel is None:
+            return
+        issue = Issue(Severity.ERROR, "commit.step_failed", f"Commit step failed: {text}")
+        self.issues_logged.emit([issue])
+        self._commit_panel.show_switch_failed(issue.text)
+
+    def _on_commit_file_activated(self, rel: str):
+        """An amber file was opened: show its content in HEAD against what it held before this import (D-09)."""
+        cplan = self._commit_plan
+        if cplan is None or self._closing:
+            return
+        core = self._core
+        self._run_content(lambda cp=cplan, r=rel: core.pre_import_diff(cp, r))
 
     def _on_commit_requested(self, message: str, bump_parent: bool):
         panel, cplan, probe = self._commit_panel, self._commit_plan, self._commit_probe
@@ -2158,12 +2236,13 @@ class ImportDialog(QDialog):
             return
         core = self._core
         panel.set_committing()
+        # The message goes through exactly as typed (D-20); expected_branch is the branch the probe showed
         worker = self._spawn(
             lambda progress, cp=cplan, m=message, b=bump_parent, br=probe.branch: core.run_commit(
                 cp, m, b, expected_branch=br, progress=progress
             )
         )
-        self._git_worker = worker
+        self._set_git_worker(worker)
         worker.progress.connect(self._on_commit_progress)
         worker.result.connect(lambda outcome, w=worker: self._on_commit_done(w, outcome))
         worker.failed.connect(lambda text, w=worker: self._on_commit_failed(w, text))
@@ -2175,7 +2254,7 @@ class ImportDialog(QDialog):
 
     def _on_commit_done(self, worker: TaskWorker, outcome: CommitOutcome):
         if self._git_worker is worker:
-            self._git_worker = None
+            self._set_git_worker(None)
         if self._closing or self._commit_panel is None:
             return
         self._commit_panel.show_outcome(outcome)
@@ -2185,6 +2264,15 @@ class ImportDialog(QDialog):
     def _on_commit_failed(self, worker: TaskWorker, text: str):
         issue = Issue(Severity.ERROR, "commit.step_failed", f"Commit step failed: {text}")
         self._on_commit_done(worker, CommitOutcome(issues=(issue,)))
+
+    def _log_not_committed(self):
+        """D-02: the user closes the Result view without a Custom commit; one WARNING, no question asked."""
+        panel = self._commit_panel
+        if panel is None or panel.committed() or self._not_committed_logged:
+            return
+        self._not_committed_logged = True
+        text = "Not committed — commit manually: the imported files stay as uncommitted changes in Custom."
+        self.issues_logged.emit([Issue(Severity.WARNING, "commit.not_committed", text)])
 
     def set_post_install_status(self, row: str, text: str, severity: Severity):
         """Set a status row of the Result view: library_list, tables or generate_hint (D-16, D-17)."""
@@ -2277,6 +2365,7 @@ class ImportDialog(QDialog):
         # for a git job, which may run a slow hook (D-07)
         if self.is_installing() or self.is_committing():
             return
+        self._log_not_committed()
         self._shutdown()
         super().done(r)
 
@@ -2290,5 +2379,6 @@ class ImportDialog(QDialog):
         if self.is_installing() or self.is_committing():
             event.ignore()
             return
+        self._log_not_committed()
         self._shutdown()
         super().closeEvent(event)

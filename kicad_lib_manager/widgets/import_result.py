@@ -8,8 +8,8 @@ from pathlib import Path
 from PySide6.QtCore import QSize, Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QKeyEvent, QResizeEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QSizePolicy,
-    QVBoxLayout, QWidget,
+    QAbstractItemView, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QScrollArea,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 
 from ..importer.plan import InstallPlan, InstallResult
@@ -108,7 +108,9 @@ class ImportResultView(QWidget):
 
     From top to bottom: the success banner, the KiCad-running notice (hidden until the dialog finds
     KiCad running), Warnings, the post-install status rows the main window updates, Files written,
-    the backup folder, the commit slot (hidden until the dialog puts the Phase 6 commit panel in it), and Close.
+    the backup folder and the commit slot (hidden until the dialog puts the Phase 6 commit panel in it). All of
+    that scrolls vertically inside one scroll area, so the commit panel fits at the dialog's minimum size;
+    Close stays below the scroll area and is always visible.
     """
 
     file_activated = Signal(object)  # the absolute Path of a written file, on double click or Enter
@@ -118,7 +120,15 @@ class ImportResultView(QWidget):
         self._backup_dir: Path | None = None
         self._warning_labels: list[QLabel] = []
 
-        lay = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(theme.SP_LG)
+        self._scroll = QScrollArea()
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        body = QWidget()
+        lay = QVBoxLayout(body)
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(theme.SP_LG)
 
@@ -198,11 +208,13 @@ class ImportResultView(QWidget):
         lay.addWidget(self.commit_slot)
 
         lay.addStretch(1)
+        self._scroll.setWidget(body)
+        outer.addWidget(self._scroll, 1)
         buttons = QHBoxLayout()
         buttons.addStretch(1)
         self.close_button = QPushButton("Close")
         buttons.addWidget(self.close_button)
-        lay.addLayout(buttons)
+        outer.addLayout(buttons)
 
         self._set_warnings(())
         self._reset_status()
