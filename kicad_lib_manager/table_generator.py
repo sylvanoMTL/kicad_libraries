@@ -66,6 +66,17 @@ def _line_of(text: str, pos: int) -> int:
     return text.count("\n", 0, pos) + 1
 
 
+def _insert_before_close(text: str, table_node: Node, eol: str, block: str) -> Edit:
+    """Edit that puts block just before the table's closing paren, on its own line(s)."""
+    p = table_node.end - 1
+    line_start = p
+    while line_start > 0 and text[line_start - 1] in " \t":
+        line_start -= 1
+    if line_start == 0 or text[line_start - 1] == "\n":
+        return Edit(line_start, line_start, block)
+    return Edit(p, p, eol + block)
+
+
 def _merge_table(tag: str, existing: LoadedFile | None,
                  libs: list) -> MergeResult | Issue:
     """Splice the selected libraries into an existing table.
@@ -186,14 +197,7 @@ def _merge_table(tag: str, existing: LoadedFile | None,
             edits.append(Edit(lo, hi, ""))
 
     if not placed and block:
-        p = table.node.end - 1
-        line_start = p
-        while line_start > 0 and text[line_start - 1] in " \t":
-            line_start -= 1
-        if line_start == 0 or text[line_start - 1] == "\n":
-            edits.append(Edit(line_start, line_start, block))
-        else:
-            edits.append(Edit(p, p, eol + block))
+        edits.append(_insert_before_close(text, table.node, eol, block))
 
     return MergeResult(
         apply_edits(text, edits),
@@ -293,6 +297,110 @@ def write_tables(dest_folder: Path,
             ))
         issues.extend(result.issues)
 
+    return issues
+
+
+def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
+               backup_number: int, issues: list[Issue]) -> str:
+    """Add one managed entry to one table. Returns "added", "listed" or "skipped"."""
+    filename = _TABLE_FILES[tag]
+    lib_cls = SymbolLibrary if tag == "sym_lib_table" else FootprintLibrary
+    uri = f"{_MANAGED_MARKER}{rel_path}"
+
+    if not path.exists():
+        template = _merge_table(tag, None, [lib_cls(nickname, rel_path, "", selected=True)])
+        failure = fsutil.atomic_write_text(path, template.content, bom=False)
+        if failure is not None:
+            issues.append(failure)
+            return "skipped"
+        return "added"
+
+    loaded = kicad_files.load(path)
+    if isinstance(loaded, Issue):
+        issues.append(loaded)
+        return "skipped"
+    issues.extend(loaded.source.issues)
+
+    text = loaded.source.text
+    if not text.strip(" \t\r\n"):
+        new_text = _merge_table(
+            tag, None, [lib_cls(nickname, rel_path, "", selected=True)]
+        ).content
+    else:
+        table = kicad_files.lib_table(loaded.root)
+        if table is None or table.tag != tag:
+            issues.append(Issue(
+                Severity.ERROR,
+                "table.unrecognised",
+                f"Could not update {filename}: no ({tag} ...) table found; "
+                "file left unchanged",
+            ))
+            return "skipped"
+        for entry in table.entries:
+            if entry.name != nickname:
+                continue
+            if _is_managed(entry):
+                return "listed"
+            issues.append(Issue(
+                Severity.WARNING,
+                "table.external_clash",
+                f"{filename}: '{nickname}' is already defined by an external entry "
+                f"({entry.uri}); kept it and did not add {uri}",
+            ))
+            return "skipped"
+        block = f"  {_entry_text(nickname, uri)}{loaded.source.eol}"
+        new_text = apply_edits(
+            text, [_insert_before_close(text, table.node, loaded.source.eol, block)]
+        )
+
+    backup = fsutil.backup_file(path, path.parent, number=backup_number)
+    if isinstance(backup, Issue):
+        issues.append(backup)
+        return "skipped"
+    issues.append(Issue(Severity.INFO, "table.backed_up",
+                        f"Backed up {filename} -> {backup.name}"))
+    failure = fsutil.atomic_write_text(path, new_text, bom=loaded.source.bom)
+    if failure is not None:
+        issues.append(failure)
+        return "skipped"
+    return "added"
+
+
+def add_library_entries(dest_folder: Path, nickname: str, sym_rel_path: str, fp_rel_path: str) -> list[Issue]:
+    """Add one library's managed entries to sym-lib-table and fp-lib-table.
+
+    Never edits, reorders or removes any other entry, and never creates the destination
+    folder (D-17). A table that already lists the nickname is left alone; a missing table
+    is created from the same template Generate uses.
+    """
+    if not dest_folder.is_dir():
+        return [Issue(Severity.ERROR, "table.dest_missing",
+                      f"Destination folder does not exist: {dest_folder}")]
+
+    issues: list[Issue] = []
+    backup_number = _next_backup_number(dest_folder)
+    outcomes: dict[str, str] = {}
+    for tag, rel_path in (("sym_lib_table", sym_rel_path), ("fp_lib_table", fp_rel_path)):
+        filename = _TABLE_FILES[tag]
+        outcomes[filename] = _add_entry(
+            tag, dest_folder / filename, nickname, rel_path, backup_number, issues
+        )
+
+    values = list(outcomes.values())
+    if values == ["added", "added"]:
+        issues.append(Issue(Severity.SUCCESS, "table.entries_added",
+                            f"Added {nickname} to sym-lib-table and fp-lib-table"))
+    elif values == ["listed", "listed"]:
+        issues.append(Issue(Severity.INFO, "table.already_listed",
+                            f"Library tables not changed: {nickname} was already listed"))
+    else:
+        for filename, outcome in outcomes.items():
+            if outcome == "added":
+                issues.append(Issue(Severity.SUCCESS, "table.entry_added",
+                                    f"Added {nickname} to {filename}"))
+            elif outcome == "listed":
+                issues.append(Issue(Severity.INFO, "table.already_listed",
+                                    f"{filename} already lists {nickname}; not changed"))
     return issues
 
 
