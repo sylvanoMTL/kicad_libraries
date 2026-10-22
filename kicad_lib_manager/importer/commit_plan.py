@@ -14,7 +14,8 @@ from ..models import Issue, Severity
 from .plan import InstallPlan, InstallResult
 
 NEW_PLACEHOLDER = "<new commit>"  # stands for the Custom commit that does not exist yet (RESEARCH Pattern 5)
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# Controls (C0, DEL, C1) plus the Unicode line and paragraph separators, which str.splitlines treats as breaks
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}]")
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,34 @@ def _posix_relative(path: Path, base: Path) -> str | None:
         return None
 
 
+def _listed_name(folder: Path, name: str) -> str:
+    """The spelling of `name` inside `folder` as the folder lists it: exact match, else case-insensitive, else `name`."""
+    try:
+        names = sorted(entry.name for entry in folder.iterdir())
+    except OSError:
+        return name
+    if name in names:
+        return name
+    folded = name.casefold()
+    return next((candidate for candidate in names if candidate.casefold() == folded), name)
+
+
+def _disk_spelling(path: Path, custom_dir: Path) -> Path:
+    """The path under its on-disk spelling (RESEARCH Pitfall 2).
+
+    A case-insensitive volume keeps whatever case the file was first written with, and git matches
+    a pathspec exactly, so every component below custom_dir is looked up in its folder.
+    """
+    try:
+        parts = path.relative_to(custom_dir).parts
+    except ValueError:
+        return path.parent / _listed_name(path.parent, path.name)
+    current = custom_dir
+    for part in parts:
+        current = current / _listed_name(current, part)
+    return current
+
+
 def build_commit_plan(
     result: InstallResult, plan: InstallPlan, *, vendor_label: str, today: date | None = None
 ) -> CommitPlan:
@@ -67,20 +96,26 @@ def build_commit_plan(
     repo_root, custom_dir = Path(plan.layout.repo_root), Path(plan.layout.custom_dir)
     custom_rel = _posix_relative(custom_dir, repo_root) or custom_dir.name
     custom_real = custom_dir.resolve()
+    ops = {op.path: op for op in plan.ops}
     files: list[CommitFile] = []
     issues: list[Issue] = []
+    seen: set[Path] = set()
+    seen_rel: set[str] = set()
     for path in result.touched:
         path = Path(path)
-        op = next((candidate for candidate in plan.ops if candidate.path == path), None)
+        if path in seen:
+            continue
+        seen.add(path)
+        op = ops.get(path)
         if (op is not None and op.kind == "mkdir") or path.is_dir():
             continue
         shown = _posix_relative(path, repo_root) or path.as_posix()
         if op is None:
             issues.append(Issue(Severity.ERROR, "commit.unknown_file", f"{shown} was written but is not part of the install plan"))
             continue
-        spelled = op.listed_path if op.listed_path is not None else path  # the on-disk spelling (Pitfall 2)
-        rel = _posix_relative(Path(spelled).resolve(), custom_real)
-        if rel is None:
+        spelled = _disk_spelling(op.listed_path if op.listed_path is not None else path, custom_dir)
+        resolved = spelled.resolve()
+        if not resolved.is_relative_to(custom_real):
             issues.append(Issue(Severity.ERROR, "commit.outside_custom", f"{shown} is outside {custom_rel}; it is not committed"))
             continue
         if op.data is not None:
@@ -90,7 +125,11 @@ def build_commit_plan(
         else:
             issues.append(Issue(Severity.ERROR, "commit.unknown_file", f"{shown} has no recorded content"))
             continue
-        display = _posix_relative(Path(spelled), repo_root) or Path(spelled).as_posix()
+        rel = _posix_relative(spelled, custom_dir) or resolved.relative_to(custom_real).as_posix()
+        if rel in seen_rel:
+            continue
+        seen_rel.add(rel)
+        display = _posix_relative(spelled, repo_root) or spelled.as_posix()
         files.append(CommitFile(rel, display, path, op.kind, expected, op.base_sha256))
     files.sort(key=lambda f: (f.display.casefold(), f.display))
     overwrite = any(
@@ -116,9 +155,52 @@ def build_commit_plan(
     )
 
 
+def _sha256_of(path: Path) -> str | None:
+    """Hex digest of a file read in 1 MiB chunks; None when it cannot be read."""
+    digest = hashlib.sha256()
+    try:
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1 << 20), b""):
+                digest.update(chunk)
+    except OSError:
+        return None
+    return digest.hexdigest()
+
+
+def changed_since_install(cplan: CommitPlan) -> tuple[str, ...]:
+    """Display paths, in plan order, of the planned files that are missing or no longer hold what the install wrote (D-11)."""
+    return tuple(f.display for f in cplan.files if _sha256_of(f.path) != f.expected_sha256)
+
+
+def pre_install_bytes(cfile: CommitFile, backup_dir: Path | None) -> bytes | None:
+    """The bytes the file held before the install, from the Phase 4 backup copy whose hash is base_sha256 (D-09).
+
+    Backups are named '{name}_backup_{N}'; same-named files of different folders share the
+    folder, so a copy is accepted only when its content matches. None when there is no match.
+    """
+    if cfile.base_sha256 is None or backup_dir is None:
+        return None
+    pattern = re.compile(re.escape(cfile.path.name) + r"_backup_(\d+)$")
+    try:
+        candidates = [(int(m.group(1)), entry) for entry in backup_dir.iterdir() if (m := pattern.fullmatch(entry.name))]
+    except OSError:
+        return None
+    for _, entry in sorted(candidates):
+        try:
+            data = entry.read_bytes()
+        except OSError:
+            continue
+        if hashlib.sha256(data).hexdigest() == cfile.base_sha256:
+            return data
+    return None
+
+
 def default_message(cplan: CommitPlan) -> str:
     """The Custom commit message of D-18: subject, what was installed, then the Import-* trailers."""
     symbol, library = sanitize_line(cplan.symbol), sanitize_line(cplan.library)
+    footprint = sanitize_line(cplan.footprint or "")
+    model = sanitize_line(cplan.model or "")
+    package = sanitize_line(cplan.package or "")  # the base name only: never a path (T-06-18)
     if cplan.overwrite:
         subject = f"Update {symbol} in {library}"
     elif cplan.new_library:
@@ -128,13 +210,13 @@ def default_message(cplan: CommitPlan) -> str:
     body = []
     if symbol:
         body.append(f"Symbol: {symbol}")
-    if cplan.footprint:
-        body.append(f"Footprint: {sanitize_line(cplan.footprint)}")
-    if cplan.model:
-        body.append(f"3D model: {sanitize_line(cplan.model)}")
-    trailers = [f"Import-Vendor: {sanitize_line(cplan.vendor)}"]
-    if cplan.package:
-        trailers.append(f"Import-Package: {sanitize_line(cplan.package)}")
+    if footprint:
+        body.append(f"Footprint: {footprint}")
+    if model:
+        body.append(f"3D model: {model}")
+    trailers = [f"Import-Vendor: {sanitize_line(cplan.vendor) or 'Unknown vendor'}"]
+    if package:
+        trailers.append(f"Import-Package: {package}")
     trailers.append(f"Import-Date: {sanitize_line(cplan.date)}")
     paragraphs = [subject, *(["\n".join(body)] if body else []), "\n".join(trailers)]
     return "\n\n".join(paragraphs)
