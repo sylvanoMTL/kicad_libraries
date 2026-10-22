@@ -1,43 +1,43 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 05
-current_phase_name: Import UI and Post-Install
-status: executing
-stopped_at: Phase 5 UI-SPEC approved
-last_updated: "2026-10-22T11:18:23.329Z"
+current_phase: 6
+current_phase_name: Git Commit Step
+status: planning
+stopped_at: Phase 05 complete, ready to plan Phase 6
+last_updated: "2026-10-22T12:54:14.405Z"
 last_activity: 2026-10-22
-last_activity_desc: Phase 05 execution started
-state_head: 3b52ca17504be3f0bf9092b3b0982adf49ebbec5
+last_activity_desc: Phase 05 complete, transitioned to Phase 6
+state_head: eef74f4929dbb553721a5e7883470cc89b5b032b
 progress:
   total_phases: 7
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 49
-  completed_plans: 38
-  percent: 57
+  completed_plans: 49
+  percent: 71
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-20)
+See: .planning/PROJECT.md (updated 2026-10-22)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 05 — Import UI and Post-Install
+**Current focus:** Phase 6 — Git Commit Step
 
 ## Current Position
 
-Phase: 05 (Import UI and Post-Install) — EXECUTING
-Plan: 1 of 11
-Status: Executing Phase 05
-Last activity: 2026-10-22 - Completed quick task 261022-gnn: Guard KiCad path-variable sync against silent writes
+Phase: 6 — Git Commit Step
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-22 — Phase 05 complete, transitioned to Phase 6
 
-Progress: [██████░░░░] 57%
+Progress: [███████░░░] 71%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 38
+- Total plans completed: 49
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -49,6 +49,7 @@ Progress: [██████░░░░] 57%
 | 02 | 9 | - | - |
 | 03 | 10 | - | - |
 | 04 | 13 | - | - |
+| 05 | 11 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -99,6 +100,9 @@ Recent decisions affecting current work:
 - [Phase 04]: 04-10: test_uat_scratch_install is gated by KICAD_IMPORT_UAT_DIR and not marked kicad_cli, so -m kicad_cli shows 7 passed, 0 skipped
 - [Phase 04]: 04-10: INST-06 and ROADMAP criterion 3 amended for D-02 (only the incoming symbol is normalised; footprints are copied as-is)
 - [Phase 04]: 04-11..04-13 (gap closure): install is exception-safe (rollback, then install.unexpected or re-raise); freshness is re-checked after the kicad-cli gate and before every write; blank InstallOptions text means not set (explicit clear deferred to the Phase 5 preview)
+- [Phase 05]: Emptied preview fields are explicit clears (Datasheet written empty, cleared Manufacturer skips inference, cleared MPN refused); KiCad loads an empty Datasheet (UAT)
+- [Phase 05]: Post-install table write is add-only (one entry per table for a new library); an existing unlisted library gets a Generate hint
+- [Phase 05]: The import flow never runs git; `ImportDialog.result` / `result_plan` and `ImportResultView.commit_slot` are the hand-off for Phase 6
 - [Quick 261022-gnn]: KiCad path variables are never written silently: `sync_kicad_path_vars` writes only after `confirm(changes)` returns True (no callback = no write); a git worktree (`.git` is a file) or a checkout other than a non-empty configured `KICAD_LIB_GITHUB` (normalised compare) is refused with a WARNING and never prompts. Later phases must not add a silent caller.
 
 ### Pending Todos
@@ -108,9 +112,9 @@ None yet.
 ### Blockers/Concerns
 
 - [Phase 2]: `Custom` `main` is 1 commit ahead of `origin/main` (485d530, HARD-09 cleanup). Owner must push it before removing this worktree.
-- [Phase 2, UI review]: Non-blocking UI fixes in `02-UI-REVIEW.md`: `populate()` `_updating` needs try/finally, the Symbols Status column is off-screen at default size, help text lacks Collision and Ctrl+Shift+R, Select All/Deselect All stay enabled during a scan. Fold into Phase 5 (Import UI).
-- [Phase 3, review]: `ImportCandidate` outlives its staged files (03-REVIEW-DISPOSITION.md WR-04): the Phase 5 caller must keep the package open until install finishes. Package warnings now reach the candidate (fixed by 04-12), except when no candidate is found (see Phase 4 WR-06).
-- [Phase 4, review]: Open, non-blocking, for Phase 5 planning: WR-06 (no candidate found drops `package.issues`, so "nothing found" has no reason), IN-04 (blank footprint/symbol/model choices give confusing refusals), WR-02 (new library with no `Custom/Symbols` fails late), WR-04 (`build_plan` ~531 lines), IN-01/02/03/05. See 04-REVIEW-DISPOSITION.md.
+- [Phase 4, review]: Still open, non-blocking: WR-04 (`build_plan` ~531 lines), IN-01/02/03/05. See 04-REVIEW-DISPOSITION.md. (WR-06, IN-04, WR-02 and the Phase 2 UI-review items were closed in Phase 5.)
+- [Phase 5, review]: Open, non-blocking: WR-01..WR-06 in 05-REVIEW-DISPOSITION.md. WR-04 (worker reads `self._plan`, `open_path` lacks an install guard) and WR-05 (GUI thread waits up to 60 s on kicad-cli) touch the dialog Phase 6 extends.
+- [Phase 5, UI review]: 05-UI-REVIEW.md 17/24; help dialog hard-codes colours and px font sizes outside `theme.py`; `conflict_row.py` has `#FFFFFF` literals.
 - [Phase 4]: KiCad 9 load of a mixed-version library verified by kicad-cli 9.0.9 and the owner's GUI UAT. KiCad 10 (format 20251024) and case-sensitive-volume rollback are deferred re-tests (ROADMAP backlog 999.1, 999.2).
 - [Phase 6]: Research flag. Spike git in this worktree early: detached HEAD, worktree-private module gitdir, and the owner's hooks on `commit -- Custom`.
 - [Phase 7]: Blocked until real SnapEDA and SamacSys/CSE downloads are added to `downloaded_examples/`. Check redistribution terms before committing fixtures.
@@ -132,6 +136,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-20T13:26:47.011Z
-Stopped at: Phase 5 UI-SPEC approved
-Resume file: .planning/phases/05-import-ui-and-post-install/05-UI-SPEC.md
+Last session: 2026-10-22
+Stopped at: Phase 05 complete, ready to plan Phase 6
+Resume file: None

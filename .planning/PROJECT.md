@@ -49,31 +49,25 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ A new library creates the matching `.kicad_sym` + `.pretty/` pair; an existing library header is never changed (LIB-02 install side; choosing in the UI arrives with Phase 5) — Phase 4
 - ✓ Install is one transaction: app-data backups, ordered atomic writes, verify, and rollback on any failure or exception; a target changed after planning is refused as stale; a second identical install is a no-op (INST-06..INST-09) — Phase 4
 - ✓ Post-install warnings for a name found in another library and for pin/pad mismatches (POST-03, POST-04) — Phase 4
+- ✓ Import Part dialog (File > Import Part..., Ctrl+I, or drop one zip/folder on the main window) opens one Ultra Librarian zip or loose-files folder per session; the newest Downloads zip and the last folder are offered but never opened without a click (UX-01, UX-02) — Phase 5
+- ✓ Several symbols, footprints or models in a package are picked in the dialog (INTK-07); "nothing found" shows the package and detection reasons (Phase 4 WR-06, IN-04) — Phase 5
+- ✓ Target library suggested and editable, or an existing `Custom/` library picked; a "new" badge shows a `.kicad_sym` + `.pretty` pair will be created, and placeholder names block Install (LIB-01, LIB-02 UI) — Phase 5
+- ✓ Preview before any write: every file, rename, path rewrite and format/kicad-cli action, with diffs and a file content view; footprint name and Value/Datasheet/Description/Manufacturer/MPN editable, explicit clear supported, Footprint field `<Lib>:<FP>` kept in sync; preview and install share one plan (PREV-01..PREV-07) — Phase 5
+- ✓ Per-conflict Overwrite / Rename / Skip with no bulk control and nothing pre-selected; Install blocked until every conflict is decided (PREV-05) — Phase 5
+- ✓ After install: Result view, rescan with the library checked and current, add-only `sym-lib-table` / `fp-lib-table` entries for a new library, a Generate hint for an existing unlisted one, and a "reopen KiCad's editors" notice when KiCad is running (POST-01, POST-02, POST-05) — Phase 5
 
 ### Active
 
 **Importer — input**
-- [ ] Browse to and open a vendor package: Ultra Librarian zip, SnapEDA zip, SamacSys/CSE zip, or a folder of loose `.kicad_sym` / `.kicad_mod` / `.step`/`.stp` files
-- [ ] Auto-detect the package format and locate the KiCad symbol, footprint(s) and 3D model inside it, whatever the folder depth or layout
-- [ ] One package per import session
-- [ ] When detection finds no part, show the package-level reasons (for example a too-deep folder) instead of a bare "nothing found" (review WR-06, emerged in Phase 4; plus blank-string handling for footprint/symbol/model choices, IN-04)
-
-**Importer — target library**
-- [ ] Suggest a target library name following `<Type>_<SubCategory>_<Manufacturer>` (e.g. `Transistor_MOSFET_TI`) from the part's info, editable by the user
-- [ ] Choose an existing `Custom/` library or create a new one, creating the matching `.kicad_sym` + `.pretty/` pair
-
-**Importer — preview and editing**
-- [ ] A preview step before anything is written: target files, new or renamed names, path rewrites and detected conflicts
-- [ ] Footprint name defaults to the vendor name (e.g. `DQK0006B`) and can be edited in the preview
-- [ ] Symbol's Footprint field set automatically to `<Lib>:<FP>`. Value, Datasheet, MPN, Manufacturer and Description are shown for editing in the preview
-- [ ] Name conflicts with existing symbols or footprints are shown in the preview, and the user picks overwrite, rename or skip each time
+- [ ] Open and auto-detect SnapEDA and SamacSys/CSE zips (Ultra Librarian and loose files done in Phases 3-5; Phase 7, gated on real downloads)
 
 **Importer — install**
-- [ ] After install: rescan and regenerate `sym-lib-table` / `fp-lib-table`
 - [ ] After install: ask for confirmation, then commit the new part in the `Custom` submodule and bump the parent repo's submodule ref. Commit only, never push.
 
 **Quality**
-- [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code (harness and parser tests done in Phase 1, hardened-table/config/scan tests done in Phase 2; importer tests still to come)
+- [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code (harness and parser tests done in Phase 1, hardened-table/config/scan tests in Phase 2, importer intake/install/UI tests in Phases 3-5; SnapEDA/SamacSys fixtures still to come)
+- [ ] Phase 5 review warnings, open and non-blocking: WR-01 misleading "already listed" text, WR-02 table write to the process cwd when Destination is empty, WR-03 one-off build can overlap Install, WR-04 worker reads `self._plan` / `open_path` has no install guard, WR-05 GUI thread waits up to 60 s on kicad-cli, WR-06 stale `kicad_common.json` content after the confirm dialog (05-REVIEW-DISPOSITION.md)
+- [ ] Help dialog styling outside the theme tokens (hard-coded colours, px font sizes) per 05-UI-REVIEW.md
 
 ### Out of Scope
 
@@ -106,14 +100,14 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
-| Importer lives inside the existing Library Manager app | Reuses scanner, log panel, settings and table generation; one tool for the repo | — Pending |
+| Importer lives inside the existing Library Manager app | Reuses scanner, log panel, settings and table generation; one tool for the repo | ✓ Good — Phase 5 UAT passed |
 | Support UL, SnapEDA, SamacSys/CSE and loose files in v1 | Owner uses all of them; zip layouts differ | — Pending |
-| Preview before every write; per-conflict overwrite/rename/skip | Avoid silent damage to curated libraries | — Pending |
-| Library name suggested from `<Type>_<SubCategory>_<Manufacturer>`, editable | Keeps the convention without blocking edge cases | — Pending |
-| Footprint keeps vendor name by default, editable | Package codes are often the right name; user can override | — Pending |
-| Footprint link set automatically; other fields editable in preview | Footprint link is the most error-prone manual step | — Pending |
+| Preview before every write; per-conflict overwrite/rename/skip | Avoid silent damage to curated libraries | ✓ Good — Phase 5 UAT passed |
+| Library name suggested from `<Type>_<SubCategory>_<Manufacturer>`, editable | Keeps the convention without blocking edge cases | ✓ Good — Phase 5 UAT passed |
+| Footprint keeps vendor name by default, editable | Package codes are often the right name; user can override | ✓ Good — Phase 5 UAT passed |
+| Footprint link set automatically; other fields editable in preview | Footprint link is the most error-prone manual step | ✓ Good — Phase 5 UAT passed |
 | No 3D model → install without it and warn | Keep the flow simple; models can be added later | — Pending |
-| One package per import | Simpler review; batch not needed | — Pending |
+| One package per import | Simpler review; batch not needed | ✓ Good — Phase 5 UAT passed |
 | Commit in `Custom` + bump parent ref after confirmation; never push | Matches the CLAUDE.md git workflow; pushing stays a deliberate act | — Pending |
 | Fix all High/Medium-High concerns from the codebase map | Importer builds on table/scan/write code that has known data-loss risks | ✓ Good — HARD-01..09 verified and UAT passed (Phase 2) |
 | Managed table entries identified by URI tail after `${KICAD_LIB_GITHUB}/`, not by nickname | Nicknames can collide across sources; the path cannot | ✓ Good (Phase 2) |
@@ -126,8 +120,10 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | Intake never extracts into the repo: zips are staged member-by-member into a temp folder outside the repo, folders are read in place | Keeps the "no write without preview" guarantee for the whole intake step | ✓ Good (Phase 3) |
 | Install is a transaction under `except BaseException`: any exception rolls back (`install.unexpected`), interrupts roll back then re-raise | A partial install in a curated library is the worst outcome; an Issue-only rollback missed exceptions (CR-01) | ✓ Good — gap closed and re-verified (Phase 4) |
 | Stale-plan check held from preflight to the last write: post-gate re-check, backup copy hashed and used as the rollback pre-image, re-check before every write | kicad-cli runs between preflight and the first write; an edit there was silently overwritten (CR-02) | ✓ Good — gap closed and re-verified (Phase 4) |
-| Blank preview text means "not set, keep the vendor value"; an explicit clear is a Phase 5 preview decision | A Qt line edit returns "" for untouched fields (WR-05) | — Pending (Phase 5 clear option) |
+| Blank preview text means "not set, keep the vendor value"; an explicit clear is a Phase 5 preview decision | A Qt line edit returns "" for untouched fields (WR-05) | ✓ Good — Phase 5: an emptied field is an explicit clear (Datasheet written empty, cleared Manufacturer skips inference, cleared MPN refused); KiCad loads an empty Datasheet (UAT) |
 | kicad-cli normalises only the incoming symbol, and only when its output version equals the target header; footprints are copied as-is | Never change a library's version header; mixed versions load in KiCad 9 (D-01, D-02) | ✓ Good — loads in kicad-cli 9.0.9; KiCad 10 re-test deferred (backlog 999.1) |
+| Post-install table update is add-only: one entry per table for a new library, a no-op when listed, never the tree selection; an existing unlisted library gets a Generate hint | Import must not rewrite the owner's tables or apply an ungenerated selection | ✓ Good (Phase 5) |
+| The import flow never runs git; the Result view holds a hidden commit slot for Phase 6 | Commit needs its own confirmation step (GIT-01..05) | ✓ Good (Phase 5) |
 | KiCad path variables are never written silently: Generate and the post-install table update show `VAR: old -> new` and ask (default No); a git worktree or a checkout other than the configured `KICAD_LIB_GITHUB` is refused with a WARNING; no confirm callback means no write | 2026-10-21: Generate from the dev worktree repointed KiCad 10 at it; 89 WurthElektronik libraries went missing and an ERC error followed | ✓ Good (Quick 261022-gnn) |
 
 ## Evolution
@@ -148,4 +144,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-20 after Phase 4*
+*Last updated: 2026-10-22 after Phase 5*

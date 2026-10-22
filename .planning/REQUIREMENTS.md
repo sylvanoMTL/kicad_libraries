@@ -35,7 +35,7 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 - [ ] **INTK-04**: A SamacSys / Component Search Engine zip is recognised and its KiCad symbol, footprint and 3D model are found, verified against a real CSE download in `downloaded_examples/`
 - [x] **INTK-05**: Packages containing only legacy KiCad 5 files (`.lib`, `.dcm`, `.mod`) are rejected with a clear "re-download as KiCad v6+" message
 - [x] **INTK-06**: Zips are read safely: no extraction into the repo, path traversal, absolute names and symlinks are rejected, and size and count limits stop zip bombs
-- [ ] **INTK-07**: When a package holds several symbols, footprints or models, the user picks which ones to import
+- [x] **INTK-07**: When a package holds several symbols, footprints or models, the user picks which ones to import
 - [x] **INTK-08**: A package with no 3D model can still be installed, and the preview and log warn that no model was found
 
 ### Target Library
@@ -46,13 +46,13 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 
 ### Preview & Editing
 
-- [ ] **PREV-01**: Before anything is written, user sees a preview listing every file to be created or modified, every rename and every path rewrite
-- [ ] **PREV-02**: User can edit the footprint name in the preview. It defaults to the vendor name (e.g. `DQK0006B`).
-- [ ] **PREV-03**: The symbol's Footprint field is set to `<Lib>:<FP>` automatically and stays in sync when the library or footprint name is edited
-- [ ] **PREV-04**: User can edit Value, Datasheet, Description, `Manufacturer` and `MPN` in the preview. Missing fields are created with those exact property names.
-- [ ] **PREV-05**: Each name conflict with an existing symbol, footprint or 3D model is shown in the preview, and the user picks overwrite, rename or skip for each one
-- [ ] **PREV-06**: Preview shows source vs target KiCad file-format versions and whether the incoming part will be normalised with `kicad-cli`
-- [ ] **PREV-07**: What the preview shows is exactly what gets installed. Preview and install use the same plan, and the plan is rebuilt on every edit.
+- [x] **PREV-01**: Before anything is written, user sees a preview listing every file to be created or modified, every rename and every path rewrite
+- [x] **PREV-02**: User can edit the footprint name in the preview. It defaults to the vendor name (e.g. `DQK0006B`).
+- [x] **PREV-03**: The symbol's Footprint field is set to `<Lib>:<FP>` automatically and stays in sync when the library or footprint name is edited
+- [x] **PREV-04**: User can edit Value, Datasheet, Description, `Manufacturer` and `MPN` in the preview. Missing fields are created with those exact property names.
+- [x] **PREV-05**: Each name conflict with an existing symbol, footprint or 3D model is shown in the preview, and the user picks overwrite, rename or skip for each one
+- [x] **PREV-06**: Preview shows source vs target KiCad file-format versions and whether the incoming part will be normalised with `kicad-cli`
+- [x] **PREV-07**: What the preview shows is exactly what gets installed. Preview and install use the same plan, and the plan is rebuilt on every edit.
 
 ### Install
 
@@ -68,11 +68,11 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 
 ### Post-Install
 
-- [ ] **POST-01**: After install, the library list rescans and the new or updated library is shown and selected
-- [ ] **POST-02**: When a new library was created, `sym-lib-table` / `fp-lib-table` are regenerated
+- [x] **POST-01**: After install, the library list rescans and the new or updated library is shown and selected
+- [x] **POST-02**: When a new library was created, `sym-lib-table` / `fp-lib-table` are regenerated
 - [x] **POST-03**: User is warned when the imported part name already exists in another library
 - [x] **POST-04**: User is warned when the symbol's pin numbers don't match the footprint's pad numbers
-- [ ] **POST-05**: User is told to reopen KiCad's library editors if KiCad appears to be running
+- [x] **POST-05**: User is told to reopen KiCad's library editors if KiCad appears to be running
 
 ### Git
 
@@ -84,8 +84,8 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 
 ### Usability
 
-- [ ] **UX-01**: User can start an import by dropping a zip or folder onto the main window
-- [ ] **UX-02**: The import dialog remembers the last folder used and offers the most recent zip in the Downloads folder
+- [x] **UX-01**: User can start an import by dropping a zip or folder onto the main window
+- [x] **UX-02**: The import dialog remembers the last folder used and offers the most recent zip in the Downloads folder
 
 ## v2 Requirements
 
@@ -150,18 +150,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INTK-04 | Phase 7 | Pending |
 | INTK-05 | Phase 3 | Complete |
 | INTK-06 | Phase 3 | Complete |
-| INTK-07 | Phase 5 | Pending |
+| INTK-07 | Phase 5 | Complete |
 | INTK-08 | Phase 4 | Complete |
 | LIB-01 | Phase 3 | Complete |
 | LIB-02 | Phase 4 | Complete |
 | LIB-03 | Phase 3 | Complete |
-| PREV-01 | Phase 5 | Pending |
-| PREV-02 | Phase 5 | Pending |
-| PREV-03 | Phase 5 | Pending |
-| PREV-04 | Phase 5 | Pending |
-| PREV-05 | Phase 5 | Pending |
-| PREV-06 | Phase 5 | Pending |
-| PREV-07 | Phase 5 | Pending |
+| PREV-01 | Phase 5 | Complete |
+| PREV-02 | Phase 5 | Complete |
+| PREV-03 | Phase 5 | Complete |
+| PREV-04 | Phase 5 | Complete |
+| PREV-05 | Phase 5 | Complete |
+| PREV-06 | Phase 5 | Complete |
+| PREV-07 | Phase 5 | Complete |
 | INST-01 | Phase 4 | Complete |
 | INST-02 | Phase 4 | Complete |
 | INST-03 | Phase 4 | Complete |
@@ -171,18 +171,18 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INST-07 | Phase 4 | Complete |
 | INST-08 | Phase 4 | Complete |
 | INST-09 | Phase 4 | Complete |
-| POST-01 | Phase 5 | Pending |
-| POST-02 | Phase 5 | Pending |
+| POST-01 | Phase 5 | Complete |
+| POST-02 | Phase 5 | Complete |
 | POST-03 | Phase 4 | Complete |
 | POST-04 | Phase 4 | Complete |
-| POST-05 | Phase 5 | Pending |
+| POST-05 | Phase 5 | Complete |
 | GIT-01 | Phase 6 | Pending |
 | GIT-02 | Phase 6 | Pending |
 | GIT-03 | Phase 6 | Pending |
 | GIT-04 | Phase 6 | Pending |
 | GIT-05 | Phase 6 | Pending |
-| UX-01 | Phase 5 | Pending |
-| UX-02 | Phase 5 | Pending |
+| UX-01 | Phase 5 | Complete |
+| UX-02 | Phase 5 | Complete |
 
 **Coverage:**
 - v1 requirements: 53 total
