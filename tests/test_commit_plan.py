@@ -321,7 +321,7 @@ def test_default_message_sanitises_controls(install):
 
 
 def test_default_message_cannot_be_split_by_unicode_line_breaks(install):
-    cplan = replace(install.commit_plan(), symbol="a\x85b c d\x1b[31m")
+    cplan = replace(install.commit_plan(), symbol="a\x85b\N{LINE SEPARATOR}c\N{PARAGRAPH SEPARATOR}d\x1b[31m")
 
     message = commit_plan.default_message(cplan)
 

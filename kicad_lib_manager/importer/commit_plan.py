@@ -15,7 +15,7 @@ from .plan import InstallPlan, InstallResult
 
 NEW_PLACEHOLDER = "<new commit>"  # stands for the Custom commit that does not exist yet (RESEARCH Pattern 5)
 # Controls (C0, DEL, C1) plus the Unicode line and paragraph separators, which str.splitlines treats as breaks
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}]")
 
 
 @dataclass(frozen=True)
@@ -114,8 +114,8 @@ def build_commit_plan(
             issues.append(Issue(Severity.ERROR, "commit.unknown_file", f"{shown} was written but is not part of the install plan"))
             continue
         spelled = _disk_spelling(op.listed_path if op.listed_path is not None else path, custom_dir)
-        rel = _posix_relative(spelled.resolve(), custom_real)
-        if rel is None:
+        resolved = spelled.resolve()
+        if not resolved.is_relative_to(custom_real):
             issues.append(Issue(Severity.ERROR, "commit.outside_custom", f"{shown} is outside {custom_rel}; it is not committed"))
             continue
         if op.data is not None:
@@ -125,7 +125,7 @@ def build_commit_plan(
         else:
             issues.append(Issue(Severity.ERROR, "commit.unknown_file", f"{shown} has no recorded content"))
             continue
-        rel = _posix_relative(spelled, custom_dir) or rel
+        rel = _posix_relative(spelled, custom_dir) or resolved.relative_to(custom_real).as_posix()
         if rel in seen_rel:
             continue
         seen_rel.add(rel)
