@@ -179,13 +179,13 @@ Plans:
   4. Every conflict with an existing symbol, footprint or 3D model appears in the preview with its own overwrite / rename / skip choice. There is no "overwrite all" option.
   5. After install, the library list rescans and shows the new or updated library selected. `sym-lib-table` / `fp-lib-table` are regenerated when a new library was created. If KiCad appears to be running, the user is told to reopen KiCad's library editors.
 
-**Plans**: 11 plans
+**Plans**: 3/11 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 05-01-PLAN.md — Tracer: File > Import Part... -> worker open/detect -> real plan -> Files preview -> Install of that exact plan -> Result page -> quiet post-install rescan that checks the library; generation counter, Package ownership (WR-04), forward layering registration (wave 1)
-- [ ] 05-02-PLAN.md — Phase 4 delta: InstallOptions.cleared (D-13 explicit empty), explicit-empty Manufacturer, empty Value/MPN refused, WR-02 early refusal for missing Custom folders (wave 1)
-- [ ] 05-03-PLAN.md — widgets/theme.py, AMBER in the log and trees, populate try/finally, visible Status column with tooltips, LibraryTableWidget.reveal() (wave 1)
+- [x] 05-01-PLAN.md — Tracer: File > Import Part... -> worker open/detect -> real plan -> Files preview -> Install of that exact plan -> Result page -> quiet post-install rescan that checks the library; generation counter, Package ownership (WR-04), forward layering registration (wave 1)
+- [x] 05-02-PLAN.md — Phase 4 delta: InstallOptions.cleared (D-13 explicit empty), explicit-empty Manufacturer, empty Value/MPN refused, WR-02 early refusal for missing Custom folders (wave 1)
+- [x] 05-03-PLAN.md — widgets/theme.py, AMBER in the log and trees, populate try/finally, visible Status column with tooltips, LibraryTableWidget.reveal() (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 05-04-PLAN.md — POST-02: add-only add_library_entries for a new library plus path-variable sync; Generate hint for an existing library; reveal after the rescan (wave 2)
@@ -247,7 +247,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
-| 5. Import UI and Post-Install | 0/11 | Planned | - |
+| 5. Import UI and Post-Install | 3/11 | In Progress | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
 
