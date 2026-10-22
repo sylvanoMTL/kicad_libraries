@@ -219,3 +219,22 @@ def test_empty_footprint_name_blocks_the_plan(eq_layout):
     assert not sanitised.blocked
     assert sanitised.footprint_names == ("DQK_0006B",)
     assert sanitised.linked_footprint == "DQK_0006B"
+    assert [op.path.name for op in sanitised.ops if op.kind == "footprint"] == ["DQK_0006B.kicad_mod"]
+
+
+def test_typed_footprint_name_case_twin_is_a_conflict(eq_layout):
+    """A typed name that differs from an installed footprint only by letter case collides (casefold)."""
+    pretty = eq_layout.footprints_dir / f"{UL_LIBRARY}.pretty"
+    (pretty / "DQK0006B.kicad_mod").write_bytes(footprint("DQK0006B"))
+    with open_package(UL_ZIP, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+        fp = candidate.footprints[0].name
+        options = build_options(
+            values(library=UL_LIBRARY, symbol=candidate.symbols[0].name, footprints=(fp,), footprint_name="dqk0006b"),
+            DEFAULTS,
+            linked_vendor=fp,
+        )
+        plan = build_plan(candidate, options, eq_layout)
+    assert plan.blocked
+    clash = [c for c in plan.conflicts if c.kind == "footprint"]
+    assert len(clash) == 1 and "letter case" in clash[0].existing

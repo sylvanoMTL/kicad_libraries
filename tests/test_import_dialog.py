@@ -1341,3 +1341,39 @@ def test_fields_long_text_geometry(qtbot, make_item_dialog, tmp_path):
     for name, edit in dialog._field_edits.items():
         assert edit.mapTo(left, QPoint(edit.width(), 0)).x() <= dialog._field_restore[name].mapTo(left, QPoint(0, 0)).x()
     assert dialog._field_edits["description"].text() == "D" * 120
+
+
+def test_footprint_field_and_filters_follow_checked_order(qtbot, make_item_dialog, tmp_path):
+    """Edge PREV-03/ordering: the field names the linked footprint, ki_fp_filters lists the checked ones in order."""
+    from kicad_lib_manager.kicad_files import find_property, find_symbol, parse_bytes
+
+    dialog = make_item_dialog(multi_zip(tmp_path), show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+
+    def filters() -> str:
+        op = next(op for op in dialog._plan.ops if op.kind == "symbol_lib")
+        symbol = find_symbol(parse_bytes(op.data, "lib").root, dialog._plan.symbol_name)
+        return find_property(symbol.node, "ki_fp_filters").value
+
+    assert dialog._fp_field.text() == f"{LIB}:F1"
+    assert filters() == "F1 F2 F3"
+    dialog._fp_list.setCurrentRow(2)
+    dialog._make_linked_btn.click()
+    wait_current(qtbot, dialog)
+    assert dialog._fp_field.text() == f"{LIB}:F3"
+    assert filters() == "F3 F1 F2"
+    dialog._fp_list.item(1).setCheckState(Qt.CheckState.Unchecked)  # F2 out
+    wait_current(qtbot, dialog)
+    assert dialog._fp_field.text() == f"{LIB}:F3"
+    assert filters() == "F3 F1"
+
+
+def test_emptied_mpn_blocks_install(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    wait_current(qtbot, dialog)
+    assert "install.empty_required" in [i.code for i in dialog._plan.issues]
+    assert not dialog._install_btn.isEnabled()
+    dialog._field_restore["mpn"].click()
+    wait_current(qtbot, dialog)
+    assert dialog._install_btn.isEnabled()

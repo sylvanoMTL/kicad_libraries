@@ -18,19 +18,21 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QStandardPaths, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QColor, QResizeEvent, QShowEvent
+from PySide6.QtCore import Qt, QSize, QStandardPaths, QThread, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QColor, QFont, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
-    QListView, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea, QSizePolicy,
-    QSplitter, QStackedWidget, QVBoxLayout, QWidget,
+    QLineEdit, QListView, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea,
+    QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from ..importer.applier import apply_plan
 from ..importer.candidate import ImportCandidate
 from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
-from ..importer.form import FieldDefaults, FormValues, build_options
+from ..importer.form import (
+    FIELD_LABELS, FIELD_NAMES, FieldDefaults, FormValues, build_options, field_defaults,
+)
 from ..importer.layout import RepoLayout, list_existing_libraries
 from ..importer.package import Package, open_package
 from ..importer.plan import InstallOptions, InstallPlan, InstallResult, Resolution, ToolContext
@@ -41,7 +43,7 @@ from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
 from .preview_tree import PreviewTree
-from .theme import AMBER, ERROR, HEADING_PT, MUTED, SP_LG, SP_MD, SP_XL
+from .theme import AMBER, ERROR, HEADING_PT, MONO_FAMILY, MONO_PT, MUTED, SP_LG, SP_MD, SP_XL, SP_XS
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
 _SEVERITY_COLOR = {Severity.ERROR: ERROR, Severity.WARNING: AMBER}
@@ -49,10 +51,11 @@ _ISSUE_LIST_MAX_HEIGHT = 160
 _NOTHING_FOUND = "No KiCad symbol or footprint was found in this package."
 _CLOSING_REFUSED = "Pick another file."
 _CLOSING_EMPTY = "Check that you downloaded the KiCad format, then pick another file."
-_DEBOUNCE_MS = 300  # text edits rebuild this long after the last keystroke (D-06)
 _CHECKLIST_ROWS = 6  # footprint rows shown before the list scrolls
 _LINKED_SUFFIX = "  (linked)"
 _NO_MODEL = "No model"
+_BLANK_FIELD_HINT = "Empty - the field will be written blank"
+_NO_FOOTPRINT_FIELD = "(none)"
 
 # Vendor names of the adapters (importer/adapters) as shown in the package header
 _VENDOR_LABELS = {"UltraLibrarian": "Ultra Librarian", "Loose": "Loose files", "Unknown": "Unknown vendor"}
@@ -80,11 +83,19 @@ def default_downloads_dir() -> Path | None:
 class _OfferLabel(QLabel):
     """One-line plain-text label that elides the middle of a name to fit its width (UI E3/overflow)."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, expanding: bool = False):
         super().__init__(parent)
         self.setTextFormat(Qt.TextFormat.PlainText)
-        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        # Ignored suits a label that sits in a stretching box layout. A form field must ask for the
+        # room (Expanding) yet still shrink to nothing, so a long name never widens the pane.
+        self._expanding = expanding
+        horizontal = QSizePolicy.Policy.Expanding if expanding else QSizePolicy.Policy.Ignored
+        self.setSizePolicy(horizontal, QSizePolicy.Policy.Preferred)
         self._parts: tuple[str, str, str] | None = None
+
+    def minimumSizeHint(self) -> QSize:
+        hint = super().minimumSizeHint()
+        return QSize(0, hint.height()) if self._expanding else hint
 
     def set_parts(self, prefix: str, name: str, suffix: str):
         self._parts = (prefix, name, suffix)
@@ -227,13 +238,15 @@ class ImportDialog(QDialog):
         self._extends_note: QLabel | None = None
         self._linked_fp: str | None = None  # vendor name of the linked footprint
         self._defaults = FieldDefaults()
+        self._edited: set[str] = set()  # field names the user changed; only these reach the planner
+        self._fp_name_edited = False
         self._resolutions: dict[str, Resolution] = {}  # conflict choices; plan 05-10 fills them
         self._first_plan_seen = False
         self._syncing = False  # True while the dialog sets control values itself
         self._dirty = False  # a text edit waits for its debounce, so the plan on screen is not current
         self._debounce = QTimer(self)
         self._debounce.setSingleShot(True)
-        self._debounce.setInterval(_DEBOUNCE_MS)
+        self._debounce.setInterval(300)  # D-06: the quiet period after the last keystroke, in ms
         self._debounce.timeout.connect(self._on_debounce)
 
         self._workers: list[TaskWorker] = []
@@ -423,6 +436,10 @@ class ImportDialog(QDialog):
         self._library_combo.lineEdit().editingFinished.connect(self._on_library_edited)
         left_lay.addWidget(self._library_combo)
         left_lay.addSpacing(SP_MD)
+        self._build_footprint_section(left_lay)
+        left_lay.addSpacing(SP_MD)
+        self._build_fields_section(left_lay)
+        left_lay.addSpacing(SP_MD)
         left_lay.addStretch()
         self._left_scroll.setWidget(left)
         self._left_scroll.setMinimumWidth(380)
@@ -500,6 +517,102 @@ class ImportDialog(QDialog):
         font.setBold(True)
         label.setFont(font)
         return label
+
+    @staticmethod
+    def _restore_button(accessible: str) -> QToolButton:
+        """The 24x24 glyph button that puts a default back; its tooltip is set when the default is known."""
+        button = QToolButton()
+        button.setText("↺")
+        button.setFixedSize(24, 24)
+        button.setAccessibleName(accessible)
+        button.setEnabled(False)
+        return button
+
+    @staticmethod
+    def _aligned_row(widget: QWidget) -> QWidget:
+        """Wrap a widget so it ends where a line edit followed by a restore button ends."""
+        row = QWidget()
+        lay = QHBoxLayout(row)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(widget, 1)
+        lay.addSpacing(24 + SP_XS)
+        return row
+
+    def _build_footprint_section(self, left_lay: QVBoxLayout):
+        """The footprint name (D-14, PREV-02): pre-filled with the linked footprint's sanitised vendor name."""
+        left_lay.addWidget(self._heading("Footprint"))
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        row = QWidget()
+        row_lay = QHBoxLayout(row)
+        row_lay.setContentsMargins(0, 0, 0, 0)
+        row_lay.setSpacing(SP_XS)
+        self._fp_name_edit = QLineEdit()
+        self._fp_name_edit.setAccessibleName("Footprint name")
+        self._fp_name_edit.setMinimumHeight(28)
+        self._fp_name_edit.textEdited.connect(self._on_fp_name_edited)
+        row_lay.addWidget(self._fp_name_edit, 1)
+        self._fp_name_restore = self._restore_button("Restore default footprint name")
+        self._fp_name_restore.clicked.connect(self._on_fp_name_restore)
+        row_lay.addWidget(self._fp_name_restore)
+        form.addRow("Name", row)
+        self._fp_name_hint = QLabel()
+        self._fp_name_hint.setTextFormat(Qt.TextFormat.PlainText)
+        self._fp_name_hint.setWordWrap(True)
+        self._fp_name_hint.setStyleSheet(f"color: {MUTED};")
+        self._fp_name_hint.hide()
+        form.addRow(self._fp_name_hint)
+        left_lay.addLayout(form)
+
+    def _build_fields_section(self, left_lay: QVBoxLayout):
+        """Symbol, the read-only Footprint field, then the five editable fields with their restore buttons."""
+        left_lay.addWidget(self._heading("Fields"))
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+
+        # The two read-only rows keep the right edge of the editable ones: a spacer stands for the ↺ button
+        self._symbol_name_label = _OfferLabel(expanding=True)
+        form.addRow("Symbol", self._aligned_row(self._symbol_name_label))
+
+        # Read-only: the text always comes from the latest accepted plan, never from the inputs (PREV-03)
+        self._fp_field = QLineEdit()
+        self._fp_field.setReadOnly(True)
+        self._fp_field.setFont(QFont(MONO_FAMILY, MONO_PT))
+        self._fp_field.setAccessibleName("Footprint")
+        self._fp_field.setMinimumHeight(28)
+        form.addRow("Footprint", self._aligned_row(self._fp_field))
+
+        self._field_edits: dict[str, QLineEdit] = {}
+        self._field_restore: dict[str, QToolButton] = {}
+        for name in FIELD_NAMES:
+            label = FIELD_LABELS[name]
+            row = QWidget()
+            row_lay = QHBoxLayout(row)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+            row_lay.setSpacing(SP_XS)
+            edit = QLineEdit()
+            edit.setAccessibleName(label)
+            edit.setMinimumHeight(28)
+            if name in ("datasheet", "description", "manufacturer"):
+                edit.setPlaceholderText(_BLANK_FIELD_HINT)
+            if name == "mpn":
+                edit.setToolTip("MPN names the 3D model file")
+            edit.textEdited.connect(lambda text, n=name: self._on_field_edited(n, text))
+            restore = self._restore_button(f"Restore default {label}")
+            restore.clicked.connect(lambda _checked=False, n=name: self._restore_field(n))
+            row_lay.addWidget(edit, 1)
+            row_lay.addWidget(restore)
+            form.addRow(label, row)
+            self._field_edits[name] = edit
+            self._field_restore[name] = restore
+        left_lay.addLayout(form)
 
     # -- opening a package ------------------------------------------------------
 
@@ -788,8 +901,8 @@ class ImportDialog(QDialog):
             footprints=footprints,
             model=model,
             no_model=no_model,
-            footprint_name=None,
-            fields={},
+            footprint_name=self._fp_name_edit.text() if self._fp_name_edited else None,
+            fields={name: self._field_edits[name].text() for name in FIELD_NAMES if name in self._edited},
             resolutions=dict(self._resolutions),
         )
 
@@ -803,11 +916,31 @@ class ImportDialog(QDialog):
         self._linked_fp = None
         while self._items_form.rowCount():
             self._items_form.removeRow(0)
+        self._clear_form()
+
+    def _clear_form(self):
+        """Forget every edit and empty the footprint and field controls (a new or discarded package)."""
+        self._edited.clear()
+        self._fp_name_edited = False
+        self._defaults = FieldDefaults()
+        self._fp_name_edit.blockSignals(True)
+        try:
+            self._fp_name_edit.clear()
+        finally:
+            self._fp_name_edit.blockSignals(False)
+        self._fp_name_edit.setEnabled(False)
+        self._fp_name_restore.setEnabled(False)
+        self._fp_name_hint.hide()
+        self._set_field_texts()
+        self._symbol_name_label.set_plain("")
+        self._symbol_name_label.setToolTip("")
+        self._fp_field.clear()
+        self._fp_field.setStyleSheet("")
 
     @staticmethod
     def _item_label(name: str, *, missing: bool = False) -> "_OfferLabel":
         """A one-line plain label for a single item: the name elides in the middle, the tooltip holds it all."""
-        label = _OfferLabel()
+        label = _OfferLabel(expanding=True)
         if missing:
             label.set_plain(name)
             label.setStyleSheet(f"color: {AMBER};")
@@ -889,6 +1022,22 @@ class ImportDialog(QDialog):
         else:
             self._model_label = self._item_label("No 3D model in this package", missing=True)
             form.addRow("3D model", self._model_label)
+
+        self._reset_fp_name()
+        self._reload_symbol_defaults()
+        self._set_tab_order()
+
+    def _set_tab_order(self):
+        """Items come after the page's widgets in creation order, so chain the whole left pane by hand."""
+        chain: list[QWidget] = [self._change_btn]
+        for widget in (self._symbol_combo, self._fp_list, self._make_linked_btn, self._model_combo):
+            if widget is not None:
+                chain.append(widget)
+        chain += [self._library_combo, self._fp_name_edit, self._fp_name_restore, self._fp_field]
+        for name in FIELD_NAMES:
+            chain += [self._field_edits[name], self._field_restore[name]]
+        for first, second in zip(chain, chain[1:]):
+            QWidget.setTabOrder(first, second)
 
     def _build_footprint_list(self, names: list[str]) -> QWidget:
         host = QWidget()
@@ -982,13 +1131,17 @@ class ImportDialog(QDialog):
         self._request_rebuild()
 
     def _set_linked(self, name: str | None):
-        self._linked_fp = name
+        """Change which footprint is linked; its name field starts again from that footprint's default (D-14b)."""
+        if name != self._linked_fp:
+            self._linked_fp = name
+            self._reset_fp_name()
 
     def _on_symbol_changed(self, _index: int = -1):
         combo = self._symbol_combo
         if combo is None or self._candidate is None:
             return
         combo.setToolTip(combo.currentText())
+        self._reload_symbol_defaults()  # another symbol: every field starts from its own defaults
         self._request_rebuild()
 
     def _on_model_changed(self, _index: int = -1):
@@ -999,12 +1152,126 @@ class ImportDialog(QDialog):
         self._request_rebuild()
 
     def _show_plan_in_form(self, plan: InstallPlan):
-        """Show what the accepted plan says: the extends note under the symbol."""
+        """Show what the accepted plan says: the extends note, the symbol name, the fields and the Footprint field."""
         note = self._extends_note
         if note is not None:
             parents = plan.symbol_names[:-1]
             note.setText(f"extends parent {', '.join(parents)} is included automatically" if parents else "")
             note.setVisible(bool(parents))
+        # The fields show what this plan writes: the defaults follow the final symbol name (PREV-04)
+        chosen = self._chosen_symbol_name()
+        if chosen is not None and plan.symbol_name:
+            self._defaults = field_defaults(self._candidate, chosen, final_name=plan.symbol_name)
+            self._set_field_texts()
+            self._show_symbol_name(chosen, plan.symbol_name)
+        # PREV-03: read from the plan, never computed from the inputs
+        if plan.linked_footprint is None or not plan.symbol_names:
+            self._fp_field.setText(_NO_FOOTPRINT_FIELD)
+            self._fp_field.setStyleSheet(f"color: {MUTED};")
+        else:
+            self._fp_field.setText(f"{plan.library}:{plan.linked_footprint}")
+            self._fp_field.setStyleSheet("")
+
+    # -- footprint name and field text (D-13, D-14, PREV-02, PREV-04) ---------------
+
+    def _chosen_symbol_name(self) -> str | None:
+        """The vendor name of the symbol the controls select."""
+        if self._candidate is None or not self._candidate.symbols:
+            return None
+        if self._symbol_combo is not None:
+            return self._symbol_combo.currentData()
+        return self._candidate.symbols[0].name
+
+    def _show_symbol_name(self, vendor: str, final: str):
+        text = final if vendor == final else f"{vendor} → {final}"
+        self._symbol_name_label.set_parts("", text, "")
+        self._symbol_name_label.setToolTip(text)
+
+    def _reload_symbol_defaults(self):
+        """A symbol was opened or picked: reload every field from its defaults and forget the field edits."""
+        chosen = self._chosen_symbol_name()
+        self._edited.clear()
+        if chosen is None:
+            self._defaults = FieldDefaults()
+            self._set_field_texts()
+            return
+        item = next(s for s in self._candidate.symbols if s.name == chosen)
+        final = item.name_check.sanitized  # until a plan says otherwise (a conflict Rename)
+        self._defaults = field_defaults(self._candidate, chosen, final_name=final)
+        self._set_field_texts()
+        self._show_symbol_name(chosen, final)
+
+    def _set_field_texts(self):
+        """Put the defaults into every field that was not edited; edited fields keep their text."""
+        for name, edit in self._field_edits.items():
+            if name not in self._edited:
+                edit.blockSignals(True)
+                try:
+                    edit.setText(self._defaults.get(name))
+                    edit.setCursorPosition(0)
+                finally:
+                    edit.blockSignals(False)
+            self._update_field_restore(name)
+
+    def _update_field_restore(self, name: str):
+        default = self._defaults.get(name)
+        button = self._field_restore[name]
+        button.setEnabled(self._field_edits[name].text() != default)
+        button.setToolTip(f"Restore default: {default}")
+
+    def _on_field_edited(self, name: str, text: str):
+        """User typing only (textEdited): remember the edit and wait for the quiet period."""
+        if text == self._defaults.get(name):
+            self._edited.discard(name)  # typed back to the default: the planner decides again
+        else:
+            self._edited.add(name)
+        self._update_field_restore(name)
+        self._mark_dirty()
+
+    def _restore_field(self, name: str):
+        self._edited.discard(name)
+        edit = self._field_edits[name]
+        edit.blockSignals(True)
+        try:
+            edit.setText(self._defaults.get(name))
+            edit.setCursorPosition(0)
+        finally:
+            edit.blockSignals(False)
+        self._update_field_restore(name)
+        self._request_rebuild()
+
+    def _linked_item(self):
+        """The candidate footprint that is linked, or None."""
+        if self._candidate is None or self._linked_fp is None:
+            return None
+        return next((f for f in self._candidate.footprints if f.name == self._linked_fp), None)
+
+    def _reset_fp_name(self):
+        """Start the Name field again from the linked footprint's sanitised vendor name (D-14b)."""
+        item = self._linked_item()
+        self._fp_name_edited = False
+        self._fp_name_edit.blockSignals(True)
+        try:
+            self._fp_name_edit.setText(item.name_check.sanitized if item is not None else "")
+            self._fp_name_edit.setCursorPosition(0)
+        finally:
+            self._fp_name_edit.blockSignals(False)
+        self._fp_name_edit.setEnabled(item is not None)
+        self._fp_name_restore.setEnabled(False)
+        differs = item is not None and item.name != item.name_check.sanitized
+        self._fp_name_hint.setText(f"Vendor name: {item.name}" if differs else "")
+        self._fp_name_hint.setVisible(differs)
+
+    def _on_fp_name_edited(self, text: str):
+        item = self._linked_item()
+        default = item.name_check.sanitized if item is not None else ""
+        self._fp_name_edited = text != default
+        self._fp_name_restore.setEnabled(self._fp_name_edited)
+        self._mark_dirty()
+
+    def _on_fp_name_restore(self):
+        self._reset_fp_name()
+        self._request_rebuild()
 
     # -- text edits: a quiet period before the rebuild (D-06) ----------------------
 
