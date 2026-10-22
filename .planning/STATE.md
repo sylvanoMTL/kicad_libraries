@@ -4,10 +4,10 @@ current_phase: 05
 current_phase_name: Import UI and Post-Install
 status: executing
 stopped_at: Phase 5 UI-SPEC approved
-last_updated: "2026-10-22T09:26:52.665Z"
+last_updated: "2026-10-22T11:18:23.329Z"
 last_activity: 2026-10-22
 last_activity_desc: Phase 05 execution started
-state_head: 543f75e8d932da33cca1d1a4a942e1e9fa127343
+state_head: 3b52ca17504be3f0bf9092b3b0982adf49ebbec5
 progress:
   total_phases: 7
   completed_phases: 4
@@ -30,7 +30,7 @@ See: .planning/PROJECT.md (updated 2026-10-20)
 Phase: 05 (Import UI and Post-Install) — EXECUTING
 Plan: 1 of 11
 Status: Executing Phase 05
-Last activity: 2026-10-22 — Phase 05 execution started
+Last activity: 2026-10-22 - Completed quick task 261022-gnn: Guard KiCad path-variable sync against silent writes
 
 Progress: [██████░░░░] 57%
 
@@ -114,6 +114,13 @@ None yet.
 - [Phase 4]: KiCad 9 load of a mixed-version library verified by kicad-cli 9.0.9 and the owner's GUI UAT. KiCad 10 (format 20251024) and case-sensitive-volume rollback are deferred re-tests (ROADMAP backlog 999.1, 999.2).
 - [Phase 6]: Research flag. Spike git in this worktree early: detached HEAD, worktree-private module gitdir, and the owner's hooks on `commit -- Custom`.
 - [Phase 7]: Blocked until real SnapEDA and SamacSys/CSE downloads are added to `downloaded_examples/`. Check redistribution terms before committing fixtures.
+- [Phase 5, environment]: 7 real-kicad-cli tests fail on the phase base too, because the installed KiCad 10 CLI writes symbol format 20251024 where the tests expect 20241209: `test_install_plan.py` (3), `test_kicad_cli.py::test_real_cli_upgrades_ul_symbol_deterministically`, `test_install_e2e.py` (3). Not a phase 5 regression; owner to decide whether the tests follow the installed CLI version.
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 261022-gnn | Guard KiCad path-variable sync: confirm before changing kicad_common.json, refuse from a git worktree or another checkout | 2026-10-22 | 3b52ca1 | [261022-gnn-guard-kicad-path-variable-sync-against-s](./quick/261022-gnn-guard-kicad-path-variable-sync-against-s/) |
 
 ## Deferred Items
 
