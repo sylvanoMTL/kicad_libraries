@@ -1952,9 +1952,9 @@ def write_clashes(layout, *, symbol=False, footprint=True, model=True, lower_fp=
         (layout.symbols_dir / f"{library}.kicad_sym").write_bytes(symbol_lib((library, "CSD85301Q2")))
 
 
-def clash_dialog(make_item_dialog, qtbot, item_layout, **kinds) -> ImportDialog:
+def clash_dialog(make_item_dialog, qtbot, item_layout, core=None, **kinds) -> ImportDialog:
     write_clashes(item_layout, **kinds)
-    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, **(core or {}))
     wait_current(qtbot, dialog)
     return dialog
 
@@ -2220,3 +2220,193 @@ def test_conflicts_overflow_geometry(qtbot, make_item_dialog, item_layout, tmp_p
     assert rows[0]._rename_edit.text() == "R" * 60
     for above, below in zip(rows, rows[1:]):
         assert below.y() - (above.y() + above.height()) == 8
+
+
+# -- plan 05-10 Task 2: the content view from file rows and conflicts (D-08, Pitfall 2) ---------------
+
+from kicad_lib_manager.importer.content import op_content as real_op_content  # noqa: E402
+from kicad_lib_manager.importer.content import unchanged_content as real_unchanged_content  # noqa: E402
+from kicad_lib_manager.widgets.content_view import ContentViewDialog  # noqa: E402
+
+FP_PATH = "Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod"
+
+
+def preview_row(dialog: ImportDialog, section: str, ends_with: str):
+    rows = next(s for s in dialog._preview.sections if s.name == section).rows
+    return next(r for r in rows if r.text.endswith(ends_with))
+
+
+def open_views(dialog: ImportDialog) -> list:
+    return dialog.findChildren(ContentViewDialog)
+
+
+def wait_view(qtbot, dialog: ImportDialog) -> ContentViewDialog:
+    qtbot.waitUntil(lambda: bool(open_views(dialog)), timeout=30000)
+    return open_views(dialog)[-1]
+
+
+def view_lines(view: ContentViewDialog) -> list[str]:
+    return view._text.toPlainText().splitlines()
+
+
+def test_content_view_new_footprint_row(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "DQK0006B.kicad_mod"))
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == f"{FP_PATH} - new file"
+    assert view._content.kind == "text"
+    text = view._text.toPlainText()
+    assert "(footprint" in text and "DQK0006B" in text
+
+
+def test_content_view_modified_library_diff(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "IC_Battery_Charger_TI.kicad_sym"))
+    view = wait_view(qtbot, dialog)
+    assert view._content.kind == "diff"
+    assert view.windowTitle().endswith(" - changes")
+    assert any(line.startswith("+") and "CSD85301Q2" in line for line in view_lines(view))
+
+
+def test_content_view_model_row_hash_on_worker(qtbot, make_item_dialog):
+    main = threading.get_ident()
+    seen: list[int] = []
+
+    def spy(op, repo_root, *, conflict=False):
+        seen.append(threading.get_ident())
+        return real_op_content(op, repo_root, conflict=conflict)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, op_content=spy)
+    wait_current(qtbot, dialog)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "CSD85301Q2.stp"))
+    view = wait_view(qtbot, dialog)
+    text = view._text.toPlainText()
+    assert "Size: " in text and "SHA-256: " in text
+    assert view._content.kind == "binary"
+    assert len(seen) == 1 and seen[0] != main
+
+
+def test_content_view_unchanged_row(qtbot, make_item_dialog):
+    main = threading.get_ident()
+    seen: list[int] = []
+
+    def spy(path, repo_root):
+        seen.append(threading.get_ident())
+        return real_unchanged_content(path, repo_root)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, unchanged_content=spy)
+    wait_current(qtbot, dialog)
+    # put the planned files on disk, so the next plan has nothing left to write
+    for op in dialog._plan.ops:
+        op.path.write_bytes(op.source.path.read_bytes() if op.kind == "model" else op.data)
+    dialog._request_rebuild()
+    wait_current(qtbot, dialog)
+    assert dialog._plan.is_noop
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "DQK0006B.kicad_mod"))
+    view = wait_view(qtbot, dialog)
+    assert view._content.kind == "unchanged"
+    assert view._text.toPlainText() == "This file is unchanged by the install."
+    assert len(seen) == 1 and seen[0] != main
+
+
+def test_conflict_view_unresolved_uses_one_off_build(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    plan, gen, before = dialog._plan, dialog._gen, len(recorded)
+    row = dialog._conflict_rows[FP_KEY]
+    qtbot.mouseDClick(row, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+    view = wait_view(qtbot, dialog)
+    assert len(recorded) == before + 1
+    assert recorded[-1].resolutions == {FP_KEY: Resolution("overwrite")}
+    assert view.windowTitle() == f"{FP_PATH} - existing vs incoming"
+    lines = view_lines(view)
+    assert any(line.startswith("-") and not line.startswith("---") for line in lines)
+    assert any(line.startswith("+") and not line.startswith("+++") for line in lines)
+    # the one-off plan never replaces the plan on screen
+    assert dialog._plan is plan and dialog._gen == gen
+    assert dialog._conflict_rows[FP_KEY].current_resolution() is None
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_conflict_view_resolved_overwrite_no_extra_build(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    dialog._conflict_rows[FP_KEY]._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    before = len(recorded)
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    view = wait_view(qtbot, dialog)
+    assert len(recorded) == before
+    assert view.windowTitle().endswith(" - existing vs incoming")
+    assert view._content.kind == "diff"
+
+
+def test_conflict_view_from_preview_section(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    row = next(r for s in dialog._preview.sections if s.name == "Conflicts" for r in s.rows)
+    assert row.kind == "conflict" and row.key == FP_KEY
+    dialog._preview.row_activated.emit(row)
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == f"{FP_PATH} - existing vs incoming"
+    assert view._content.kind == "diff"
+
+
+def test_conflict_view_model_and_symbol(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, symbol=True, footprint=False)
+    dialog._conflict_rows[MODEL_KEY].activated.emit(MODEL_KEY)
+    model_view = wait_view(qtbot, dialog)
+    assert model_view.windowTitle() == "Custom/3DModels/CSD85301Q2.stp - existing vs incoming"
+    assert "Existing" in model_view._text.toPlainText() and "Planned" in model_view._text.toPlainText()
+    model_view.close()
+    qtbot.waitUntil(lambda: not open_views(dialog), timeout=5000)
+    dialog._conflict_rows[SYMBOL_KEY].activated.emit(SYMBOL_KEY)
+    symbol_view = wait_view(qtbot, dialog)
+    assert symbol_view.windowTitle() == "Custom/Symbols/IC_Battery_Charger_TI.kicad_sym - existing vs incoming"
+    assert symbol_view._content.kind == "diff"
+
+
+def test_conflict_view_refused_one_off_shows_the_error(qtbot, make_item_dialog, item_layout):
+    def refusing(candidate, options, layout, tools=ToolContext(), **kwargs):
+        plan = real_build_plan(candidate, options, layout, tools, **kwargs)
+        if options.resolutions.get(FP_KEY) == Resolution("overwrite"):
+            return replace(plan, ops=(), issues=(Issue(Severity.ERROR, "install.test", "The incoming item is refused"),))
+        return plan
+
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, core={"build_plan": refusing}, model=False)
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    view = wait_view(qtbot, dialog)
+    assert view._content.kind == "error"
+    assert view._text.toPlainText() == "The incoming item is refused"
+
+
+def test_builds_never_overlap(qtbot, make_item_dialog, item_layout, gates):
+    running = {"now": 0, "max": 0, "calls": 0}
+    lock = threading.Lock()
+
+    def counting_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        with lock:
+            running["now"] += 1
+            running["calls"] += 1
+            running["max"] = max(running["max"], running["now"])
+            gated = running["calls"] == 2
+        try:
+            if gated:
+                gate = threading.Event()
+                gates.append(gate)
+                assert gate.wait(30)
+            return real_build_plan(candidate, options, layout, tools, **kwargs)
+        finally:
+            with lock:
+                running["now"] -= 1
+
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, core={"build_plan": counting_build}, model=False)
+    assert running["calls"] == 1
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    qtbot.wait(150)
+    assert running["calls"] == 2 and not open_views(dialog)  # the one-off waits for the running build
+    gates[0].set()
+    wait_view(qtbot, dialog)
+    assert running["calls"] == 3
+    assert running["max"] == 1
