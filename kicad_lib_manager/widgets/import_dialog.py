@@ -31,21 +31,25 @@ from PySide6.QtWidgets import (
 
 from ..importer.applier import apply_plan
 from ..importer.candidate import ImportCandidate
+from ..importer.content import ContentText, op_content, unchanged_content
 from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
 from ..importer.form import (
     FIELD_LABELS, FIELD_NAMES, UPDATING_REASON, FieldDefaults, FormStatus, FormValues, Reason,
-    blocking_reasons, build_options, field_defaults, library_badge, library_tokens, noop_text, ready_text,
+    blocking_reasons, build_options, carry_resolutions, field_defaults, kind_label, library_badge,
+    library_tokens, noop_text, ready_text,
 )
 from ..importer.layout import RepoLayout, list_existing_libraries
 from ..importer.package import Package, open_package
-from ..importer.plan import InstallOptions, InstallPlan, InstallResult, Resolution, ToolContext
+from ..importer.plan import Conflict, InstallOptions, InstallPlan, InstallResult, Resolution, ToolContext
 from ..importer.planner import build_plan, detect_tools
 from ..importer.preview import file_counts, preview_sections
 from ..importer.suggest import LibrarySuggestion, suggest_library
 from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
+from .conflict_row import ConflictRow
+from .content_view import ContentViewDialog
 from .preview_tree import PreviewTree
 from .theme import (
     AMBER, AMBER_TINT, BORDER, ERROR, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY, MONO_PT, MUTED,
@@ -88,6 +92,22 @@ def default_downloads_dir() -> Path | None:
             return Path(text)
     fallback = Path.home() / "Downloads"
     return fallback if fallback.is_dir() else None
+
+
+def incoming_op(plan: InstallPlan, conflict: Conflict):
+    """The planned write that carries the incoming side of a conflict, or None when the plan has none.
+
+    A plan holds this op only once the conflict is settled with Overwrite (RESEARCH Pitfall 2): the
+    footprint op named after the conflict, the model op, or the symbol library op (whole file).
+    """
+    if conflict.kind == "symbol":
+        return next((op for op in plan.ops if op.kind == "symbol_lib"), None)
+    if conflict.kind == "footprint":
+        wanted = f"{conflict.name}.kicad_mod"
+        return next((op for op in plan.ops if op.kind == "footprint" and op.path.name == wanted), None)
+    if conflict.kind == "model":
+        return next((op for op in plan.ops if op.kind == "model" and op.path.name == plan.model_file), None)
+    return None
 
 
 class _OfferLabel(QLabel):
@@ -179,6 +199,8 @@ class ImportCore:
     list_existing_libraries: Callable = list_existing_libraries
     suggest_library: Callable = suggest_library
     downloads_dir: Callable = default_downloads_dir
+    op_content: Callable = op_content
+    unchanged_content: Callable = unchanged_content
 
 
 @dataclass(frozen=True)
@@ -226,10 +248,15 @@ class ImportDialog(QDialog):
         self._suggestion: LibrarySuggestion | None = None
         self._existing: tuple = ()
 
-        # Rebuild coordinator (PREV-07): serialised builds, the latest request wins
+        # Rebuild coordinator (PREV-07): serialised builds, the latest request wins. A one-off build
+        # (the incoming side of a conflict, D-08) shares the queue: never two build_plan calls at once.
         self._gen = 0
         self._building: TaskWorker | None = None
         self._queued: InstallOptions | None = None
+        self._oneoff: TaskWorker | None = None
+        self._oneoff_jobs: list[tuple[int, InstallOptions, Callable]] = []
+        self._session = 0  # counts the opened packages; a one-off or content result of an older one is dropped
+        self._content_views: list[ContentViewDialog] = []
         self._plan: InstallPlan | None = None
         self._plan_gen = -1
         self._plan_options: InstallOptions | None = None
@@ -249,10 +276,12 @@ class ImportDialog(QDialog):
         self._defaults = FieldDefaults()
         self._edited: set[str] = set()  # field names the user changed; only these reach the planner
         self._fp_name_edited = False
-        self._resolutions: dict[str, Resolution] = {}  # conflict choices; plan 05-10 fills them
+        # Conflict choices by Conflict.key (D-14a): pruned to the keys of each accepted plan
+        self._resolutions: dict[str, Resolution] = {}
+        self._conflict_rows: dict[str, ConflictRow] = {}
         # Blocked-field highlight (D-09): a reason's target names the control to focus and its amber frame.
-        # Keys: "library", "footprint_name", "footprints", the field names; plan 05-10 adds
-        # "conflict:{key}" and "rename:{key}" entries and removes them with their rows.
+        # Keys: "library", "footprint_name", "footprints", the field names, and per conflict row
+        # "conflict:{key}" (the Overwrite button) and "rename:{key}" (the rename field), removed with the row.
         self._reason_targets: dict[str, QWidget] = {}
         self._field_frames: dict[str, QFrame] = {}
         self._strip_reasons: list[Reason] = []  # the reasons the strip links point at
@@ -458,6 +487,7 @@ class ImportDialog(QDialog):
         left_lay.addSpacing(SP_MD)
         self._build_fields_section(left_lay)
         left_lay.addSpacing(SP_MD)
+        self._build_conflicts_section(left_lay)
         left_lay.addStretch()
         self._left_scroll.setWidget(left)
         self._left_scroll.setMinimumWidth(380)
@@ -502,6 +532,7 @@ class ImportDialog(QDialog):
         building_lay.addStretch()
         self._building_page = building
         self._preview = PreviewTree()
+        self._preview.row_activated.connect(self._on_preview_row_activated)
         self._preview_stack.addWidget(building)
         self._preview_stack.addWidget(self._preview)
         right_lay.addWidget(self._preview_stack, stretch=1)
@@ -737,6 +768,21 @@ class ImportDialog(QDialog):
             self._field_restore[name] = restore
         left_lay.addLayout(form)
 
+    def _build_conflicts_section(self, left_lay: QVBoxLayout):
+        """The Conflicts section (D-12): last in the left pane, hidden until the plan has a conflict."""
+        box = QWidget()
+        box_lay = QVBoxLayout(box)
+        box_lay.setContentsMargins(0, 0, 0, 0)
+        box_lay.setSpacing(SP_SM)
+        box_lay.addWidget(self._heading("Conflicts"))
+        self._conflicts_layout = QVBoxLayout()
+        self._conflicts_layout.setContentsMargins(0, 0, 0, 0)
+        self._conflicts_layout.setSpacing(SP_SM)
+        box_lay.addLayout(self._conflicts_layout)
+        box.hide()
+        self._conflicts_box = box
+        left_lay.addWidget(box)
+
     # -- opening a package ------------------------------------------------------
 
     def _set_reading(self, reading: bool):
@@ -829,8 +875,7 @@ class ImportDialog(QDialog):
         """Open a zip or folder on a worker; the dialog owns the resulting Package."""
         if self._closing or self._open_worker is not None:
             return
-        if self._building is not None:
-            self._building.wait()  # WR-04: never close the package under a running build
+        self._wait_builds()  # WR-04: never close the package under a running build
         self._discard_package()
         self._reset_edit_state()
         self._hide_issue_box()
@@ -1014,8 +1059,16 @@ class ImportDialog(QDialog):
 
     # -- the rebuild coordinator (PREV-07, D-06) -------------------------------
 
+    def _wait_builds(self):
+        """Wait for the running rebuild and one-off build, if any."""
+        for worker in (self._building, self._oneoff):
+            if worker is not None:
+                worker.wait()
+
     def _reset_edit_state(self):
         self._gen += 1
+        self._session += 1
+        self._oneoff_jobs.clear()
         self._debounce.stop()
         self._dirty = False
         self._candidate = None
@@ -1030,7 +1083,7 @@ class ImportDialog(QDialog):
         self._install_failure = ""
         self._first_plan_seen = False
         self._defaults = FieldDefaults()
-        self._resolutions = {}
+        self._clear_conflicts()
         self._clear_items()
         self._preview.render(())
         self._preview_stack.setCurrentWidget(self._building_page)
@@ -1324,6 +1377,169 @@ class ImportDialog(QDialog):
         combo.setToolTip(combo.currentText())
         self._request_rebuild()
 
+    # -- conflicts: one row per conflict, choices kept by key (PREV-05, D-12, D-14a) ----------------
+
+    def _sync_conflicts(self, plan: InstallPlan):
+        """Show the accepted plan's conflicts: prune the choices to its keys, update rows in place by key.
+
+        A row that stays keeps its widgets, so focus and typed rename text survive the rebuild. A key
+        that vanished takes its row and choice with it; a new key starts unresolved.
+        """
+        self._resolutions = carry_resolutions(self._resolutions, plan)
+        wanted = [conflict.key for conflict in plan.conflicts]
+        for key in [key for key in self._conflict_rows if key not in wanted]:
+            self._remove_conflict_row(key)
+        for index, conflict in enumerate(plan.conflicts):
+            row = self._conflict_rows.get(conflict.key)
+            if row is None:
+                row = self._add_conflict_row(conflict)
+            else:
+                row.update_conflict(conflict)
+            resolution = self._resolutions.get(conflict.key)
+            if row.current_resolution() != resolution:
+                row.set_resolution(resolution)
+            if self._conflicts_layout.indexOf(row) != index:
+                self._conflicts_layout.removeWidget(row)
+                self._conflicts_layout.insertWidget(index, row)
+        self._conflicts_box.setVisible(bool(wanted))
+
+    def _add_conflict_row(self, conflict: Conflict) -> ConflictRow:
+        key = conflict.key
+        row = ConflictRow(conflict)
+        row.choice_changed.connect(self._on_conflict_choice)
+        row.rename_edited.connect(self._on_conflict_rename)
+        row.activated.connect(self._open_conflict_view)
+        self._conflict_rows[key] = row
+        self._conflicts_layout.addWidget(row)
+        self._reason_targets[f"conflict:{key}"] = row.overwrite_button
+        self._reason_targets[f"rename:{key}"] = row.rename_edit
+        self._field_frames[f"rename:{key}"] = row.rename_frame
+        return row
+
+    def _remove_conflict_row(self, key: str):
+        row = self._conflict_rows.pop(key)
+        for target in (f"conflict:{key}", f"rename:{key}"):
+            self._reason_targets.pop(target, None)
+            self._field_frames.pop(target, None)
+        self._conflicts_layout.removeWidget(row)
+        row.hide()
+        row.setParent(None)
+        row.deleteLater()
+
+    def _clear_conflicts(self):
+        """Forget every conflict row and choice (a new or discarded package)."""
+        for key in list(self._conflict_rows):
+            self._remove_conflict_row(key)
+        self._resolutions = {}
+        self._conflicts_box.hide()
+
+    def _on_conflict_choice(self, key: str, resolution: Resolution | None):
+        """A button was picked: keep the choice and rebuild at once (it supersedes any typing timer)."""
+        if resolution is None:
+            self._resolutions.pop(key, None)
+        else:
+            self._resolutions[key] = resolution
+        self._request_rebuild()
+
+    def _on_conflict_rename(self, key: str, text: str):
+        """The rename field was typed in: the text goes to the planner exactly as typed, after the quiet period."""
+        self._resolutions[key] = Resolution("rename", text)
+        self._mark_dirty()
+
+    # -- the content view (D-08): read-only text of what a file write or an overwrite changes -----
+
+    def _on_preview_row_activated(self, row):
+        """A preview row was double-clicked or entered: open the content view of its file or conflict."""
+        plan = self._plan
+        if plan is None or self._candidate is None or self._closing:
+            return
+        if row.kind == "conflict":
+            self._open_conflict_view(row.key)
+            return
+        if row.kind != "file":
+            return
+        core, repo_root = self._core, self._repo_root
+        if row.op_index is not None:
+            if row.op_index >= len(plan.ops):
+                return
+            op = plan.ops[row.op_index]
+            self._run_content(lambda: core.op_content(op, repo_root))
+        elif row.path is not None:
+            path = row.path
+            self._run_content(lambda: core.unchanged_content(path, repo_root))
+
+    def _open_conflict_view(self, key: str):
+        """Show the existing item against the incoming one for a conflict (D-08).
+
+        The incoming bytes are on the plan only after Overwrite. An undecided conflict gets a one-off
+        build_plan with Overwrite for that key, on the shared build queue; its plan is only read for the
+        op and never replaces the plan on screen (RESEARCH Pitfall 2).
+        """
+        plan = self._plan
+        if plan is None or self._candidate is None or self._closing:
+            return
+        conflict = next((c for c in plan.conflicts if c.key == key), None)
+        if conflict is None:
+            return
+        core, repo_root = self._core, self._repo_root
+        if conflict.resolution is not None and conflict.resolution.action == "overwrite":
+            op = incoming_op(plan, conflict)
+            if op is not None:
+                self._run_content(lambda: core.op_content(op, repo_root, conflict=True))
+                return
+        options = self._snapshot_options()
+        options = replace(options, resolutions={**options.resolutions, key: Resolution("overwrite")})
+        self._oneoff_jobs.append(
+            (self._session, options, lambda built, error: self._on_conflict_built(conflict, built, error))
+        )
+        self._pump_builds()
+
+    def _on_conflict_built(self, conflict: Conflict, built: InstallPlan | None, error: str):
+        """The one-off plan is here: find the incoming op and show it, or show why there is none."""
+        core, repo_root = self._core, self._repo_root
+        op = incoming_op(built, conflict) if built is not None else None
+        if op is not None:
+            self._run_content(lambda: core.op_content(op, repo_root, conflict=True))
+            return
+        if built is None:
+            body = f"The incoming {kind_label(conflict.kind)} could not be built: {error}"
+        else:
+            errors = [i.text for i in built.issues if i.severity is Severity.ERROR]
+            body = errors[0] if errors else f"The incoming {kind_label(conflict.kind)} is not part of the plan."
+        title = f"{conflict.name} - existing vs incoming"
+        self._show_content(ContentText(title=title, header=conflict.existing, body=body, kind="error"))
+
+    def _run_content(self, build: Callable[[], ContentText]):
+        """Build a ContentText on a worker (hashing and diffing never run on the GUI thread), then show it."""
+        session = self._session
+        worker = self._spawn(lambda progress: build())
+        worker.result.connect(lambda content, w=worker: self._on_content_ready(session, content))
+        worker.failed.connect(lambda text, w=worker: self._on_content_failed(session, text))
+        worker.start()
+
+    def _on_content_ready(self, session: int, content: ContentText):
+        if not self._closing and session == self._session:
+            self._show_content(content)
+
+    def _on_content_failed(self, session: int, text: str):
+        if self._closing or session != self._session:
+            return
+        self.issues_logged.emit([Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")])
+        self._show_content(ContentText(
+            title="Content view", header="", body=f"Could not build the view: {text}", kind="error"
+        ))
+
+    def _show_content(self, content: ContentText):
+        view = ContentViewDialog(content, parent=self)
+        self._content_views.append(view)
+        view.finished.connect(lambda _result=0, v=view: self._on_view_closed(v))
+        view.open()
+
+    def _on_view_closed(self, view: ContentViewDialog):
+        if view in self._content_views:
+            self._content_views.remove(view)
+        view.deleteLater()
+
     def _show_plan_in_form(self, plan: InstallPlan):
         """Show what the accepted plan says: the extends note, the symbol name, the fields and the Footprint field."""
         note = self._extends_note
@@ -1479,7 +1695,7 @@ class ImportDialog(QDialog):
             return
         self._gen += 1
         options = self._snapshot_options()
-        if self._building is not None:
+        if self._building is not None or self._oneoff is not None:
             self._queued = options
         else:
             self._start_build(options)
@@ -1497,12 +1713,44 @@ class ImportDialog(QDialog):
         worker.start()
 
     def _build_ended(self, worker: TaskWorker):
-        """Common tail of a build result or failure: free the slot and run the queued request."""
+        """Common tail of a build result or failure: free the slot and run the next queued build."""
         if self._building is worker:
             self._building = None
-        if self._queued is not None and not self._closing:
+        self._pump_builds()
+
+    def _pump_builds(self):
+        """Start the next queued build when none runs: the latest rebuild first, then one-off jobs in order."""
+        if self._closing or self._building is not None or self._oneoff is not None:
+            return
+        if self._queued is not None:
             options, self._queued = self._queued, None
             self._start_build(options)
+            return
+        while self._oneoff_jobs:
+            session, options, on_result = self._oneoff_jobs.pop(0)
+            if session == self._session:  # a job of a package that was changed meanwhile is dropped
+                self._start_oneoff(session, options, on_result)
+                return
+
+    def _start_oneoff(self, session: int, options: InstallOptions, on_result: Callable):
+        core, candidate, layout, tools = self._core, self._candidate, self._repo_layout, self._tools
+        worker = self._spawn(lambda progress: core.build_plan(candidate, options, layout, tools))
+        self._oneoff = worker
+        worker.result.connect(lambda plan, w=worker: self._on_oneoff_done(w, session, on_result, plan, ""))
+        worker.failed.connect(lambda text, w=worker: self._on_oneoff_done(w, session, on_result, None, text))
+        worker.start()
+
+    def _on_oneoff_done(self, worker: TaskWorker, session: int, on_result: Callable, plan, error: str):
+        """A one-off build ended. Its plan goes only to on_result: never to self._plan, _plan_gen or _gen."""
+        if self._oneoff is worker:
+            self._oneoff = None
+        if not self._closing:
+            if plan is None:
+                self.issues_logged.emit([Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {error}")])
+            if session == self._session:
+                on_result(plan, error)
+            self._pump_builds()
+            self._update_install_state()
 
     def _on_build_result(self, worker: TaskWorker, plan: InstallPlan):
         if self._closing:
@@ -1518,6 +1766,7 @@ class ImportDialog(QDialog):
             self._preview.render(preview_sections(plan, self._candidate, worker.options))
             self._preview_stack.setCurrentWidget(self._preview)
             self._show_plan_in_form(plan)
+            self._sync_conflicts(plan)
         # else: a newer request exists; this result is stale and dropped untouched
         self._build_ended(worker)
         self._update_install_state()
@@ -1753,10 +2002,9 @@ class ImportDialog(QDialog):
         """
         if self.is_installing() or self._closing or self._open_worker is not None:
             return
-        building = self._building
-        if building is not None:
-            building.wait()
+        self._wait_builds()
         self._building = None
+        self._oneoff = None
         self._discard_package()
         self._reset_edit_state()
         self.setWindowTitle("Import Part")
@@ -1779,6 +2027,9 @@ class ImportDialog(QDialog):
         self._closing = True
         self._debounce.stop()
         self._busy_timer.stop()
+        self._oneoff_jobs.clear()
+        for view in list(self._content_views):
+            view.close()
         for worker in list(self._workers):
             worker.wait()
         for worker in list(self._workers):

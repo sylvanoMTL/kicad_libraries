@@ -198,6 +198,16 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
     return reasons
 
 
+def carry_resolutions(old: Mapping[str, Resolution], plan: InstallPlan) -> dict[str, Resolution]:
+    """The conflict choices that still apply to a new plan: only those whose key the plan still has (D-14a).
+
+    A key that vanished (another library, a renamed footprint) drops its choice, so an Overwrite never
+    moves to another item; a key that is new starts unresolved.
+    """
+    keys = {conflict.key for conflict in plan.conflicts}
+    return {key: resolution for key, resolution in old.items() if key in keys}
+
+
 def ready_text(counts) -> str:
     """The strip line for a plan that can be installed; counts is a preview.FileCounts."""
     return f"✓ Ready to install: {counts.new} new, {counts.modified} modified, {counts.unchanged} unchanged files"

@@ -1922,3 +1922,491 @@ def test_one_build_at_a_time(qtbot, make_item_dialog, gates):
     wait_current(qtbot, dialog)
     assert running["max"] == 1
     assert dialog._plan.library == "C_x_TI"
+
+
+# -- plan 05-10 Task 1: one conflict row per conflict (PREV-05, D-12, D-14a) --------------------------
+
+from PySide6.QtGui import QAction  # noqa: E402
+
+from kicad_lib_manager.importer.plan import Conflict, Resolution  # noqa: E402
+from kicad_lib_manager.widgets.theme import ACCENT  # noqa: E402
+
+OTHER_LIB = "IC_Battery_Fuel_Gauge_ADI"
+SYMBOL_KEY = f"symbol:{LIB}:CSD85301Q2"
+FP_KEY = f"footprint:{LIB}:dqk0006b"
+MODEL_KEY = "model:csd85301q2.stp"
+NEEDS_CHOICE = "Needs a choice"
+
+
+def write_clashes(layout, *, symbol=False, footprint=True, model=True, lower_fp=False, library=LIB) -> None:
+    """Put items that differ from the UL sample's into the target, so each becomes a conflict."""
+    from zipfixtures import STEP_BYTES, symbol_lib
+    from zipfixtures import footprint as fp_bytes
+
+    if footprint:
+        name = "dqk0006b.kicad_mod" if lower_fp else "DQK0006B.kicad_mod"
+        (layout.footprints_dir / f"{library}.pretty" / name).write_bytes(fp_bytes("DQK0006B", model="other.step"))
+    if model:
+        (layout.models_dir / "CSD85301Q2.stp").write_bytes(STEP_BYTES + b"\n")
+    if symbol:
+        (layout.symbols_dir / f"{library}.kicad_sym").write_bytes(symbol_lib((library, "CSD85301Q2")))
+
+
+def clash_dialog(make_item_dialog, qtbot, item_layout, core=None, **kinds) -> ImportDialog:
+    write_clashes(item_layout, **kinds)
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, **(core or {}))
+    wait_current(qtbot, dialog)
+    return dialog
+
+
+def toggles(row) -> list[bool]:
+    return [b.isChecked() for b in (row._overwrite_btn, row._rename_btn, row._skip_btn)]
+
+
+def test_conflict_rows_no_bulk_and_none_selected(qtbot, make_item_dialog, item_layout, recorded):
+    """T-05-30: one row per conflict, nothing pre-selected, no bulk control, Install blocked."""
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout)
+    assert set(dialog._conflict_rows) == {FP_KEY, MODEL_KEY}
+    assert dialog._conflicts_box.isVisible()
+    for row in dialog._conflict_rows.values():
+        assert toggles(row) == [False, False, False]
+        assert row._needs_label.text() == NEEDS_CHOICE and row._needs_label.isVisible()
+        assert row.property("resolved") is False
+        assert row.current_resolution() is None
+    assert dialog._resolutions == {}
+    assert recorded[-1].resolutions == {}
+    texts = [b.text() for b in dialog.findChildren(QPushButton)] + [a.text() for a in dialog.findChildren(QAction)]
+    assert [t for t in texts if "all" in t.lower() and t != "Install Part"] == []
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_conflict_choice_rebuilds_and_resolves(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout)
+    fp_row = dialog._conflict_rows[FP_KEY]
+    before = len(recorded)
+    fp_row._skip_btn.click()
+    wait_current(qtbot, dialog)
+    assert len(recorded) == before + 1
+    assert recorded[-1].resolutions == {FP_KEY: Resolution("skip")}
+    assert toggles(fp_row) == [False, False, True]
+    assert fp_row.property("resolved") is True
+    assert fp_row._hint_label.text() == "Skip - keep the existing footprint and link it"
+    assert not fp_row._needs_label.isVisible()
+    # clicking the checked button again changes nothing
+    fp_row._skip_btn.click()
+    qtbot.wait(100)
+    assert len(recorded) == before + 1 and toggles(fp_row) == [False, False, True]
+    # a kept footprint does not link the incoming model, so that conflict leaves the plan
+    assert set(dialog._conflict_rows) == {FP_KEY}
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    assert dialog._strip.text().startswith("✓ Ready to install")
+    # Overwrite brings the model conflict back, unresolved
+    fp_row._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    assert set(dialog._conflict_rows) == {FP_KEY, MODEL_KEY}
+    assert not dialog._install_btn.isEnabled()
+    model_row = dialog._conflict_rows[MODEL_KEY]
+    assert model_row.current_resolution() is None
+    model_row._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    assert dialog._strip.text().startswith("✓ Ready to install")
+    assert recorded[-1].resolutions == {FP_KEY: Resolution("overwrite"), MODEL_KEY: Resolution("overwrite")}
+
+
+def test_conflict_rename_field_and_empty_reason(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    row = dialog._conflict_rows[FP_KEY]
+    assert not row._rename_edit.isVisible()
+    row._rename_btn.click()
+    wait_current(qtbot, dialog)
+    suggested = dialog._plan.conflicts[0].suggested_name
+    assert suggested == "DQK0006B_2"
+    assert row._rename_edit.isVisible() and row._rename_edit.text() == suggested
+    assert row._rename_edit.minimumWidth() >= 160
+    assert row._hint_label.text() == f"Rename - install as {suggested} and leave the existing footprint untouched"
+    assert recorded[-1].resolutions == {FP_KEY: Resolution("rename", suggested)}
+
+    type_text(qtbot, row._rename_edit, "")
+    assert not dialog._install_btn.isEnabled()
+    wait_current(qtbot, dialog)
+    assert list(strip_links(dialog)) == ["Enter a new name for footprint DQK0006B"]
+    assert frame_blocked(dialog, f"rename:{FP_KEY}")
+    assert recorded[-1].resolutions[FP_KEY] == Resolution("rename", "")
+    dialog._on_reason_link("reason:0")
+    assert dialog.focusWidget() is row._rename_edit
+
+    type_text(qtbot, row._rename_edit, "FP_X")
+    wait_current(qtbot, dialog)
+    assert recorded[-1].resolutions[FP_KEY] == Resolution("rename", "FP_X")
+    renames = next(s for s in dialog._preview.sections if s.name == "Renames")
+    assert "DQK0006B → FP_X" in [r.text for r in renames.rows]
+    assert not frame_blocked(dialog, f"rename:{FP_KEY}")
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+
+def test_conflict_choice_carried_by_key(qtbot, make_item_dialog, item_layout):
+    """T-05-31 / D-14a: a choice never moves to another item."""
+    write_clashes(item_layout, model=False, library=OTHER_LIB)
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    row = dialog._conflict_rows[FP_KEY]
+    row._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    # an unrelated edit keeps the same key, so the choice stays
+    type_text(qtbot, dialog._field_edits["description"], "Edited")
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows[FP_KEY] is row
+    assert row.current_resolution() == Resolution("overwrite")
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+    # another library has the same clash, but its key is another item
+    other_key = f"footprint:{OTHER_LIB}:dqk0006b"
+    set_library(dialog, OTHER_LIB)
+    wait_current(qtbot, dialog)
+    assert set(dialog._conflict_rows) == {other_key}
+    assert dialog._resolutions == {}
+    assert dialog._conflict_rows[other_key].current_resolution() is None
+    assert not dialog._install_btn.isEnabled()
+
+    # coming back does not bring the old choice back
+    set_library(dialog, LIB)
+    wait_current(qtbot, dialog)
+    row = dialog._conflict_rows[FP_KEY]
+    assert row.current_resolution() is None and dialog._resolutions == {}
+
+    # a free footprint name removes the row and its choice
+    row._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    type_text(qtbot, dialog._fp_name_edit, "OTHER_FP")
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows == {} and dialog._resolutions == {}
+    assert not dialog._conflicts_box.isVisible()
+    assert f"conflict:{FP_KEY}" not in dialog._reason_targets
+    assert f"rename:{FP_KEY}" not in dialog._reason_targets and f"rename:{FP_KEY}" not in dialog._field_frames
+    dialog._fp_name_restore.click()
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows[FP_KEY].current_resolution() is None
+    assert dialog._conflicts_box.isVisible()
+
+
+def test_conflict_rows_update_in_place(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    row = dialog._conflict_rows[FP_KEY]
+    row._rename_btn.click()
+    wait_current(qtbot, dialog)
+    edit = row._rename_edit
+    type_text(qtbot, edit, "Abc_1X")
+    qtbot.keyClick(edit, Qt.Key.Key_Home)
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows[FP_KEY] is row
+    assert row._rename_edit is edit and edit.text() == "Abc_1X"
+    assert dialog.focusWidget() is edit
+    assert edit.cursorPosition() == 0
+
+
+def test_conflict_case_twin_row(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False, lower_fp=True)
+    row = dialog._conflict_rows[FP_KEY]
+    assert "only by letter case" in row._title_label.toolTip()
+    assert row._kind_label.text() == "footprint"
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_identical_existing_item_has_no_row(qtbot, make_item_dialog, item_layout):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows == {}
+    op = next(op for op in dialog._plan.ops if op.kind == "footprint")
+    op.path.write_bytes(op.data)
+    dialog._request_rebuild()
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows == {} and not dialog._conflicts_box.isVisible()
+
+
+def test_conflict_rows_order(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, symbol=True)
+    keys = [c.key for c in dialog._plan.conflicts]
+    assert keys == [SYMBOL_KEY, FP_KEY, MODEL_KEY]
+    layout = dialog._conflicts_layout
+    assert [layout.itemAt(i).widget() for i in range(layout.count())] == [dialog._conflict_rows[k] for k in keys]
+    prefix = "Choose Overwrite, Rename or Skip for "
+    assert list(strip_links(dialog)) == [
+        prefix + "symbol CSD85301Q2",
+        prefix + "footprint DQK0006B",
+        prefix + "3D model CSD85301Q2.stp",
+    ]
+
+
+def test_conflict_row_overwrite_style_and_hint(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, footprint=False)
+    row = dialog._conflict_rows[MODEL_KEY]
+    row._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    assert row._overwrite_btn.isChecked()
+    assert ERROR in row._overwrite_btn.styleSheet()
+    assert ACCENT in row._rename_btn.styleSheet() and ACCENT in row._skip_btn.styleSheet()
+    assert row._hint_label.text() == "Overwrite - replace the existing 3D model with the incoming one (a backup is kept)"
+    assert ERROR in row._hint_label.styleSheet()
+    row._skip_btn.click()
+    assert MUTED in row._hint_label.styleSheet()
+    assert row._hint_label.text() == "Skip - keep the existing 3D model and link it"
+    assert toggles(row) == [False, False, True]
+
+
+def test_conflict_section_hidden_without_conflicts(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows == {}
+    assert not dialog._conflicts_box.isVisible()
+
+
+def test_conflict_row_exclusive_toggles_and_line_one(qtbot):
+    from kicad_lib_manager.widgets.conflict_row import ConflictRow
+
+    long_name, long_existing = "N" * 80, "where " * 40
+    conflict = Conflict("footprint:L:n", "footprint", long_name, long_existing, suggested_name="N_2")
+    row = ConflictRow(conflict)
+    qtbot.addWidget(row)
+    events = []
+    row.choice_changed.connect(lambda key, res: events.append((key, res)))
+    row.resize(420, 120)
+    row.show()
+    full = f"{long_name} — {long_existing}"
+    assert row._title_label.toolTip() == full
+    assert row._title_label.text() != full and "…" in row._title_label.text()
+    assert row._rename_edit.minimumWidth() >= 160
+    row._overwrite_btn.click()
+    row._rename_btn.click()
+    assert toggles(row) == [False, True, False]
+    row._rename_btn.click()  # again: stays checked, no event
+    assert toggles(row) == [False, True, False]
+    assert [res for _, res in events] == [Resolution("overwrite"), Resolution("rename", "N_2")]
+    row.set_resolution(Resolution("skip"))
+    assert toggles(row) == [False, False, True] and len(events) == 2  # programmatic: no signal
+    row.set_resolution(None)
+    assert toggles(row) == [False, False, False] and row.current_resolution() is None
+
+
+def test_conflicts_overflow_geometry(qtbot, make_item_dialog, item_layout, tmp_path):
+    """Backstop (UI E8/overflow): 3 conflicts and 6 footprints at 900x600 scroll vertically only."""
+    from zipfixtures import STEP_BYTES, make_zip, symbol_lib
+    from zipfixtures import footprint as fp_bytes
+
+    members = [("part.kicad_sym", symbol_lib(("S1",), props=_DATASHEET))]
+    members += [(f"F{i}.kicad_mod", fp_bytes(f"F{i}")) for i in range(1, 7)]
+    members += [("a.step", STEP_BYTES)]
+    package = make_zip(tmp_path / "six.zip", members)
+    for i in (1, 2, 3):
+        (item_layout.footprints_dir / f"{LIB}.pretty" / f"F{i}.kicad_mod").write_bytes(fp_bytes(f"F{i}", model="other.step"))
+    dialog = make_item_dialog(package, show=True, suggest_library=_good_suggestion)
+    dialog.resize(900, 600)
+    wait_current(qtbot, dialog)
+    assert len(dialog._conflict_rows) == 3
+    rows = [dialog._conflicts_layout.itemAt(i).widget() for i in range(3)]
+    rows[0]._rename_btn.click()
+    wait_current(qtbot, dialog)
+    type_text(qtbot, rows[0]._rename_edit, "R" * 60)
+    qtbot.wait(50)
+    scroll = dialog._left_scroll
+    viewport = scroll.viewport()
+    left = scroll.widget()
+    assert scroll.verticalScrollBar().maximum() > 0
+    assert not scroll.horizontalScrollBar().isVisible()
+    assert left.width() <= viewport.width()
+    for widget in dialog._conflicts_box.findChildren(QWidget):
+        if widget.isVisible():
+            right = widget.mapTo(left, QPoint(widget.width(), 0)).x()
+            assert right <= viewport.width(), (widget, right, viewport.width())
+    assert rows[0]._rename_edit.text() == "R" * 60
+    for above, below in zip(rows, rows[1:]):
+        assert below.y() - (above.y() + above.height()) == 8
+
+
+# -- plan 05-10 Task 2: the content view from file rows and conflicts (D-08, Pitfall 2) ---------------
+
+from kicad_lib_manager.importer.content import op_content as real_op_content  # noqa: E402
+from kicad_lib_manager.importer.content import unchanged_content as real_unchanged_content  # noqa: E402
+from kicad_lib_manager.widgets.content_view import ContentViewDialog  # noqa: E402
+
+FP_PATH = "Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod"
+
+
+def preview_row(dialog: ImportDialog, section: str, ends_with: str):
+    rows = next(s for s in dialog._preview.sections if s.name == section).rows
+    return next(r for r in rows if r.text.endswith(ends_with))
+
+
+def open_views(dialog: ImportDialog) -> list:
+    return dialog.findChildren(ContentViewDialog)
+
+
+def wait_view(qtbot, dialog: ImportDialog) -> ContentViewDialog:
+    qtbot.waitUntil(lambda: bool(open_views(dialog)), timeout=30000)
+    return open_views(dialog)[-1]
+
+
+def view_lines(view: ContentViewDialog) -> list[str]:
+    return view._text.toPlainText().splitlines()
+
+
+def test_content_view_new_footprint_row(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "DQK0006B.kicad_mod"))
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == f"{FP_PATH} - new file"
+    assert view._content.kind == "text"
+    text = view._text.toPlainText()
+    assert "(footprint" in text and "DQK0006B" in text
+
+
+def test_content_view_modified_library_diff(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "IC_Battery_Charger_TI.kicad_sym"))
+    view = wait_view(qtbot, dialog)
+    assert view._content.kind == "diff"
+    assert view.windowTitle().endswith(" - changes")
+    assert any(line.startswith("+") and "CSD85301Q2" in line for line in view_lines(view))
+
+
+def test_content_view_model_row_hash_on_worker(qtbot, make_item_dialog):
+    main = threading.get_ident()
+    seen: list[int] = []
+
+    def spy(op, repo_root, *, conflict=False):
+        seen.append(threading.get_ident())
+        return real_op_content(op, repo_root, conflict=conflict)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, op_content=spy)
+    wait_current(qtbot, dialog)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "CSD85301Q2.stp"))
+    view = wait_view(qtbot, dialog)
+    text = view._text.toPlainText()
+    assert "Size: " in text and "SHA-256: " in text
+    assert view._content.kind == "binary"
+    assert len(seen) == 1 and seen[0] != main
+
+
+def test_content_view_unchanged_row(qtbot, make_item_dialog):
+    main = threading.get_ident()
+    seen: list[int] = []
+
+    def spy(path, repo_root):
+        seen.append(threading.get_ident())
+        return real_unchanged_content(path, repo_root)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, unchanged_content=spy)
+    wait_current(qtbot, dialog)
+    # put the planned files on disk, so the next plan has nothing left to write
+    for op in dialog._plan.ops:
+        op.path.write_bytes(op.source.path.read_bytes() if op.kind == "model" else op.data)
+    dialog._request_rebuild()
+    wait_current(qtbot, dialog)
+    assert dialog._plan.is_noop
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "DQK0006B.kicad_mod"))
+    view = wait_view(qtbot, dialog)
+    assert view._content.kind == "unchanged"
+    assert view._text.toPlainText() == "This file is unchanged by the install."
+    assert len(seen) == 1 and seen[0] != main
+
+
+def test_conflict_view_unresolved_uses_one_off_build(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    plan, gen, before = dialog._plan, dialog._gen, len(recorded)
+    row = dialog._conflict_rows[FP_KEY]
+    qtbot.mouseDClick(row, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+    view = wait_view(qtbot, dialog)
+    assert len(recorded) == before + 1
+    assert recorded[-1].resolutions == {FP_KEY: Resolution("overwrite")}
+    assert view.windowTitle() == f"{FP_PATH} - existing vs incoming"
+    lines = view_lines(view)
+    assert any(line.startswith("-") and not line.startswith("---") for line in lines)
+    assert any(line.startswith("+") and not line.startswith("+++") for line in lines)
+    # the one-off plan never replaces the plan on screen
+    assert dialog._plan is plan and dialog._gen == gen
+    assert dialog._conflict_rows[FP_KEY].current_resolution() is None
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_conflict_view_resolved_overwrite_no_extra_build(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    dialog._conflict_rows[FP_KEY]._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    before = len(recorded)
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    view = wait_view(qtbot, dialog)
+    assert len(recorded) == before
+    assert view.windowTitle().endswith(" - existing vs incoming")
+    assert view._content.kind == "diff"
+
+
+def test_conflict_view_from_preview_section(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    row = next(r for s in dialog._preview.sections if s.name == "Conflicts" for r in s.rows)
+    assert row.kind == "conflict" and row.key == FP_KEY
+    dialog._preview.row_activated.emit(row)
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == f"{FP_PATH} - existing vs incoming"
+    assert view._content.kind == "diff"
+
+
+def test_conflict_view_model_and_symbol(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, symbol=True, footprint=False)
+    dialog._conflict_rows[MODEL_KEY].activated.emit(MODEL_KEY)
+    model_view = wait_view(qtbot, dialog)
+    assert model_view.windowTitle() == "Custom/3DModels/CSD85301Q2.stp - existing vs incoming"
+    assert "Existing" in model_view._text.toPlainText() and "Planned" in model_view._text.toPlainText()
+    model_view.close()
+    qtbot.waitUntil(lambda: not open_views(dialog), timeout=5000)
+    dialog._conflict_rows[SYMBOL_KEY].activated.emit(SYMBOL_KEY)
+    symbol_view = wait_view(qtbot, dialog)
+    assert symbol_view.windowTitle() == "Custom/Symbols/IC_Battery_Charger_TI.kicad_sym - existing vs incoming"
+    assert symbol_view._content.kind == "diff"
+
+
+def test_conflict_view_refused_one_off_shows_the_error(qtbot, make_item_dialog, item_layout):
+    def refusing(candidate, options, layout, tools=ToolContext(), **kwargs):
+        plan = real_build_plan(candidate, options, layout, tools, **kwargs)
+        if options.resolutions.get(FP_KEY) == Resolution("overwrite"):
+            return replace(plan, ops=(), issues=(Issue(Severity.ERROR, "install.test", "The incoming item is refused"),))
+        return plan
+
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, core={"build_plan": refusing}, model=False)
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    view = wait_view(qtbot, dialog)
+    assert view._content.kind == "error"
+    assert view._text.toPlainText() == "The incoming item is refused"
+
+
+def test_builds_never_overlap(qtbot, make_item_dialog, item_layout, gates):
+    running = {"now": 0, "max": 0, "calls": 0}
+    lock = threading.Lock()
+
+    def counting_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        with lock:
+            running["now"] += 1
+            running["calls"] += 1
+            running["max"] = max(running["max"], running["now"])
+            gated = running["calls"] == 2
+        try:
+            if gated:
+                gate = threading.Event()
+                gates.append(gate)
+                assert gate.wait(30)
+            return real_build_plan(candidate, options, layout, tools, **kwargs)
+        finally:
+            with lock:
+                running["now"] -= 1
+
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, core={"build_plan": counting_build}, model=False)
+    assert running["calls"] == 1
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    qtbot.wait(150)
+    assert running["calls"] == 2 and not open_views(dialog)  # the one-off waits for the running build
+    gates[0].set()
+    wait_view(qtbot, dialog)
+    assert running["calls"] == 3
+    assert running["max"] == 1

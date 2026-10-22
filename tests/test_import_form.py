@@ -500,3 +500,18 @@ def replace_resolution(conflict: Conflict, resolution: Resolution) -> Conflict:
 def test_ready_and_noop_text():
     assert ready_text(FileCounts(2, 1, 0)) == "✓ Ready to install: 2 new, 1 modified, 0 unchanged files"
     assert noop_text("Lib") == "Nothing to install: this part is already in Lib."
+
+
+# -- plan 05-10 Task 1: conflict choices are kept by key (D-14a) ----------------------------------
+
+
+def test_carry_resolutions():
+    from kicad_lib_manager.importer.form import carry_resolutions
+
+    r1, r2 = Resolution("skip"), Resolution("overwrite")
+    old = {"footprint:L:a": r1, "model:x.step": r2}
+    kept = carry_resolutions(old, fake_plan(conflicts=(Conflict("footprint:L:a", "footprint", "a", "L.pretty"),)))
+    assert kept == {"footprint:L:a": r1}
+    assert kept is not old
+    assert carry_resolutions(old, fake_plan()) == {}
+    assert carry_resolutions({}, fake_plan(conflicts=(Conflict("model:x.step", "model", "x.step", "3D"),))) == {}
