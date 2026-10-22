@@ -1,3 +1,7 @@
+import subprocess
+import sys
+from pathlib import Path
+
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QGuiApplication
@@ -327,7 +331,7 @@ def test_collided_symbol_is_marked_with_collision_status_and_tooltip(qtbot):
         assert not item.icon(3).isNull()
         assert peer in item.toolTip(0)
         for col in range(item.columnCount()):
-            assert item.foreground(col).color().name().upper() == "#CC7700"
+            assert item.foreground(col).color().name().upper() == theme.AMBER.upper()
 
     # A non-collided symbol keeps the normal status
     assert _sym_item(w, OWN_SYM_C).text(3) == "OK"
@@ -344,7 +348,7 @@ def test_collided_footprint_is_marked_with_collision_status_and_tooltip(qtbot):
         assert not item.icon(2).isNull()
         assert peer in item.toolTip(0)
         for col in range(item.columnCount()):
-            assert item.foreground(col).color().name().upper() == "#CC7700"
+            assert item.foreground(col).color().name().upper() == theme.AMBER.upper()
 
     assert _fp_item(w, OWN_FP_C).text(2) == "OK"
 
@@ -540,3 +544,73 @@ def test_collision_handling_never_renames_a_library(qtbot):
     assert [lib.nickname for lib in scan.symbol_libs] == ["Same", "Own_C", "Same", "Own_W"]
     assert [lib.nickname for lib in scan.footprint_libs] == ["Same", "Own_C", "Same", "Own_W"]
     _assert_invariants(w, scan)
+
+
+# ── Phase 5 shared theme (UI-SPEC "Shared theme module") ──
+
+
+def test_theme_constants_match_ui_spec():
+    from kicad_lib_manager.widgets import theme
+
+    expected = {
+        "AMBER": "#8A5200",
+        "AMBER_TINT": "#FFF8E1",
+        "ERROR": "#CC0000",
+        "ERROR_TINT": "#FDECEA",
+        "SUCCESS": "#007700",
+        "SUCCESS_TINT": "#E6F4EA",
+        "ACCENT": "#0078D4",
+        "LINK": "#0057A0",
+        "MUTED": "#595959",
+        "SURFACE": "#F5F7FA",
+        "SURFACE_HEADER": "#EEF1F5",
+        "BORDER": "#C8C8C8",
+    }
+    for name, value in expected.items():
+        assert getattr(theme, name) == value, name
+    assert (theme.SP_XS, theme.SP_SM, theme.SP_MD, theme.SP_LG, theme.SP_XL) == (4, 8, 16, 24, 32)
+    assert (theme.HEADING_PT, theme.DISPLAY_PT) == (10, 12)
+    assert (theme.MONO_FAMILY, theme.MONO_PT) == ("Consolas", 9)
+    assert theme.PRIMARY_BUTTON_QSS == (
+        "QPushButton { background-color: #0078D4; color: white; padding: 8px 16px; "
+        "font-weight: bold; min-height: 12px; }\n"
+        "QPushButton:disabled { background-color: #E1E1E1; color: #595959; }"
+    )
+    assert "padding: 8px 16px" in theme.PRIMARY_BUTTON_QSS
+    assert "QPushButton:disabled" in theme.PRIMARY_BUTTON_QSS
+    assert 'QFrame#fieldFrame[blocked="true"]' in theme.FIELD_FRAME_QSS
+    assert "QFrame#fieldFrame {" in theme.FIELD_FRAME_QSS
+    assert "#8A5200" in theme.FIELD_FRAME_QSS
+
+
+def test_theme_imports_no_qt():
+    code = (
+        "import sys, importlib.util\n"
+        "spec = importlib.util.spec_from_file_location('theme_probe', sys.argv[1])\n"
+        "mod = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(mod)\n"
+        "print([n for n in sorted(sys.modules) if n.split('.')[0] in ('PySide6', 'shiboken6')])\n"
+    )
+    theme_file = Path(__file__).resolve().parent.parent / "kicad_lib_manager" / "widgets" / "theme.py"
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", code, str(theme_file)],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "[]"
+
+
+def test_log_panel_warning_is_amber(qtbot):
+    from kicad_lib_manager.models import Issue, Severity
+    from kicad_lib_manager.widgets import theme
+    from kicad_lib_manager.widgets.log_panel import COLORS, LogPanel
+
+    assert COLORS["warning"] == theme.AMBER == "#8A5200"
+    assert COLORS["info"] == "#000000"
+    assert COLORS["error"] == "#CC0000"
+    assert COLORS["success"] == "#007700"
+
+    panel = LogPanel()
+    qtbot.addWidget(panel)
+    panel.log_issue(Issue(Severity.WARNING, "x.y", "careful"))
+    assert "#8a5200" in panel._text.toHtml().lower()
