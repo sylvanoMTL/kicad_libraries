@@ -4,18 +4,24 @@ Each test builds a throwaway superproject (two bare remotes, a parent, a Custom 
 puts Custom in the state under test. Nothing here touches the real repository.
 """
 
+import dataclasses
 import subprocess
 from pathlib import Path
 
+import pytest
 from gitfixtures import (
     GIT,
     advance_remote_main,
+    clone_parent_without_submodule,
     commit_file,
     delete_local_branch,
     detach,
+    git_path,
     import_files,
     make_superproject,
+    make_worktree,
     requires_git,
+    start_merge_conflict,
 )
 
 from kicad_lib_manager.gitops import GitContext
@@ -266,3 +272,203 @@ def test_switch_argv_is_plain(tmp_path):
     assert outcome.ok is True
     assert [argv[6:] for argv in calls if argv[6] == "switch"] == [["switch", "main"]]
     assert not {argv[6] for argv in calls} & {"add", "reset", "commit"}
+
+
+# -- when committing is unavailable (D-05, D-16) -------------------------------
+
+
+def _answering(canned):
+    """A runner that gives chosen subcommands a canned (exit code, stdout) and runs every other one for real."""
+
+    def runner(argv, **kwargs):
+        answer = canned.get(argv[6])
+        if answer is None:
+            return subprocess.run(argv, **kwargs)
+        return subprocess.CompletedProcess(argv, answer[0], stdout=answer[1], stderr=b"")
+
+    return GitContext(Path(GIT), runner)
+
+
+def _unavailable_issue(reason):
+    return [(Severity.WARNING, "commit.unavailable", f"Commit unavailable: {reason}")]
+
+
+def _issue_triples(probe):
+    return [(i.severity, i.code, i.text) for i in probe.issues]
+
+
+@requires_git
+def test_probe_git_missing_unavailable(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    monkeypatch.setattr("kicad_lib_manager.gitops.shutil.which", lambda name: None)
+
+    probe = commit_step.probe_commit(plan)
+
+    assert probe.state == "unavailable"
+    assert probe.reason == "git was not found on PATH"
+    assert _issue_triples(probe) == _unavailable_issue("git was not found on PATH")
+
+
+@requires_git
+def test_probe_old_git_unavailable(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    probe = commit_step.probe_commit(_plan(repos), git=_answering({"--version": (0, b"git version 2.20.1\n")}))
+
+    assert probe.state == "unavailable"
+    assert probe.reason == "git 2.25 or newer is needed (found 2.20.1)"
+    assert _issue_triples(probe) == _unavailable_issue(probe.reason)
+
+
+@requires_git
+def test_probe_windows_git_version_is_accepted(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    ctx = _answering({"--version": (0, b"git version 2.49.0.windows.1\n")})
+
+    assert commit_step.probe_commit(_plan(repos), git=ctx).state == "ready"
+
+
+@requires_git
+def test_probe_uninitialised_custom_unavailable(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    clone = clone_parent_without_submodule(repos)
+    assert (clone / "Custom").is_dir() and not list((clone / "Custom").iterdir())
+    plan = dataclasses.replace(_plan(repos), repo_root=clone, custom_dir=clone / "Custom", files=())
+    ctx, calls = _recording_ctx()
+
+    probe = commit_step.probe_commit(plan, git=ctx)
+
+    assert probe.state == "unavailable"
+    assert probe.reason == "Custom is not a git work tree"
+    assert _issue_triples(probe) == _unavailable_issue(probe.reason)
+    assert not {argv[6] for argv in calls} & {"add", "reset", "commit", "switch"}
+
+
+BUSY_MARKERS = [
+    ("MERGE_HEAD", "a merge", False),
+    ("rebase-merge", "a rebase", True),
+    ("rebase-apply", "a rebase", True),
+    ("CHERRY_PICK_HEAD", "a cherry-pick", False),
+    ("REVERT_HEAD", "a revert", False),
+    ("BISECT_LOG", "a bisect", False),
+]
+
+
+@requires_git
+@pytest.mark.parametrize(("marker", "label", "is_dir"), BUSY_MARKERS)
+def test_probe_custom_busy_unavailable(tmp_path, marker, label, is_dir):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    target = git_path(repos, repos.custom, marker)
+    if is_dir:
+        target.mkdir(parents=True)
+    else:
+        target.write_text(_head(repos) + "\n", encoding="utf-8")
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.state == "unavailable"
+    assert probe.reason == f"{label} is in progress in Custom"
+    assert _issue_triples(probe) == _unavailable_issue(probe.reason)
+
+
+@requires_git
+def test_probe_custom_real_merge_unavailable(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    start_merge_conflict(repos, repos.custom, SYM_FFC)
+    assert git_path(repos, repos.custom, "MERGE_HEAD").is_file()
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "unavailable"
+    assert probe.reason == "a merge is in progress in Custom"
+
+
+@requires_git
+def test_probe_identity_unknown_unavailable(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    probe = commit_step.probe_commit(_plan(repos), git=_answering({"var": (128, b"")}))
+
+    assert probe.state == "unavailable"
+    assert probe.reason == "git does not know who you are: set user.name and user.email"
+    assert _issue_triples(probe) == _unavailable_issue(probe.reason)
+
+
+@requires_git
+def test_probe_identity_known_by_default(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+
+    assert commit_step.probe_commit(_plan(repos), git=_ctx()).state == "ready"
+
+
+# -- the parent repo: reported, never blocking the Custom commit (D-16, D-17a) ---
+
+
+@requires_git
+def test_probe_parent_states(tmp_path):
+    # (a) Custom cloned into a folder that is not inside any repository
+    repos = make_superproject(tmp_path / "git")
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    repos.git(loose, "clone", str(repos.custom_remote), "Custom")
+    for key, value in (("user.name", "Fixture User"), ("user.email", "fixture@example.invalid")):
+        repos.git(loose / "Custom", "config", key, value)
+    plan = dataclasses.replace(_plan(repos), repo_root=loose, custom_dir=loose / "Custom", files=())
+    probe = commit_step.probe_commit(plan, git=_ctx())
+    assert probe.state == "ready" and probe.branch == "main"
+    assert probe.parent_ok is False
+    assert probe.parent_reason == f"no parent git repository at {loose.as_posix()}"
+
+    # (b) a detached parent
+    repos = make_superproject(tmp_path / "git_b")
+    repos.git(repos.parent, "switch", "--detach")
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+    assert probe.state == "ready" and probe.parent_ok is False
+    assert probe.parent_reason == "the parent repo is on a detached HEAD"
+
+    # (c) a merge in the parent
+    repos = make_superproject(tmp_path / "git_c")
+    start_merge_conflict(repos, repos.parent, "README.md")
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+    assert probe.state == "ready" and probe.parent_ok is False
+    assert probe.parent_reason == "a merge is in progress in the parent repo"
+
+
+@requires_git
+def test_probe_reports_parent_path_and_branch(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "ready" and probe.parent_ok is True and probe.parent_reason == ""
+    assert probe.parent_dir == repos.parent
+    assert probe.parent_branch == "main"
+    assert probe.gitlink_old == repos.git(repos.parent, "rev-parse", "HEAD:Custom").strip()
+
+
+@requires_git
+def test_probe_and_commit_in_linked_worktree(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    wt = make_worktree(repos)
+    assert "worktrees" in wt.git(wt.custom, "rev-parse", "--git-dir")
+    plan = import_files(wt, {FP_NEW: b'(footprint "FP1")\n'})
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+    assert probe.state == "ready" and probe.branch == "main"
+    assert probe.parent_ok is True and probe.parent_dir == wt.parent
+    assert probe.parent_branch == "feature/x"
+
+    merge_head = git_path(wt, wt.custom, "MERGE_HEAD")
+    assert "worktrees" in merge_head.as_posix()
+    merge_head.write_text(wt.git(wt.custom, "rev-parse", "HEAD"), encoding="utf-8")
+    busy = commit_step.probe_commit(plan, git=_ctx())
+    assert busy.state == "unavailable" and busy.reason == "a merge is in progress in Custom"
+    merge_head.unlink()
+
+    outcome = commit_step.run_commit(plan, "Add FP1 to IC_Battery_Charger_TI", True, git=_ctx())
+
+    assert outcome.committed and outcome.parent_commit is not None, outcome.issues
+    assert outcome.parent_branch == "feature/x"
+    assert wt.git(wt.custom, "show", "--name-only", "--format=", "HEAD").split() == [FP_NEW]
+    assert wt.git(wt.parent, "show", "--name-only", "--format=", "HEAD").split() == ["Custom"]
+    assert wt.git(wt.parent, "rev-parse", "HEAD:Custom").strip() == wt.git(wt.custom, "rev-parse", "HEAD").strip()
+    assert repos.git(repos.parent, "rev-parse", "HEAD").strip() != wt.git(wt.parent, "rev-parse", "HEAD").strip()
