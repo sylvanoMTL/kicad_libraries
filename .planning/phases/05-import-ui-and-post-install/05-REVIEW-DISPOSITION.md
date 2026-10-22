@@ -17,8 +17,9 @@ findings:
     title: "A one-off conflict build can overlap Install, although the code says it cannot"
   - id: WR-04
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "Install worker reads `self._plan` from the worker thread; `open_path` has no install guard"
+    note: "Phase 6 plan 06-08: the install worker gets the plan captured at the click; open_path refuses while installing or committing"
   - id: WR-05
     severity: warning
     disposition: open
@@ -70,7 +71,7 @@ One row per finding in 05-REVIEW.md. Every finding starts as `open`; change a ro
 | WR-01 | warning | open | `add_library_entries` reports "already listed" when the managed entry points at a different library |
 | WR-02 | warning | open | Post-install table write goes to the process working directory when the Destination box is empty |
 | WR-03 | warning | open | A one-off conflict build can overlap Install, although the code says it cannot |
-| WR-04 | warning | open | Install worker reads `self._plan` from the worker thread; `open_path` has no install guard |
+| WR-04 | warning | fixed | Install worker reads `self._plan` from the worker thread; `open_path` has no install guard |
 | WR-05 | warning | open | GUI thread blocks on worker `wait()` for as long as a kicad-cli call (up to 60 s) |
 | WR-06 | warning | open | `kicad_common.json` write: stale content after the confirm dialog, and a KiCad-running check that does not gate the write |
 | IN-01 | info | open | Invisible character as a source literal |
@@ -81,3 +82,7 @@ One row per finding in 05-REVIEW.md. Every finding starts as `open`; change a ro
 | IN-06 | info | open | Package-derived names are used in tooltips (Qt rich-text heuristic) |
 | IN-07 | info | open | `self.result` shadows `QDialog.result()` |
 | IN-08 | info | open | Test hygiene |
+
+## Notes
+
+- WR-04: Phase 6 plan 06-08: the install worker gets the plan captured at the click; open_path refuses while installing or committing.

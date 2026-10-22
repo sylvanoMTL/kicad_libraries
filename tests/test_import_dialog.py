@@ -3524,31 +3524,29 @@ def test_result_view_scrolls_at_minimum_size(qtbot, make_install_dialog):
 # -- Phase 6 plan 06-08 Task 2: WR-04, no worker reads dialog state and no package opens under a job -----
 
 
-def test_open_path_refused_while_busy(qtbot, make_install_dialog, gates):
+@pytest.mark.parametrize("job", ["commit", "install"])
+def test_open_path_refused_while_busy(qtbot, make_install_dialog, gates, job):
     started = threading.Event()
-    dialog = make_install_dialog(probe_commit=fake_ready_probe(), run_commit=gated(gates, started, fake_committed))
-    install_ul(qtbot, dialog)
-    (panel,) = commit_panel_of(dialog)
-    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
-    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
-    panel.commit_button.click()
-    qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
+    if job == "commit":
+        dialog = make_install_dialog(probe_commit=fake_ready_probe(), run_commit=gated(gates, started, fake_committed))
+        install_ul(qtbot, dialog)
+        (panel,) = commit_panel_of(dialog)
+        qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+        qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+        panel.commit_button.click()
+        qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
+        page = dialog._result_page
+    else:
+        dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+        dialog._install_btn.click()
+        qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+        page = dialog._edit_page
 
-    dialog.open_path(UL_ZIP)  # a new package must not open under a running commit
+    dialog.open_path(UL_ZIP)  # a new package must not open under a running job
     assert dialog._open_worker is None
-    assert dialog._stack.currentWidget() is dialog._result_page
+    assert dialog._stack.currentWidget() is page
     gates[-1].set()
-    qtbot.waitUntil(lambda: panel.state() == "done" and not dialog.is_committing(), timeout=30000)
-
-    installing = threading.Event()
-    other = make_install_dialog(apply_plan=blocking_apply(gates, started=installing))
-    other._install_btn.click()
-    qtbot.waitUntil(lambda: installing.is_set() and other.is_installing(), timeout=30000)
-    other.open_path(UL_ZIP)  # nor under a running install
-    assert other._open_worker is None
-    assert other._stack.currentWidget() is other._edit_page
-    gates[-1].set()
-    qtbot.waitUntil(lambda: other.result is not None, timeout=60000)
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing(), timeout=60000)
 
 
 def test_install_worker_uses_captured_plan(qtbot, make_install_dialog, gates, monkeypatch):

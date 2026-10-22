@@ -987,7 +987,7 @@ class ImportDialog(QDialog):
 
     def open_path(self, path: Path):
         """Open a zip or folder on a worker; the dialog owns the resulting Package."""
-        if self._closing or self._open_worker is not None:
+        if self._closing or self._open_worker is not None or self.is_installing() or self.is_committing():
             return
         self._wait_builds()  # WR-04: never close the package under a running build
         self._discard_package()
@@ -2048,10 +2048,11 @@ class ImportDialog(QDialog):
         plan = self._plan  # the rendered object, never a rebuilt copy (PREV-07)
         core, backup_root = self._core, self._backup_root
         self._failure_banner.hide()
-        # self._plan cannot change while installing: the inputs are locked and a build result is
-        # not accepted until the install ends (_on_build_result)
+        # The worker gets the plan captured above and never reads self._plan from its thread (WR-04).
+        # Besides, the inputs are locked and a build result is not accepted until the install ends
+        # (_on_build_result).
         worker = self._spawn(
-            lambda progress: core.apply_plan(self._plan, backup_root=backup_root, progress=progress)
+            lambda progress, p=plan: core.apply_plan(p, backup_root=backup_root, progress=progress)
         )
         self._install_worker = worker
         self._install_step.set_full_text("Installing...")
