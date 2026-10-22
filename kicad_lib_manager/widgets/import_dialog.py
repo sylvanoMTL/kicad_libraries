@@ -13,20 +13,22 @@ Three rules shape this module:
 - Nothing is written before Install Part. Opening and rebuilding are read-only.
 """
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import Qt, QStandardPaths, QThread, QTimer, Signal
+from PySide6.QtGui import QCloseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QListWidget, QProgressBar,
-    QPushButton, QScrollArea, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from ..importer.applier import apply_plan
 from ..importer.candidate import ImportCandidate
 from ..importer.detect import detect_candidate
+from ..importer.downloads import age_text, newest_zip
 from ..importer.layout import RepoLayout, list_existing_libraries
 from ..importer.package import Package, open_package
 from ..importer.plan import InstallOptions, InstallPlan, InstallResult, ToolContext
@@ -36,8 +38,66 @@ from ..importer.suggest import LibrarySuggestion, suggest_library
 from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from .preview_tree import PreviewTree
+from .theme import HEADING_PT, MUTED, SP_LG, SP_XL
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
+
+_START_BODY = (
+    "Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. "
+    "Nothing is written until you click Install Part."
+)
+
+
+def default_downloads_dir() -> Path | None:
+    """The user's Downloads folder: the Qt standard location, else ~/Downloads, else None."""
+    for text in QStandardPaths.standardLocations(QStandardPaths.StandardLocation.DownloadLocation):
+        if text and Path(text).is_dir():
+            return Path(text)
+    fallback = Path.home() / "Downloads"
+    return fallback if fallback.is_dir() else None
+
+
+class _OfferLabel(QLabel):
+    """One-line plain-text label that elides the middle of a name to fit its width (UI E3/overflow)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._parts: tuple[str, str, str] | None = None
+
+    def set_parts(self, prefix: str, name: str, suffix: str):
+        self._parts = (prefix, name, suffix)
+        self._refresh()
+
+    def set_plain(self, text: str):
+        self._parts = None
+        self.setText(text)
+
+    def full_text(self) -> str:
+        """The text before eliding."""
+        return "".join(self._parts) if self._parts is not None else self.text()
+
+    def resizeEvent(self, event: QResizeEvent):
+        super().resizeEvent(event)
+        self._refresh()
+
+    def _refresh(self):
+        if self._parts is None:
+            return
+        prefix, name, suffix = self._parts
+        full = prefix + name + suffix
+        metrics = self.fontMetrics()
+        width = self.contentsRect().width()
+        shown = full
+        # width < 40: not laid out yet; show everything and elide on the first real resize
+        if width >= 40 and metrics.horizontalAdvance(full) > width:
+            room = width - metrics.horizontalAdvance(prefix) - metrics.horizontalAdvance(suffix)
+            shown = prefix + metrics.elidedText(
+                name, Qt.TextElideMode.ElideMiddle, max(room, metrics.horizontalAdvance("…"))
+            ) + suffix
+        if self.text() != shown:
+            self.setText(shown)
 
 
 class TaskWorker(QThread):
@@ -77,6 +137,7 @@ class ImportCore:
     kicad_running: Callable = kicad_running
     list_existing_libraries: Callable = list_existing_libraries
     suggest_library: Callable = suggest_library
+    downloads_dir: Callable = default_downloads_dir
 
 
 @dataclass(frozen=True)
@@ -166,38 +227,80 @@ class ImportDialog(QDialog):
     # -- pages ------------------------------------------------------------------
 
     def _build_start_page(self):
+        """A centred column (max 560 wide, 32 px top inset, 24 px between blocks), UI-SPEC start step."""
         page = QWidget()
-        lay = QVBoxLayout(page)
-        lay.setSpacing(8)
-        heading = QLabel("Choose a part package")
-        font = heading.font()
-        font.setBold(True)
-        heading.setFont(font)
-        lay.addWidget(heading)
+        outer = QVBoxLayout(page)
+        outer.setContentsMargins(0, SP_XL, 0, 0)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        column = QWidget()
+        column.setMaximumWidth(560)
+        lay = QVBoxLayout(column)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(SP_LG)
+        row.addWidget(column, 100)
+        row.addStretch(1)
+        outer.addLayout(row)
+        outer.addStretch(1)
+        self._start_column = column
 
+        self._start_heading = QLabel("Choose a part package")
+        font = self._start_heading.font()
+        font.setPointSize(HEADING_PT)
+        font.setBold(True)
+        self._start_heading.setFont(font)
+        lay.addWidget(self._start_heading)
+
+        self._start_body = QLabel(_START_BODY)
+        self._start_body.setTextFormat(Qt.TextFormat.PlainText)
+        self._start_body.setWordWrap(True)
+        lay.addWidget(self._start_body)
+
+        # The Downloads offer; replaced by the reading box while a package is read
+        self._offer_ready = False
+        self._offer_requested = False
+        self._offer_path: Path | None = None
+        self._offer_row = QWidget()
+        offer_lay = QHBoxLayout(self._offer_row)
+        offer_lay.setContentsMargins(0, 0, 0, 0)
+        offer_lay.setSpacing(8)
+        self._offer_label = _OfferLabel()
+        offer_lay.addWidget(self._offer_label, 1)
+        self._offer_open_btn = QPushButton("Open")
+        self._offer_open_btn.clicked.connect(self._on_offer_open)
+        offer_lay.addWidget(self._offer_open_btn)
+        lay.addWidget(self._offer_row)
+
+        self._reading_box = QWidget()
+        reading_lay = QVBoxLayout(self._reading_box)
+        reading_lay.setContentsMargins(0, 0, 0, 0)
+        reading_lay.setSpacing(8)
         self._reading_label = QLabel("Reading package...")
+        self._reading_label.setTextFormat(Qt.TextFormat.PlainText)
         self._reading_bar = QProgressBar()
         self._reading_bar.setRange(0, 0)
-        lay.addWidget(self._reading_label)
-        lay.addWidget(self._reading_bar)
+        reading_lay.addWidget(self._reading_label)
+        reading_lay.addWidget(self._reading_bar)
+        lay.addWidget(self._reading_box)
 
         self._browse_btn = QPushButton("Browse zip...")
         self._browse_btn.clicked.connect(self._on_browse)
-        row = QHBoxLayout()
-        row.addWidget(self._browse_btn)
-        row.addStretch()
-        lay.addLayout(row)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addWidget(self._browse_btn)
+        buttons.addStretch()
+        lay.addLayout(buttons)
 
         self._start_issues = QLabel()
         self._start_issues.setTextFormat(Qt.TextFormat.PlainText)
         self._start_issues.setWordWrap(True)
         self._start_issues.hide()
         lay.addWidget(self._start_issues)
-        lay.addStretch()
 
         self._set_reading(False)
         self._start_page = page
         self._stack.addWidget(page)
+        self._browse_btn.setFocus()
 
     def _build_edit_page(self):
         page = QWidget()
@@ -309,9 +412,61 @@ class ImportDialog(QDialog):
     # -- opening a package ------------------------------------------------------
 
     def _set_reading(self, reading: bool):
-        self._reading_label.setVisible(reading)
-        self._reading_bar.setVisible(reading)
+        self._reading_box.setVisible(reading)
+        self._offer_row.setVisible(not reading and self._offer_ready)
         self._browse_btn.setEnabled(not reading)
+        self._offer_open_btn.setEnabled(not reading)
+
+    # -- the Downloads offer (D-02): listed only, opened by an explicit click --------
+
+    def showEvent(self, event: QShowEvent):
+        super().showEvent(event)
+        if not self._offer_requested:
+            self._offer_requested = True
+            self._browse_btn.setFocus()
+            # After the dialog is shown: a OneDrive-redirected Downloads folder can be slow to list
+            QTimer.singleShot(0, self._start_offer_lookup)
+
+    def _start_offer_lookup(self):
+        if self._closing:
+            return
+        core = self._core
+
+        def task(progress):
+            folder = core.downloads_dir()
+            return folder, (newest_zip(folder) if folder is not None else None)
+
+        worker = self._spawn(task)
+        worker.result.connect(lambda value, w=worker: self._on_offer_found(*value))
+        worker.failed.connect(lambda text, w=worker: self._on_offer_found(None, None))
+        worker.start()
+
+    def _on_offer_found(self, folder: Path | None, newest: tuple[Path, float] | None):
+        if self._closing:
+            return
+        self._offer_ready = True
+        self._offer_path = None
+        self._offer_label.setToolTip("")
+        self._offer_label.setStyleSheet("")
+        self._offer_open_btn.hide()
+        if folder is None:
+            self._offer_label.set_plain("Downloads folder not found.")
+        elif newest is None:
+            self._offer_label.set_plain("No .zip files found in your Downloads folder.")
+            self._offer_label.setStyleSheet(f"color: {MUTED};")
+        else:
+            path, mtime = newest
+            self._offer_path = path
+            self._offer_label.set_parts(
+                "Newest in Downloads: ", path.name, f" ({age_text(time.time() - mtime)})"
+            )
+            self._offer_label.setToolTip(str(path))
+            self._offer_open_btn.show()
+        self._offer_row.setVisible(self._open_worker is None)
+
+    def _on_offer_open(self):
+        if self._offer_path is not None:
+            self.open_path(self._offer_path)
 
     def _on_browse(self):
         path, _ = QFileDialog.getOpenFileName(

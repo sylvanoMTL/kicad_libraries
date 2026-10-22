@@ -413,12 +413,12 @@ def fake_package(path: Path, issues=()) -> Package:
 @pytest.fixture
 def make_start_dialog(qtbot, start_layout, downloads, gates):
     def make(show: bool = True, **changes) -> ImportDialog:
-        core = replace(
-            ImportCore(),
-            detect_tools=lambda kicad_fp_dir: ToolContext(),
-            downloads_dir=lambda: downloads,
+        fields = {
+            "detect_tools": lambda kicad_fp_dir: ToolContext(),
+            "downloads_dir": lambda: downloads,
             **changes,
-        )
+        }
+        core = replace(ImportCore(), **fields)
         dialog = ImportDialog(start_layout.repo_root, start_layout, core=core)
         qtbot.addWidget(dialog)
         if show:
@@ -437,7 +437,8 @@ def test_start_page_offers_newest_zip(qtbot, make_start_dialog, downloads):
     newer = _zip_at(downloads, "newer.zip", 5)
     dialog = make_start_dialog()
     wait_offer(qtbot, dialog)
-    assert dialog._offer_label.text() == "Newest in Downloads: newer.zip (just now)"
+    # full_text: the offscreen test platform has no fonts, so the shown text may be elided
+    assert dialog._offer_label.full_text() == "Newest in Downloads: newer.zip (just now)"
     assert dialog._offer_label.toolTip() == str(newer)
     assert dialog._offer_open_btn.isVisible()
     assert dialog._offer_open_btn.isEnabled()
@@ -487,3 +488,17 @@ def test_start_page_layout_and_focus(qtbot, make_start_dialog):
     )
     assert dialog._start_column.maximumWidth() == 560
     assert dialog.focusWidget() is dialog._browse_btn
+
+
+def test_start_page_offer_elides_long_name_and_keeps_full_path(qtbot, make_start_dialog, downloads):
+    long_name = "ul_" + "very_long_component_name_" * 8 + "end.zip"
+    path = _zip_at(downloads, long_name, 3 * 86400)
+    dialog = make_start_dialog()
+    wait_offer(qtbot, dialog)
+    shown = dialog._offer_label.text()
+    assert dialog._offer_label.full_text() == f"Newest in Downloads: {long_name} (3 days ago)"
+    assert shown != dialog._offer_label.full_text()
+    assert shown.startswith("Newest in Downloads: ul")
+    assert shown.endswith(" (3 days ago)")
+    assert "…" in shown
+    assert dialog._offer_label.toolTip() == str(path)
