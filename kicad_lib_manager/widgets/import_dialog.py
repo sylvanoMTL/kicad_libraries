@@ -13,6 +13,7 @@ Three rules shape this module:
 - Nothing is written before Install Part. Opening and rebuilding are read-only.
 """
 
+import html
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,6 +33,7 @@ from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
 from ..importer.form import (
     FIELD_LABELS, FIELD_NAMES, FieldDefaults, FormValues, build_options, field_defaults,
+    library_badge, library_tokens,
 )
 from ..importer.layout import RepoLayout, list_existing_libraries
 from ..importer.package import Package, open_package
@@ -43,7 +45,9 @@ from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
 from .preview_tree import PreviewTree
-from .theme import AMBER, ERROR, HEADING_PT, MONO_FAMILY, MONO_PT, MUTED, SP_LG, SP_MD, SP_XL, SP_XS
+from .theme import (
+    AMBER, BORDER, ERROR, HEADING_PT, MONO_FAMILY, MONO_PT, MUTED, SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
+)
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
 _SEVERITY_COLOR = {Severity.ERROR: ERROR, Severity.WARNING: AMBER}
@@ -56,6 +60,9 @@ _LINKED_SUFFIX = "  (linked)"
 _NO_MODEL = "No model"
 _BLANK_FIELD_HINT = "Empty - the field will be written blank"
 _NO_FOOTPRINT_FIELD = "(none)"
+_TOKEN_HINT = "Amber parts are guesses or placeholders. Pick an existing library or type a real name."
+_BUSY_DELAY_MS = 150  # the busy strip shows only if a rebuild takes longer than this (no flicker)
+_ZWSP = "​"  # lets a long library name wrap after each "_"
 
 # Vendor names of the adapters (importer/adapters) as shown in the package header
 _VENDOR_LABELS = {"UltraLibrarian": "Ultra Librarian", "Loose": "Loose files", "Unknown": "Unknown vendor"}
@@ -224,7 +231,6 @@ class ImportDialog(QDialog):
         self._plan_gen = -1
         self._plan_options: InstallOptions | None = None
         self._build_failed = False
-        self._last_requested_library = ""
         self._install_failure = ""
 
         # Left-pane choices (plan 05-07). The item controls exist only for the package that is open.
@@ -248,6 +254,12 @@ class ImportDialog(QDialog):
         self._debounce.setSingleShot(True)
         self._debounce.setInterval(300)  # D-06: the quiet period after the last keystroke, in ms
         self._debounce.timeout.connect(self._on_debounce)
+        # The Updating indicator (D-06): the label shows at once, the busy strip only after a delay
+        self._updating_shown = False
+        self._busy_timer = QTimer(self)
+        self._busy_timer.setSingleShot(True)
+        self._busy_timer.setInterval(_BUSY_DELAY_MS)
+        self._busy_timer.timeout.connect(self._on_busy_timeout)
 
         self._workers: list[TaskWorker] = []
         self._open_worker: TaskWorker | None = None
@@ -427,14 +439,7 @@ class ImportDialog(QDialog):
         left_lay.addWidget(self._items_host)
         left_lay.addSpacing(SP_MD)
         left_lay.addWidget(self._heading("Target library"))
-        self._library_combo = QComboBox()
-        self._library_combo.setEditable(True)
-        self._library_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self._library_combo.setAccessibleName("Target library")
-        # Not currentTextChanged: that fires on every keystroke of a typed name
-        self._library_combo.textActivated.connect(self._on_library_activated)
-        self._library_combo.lineEdit().editingFinished.connect(self._on_library_edited)
-        left_lay.addWidget(self._library_combo)
+        self._build_library_section(left_lay)
         left_lay.addSpacing(SP_MD)
         self._build_footprint_section(left_lay)
         left_lay.addSpacing(SP_MD)
@@ -450,7 +455,27 @@ class ImportDialog(QDialog):
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(8)
-        right_lay.addWidget(self._heading("Preview"))
+        title_row = QHBoxLayout()
+        title_row.setSpacing(SP_SM)
+        title_row.addWidget(self._heading("Preview"))
+        self._updating_label = QLabel("Updating...")
+        self._updating_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._updating_label.setStyleSheet(f"color: {AMBER};")
+        self._updating_label.hide()
+        title_row.addWidget(self._updating_label)
+        title_row.addStretch(1)
+        right_lay.addLayout(title_row)
+        # A 4 px indeterminate strip that keeps its room when hidden, so the tree does not jump
+        self._busy_bar = QProgressBar()
+        self._busy_bar.setRange(0, 0)
+        self._busy_bar.setTextVisible(False)
+        self._busy_bar.setFixedHeight(4)
+        self._busy_bar.setAccessibleName("Preview is updating")
+        policy = self._busy_bar.sizePolicy()
+        policy.setRetainSizeWhenHidden(True)
+        self._busy_bar.setSizePolicy(policy)
+        self._busy_bar.hide()
+        right_lay.addWidget(self._busy_bar)
         self._preview_stack = QStackedWidget()
         building = QWidget()
         building_lay = QVBoxLayout(building)
@@ -538,6 +563,57 @@ class ImportDialog(QDialog):
         lay.addWidget(widget, 1)
         lay.addSpacing(24 + SP_XS)
         return row
+
+    def _build_library_section(self, left_lay: QVBoxLayout):
+        """The editable library combo with its existing/new badge, the token line and the amber hint (D-11)."""
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        # The typed name is used exactly as typed: inline completion would change its letter case,
+        # and a case twin of an existing library has to stay visible as such
+        combo.setCompleter(None)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(12)
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        combo.setAccessibleName("Target library")
+        # Picking from the list rebuilds at once; typing waits for the quiet period (D-06). Not
+        # currentTextChanged for the rebuild: that fires on every keystroke of a typed name
+        combo.textActivated.connect(self._on_library_activated)
+        line = combo.lineEdit()
+        line.textEdited.connect(self._on_library_text_edited)
+        line.textChanged.connect(self._refresh_library_labels)
+        self._library_combo = combo
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(SP_SM)
+        row.addWidget(combo, 1)
+        self._library_badge = QLabel()
+        self._library_badge.setTextFormat(Qt.TextFormat.PlainText)
+        # Wraps at its spaces when the pane is narrow, so the combo keeps room and the badge is never cut
+        self._library_badge.setWordWrap(True)
+        self._library_badge.setAccessibleName("Library status")
+        self._library_badge.hide()
+        row.addWidget(self._library_badge)
+        left_lay.addLayout(row)
+
+        # Rich text, but only the spans this dialog writes (every token is html.escape()d); no links
+        self._token_line = QLabel()
+        self._token_line.setTextFormat(Qt.TextFormat.RichText)
+        self._token_line.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
+        self._token_line.setFont(QFont(MONO_FAMILY, MONO_PT))
+        self._token_line.setWordWrap(True)
+        # Ignored: a long name wraps at its underscores instead of widening the pane
+        self._token_line.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._token_line.setAccessibleName("Library name parts")
+        self._token_line.hide()
+        left_lay.addWidget(self._token_line)
+        self._token_hint = QLabel(_TOKEN_HINT)
+        self._token_hint.setTextFormat(Qt.TextFormat.PlainText)
+        self._token_hint.setWordWrap(True)
+        self._token_hint.setStyleSheet(f"color: {MUTED};")
+        self._token_hint.hide()
+        left_lay.addWidget(self._token_hint)
 
     def _build_footprint_section(self, left_lay: QVBoxLayout):
         """The footprint name (D-14, PREV-02): pre-filled with the linked footprint's sanitised vendor name."""
@@ -830,18 +906,64 @@ class ImportDialog(QDialog):
         self._browse_btn.setFocus()
 
     def _fill_library_combo(self):
+        """Pre-fill with the suggestion; the list holds the ranked alternatives, a separator, then every library (D-11)."""
         suggestion = self._suggestion
-        names = [suggestion.name, *(a.name for a in suggestion.alternatives)]
-        names.extend(lib.name for lib in self._existing)
-        unique = list(dict.fromkeys(names))
-        self._library_combo.blockSignals(True)
+        combo = self._library_combo
+        alternatives = [a.name for a in suggestion.alternatives]
+        existing = [lib.name for lib in self._existing]
+        combo.blockSignals(True)
         try:
-            self._library_combo.clear()
-            self._library_combo.addItems(unique)
-            self._library_combo.setCurrentIndex(0)
-            self._library_combo.setEditText(suggestion.name)
+            combo.clear()
+            combo.addItems(alternatives)
+            if alternatives and existing:
+                combo.insertSeparator(combo.count())
+            combo.addItems(existing)
+            combo.setCurrentIndex(-1)
+            combo.setEditText(suggestion.name)
         finally:
-            self._library_combo.blockSignals(False)
+            combo.blockSignals(False)
+        # The popup shows every full name even when the closed combo is narrower
+        combo.view().setMinimumWidth(combo.view().sizeHintForColumn(0) + 32)
+        self._refresh_library_labels()
+
+    def _clear_library_section(self):
+        """Forget the library list, the typed name and the badge, token line and hint (a new or discarded package)."""
+        self._existing = ()
+        combo = self._library_combo
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.setEditText("")
+        finally:
+            combo.blockSignals(False)
+        self._refresh_library_labels()
+
+    def _refresh_library_labels(self, _text: str = ""):
+        """Badge, token line and hint follow the typed name against the library list, at every keystroke.
+
+        The badge reads "existing" or "new - creates .kicad_sym + .pretty" (form.library_badge).
+        """
+        name = self._library_combo.currentText()
+        badge = library_badge(name, [lib.name for lib in self._existing])
+        self._library_badge.setVisible(bool(badge))
+        self._library_badge.setText(badge)
+        if badge == "existing":
+            self._library_badge.setStyleSheet(f"border: 1px solid {BORDER}; padding: 4px 8px; color: {SUCCESS};")
+        else:
+            self._library_badge.setStyleSheet(
+                f"border: 1px solid {BORDER}; padding: 4px 8px; font-weight: bold;"
+            )
+        tokens = library_tokens(name, self._suggestion)
+        parts = [
+            f'<span style="color:{AMBER};font-weight:bold">{html.escape(token)}</span>'
+            if amber
+            else html.escape(token)
+            for token, amber in tokens
+        ]
+        self._token_line.setText(f"_{_ZWSP}".join(parts))
+        self._token_line.setToolTip(name)
+        self._token_line.setVisible(bool(tokens))
+        self._token_hint.setVisible(any(amber for _, amber in tokens))
 
     # -- the rebuild coordinator (PREV-07, D-06) -------------------------------
 
@@ -851,6 +973,7 @@ class ImportDialog(QDialog):
         self._dirty = False
         self._candidate = None
         self._suggestion = None
+        self._clear_library_section()
         self._tools = None
         self._queued = None
         self._plan = None
@@ -1286,14 +1409,14 @@ class ImportDialog(QDialog):
             self._request_rebuild()
 
     def _on_library_activated(self, _text: str = ""):
+        """A library picked from the list: no quiet period, the pending typing timer is superseded."""
+        self._refresh_library_labels()
         self._request_rebuild()
 
-    def _on_library_edited(self):
-        # editingFinished also fires on plain focus loss; only a changed name needs a rebuild
-        if self._candidate is not None and (
-            self._library_combo.currentText().strip() != self._last_requested_library
-        ):
-            self._request_rebuild()
+    def _on_library_text_edited(self, _text: str):
+        """User typing in the library name (textEdited): the labels already follow; the rebuild waits 300 ms."""
+        if self._candidate is not None:
+            self._mark_dirty()
 
     def _request_rebuild(self):
         """Ask for a plan for the current choices; at most one build runs and the latest request wins.
@@ -1306,7 +1429,6 @@ class ImportDialog(QDialog):
             return
         self._gen += 1
         options = self._snapshot_options()
-        self._last_requested_library = options.library
         if self._building is not None:
             self._queued = options
         else:
@@ -1371,7 +1493,34 @@ class ImportDialog(QDialog):
     def _updating(self) -> bool:
         return self._building is not None or self._queued is not None or self._dirty
 
+    def _sync_updating(self):
+        """Show "Updating..." beside the Preview title while a rebuild is pending; the busy strip joins after 150 ms.
+
+        Only while the previous tree is on screen: the first build has its own Building page.
+        """
+        active = (
+            self._candidate is not None
+            and not self._closing
+            and not self.is_installing()
+            and self._updating()
+            and self._preview_stack.currentWidget() is self._preview
+        )
+        if active and not self._updating_shown:
+            self._updating_shown = True
+            self._updating_label.show()
+            self._busy_timer.start()
+        elif not active and self._updating_shown:
+            self._updating_shown = False
+            self._busy_timer.stop()
+            self._updating_label.hide()
+            self._busy_bar.hide()
+
+    def _on_busy_timeout(self):
+        if self._updating_shown:
+            self._busy_bar.show()
+
     def _update_install_state(self):
+        self._sync_updating()
         if self.is_installing():
             return
         plan = self._plan
@@ -1513,6 +1662,7 @@ class ImportDialog(QDialog):
         """Wait for every open and build worker, then close the package; idempotent."""
         self._closing = True
         self._debounce.stop()
+        self._busy_timer.stop()
         for worker in list(self._workers):
             worker.wait()
         for worker in list(self._workers):

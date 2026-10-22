@@ -6,13 +6,13 @@ write into each field when nothing is set, so the form shows the real result (RE
 Keeping the rules here means they are tested without a display, and the dialog holds only widgets.
 """
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
 from ..kicad_files import replace_exact_tokens
 from .candidate import ImportCandidate
 from .plan import InstallOptions, Resolution
-from .suggest import manufacturer_choice
+from .suggest import LibrarySuggestion, manufacturer_choice, placeholder_tokens
 
 # The five symbol fields the dialog lets the user edit; the names are the InstallOptions text overrides
 FIELD_NAMES = ("value", "datasheet", "description", "manufacturer", "mpn")
@@ -56,6 +56,35 @@ class FormValues:
     footprint_name: str | None
     fields: Mapping[str, str] = field(default_factory=dict)
     resolutions: Mapping[str, Resolution] = field(default_factory=dict)
+
+
+NEW_LIBRARY_BADGE = "new - creates .kicad_sym + .pretty"
+
+
+def library_tokens(name: str, suggestion: LibrarySuggestion | None) -> list[tuple[str, bool]]:
+    """Split a library name on "_" into (token, amber) pairs for the token line (D-11).
+
+    A placeholder token (Phase 3 D-04) is always amber. While the text still equals the suggestion,
+    a token of a low-confidence part of that suggestion is amber too; once the user edits the name
+    that counts as confirmation of the rest, so only placeholders stay amber.
+    """
+    if not name:
+        return []
+    placeholders = {token.casefold() for token in placeholder_tokens(name)}
+    guesses: set[str] = set()
+    if suggestion is not None and name == suggestion.name:
+        for choice in (suggestion.type, suggestion.subcategory, suggestion.manufacturer):
+            if not choice.confident:
+                guesses.update(choice.token.split("_"))
+    return [(token, token.casefold() in placeholders or token in guesses) for token in name.split("_")]
+
+
+def library_badge(name: str, existing: Collection[str]) -> str:
+    """"existing" for an exact match, the "new" text otherwise, "" for a blank name (a case twin is new)."""
+    name = name.strip()
+    if not name:
+        return ""
+    return "existing" if name in existing else NEW_LIBRARY_BADGE
 
 
 def field_defaults(candidate: ImportCandidate, symbol_name: str, final_name: str | None = None) -> FieldDefaults:
