@@ -631,6 +631,25 @@ def build_plan(
             "install.library_case_clash",
             f"{library} differs from the existing library {twins[0]} only by letter case; use {twins[0]} or pick another name",
         ))
+    # D-13: Value and MPN can be cleared by the caller but never installed empty (MPN names the 3D model file)
+    empty = []
+    if options.value == "":
+        empty.append(_err("install.empty_required", "Value cannot be empty; enter a value"))
+    if options.mpn == "":
+        empty.append(_err("install.empty_required", "MPN cannot be empty: it names the 3D model file; enter a part number"))
+    if empty:
+        return refuse(*empty)
+    # WR-02: creating a library needs its Custom folder; say so before anything is read or written
+    for exists, folder, code in (
+        (library in sym_libs, layout.symbols_dir, "install.symbols_dir_missing"),
+        (library in pretty_libs, layout.footprints_dir, "install.footprints_dir_missing"),
+    ):
+        if not exists and not folder.is_dir():
+            try:
+                shown = folder.relative_to(layout.repo_root).as_posix()
+            except ValueError:
+                shown = folder.name
+            return refuse(_err(code, f"Cannot create {library}: the {shown} folder is missing. Check the Custom submodule is checked out."))
     sym_item, fp_items, model_item, problems = _select(candidate, options)
     if problems or sym_item is None:
         return refuse(*problems)
@@ -749,7 +768,9 @@ def build_plan(
 
     meta = sym_item.meta
     manufacturer = options.manufacturer if options.manufacturer is not None else meta.manufacturer
-    if not manufacturer:
+    # D-13: an explicitly cleared Manufacturer ("") is written empty, with no inference and no warning (Pitfall 3)
+    cleared_manufacturer = options.manufacturer == ""
+    if not manufacturer and not cleared_manufacturer:
         choice = manufacturer_choice(meta)
         if choice.source != "placeholder":
             manufacturer = choice.token

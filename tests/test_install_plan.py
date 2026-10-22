@@ -317,6 +317,46 @@ def test_blank_option_keeps_ul_vendor_values(custom_copy, ul_package, blank):
     assert find_property(symbol.node, "Description") is None
 
 
+# -- WR-02: library creation needs the Custom folders ---------------------------
+
+
+def _bare_layout(tmp_path, *folders):
+    for name in folders:
+        (tmp_path / "Custom" / name).mkdir(parents=True)
+    return RepoLayout.for_repo(tmp_path)
+
+
+def test_new_library_refused_when_symbols_missing(tmp_path, snapshot):
+    layout = _bare_layout(tmp_path, "Footprints", "3DModels")
+    before = snapshot(tmp_path / "Custom")
+    with _open(tmp_path, _members()) as (_, candidate):
+        plan = build_plan(candidate, InstallOptions(library="IC_New_TI"), layout)
+    assert plan.blocked and not plan.ops
+    assert _codes(plan) == ["install.symbols_dir_missing"]
+    assert _error(plan, "install.symbols_dir_missing").text == (
+        "Cannot create IC_New_TI: the Custom/Symbols folder is missing. Check the Custom submodule is checked out."
+    )
+    assert snapshot(tmp_path / "Custom") == before
+
+
+def test_new_library_refused_when_footprints_missing(tmp_path):
+    layout = _bare_layout(tmp_path, "Symbols", "3DModels")
+    with _open(tmp_path, _members()) as (_, candidate):
+        plan = build_plan(candidate, InstallOptions(library="IC_New_TI"), layout)
+    assert plan.blocked and not plan.ops
+    assert _codes(plan) == ["install.footprints_dir_missing"]
+    assert _error(plan, "install.footprints_dir_missing").text == (
+        "Cannot create IC_New_TI: the Custom/Footprints folder is missing. Check the Custom submodule is checked out."
+    )
+
+
+def test_existing_library_unaffected_by_symbols_check(layout, tmp_path):
+    with _open(tmp_path, _members()) as (_, candidate):
+        plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout)
+    assert not plan.blocked, plan.issues
+    assert not {"install.symbols_dir_missing", "install.footprints_dir_missing"} & {i.code for i in plan.issues}
+
+
 # -- Consistency of the installed names -----------------------------------------
 
 
