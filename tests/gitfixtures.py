@@ -76,6 +76,8 @@ def _local_config(repos: GitRepos, repo: Path, autocrlf: bool) -> None:
         ("core.autocrlf", "true" if autocrlf else "false"),
     ):
         repos.git(repo, "config", key, value)
+    # a copy of the session template still names the template's hooks folder; drop it so --git-path answers for this repo
+    repos.git(repo, "config", "--unset", "core.hooksPath", check=False)
     hooks = Path(repos.git(repo, "rev-parse", "--git-path", "hooks").strip())
     if not hooks.is_absolute():
         hooks = repo / hooks
@@ -286,6 +288,19 @@ def git_path(repos: GitRepos, repo: Path, name: str) -> Path:
     """Where git keeps `name` for repo (rev-parse --git-path); a relative answer is taken from repo."""
     found = Path(repos.git(repo, "rev-parse", "--git-path", name).strip())
     return found if found.is_absolute() else repo / found
+
+
+def write_hook(repos: GitRepos, repo: Path, name: str, script: str) -> Path:
+    """Install a git hook script in repo (LF endings, executable where that means something).
+
+    Git for Windows runs the script with its bundled sh, so no chmod is needed there (RESEARCH Pitfall 7).
+    """
+    hook = git_path(repos, repo, "hooks") / name
+    hook.parent.mkdir(parents=True, exist_ok=True)
+    hook.write_bytes(script.replace("\r\n", "\n").encode("utf-8"))
+    if os.name != "nt":
+        hook.chmod(0o755)
+    return hook
 
 
 def start_merge_conflict(repos: GitRepos, repo: Path, rel: str) -> None:

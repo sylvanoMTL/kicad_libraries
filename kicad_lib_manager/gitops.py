@@ -85,15 +85,23 @@ def _text(data) -> str:
 
 
 def run_git(
-    ctx: GitContext, repo: Path, *args: str, input: bytes | None = None, timeout: float = DEFAULT_TIMEOUT
+    ctx: GitContext,
+    repo: Path,
+    *args: str,
+    input: bytes | None = None,
+    timeout: float = DEFAULT_TIMEOUT,
+    literal: bool = True,
 ) -> GitRun | Issue:
     """Run one git command in repo; any exit code comes back as a GitRun, a timeout or OS error as an Issue.
 
+    Pathspecs are literal unless literal is False; check-ignore rejects the literal magic, so it alone
+    turns it off (it takes plain paths on stdin).
     Raises ValueError, before anything starts, for a subcommand outside ALLOWED_SUBCOMMANDS.
     """
     if not args or args[0] not in ALLOWED_SUBCOMMANDS:
         raise ValueError(f"git {args[0] if args else ''} is not allowed")
-    argv = [str(ctx.exe), "--literal-pathspecs", "-c", "core.quotepath=false", "-C", str(repo), *args]
+    pathspecs = "--literal-pathspecs" if literal else "--no-literal-pathspecs"
+    argv = [str(ctx.exe), pathspecs, "-c", "core.quotepath=false", "-C", str(repo), *args]
     run = ctx.runner or subprocess.run
     options = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
     try:
@@ -221,6 +229,22 @@ def tracked_paths(ctx: GitContext, repo: Path, rels) -> set[str] | Issue:
     return {name for name in run.stdout.split("\0") if name}
 
 
+def ignored_paths(ctx: GitContext, repo: Path, rels) -> list[str] | Issue:
+    """Which of rels (untracked paths) the repo's ignore rules cover; check-ignore exits 0 when some match, 1 when none."""
+    rels = list(rels)
+    if not rels:
+        return []
+    # --no-index: rels are untracked, and without it git glob-matches each name against the index first
+    run = run_git(ctx, repo, "check-ignore", "--no-index", "-z", "--stdin", input=_nul_paths(rels), literal=False)
+    if isinstance(run, Issue):
+        return run
+    if run.returncode == 1:
+        return []
+    if run.returncode != 0:
+        return Issue(Severity.ERROR, "git.failed", f"git check-ignore failed (git exit {run.returncode})\n{run.output}")
+    return [name for name in run.stdout.split("\0") if name]
+
+
 def head_blob(ctx: GitContext, repo: Path, rel: str) -> bytes | None:
     """What HEAD holds for rel, as the work tree would have it (`cat-file --filters`); None when HEAD lacks the path.
 
@@ -229,6 +253,14 @@ def head_blob(ctx: GitContext, repo: Path, rel: str) -> bytes | None:
     """
     run = run_git(ctx, repo, "cat-file", "--filters", f"HEAD:{rel}")
     return run.raw if _ok(run) else None
+
+
+def commit_files(ctx: GitContext, repo: Path, rev: str = "HEAD") -> list[str] | None:
+    """The paths a commit changed (`diff-tree --root`, NUL-separated and unquoted); None when git cannot list them."""
+    run = run_git(ctx, repo, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "-z", rev)
+    if not _ok(run):
+        return None
+    return [name for name in run.raw.decode("utf-8", errors="replace").split("\0") if name]
 
 
 def status_entries(ctx: GitContext, repo: Path) -> list[str] | Issue:

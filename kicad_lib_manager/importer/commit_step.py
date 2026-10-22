@@ -14,7 +14,8 @@ from pathlib import Path
 from .. import gitops
 from ..gitops import GitContext, GitRun
 from ..models import Issue, Severity
-from .commit_plan import CommitPlan, parent_message, subject_of
+from .commit_plan import CommitPlan, changed_since_install, parent_message, pre_install_bytes, subject_of
+from .content import ContentText, binary_text, diff_text
 
 
 @dataclass(frozen=True)
@@ -307,6 +308,127 @@ def _run_failed(run: GitRun | Issue) -> bool:
     return isinstance(run, Issue) or run.returncode != 0
 
 
+def _precheck(ctx: GitContext, cplan: CommitPlan, expected_branch: str | None, bump_parent: bool) -> Issue | None:
+    """The first reason the commit must not start, or None. Reads only; nothing is written (D-11, D-16).
+
+    Everything the probe saw is checked again here, because the Result view can stay open while the
+    files or either repo change.
+    """
+    errors = [issue for issue in cplan.issues if issue.severity is Severity.ERROR]
+    if errors:
+        return errors[0]
+    stale = changed_since_install(cplan)
+    if stale:
+        plural = "s" if len(stale) != 1 else ""
+        return Issue(
+            Severity.ERROR, "commit.stale_file",
+            f"Not committed: {', '.join(stale)} changed after the install (for example, edited in KiCad). "
+            f"Check the file{plural} and commit by hand.",
+        )
+    reason = _custom_unavailable(ctx, cplan)
+    if reason:
+        return Issue(Severity.ERROR, "commit.refused", f"Not committed: {reason}")
+    custom = cplan.custom_dir
+    branch = gitops.current_branch(ctx, custom)
+    if branch is None:
+        return Issue(Severity.ERROR, "commit.refused", "Not committed: Custom is on a detached HEAD.")
+    if expected_branch is not None and branch != expected_branch:
+        return Issue(
+            Severity.ERROR, "commit.branch_changed",
+            f"Custom's branch changed from {expected_branch} to {branch} since the check; nothing was committed",
+        )
+    if bump_parent:
+        parent_ok, parent_reason, _, _ = _parent_state(ctx, cplan)
+        if not parent_ok:
+            return Issue(
+                Severity.ERROR, "commit.parent_unavailable",
+                f"Not committed: {parent_reason}. Untick the parent option to commit in Custom only.",
+            )
+    rels = [f.rel for f in cplan.files]
+    tracked = gitops.tracked_paths(ctx, custom, rels)
+    if isinstance(tracked, Issue):
+        return Issue(Severity.ERROR, "commit.custom_failed", f"Commit in Custom failed: {tracked.text}; nothing was committed")
+    ignored = gitops.ignored_paths(ctx, custom, [rel for rel in rels if rel not in tracked])
+    if isinstance(ignored, Issue):
+        return Issue(Severity.ERROR, "commit.custom_failed", f"Commit in Custom failed: {ignored.text}; nothing was committed")
+    if ignored:  # never added with a force flag (RESEARCH Pitfall 4)
+        verb = "is" if len(ignored) == 1 else "are"
+        return Issue(Severity.ERROR, "commit.ignored", f"Not committed: {', '.join(ignored)} {verb} ignored by Custom's .gitignore.")
+    return None
+
+
+def _custom_failure(run: GitRun | Issue, *, committing: bool) -> CommitOutcome:
+    """The ERROR outcome of a rejected Custom write; hook output arrives on stderr and is kept whole (Pitfall 6)."""
+    output = run.text if isinstance(run, Issue) else run.output
+    if committing and isinstance(run, Issue) and run.code == "git.timeout":
+        text = (
+            f"Commit in Custom did not finish within {gitops.COMMIT_TIMEOUT:g} s "
+            "(check for a stuck hook or a leftover index.lock); nothing was committed."
+        )
+    else:
+        text = f"Commit in Custom failed ({_exit_text(run)}); nothing was committed\n{output}"
+    return _failed("commit.custom_failed", text, output)
+
+
+def commit_parent_ref(
+    ctx: GitContext, cplan: CommitPlan, subject: str
+) -> tuple[str | None, str, GitRun | Issue | None, tuple[Issue, ...]]:
+    """Commit only the Custom gitlink in the parent repo, after Custom's own commit exists.
+
+    Returns (short parent hash, final message, failing run, issues). The message is built here, from
+    the gitlink the parent committed before and Custom's HEAD now, so it lists every Custom commit
+    the bump covers, the earlier ones included (D-13). When the parent already points at Custom's
+    HEAD no commit is made and an INFO issue says so (RESEARCH Pitfall 12). The gitlink is read with
+    ls-tree, never parsed from diff output (Pitfall 13).
+    """
+    parent, custom = cplan.repo_root, cplan.custom_dir
+    old = gitops.committed_gitlink(ctx, parent, cplan.custom_rel)
+    new = gitops.head_commit(ctx, custom) or ""
+    if old is not None and old == new:
+        text = f"The parent repo already points at Custom {new[:7]}; no parent commit was needed"
+        return None, "", None, (Issue(Severity.INFO, "commit.parent_skipped", text),)
+    commits = gitops.log_range(ctx, custom, old, new) if old else []
+    message = parent_message(subject, cplan.custom_rel, old, new, commits or [], listed=commits is not None)
+    run = gitops.commit_gitlink(ctx, parent, message, cplan.custom_rel)
+    if _run_failed(run):
+        return None, message, run, ()
+    return gitops.short_hash(ctx, parent) or "?", message, None, ()
+
+
+def pre_import_diff(cplan: CommitPlan, rel: str, *, git: GitContext | None = None) -> ContentText:
+    """The D-09 view of one file: what HEAD holds against what the work tree held before the import.
+
+    The pre-import side is the Phase 4 backup copy whose hash is base_sha256. Reads files and runs
+    read-only git only.
+    """
+    cfile = next((f for f in cplan.files if f.rel == rel), None)
+    if cfile is None:
+        return ContentText(f"{rel} - HEAD vs before this import", rel, f"{rel} is not part of this commit.", "error")
+    shown = cfile.display
+    title = f"{shown} - HEAD vs before this import"
+    if cfile.base_sha256 is None:
+        return ContentText(title, shown, "This file did not exist before this import.", "text")
+    pre = pre_install_bytes(cfile, cplan.backup_dir)
+    if pre is None:
+        where = str(cplan.backup_dir) if cplan.backup_dir is not None else "(no backup folder was recorded)"
+        return ContentText(title, shown, f"The copy from before this import was not found in {where}.", "error")
+    ctx = _context(cplan, git)
+    if isinstance(ctx, Issue):
+        return ContentText(title, shown, f"Could not read HEAD: {ctx.text}.", "error")
+    head = gitops.head_blob(ctx, cplan.custom_dir, rel)
+    if head is not None and head == pre:
+        return ContentText(title, shown, "The file matched HEAD before this import.", "unchanged")
+    if cfile.kind == "model":
+        before = binary_text(f"{shown} (before this import)", len(pre), hashlib.sha256(pre).hexdigest())
+        if head is None:
+            return ContentText(title, shown, f"{shown} (not in HEAD)\n\n{before}", "binary")
+        at_head = binary_text(f"{shown} (HEAD)", len(head), hashlib.sha256(head).hexdigest())
+        return ContentText(title, shown, f"{at_head}\n\n{before}", "binary")
+    old_label = f"{shown} (HEAD)" if head is not None else f"{shown} (not in HEAD)"
+    body = diff_text(head or b"", pre, old_label, f"{shown} (before this import)")
+    return ContentText(title, shown, body, "diff")
+
+
 def run_commit(
     cplan: CommitPlan,
     message: str,
@@ -318,14 +440,19 @@ def run_commit(
 ) -> CommitOutcome:
     """Commit exactly the plan's files in Custom, then (optionally) only the Custom gitlink in the parent.
 
-    A failed parent commit keeps the Custom commit (D-03); nothing is retried and nothing is pushed.
-    expected_branch is the branch the probe saw; the refusals that use it come with plan 06-07.
+    Every refusal is decided by _precheck before the first git write. A rejected Custom commit leaves
+    HEAD unchanged and undoes the app's own intent-to-add entries; a failed parent commit keeps the
+    Custom commit (D-03). Nothing is retried and nothing is pushed.
+    expected_branch is the branch the probe saw.
     """
     ctx = _context(cplan, git)
     if isinstance(ctx, Issue):
         return _failed("commit.custom_failed", f"Commit unavailable: {ctx.text}")
     step = progress or (lambda *args: None)
     custom = cplan.custom_dir
+    refusal = _precheck(ctx, cplan, expected_branch, bump_parent)
+    if refusal is not None:
+        return CommitOutcome(issues=(refusal,))
     step("Committing in Custom...", 0, 2)
     rels = [f.rel for f in cplan.files]
     tracked = gitops.tracked_paths(ctx, custom, rels)
@@ -336,22 +463,12 @@ def run_commit(
         added = gitops.add_intent(ctx, custom, new)
         if _run_failed(added):
             gitops.unstage(ctx, custom, new)
-            output = added.text if isinstance(added, Issue) else added.output
-            return _failed(
-                "commit.custom_failed",
-                f"Commit in Custom failed ({_exit_text(added)}); nothing was committed\n{output}",
-                output,
-            )
+            return _custom_failure(added, committing=False)
     run = gitops.commit_paths(ctx, custom, message, rels)
     if _run_failed(run):
         if new:
             gitops.unstage(ctx, custom, new)
-        output = run.text if isinstance(run, Issue) else run.output
-        return _failed(
-            "commit.custom_failed",
-            f"Commit in Custom failed ({_exit_text(run)}); nothing was committed\n{output}",
-            output,
-        )
+        return _custom_failure(run, committing=True)
 
     short = gitops.short_hash(ctx, custom) or "?"
     branch = gitops.current_branch(ctx, custom) or "HEAD"
@@ -366,20 +483,27 @@ def run_commit(
         "custom_upstream": upstream[0] if upstream else None,
         "custom_ahead": upstream[1] if upstream else None,
     }
+    # the commit holds exactly the planned files, or the user is told it does not (RESEARCH Pitfall 1)
+    planned = set(rels)
+    committed_files = gitops.commit_files(ctx, custom)
+    if committed_files is not None and set(committed_files) != planned:
+        extra, missing = sorted(set(committed_files) - planned), sorted(planned - set(committed_files))
+        stop = " The parent repo was not updated." if bump_parent else ""
+        issues.append(Issue(
+            Severity.ERROR, "commit.unexpected_files",
+            f"The Custom commit {short} was made, but its files differ from the list shown: "
+            f"{extra} added, {missing} missing.{stop}",
+        ))
+        return CommitOutcome(issues=tuple(issues), **fields)
     if not bump_parent:
         return CommitOutcome(issues=tuple(issues), **fields)
 
     step("Committing Custom ref in parent...", 1, 2)
     parent = cplan.repo_root
-    old = gitops.committed_gitlink(ctx, parent, cplan.custom_rel)
-    new_head = gitops.head_commit(ctx, custom) or ""
-    commits = gitops.log_range(ctx, custom, old, new_head) if old else []
-    text = parent_message(
-        subject_of(message), cplan.custom_rel, old, new_head, commits or [], listed=commits is not None
-    )
+    parent_short, text, parent_run, parent_issues = commit_parent_ref(ctx, cplan, subject_of(message))
     fields["parent_message"] = text
-    parent_run = gitops.commit_gitlink(ctx, parent, text, cplan.custom_rel)
-    if _run_failed(parent_run):
+    issues.extend(parent_issues)
+    if parent_run is not None:
         subject = text.splitlines()[0].replace('"', '\\"')
         manual = f'git -C "{parent.as_posix()}" commit -m "{subject}" -- {cplan.custom_rel}'
         output = parent_run.text if isinstance(parent_run, Issue) else parent_run.output
@@ -389,8 +513,9 @@ def run_commit(
             f"{output}\nFinish it by hand: {manual}",
         ))
         return CommitOutcome(manual_command=manual, output=output, issues=tuple(issues), **fields)
+    if parent_short is None:  # the parent already points at Custom's HEAD: nothing to commit (D-13)
+        return CommitOutcome(issues=tuple(issues), **fields)
 
-    parent_short = gitops.short_hash(ctx, parent) or "?"
     parent_branch = gitops.current_branch(ctx, parent) or "HEAD"
     parent_upstream = gitops.upstream_ahead(ctx, parent)
     issues.append(Issue(
