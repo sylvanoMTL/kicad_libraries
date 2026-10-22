@@ -946,7 +946,7 @@ def test_picker_no_model_and_no_footprint_labels(qtbot, make_item_dialog, record
     assert dialog._model_label.full_text() == "No 3D model in this package"
     assert AMBER.lower() in dialog._model_label.styleSheet().lower()
     assert recorded[-1].model is None and recorded[-1].no_model is False
-    assert "install.no_model" in [i.code for i in dialog._plan.issues]
+    assert "intake.no_model" in [i.code for i in dialog._plan.issues]  # the package-level WARNING
 
     no_footprint = make_zip(
         tmp_path / "no_footprint.zip", [("part.kicad_sym", symbol_lib(("S1",), props=_DATASHEET))]
@@ -966,7 +966,7 @@ def test_picker_extends_note(qtbot, make_item_dialog, tmp_path):
         tmp_path / "extends.zip",
         [("pair.kicad_sym", extends_pair("PARENT_X", "CHILD_Y")), ("FP.kicad_mod", vendor_footprint("FP"))],
     )
-    dialog = make_item_dialog(zip_path)
+    dialog = make_item_dialog(zip_path, suggest_library=_good_suggestion)
     wait_current(qtbot, dialog)
     names = [dialog._symbol_combo.itemText(i) for i in range(dialog._symbol_combo.count())]
     assert names == ["PARENT_X", "CHILD_Y"]
