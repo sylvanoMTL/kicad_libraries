@@ -340,7 +340,8 @@ def test_refused_package_stays_on_start_and_logs(qtbot, make_dialog, tmp_path):
     dialog.open_path(bogus)
     qtbot.waitUntil(lambda: bool(logged), timeout=30000)
     assert dialog._stack.currentWidget() is dialog._start_page
-    assert "not a .zip file" in dialog._start_issues.text()
+    assert dialog._issue_box.isHidden() is False
+    assert any("not a .zip file" in row for row in issue_rows(dialog))
     assert dialog._plan is None
 
 

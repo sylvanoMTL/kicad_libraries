@@ -19,10 +19,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QStandardPaths, QThread, QTimer, Signal
-from PySide6.QtGui import QCloseEvent, QResizeEvent, QShowEvent
+from PySide6.QtGui import QCloseEvent, QColor, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QListWidget, QProgressBar,
-    QPushButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QListView,
+    QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSplitter,
+    QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from ..importer.applier import apply_plan
@@ -37,10 +38,24 @@ from ..importer.preview import file_counts, preview_sections
 from ..importer.suggest import LibrarySuggestion, suggest_library
 from ..kicad_process import kicad_running
 from ..models import Issue, Severity
+from ..settings import load_import_dir, save_import_dir
 from .preview_tree import PreviewTree
-from .theme import HEADING_PT, MUTED, SP_LG, SP_XL
+from .theme import AMBER, ERROR, HEADING_PT, MUTED, SP_LG, SP_XL
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
+_SEVERITY_COLOR = {Severity.ERROR: ERROR, Severity.WARNING: AMBER}
+_ISSUE_LIST_MAX_HEIGHT = 160
+_NOTHING_FOUND = "No KiCad symbol or footprint was found in this package."
+_CLOSING_REFUSED = "Pick another file."
+_CLOSING_EMPTY = "Check that you downloaded the KiCad format, then pick another file."
+
+# Vendor names of the adapters (importer/adapters) as shown in the package header
+_VENDOR_LABELS = {"UltraLibrarian": "Ultra Librarian", "Loose": "Loose files", "Unknown": "Unknown vendor"}
+
+
+def vendor_label(vendor: str) -> str:
+    """The display name of an adapter's vendor; an unmapped name is shown as it is."""
+    return _VENDOR_LABELS.get(vendor, vendor)
 
 _START_BODY = (
     "Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. "
@@ -259,6 +274,7 @@ class ImportDialog(QDialog):
         # The Downloads offer; replaced by the reading box while a package is read
         self._offer_ready = False
         self._offer_requested = False
+        self._offer_folder: Path | None = None
         self._offer_path: Path | None = None
         self._offer_row = QWidget()
         offer_lay = QHBoxLayout(self._offer_row)
@@ -285,17 +301,38 @@ class ImportDialog(QDialog):
 
         self._browse_btn = QPushButton("Browse zip...")
         self._browse_btn.clicked.connect(self._on_browse)
+        self._browse_folder_btn = QPushButton("Browse folder...")
+        self._browse_folder_btn.clicked.connect(self._on_browse_folder)
         buttons = QHBoxLayout()
         buttons.setSpacing(8)
         buttons.addWidget(self._browse_btn)
+        buttons.addWidget(self._browse_folder_btn)
         buttons.addStretch()
         lay.addLayout(buttons)
 
-        self._start_issues = QLabel()
-        self._start_issues.setTextFormat(Qt.TextFormat.PlainText)
-        self._start_issues.setWordWrap(True)
-        self._start_issues.hide()
-        lay.addWidget(self._start_issues)
+        # Shown only after a refused or empty package: the error state of the Start page (D-05)
+        self._issue_box = QWidget()
+        issue_lay = QVBoxLayout(self._issue_box)
+        issue_lay.setContentsMargins(0, 0, 0, 0)
+        issue_lay.setSpacing(8)
+        self._issue_heading = self._heading("This package can't be imported")
+        issue_lay.addWidget(self._issue_heading)
+        self._issue_list = QListWidget()
+        self._issue_list.setMaximumHeight(_ISSUE_LIST_MAX_HEIGHT)
+        self._issue_list.setWordWrap(True)
+        self._issue_list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self._issue_list.setResizeMode(QListView.ResizeMode.Adjust)
+        self._issue_list.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+        self._issue_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._issue_list.setAccessibleName("Package issues")
+        issue_lay.addWidget(self._issue_list)
+        self._issue_closing = QLabel()
+        self._issue_closing.setTextFormat(Qt.TextFormat.PlainText)
+        self._issue_closing.setWordWrap(True)
+        self._issue_closing.setStyleSheet(f"color: {MUTED};")
+        issue_lay.addWidget(self._issue_closing)
+        self._issue_box.hide()
+        lay.addWidget(self._issue_box)
 
         self._set_reading(False)
         self._start_page = page
@@ -308,8 +345,28 @@ class ImportDialog(QDialog):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
 
+        # Package header: name (bold), vendor (muted), Change... on the right, over a 1px line
+        header = QHBoxLayout()
+        header.setSpacing(8)
         self._package_label = QLabel()
-        lay.addWidget(self._package_label)
+        self._package_label.setTextFormat(Qt.TextFormat.PlainText)
+        font = self._package_label.font()
+        font.setBold(True)
+        self._package_label.setFont(font)
+        header.addWidget(self._package_label)
+        self._vendor_label = QLabel()
+        self._vendor_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._vendor_label.setStyleSheet(f"color: {MUTED};")
+        header.addWidget(self._vendor_label)
+        header.addStretch(1)
+        self._change_btn = QPushButton("Change...")
+        self._change_btn.clicked.connect(self._on_change)
+        header.addWidget(self._change_btn)
+        lay.addLayout(header)
+        rule = QFrame()
+        rule.setFrameShape(QFrame.Shape.HLine)
+        rule.setFixedHeight(1)
+        lay.addWidget(rule)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         splitter.setChildrenCollapsible(False)
@@ -415,6 +472,7 @@ class ImportDialog(QDialog):
         self._reading_box.setVisible(reading)
         self._offer_row.setVisible(not reading and self._offer_ready)
         self._browse_btn.setEnabled(not reading)
+        self._browse_folder_btn.setEnabled(not reading)
         self._offer_open_btn.setEnabled(not reading)
 
     # -- the Downloads offer (D-02): listed only, opened by an explicit click --------
@@ -445,6 +503,7 @@ class ImportDialog(QDialog):
         if self._closing:
             return
         self._offer_ready = True
+        self._offer_folder = folder
         self._offer_path = None
         self._offer_label.setToolTip("")
         self._offer_label.setStyleSheet("")
@@ -468,12 +527,32 @@ class ImportDialog(QDialog):
         if self._offer_path is not None:
             self.open_path(self._offer_path)
 
+    def _browse_start_dir(self) -> Path:
+        """Where a file dialog opens: the last import folder, else Downloads, else the home folder."""
+        saved = load_import_dir()
+        if saved is not None:
+            return saved
+        downloads = self._offer_folder if self._offer_ready else self._core.downloads_dir()
+        return downloads if downloads is not None else Path.home()
+
     def _on_browse(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open part package", "", "Zip packages (*.zip)"
+            self, "Open part package", str(self._browse_start_dir()), "Zip packages (*.zip)"
         )
         if path:
-            self.open_path(Path(path))
+            self._pick(Path(path))
+
+    def _on_browse_folder(self):
+        path = QFileDialog.getExistingDirectory(
+            self, "Open folder of KiCad files", str(self._browse_start_dir())
+        )
+        if path:
+            self._pick(Path(path))
+
+    def _pick(self, path: Path):
+        """A file or folder the user chose: remember where it came from, then open it."""
+        save_import_dir(path.parent)
+        self.open_path(path)
 
     def open_path(self, path: Path):
         """Open a zip or folder on a worker; the dialog owns the resulting Package."""
@@ -483,7 +562,8 @@ class ImportDialog(QDialog):
             self._building.wait()  # WR-04: never close the package under a running build
         self._discard_package()
         self._reset_edit_state()
-        self._start_issues.hide()
+        self._hide_issue_box()
+        self._reading_label.setText("Reading package...")
         self._set_reading(True)
         self._stack.setCurrentWidget(self._start_page)
         core, repo_root, layout, fp_dir = self._core, self._repo_root, self._repo_layout, self._kicad_fp_dir
@@ -539,7 +619,7 @@ class ImportDialog(QDialog):
             return
         issue = Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")
         self.issues_logged.emit([issue])
-        self._show_start_issues([issue])
+        self._show_start_issues([issue], refused=True)
 
     def _on_opened(self, worker: TaskWorker, outcome: OpenOutcome):
         if self._open_worker is worker:
@@ -554,8 +634,12 @@ class ImportDialog(QDialog):
         self.issues_logged.emit(issues)
         candidate = outcome.candidate
         if package.refused or candidate is None or not candidate.symbols:
+            # WR-06: package.issues are shown and logged even when detection found nothing.
+            # "Refused" also covers a detection ERROR (a KiCad 5-only package): there is no
+            # point in checking the download format then, only in picking another file.
+            refused = package.refused or any(i.severity is Severity.ERROR for i in issues)
             self._discard_package()
-            self._show_start_issues(issues)
+            self._show_start_issues(issues, refused)
             return
         self._candidate = candidate
         self._tools = outcome.tools
@@ -563,23 +647,38 @@ class ImportDialog(QDialog):
         self._existing = outcome.existing
         self.setWindowTitle(f"Import Part - {package.source.name}")
         self._package_label.setText(f"Package: {package.source.name}")
+        self._vendor_label.setText(vendor_label(candidate.vendor))
         self._fill_library_combo()
         self._preview_stack.setCurrentWidget(self._building_page)
         self._stack.setCurrentWidget(self._edit_page)
         self._request_rebuild()
 
-    def _show_start_issues(self, issues: list[Issue]):
-        lines = [
-            f"{_SEVERITY_GLYPH[i.severity]} {i.text}"
-            for i in issues
-            if i.severity in _SEVERITY_GLYPH
-        ]
-        if not lines:
-            lines = ["No KiCad symbol or footprint was found in this package."]
-        self._start_issues.setText("\n".join(lines))
-        self._start_issues.show()
+    def _hide_issue_box(self):
+        self._issue_box.hide()
+        self._issue_list.clear()
+
+    def _show_start_issues(self, issues: list[Issue], refused: bool):
+        """Fill the Start page's error state: ERROR and WARNING rows, then the closing line.
+
+        Rows are QListWidgetItem text, which is plain: no markup from a package is interpreted.
+        """
+        self._issue_list.clear()
+        shown = [i for i in issues if i.severity in _SEVERITY_GLYPH]
+        for issue in shown:
+            item = QListWidgetItem(f"{_SEVERITY_GLYPH[issue.severity]} {issue.text}")
+            item.setForeground(QColor(_SEVERITY_COLOR[issue.severity]))
+            self._issue_list.addItem(item)
+        if not shown:
+            self._issue_list.addItem(QListWidgetItem(_NOTHING_FOUND))
+        self._issue_closing.setText(_CLOSING_REFUSED if refused else _CLOSING_EMPTY)
+        # Few rows need less than the 160 px cap; many rows scroll inside it
+        row = max(self._issue_list.sizeHintForRow(0), self._issue_list.fontMetrics().height() + 8)
+        wanted = row * self._issue_list.count() + 2 * self._issue_list.frameWidth() + 4
+        self._issue_list.setMinimumHeight(min(_ISSUE_LIST_MAX_HEIGHT, wanted))
+        self._issue_box.show()
         self._set_reading(False)
         self._stack.setCurrentWidget(self._start_page)
+        self._browse_btn.setFocus()
 
     def _fill_library_combo(self):
         suggestion = self._suggestion
@@ -715,6 +814,7 @@ class ImportDialog(QDialog):
         self._install_btn.setText("Install Part")
         self._install_btn.setEnabled(bool(ready))
         self._left_scroll.setEnabled(True)
+        self._change_btn.setEnabled(True)
         prefix = f"{self._install_failure}  " if self._install_failure else ""
         self._strip.setText(prefix + self._status_text(plan, current))
 
@@ -757,6 +857,7 @@ class ImportDialog(QDialog):
         )
         self._install_worker = worker
         self._left_scroll.setEnabled(False)
+        self._change_btn.setEnabled(False)
         self._install_btn.setEnabled(False)
         self._install_btn.setText("Installing...")
         self._strip.setText("Installing...")
@@ -803,6 +904,30 @@ class ImportDialog(QDialog):
         self._stack.setCurrentWidget(self._result_page)
         self._close_btn.setAutoDefault(True)
         self._close_btn.setDefault(True)
+
+    # -- Change... (D-02): back to the Start page, nothing is asked ------------------
+
+    def _on_change(self):
+        """Discard this package and every edit made to it; nothing has been written, so no question.
+
+        A running build is waited for, then the package is closed (WR-04). _reset_edit_state bumps
+        the generation, so a build result still queued for this package is dropped when it arrives.
+        """
+        if self.is_installing() or self._closing or self._open_worker is not None:
+            return
+        building = self._building
+        if building is not None:
+            building.wait()
+        self._building = None
+        self._discard_package()
+        self._reset_edit_state()
+        self.setWindowTitle("Import Part")
+        self._package_label.clear()
+        self._vendor_label.clear()
+        self._hide_issue_box()
+        self._set_reading(False)
+        self._stack.setCurrentWidget(self._start_page)
+        self._browse_btn.setFocus()
 
     # -- lifetime (WR-04) ---------------------------------------------------------
 

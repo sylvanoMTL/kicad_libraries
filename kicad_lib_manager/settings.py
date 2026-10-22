@@ -41,6 +41,24 @@ def save_kicad_fp_dir(path: Path) -> None:
     s.setValue("kicad_fp_dir", str(path))
 
 
+# ── Import folder ────────────────────────────────────────────────────
+
+def load_import_dir() -> Path | None:
+    """The folder the last import was picked from; the stored value is untrusted, so re-check it."""
+    s = get_settings()
+    val = s.value("import/last_dir", "")
+    if val:
+        p = Path(str(val))
+        if p.is_dir():
+            return p
+    return None
+
+
+def save_import_dir(path: Path) -> None:
+    s = get_settings()
+    s.setValue("import/last_dir", str(path))
+
+
 # ── Destination folder history ────────────────────────────────────────
 
 def load_dest_history() -> list[str]:
