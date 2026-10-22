@@ -371,3 +371,119 @@ def test_preview_sections_follow_plan_ops(ul_package, custom_copy):
     (fresh_files,) = preview_sections(fresh, candidate, options)
     assert fresh_files.rows[0].text == "+ Custom/Footprints/A_x_TI.pretty/"
     assert file_counts(fresh, candidate, options).new == 3
+
+
+# -- Start page (plan 05-05): these tests use a synthetic Custom/ layout and fake core calls, so
+# they run without the Custom submodule ---------------------------------------------------------
+
+import os  # noqa: E402
+
+from kicad_lib_manager.importer.layout import RepoLayout  # noqa: E402
+from kicad_lib_manager.importer.package import Package  # noqa: E402
+from kicad_lib_manager.models import Issue, Severity  # noqa: E402
+
+
+@pytest.fixture
+def start_layout(tmp_path):
+    from zipfixtures import CURRENT_CUSTOM_FOOTPRINT_LIBS, CURRENT_CUSTOM_SYMBOL_LIBS, write_custom_layout
+
+    repo = write_custom_layout(tmp_path / "repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    return RepoLayout.for_repo(repo)
+
+
+@pytest.fixture
+def downloads(tmp_path):
+    folder = tmp_path / "Downloads"
+    folder.mkdir()
+    return folder
+
+
+def _zip_at(folder: Path, name: str, age_seconds: float) -> Path:
+    path = folder / name
+    path.write_bytes(b"PK")
+    when = time.time() - age_seconds
+    os.utime(path, (when, when))
+    return path
+
+
+def fake_package(path: Path, issues=()) -> Package:
+    return Package(source=Path(path), kind="zip", issues=list(issues))
+
+
+@pytest.fixture
+def make_start_dialog(qtbot, start_layout, downloads, gates):
+    def make(show: bool = True, **changes) -> ImportDialog:
+        core = replace(
+            ImportCore(),
+            detect_tools=lambda kicad_fp_dir: ToolContext(),
+            downloads_dir=lambda: downloads,
+            **changes,
+        )
+        dialog = ImportDialog(start_layout.repo_root, start_layout, core=core)
+        qtbot.addWidget(dialog)
+        if show:
+            dialog.show()
+        return dialog
+
+    return make
+
+
+def wait_offer(qtbot, dialog: ImportDialog) -> None:
+    qtbot.waitUntil(lambda: dialog._offer_label.isVisible(), timeout=10000)
+
+
+def test_start_page_offers_newest_zip(qtbot, make_start_dialog, downloads):
+    _zip_at(downloads, "older.zip", 7200)
+    newer = _zip_at(downloads, "newer.zip", 5)
+    dialog = make_start_dialog()
+    wait_offer(qtbot, dialog)
+    assert dialog._offer_label.text() == "Newest in Downloads: newer.zip (just now)"
+    assert dialog._offer_label.toolTip() == str(newer)
+    assert dialog._offer_open_btn.isVisible()
+    assert dialog._offer_open_btn.isEnabled()
+
+
+def test_start_page_no_zip_message(qtbot, make_start_dialog, downloads):
+    (downloads / "notes.txt").write_text("x", encoding="utf-8")
+    dialog = make_start_dialog()
+    wait_offer(qtbot, dialog)
+    assert dialog._offer_label.text() == "No .zip files found in your Downloads folder."
+    assert not dialog._offer_open_btn.isVisible()
+
+
+def test_start_page_no_downloads_folder(qtbot, make_start_dialog):
+    dialog = make_start_dialog(downloads_dir=lambda: None)
+    wait_offer(qtbot, dialog)
+    assert dialog._offer_label.text() == "Downloads folder not found."
+    assert not dialog._offer_open_btn.isVisible()
+
+
+def test_start_page_never_auto_opens(qtbot, make_start_dialog, downloads):
+    offered = _zip_at(downloads, "part.zip", 30)
+    calls: list[Path] = []
+
+    def recording_open(path, repo_root, progress=None):
+        calls.append(Path(path))
+        return fake_package(path)
+
+    dialog = make_start_dialog(open_package=recording_open, detect_candidate=lambda package: (None, []))
+    wait_offer(qtbot, dialog)
+    qtbot.wait(150)
+    assert calls == []
+
+    dialog._offer_open_btn.click()
+    qtbot.waitUntil(lambda: len(calls) == 1, timeout=10000)
+    assert calls == [offered]
+
+
+def test_start_page_layout_and_focus(qtbot, make_start_dialog):
+    dialog = make_start_dialog()
+    assert dialog._start_heading.text() == "Choose a part package"
+    assert dialog._start_heading.font().pointSize() == 10
+    assert dialog._start_heading.font().bold()
+    assert dialog._start_body.text() == (
+        "Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. "
+        "Nothing is written until you click Install Part."
+    )
+    assert dialog._start_column.maximumWidth() == 560
+    assert dialog.focusWidget() is dialog._browse_btn
