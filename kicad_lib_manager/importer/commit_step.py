@@ -118,10 +118,7 @@ def _detached_state(ctx: GitContext, cplan: CommitPlan, short: str) -> tuple[str
             "Update local main first, then commit the imported files by hand. Nothing was switched or committed."
         )
         return "refused", reason, ref, 0
-    reason = (
-        f"Custom is on a detached HEAD at {short} that is not on main's history. "
-        "Nothing was switched or committed."
-    )
+    reason = f"Custom is on a detached HEAD at {short} that is not on main's history. Nothing was switched or committed."
     return "refused", reason, ref, 0
 
 
