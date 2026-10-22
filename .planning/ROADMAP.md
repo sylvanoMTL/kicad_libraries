@@ -219,7 +219,7 @@ Plans:
   3. If `Custom` is on a detached HEAD that lies on `main`'s history, the user is offered a switch to `main` before committing. Otherwise the commit is refused with an explanation and nothing is committed.
   4. No importer code path pushes. After a commit, the local branches are ahead of their remotes and no remote has changed.
 
-**Plans**: 7/8 plans executed
+**Plans**: 8/8 plans executed
 
 Plans:
 **Wave 1**
@@ -238,7 +238,7 @@ Plans:
 - [x] 06-07-PLAN.md — Exact commit on real git: refusals before any write (D-11 stale file, changed branch, parent re-check, ignored path), hook/lock/timeout handling (D-06, D-03), bystanders untouched, awkward names, trailers round trip, final parent message, D-09 diff content (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
-- [ ] 06-08-PLAN.md — Dialog wiring: switch round trip with re-probe, Close lock, the D-02 log line, D-09 diff view, click-gated git, scrolling Result view, WR-04 fix, full suite and owner UAT on the real repo (wave 5)
+- [x] 06-08-PLAN.md — Dialog wiring: switch round trip with re-probe, Close lock, the D-02 log line, D-09 diff view, click-gated git, scrolling Result view, WR-04 fix, full suite and owner UAT on the real repo (wave 5)
 
 **UI hint**: yes
 **Research flag**: Spike early. `Custom` is on a detached HEAD, and its gitdir is worktree-private (`.git/worktrees/Kicad_Libraries-importer/modules/Custom`). How `git commit -- Custom` behaves in the parent under the owner's hooks is unverified.
@@ -268,7 +268,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
-| 6. Git Commit Step | 7/8 | In Progress | - |
+| 6. Git Commit Step | 8/8 | In Progress | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
 
 ## Backlog
