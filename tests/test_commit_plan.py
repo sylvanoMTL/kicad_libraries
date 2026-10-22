@@ -6,6 +6,7 @@ without running an install; one test runs a real Ultra Librarian install into a 
 """
 
 import hashlib
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -252,3 +253,154 @@ def test_pre_install_bytes_picks_matching_backup(install, tmp_path):
     assert commit_plan.pre_install_bytes(footprint, backups) is None
     write(backups / f"{name}_backup_2", b"changed since")
     assert commit_plan.pre_install_bytes(symbols, backups) is None
+
+
+# ── The default message (D-18) ──────────────────────────────────────────────────────────────
+
+
+def test_default_message_layout(install):
+    message = commit_plan.default_message(install.commit_plan())
+
+    assert message == (
+        "Add P1 to IC_Battery_Charger_TI\n"
+        "\n"
+        "Symbol: P1\n"
+        "Footprint: IC_Battery_Charger_TI:FP1\n"
+        "3D model: P1.step\n"
+        "\n"
+        "Import-Vendor: Ultra Librarian\n"
+        "Import-Package: ul_P1.zip\n"
+        "Import-Date: 2026-10-22"
+    )
+
+
+def test_default_message_date_is_the_local_date(install):
+    cplan = commit_plan.build_commit_plan(install.result(), install.plan(), vendor_label="V")
+
+    assert cplan.date == date.today().isoformat()
+
+
+def test_default_message_new_library_verb(install):
+    cplan = install.commit_plan(plan_kwargs={"new_library": True}, new_library=True)
+
+    assert commit_plan.default_message(cplan).splitlines()[0] == f"Add P1 to new library {LIB}"
+
+
+def test_default_message_overwrite_verb(install):
+    conflict = Conflict("symbol:P1", "symbol", "P1", "existing", resolution=Resolution("overwrite"))
+    cplan = install.commit_plan(plan_kwargs={"conflicts": (conflict,)})
+
+    assert commit_plan.default_message(cplan).splitlines()[0] == f"Update P1 in {LIB}"
+
+
+def test_default_message_omits_missing_lines(install):
+    cplan = install.commit_plan(vendor_label="", plan_kwargs={"footprint": None, "model": None}, source=None)
+
+    lines = commit_plan.default_message(cplan).splitlines()
+
+    assert not any(line.startswith(("Footprint:", "3D model:", "Import-Package:")) for line in lines)
+    assert "Symbol: P1" in lines
+    assert "Import-Vendor: Unknown vendor" in lines
+    assert "Import-Date: 2026-10-22" in lines
+
+
+def test_default_message_blank_vendor_label_says_unknown(install):
+    cplan = replace(install.commit_plan(), vendor="  \t ")
+
+    assert "Import-Vendor: Unknown vendor" in commit_plan.default_message(cplan).splitlines()
+
+
+def test_default_message_sanitises_controls(install):
+    cplan = install.commit_plan(source=Path("ev\r\nil\tImport-Vendor: X.zip"))
+
+    message = commit_plan.default_message(cplan)
+
+    assert [line for line in message.splitlines() if line.startswith("Import-Vendor:")] == ["Import-Vendor: Ultra Librarian"]
+    assert "Import-Package: ev il Import-Vendor: X.zip" in message.splitlines()
+    assert not any(ord(char) < 32 for char in message.replace("\n", ""))
+
+
+def test_default_message_cannot_be_split_by_unicode_line_breaks(install):
+    cplan = replace(install.commit_plan(), symbol="a\x85b c d\x1b[31m")
+
+    message = commit_plan.default_message(cplan)
+
+    assert message.splitlines()[0] == f"Add a b c d [31m to {LIB}"
+    assert len(message.splitlines()) == len(message.split("\n"))
+
+
+def test_default_message_skips_values_that_sanitise_to_nothing(install):
+    cplan = replace(install.commit_plan(), package="\r\n\t", footprint=" \n ", model="\x00")
+
+    lines = commit_plan.default_message(cplan).splitlines()
+
+    assert not any(line.startswith(("Footprint:", "3D model:", "Import-Package:")) for line in lines)
+
+
+def test_default_message_keeps_unicode(install):
+    cplan = replace(install.commit_plan(), symbol="Pièce—1")
+
+    lines = commit_plan.default_message(cplan).splitlines()
+
+    assert lines[0] == f"Add Pièce—1 to {LIB}"
+    assert "Symbol: Pièce—1" in lines
+
+
+def test_default_message_has_no_local_paths(install):
+    source = Path.home() / "Downloads" / "ul_P1.zip"
+    message = commit_plan.default_message(install.commit_plan(source=source))
+
+    assert "ul_P1.zip" in message
+    for private in (str(Path.home()), Path.home().as_posix(), "Downloads", str(install.layout.repo_root)):
+        assert private not in message
+
+
+def test_default_message_package_folder_carries_the_folder_name(install):
+    source = Path.home() / "Downloads" / "LIB_P1_folder"
+
+    message = commit_plan.default_message(install.commit_plan(source=source))
+
+    assert "Import-Package: LIB_P1_folder" in message.splitlines()
+    assert "Downloads" not in message
+
+
+# ── The parent message (D-18, D-19) ─────────────────────────────────────────────────────────
+
+
+def test_parent_message_lists_commits():
+    message = commit_plan.parent_message(
+        "Add P1 to L", "Custom", "a" * 40, "b" * 40, [("1111111", "First"), ("2222222", "Add P1 to L")]
+    )
+
+    assert message == "Update Custom: Add P1 to L\n\nCustom aaaaaaa..bbbbbbb\n- 1111111 First\n- 2222222 Add P1 to L"
+
+
+def test_parent_message_without_old_and_unlisted():
+    no_old = commit_plan.parent_message("S", "Custom", None, "b" * 40, [("1111111", "First")])
+    unlisted = commit_plan.parent_message("S", "Custom", "a" * 40, "b" * 40, [], listed=False)
+
+    assert "Custom bbbbbbb" in no_old.splitlines()
+    assert "Custom ..bbbbbbb" not in no_old
+    assert "(the Custom commits since aaaaaaa could not be listed)" in unlisted.splitlines()
+    assert not any(line.startswith("- ") for line in unlisted.splitlines())
+
+
+def test_parent_message_sanitises_the_subject_and_commit_lines():
+    message = commit_plan.parent_message("S\nTrailer: x", "Custom", "a" * 40, "b" * 40, [("1111111", "A\r\nB")])
+
+    assert message.splitlines()[0] == "Update Custom: S Trailer: x"
+    assert "- 1111111 A B" in message.splitlines()
+
+
+def test_parent_preview_placeholder():
+    preview = commit_plan.parent_preview("S", "Custom", "a" * 40, [("1111111", "First")])
+
+    lines = preview.splitlines()
+    assert "Custom aaaaaaa..<new commit>" in lines
+    assert "- 1111111 First" in lines
+    assert "- <new commit> S" in lines
+
+
+def test_subject_of():
+    assert commit_plan.subject_of("\n\n  Add X  \nbody") == "Add X"
+    assert commit_plan.subject_of("   ") == ""
