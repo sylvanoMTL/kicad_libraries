@@ -95,8 +95,11 @@ def _repos(root: Path) -> GitRepos:
     )
 
 
-def _build(root: Path, autocrlf: bool, populate) -> GitRepos:
-    """Create the remotes, the parent clone and the initialised Custom submodule; Custom stays detached."""
+def _build(root: Path, autocrlf: bool, populate, remote_branch: str = "main") -> GitRepos:
+    """Create the remotes, the parent clone and the initialised Custom submodule; Custom stays detached.
+
+    remote_branch names the only branch of the Custom remote (the parent remote always uses main).
+    """
     crlf = "true" if autocrlf else "false"
     (root / "gitconfig").write_text(
         "[user]\n\tname = Fixture User\n\temail = fixture@example.invalid\n"
@@ -105,15 +108,15 @@ def _build(root: Path, autocrlf: bool, populate) -> GitRepos:
         encoding="utf-8",
     )
     repos = _repos(root)
-    for remote in (repos.custom_remote, repos.parent_remote):
-        repos.git(root, "init", "--bare", "-b", "main", str(remote))
+    for remote, branch in ((repos.custom_remote, remote_branch), (repos.parent_remote, "main")):
+        repos.git(root, "init", "--bare", "-b", branch, str(remote))
 
     seed_custom = root / "seed_custom"
     repos.git(root, "clone", str(repos.custom_remote), str(seed_custom))
     populate(seed_custom)
     repos.git(seed_custom, "add", "-A")
     repos.git(seed_custom, "commit", "-m", "Seed Custom")
-    repos.git(seed_custom, "push", "origin", "HEAD:main")
+    repos.git(seed_custom, "push", "origin", f"HEAD:{remote_branch}")
 
     seed_parent = root / "seed_parent"
     repos.git(root, "clone", str(repos.parent_remote), str(seed_parent))
@@ -143,17 +146,23 @@ def _template(autocrlf: bool) -> Path:
 
 
 def make_superproject(
-    root: Path, *, custom_branch: str | None = "main", autocrlf: bool = False, populate=populate_custom
+    root: Path,
+    *,
+    custom_branch: str | None = "main",
+    autocrlf: bool = False,
+    populate=populate_custom,
+    remote_branch: str = "main",
 ) -> GitRepos:
     """Build the bare remotes, the parent repo and its Custom submodule under root.
 
     custom_branch is the branch Custom is switched to; None leaves the detached HEAD that
     `submodule update` produces. The default populate is built once per session and copied;
     after the copy every absolute path in the repo config is pointed at the copy.
+    remote_branch renames the Custom remote's only branch (for a Custom with neither main nor origin/main).
     """
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    if populate is populate_custom:
+    if populate is populate_custom and remote_branch == "main":
         shutil.copytree(_template(autocrlf), root, dirs_exist_ok=True, ignore=shutil.ignore_patterns("seed_*"))
         repos = _repos(root)
         repos.git(repos.parent, "config", "remote.origin.url", repos.parent_remote.as_posix())
@@ -162,7 +171,7 @@ def make_superproject(
         for repo in (repos.parent, repos.custom):
             _local_config(repos, repo, autocrlf)
     else:
-        repos = _build(root, autocrlf, populate)
+        repos = _build(root, autocrlf, populate, remote_branch)
     if custom_branch is not None:
         repos.git(repos.custom, "switch", custom_branch)
     return repos
@@ -229,3 +238,42 @@ def import_files(
         backup_dir=None,
         issues=(),
     )
+
+
+# -- detached-HEAD helpers (fixtures may use any git command: they are not the app) --------------------
+
+
+def detach(repos: GitRepos, rev: str = "HEAD") -> None:
+    """Detach Custom's HEAD at rev."""
+    repos.git(repos.custom, "switch", "--detach", rev)
+
+
+def commit_file(repos: GitRepos, repo: Path, rel: str, data: bytes, message: str) -> str:
+    """Write data to repo/rel, commit only that file and return the full commit hash."""
+    path = repo / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    repos.git(repo, "add", "--", rel)
+    repos.git(repo, "commit", "-m", message, "--", rel)
+    return repos.git(repo, "rev-parse", "HEAD").strip()
+
+
+def advance_remote_main(repos: GitRepos, n: int = 1) -> str:
+    """Add n commits to the Custom remote's main from a throwaway clone, then fetch them into Custom.
+
+    Returns the new tip. Custom's local main is left where it was, so it falls behind origin/main.
+    """
+    clone = repos.root / "advance_clone"
+    repos.git(repos.root, "clone", str(repos.custom_remote), str(clone))
+    for number in range(1, n + 1):
+        commit_file(repos, clone, f"advance_{number}.txt", f"{number}\n".encode(), f"Remote commit {number}")
+    repos.git(clone, "push", "origin", "HEAD:main")
+    tip = repos.git(clone, "rev-parse", "HEAD").strip()
+    repos.git(repos.custom, "fetch", "origin")
+    shutil.rmtree(clone, ignore_errors=True)
+    return tip
+
+
+def delete_local_branch(repos: GitRepos, name: str) -> None:
+    """Delete a local branch of Custom (it must not be checked out)."""
+    repos.git(repos.custom, "branch", "-D", name)
