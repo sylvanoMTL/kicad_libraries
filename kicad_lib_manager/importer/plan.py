@@ -44,8 +44,11 @@ class InstallOptions:
 
     An empty or whitespace-only value, datasheet, description, manufacturer or mpn means "not set"
     and becomes None, so the vendor value is kept (WR-05; a Qt line edit returns "" for an untouched
-    field). There is no way to ask for an empty value: an explicit "clear this field" outcome is a
-    Phase 5 preview decision, so until then a deliberate blank edit installs the vendor value.
+    field). A caller that wants an empty value names the field in `cleared` (D-13, the Phase 5
+    preview): such a field with a blank or None value is stored as "" and installs as an empty
+    property. Text is always kept exactly as typed. Value and mpn cannot be cleared; build_plan
+    refuses an empty one, because mpn names the 3D model file. An unknown name in `cleared` raises
+    ValueError, since it is a programming error.
     """
 
     library: str
@@ -61,11 +64,18 @@ class InstallOptions:
     manufacturer: str | None = None
     mpn: str | None = None
     resolutions: Mapping[str, Resolution] = field(default_factory=dict)
+    cleared: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "cleared", frozenset(self.cleared))
+        unknown = self.cleared.difference(_TEXT_OVERRIDES)
+        if unknown:
+            raise ValueError(f"cleared names unknown field(s): {', '.join(sorted(unknown))}")
         for name in _TEXT_OVERRIDES:
             text = getattr(self, name)
-            if isinstance(text, str) and not text.strip():
+            if name in self.cleared and (text is None or not text.strip()):
+                object.__setattr__(self, name, "")
+            elif isinstance(text, str) and not text.strip():
                 object.__setattr__(self, name, None)
 
 
