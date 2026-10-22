@@ -50,7 +50,7 @@ from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
 from .conflict_row import ConflictRow
 from .content_view import ContentViewDialog
-from .import_result import ElidedLabel, ImportResultView, kicad_running_text
+from .import_result import ElidedLabel, ImportResultView
 from .preview_tree import PreviewTree
 from .theme import (
     AMBER, AMBER_TINT, BORDER, DISPLAY_PT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY,
@@ -2113,8 +2113,9 @@ class ImportDialog(QDialog):
     def _on_kicad_running(self, library: str, names):
         if self._closing or not names:
             return
-        self._result_view.set_kicad_running(library)
-        self.issues_logged.emit([Issue(Severity.WARNING, "import.kicad_running", kicad_running_text(library))])
+        text = f"KiCad is running. Reopen KiCad's Symbol and Footprint editors to see {library}."
+        self._result_view.set_kicad_running(text)
+        self.issues_logged.emit([Issue(Severity.WARNING, "import.kicad_running", text)])
 
     def _on_written_file_activated(self, path: Path):
         """A Files written row was opened: show what the install wrote, read-only, in the content view (D-15)."""

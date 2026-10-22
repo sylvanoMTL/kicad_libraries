@@ -21,11 +21,6 @@ _STATUS_TITLES = {"library_list": "Library list", "tables": "Library tables"}
 _NO_WARNINGS = "No warnings."
 
 
-def kicad_running_text(library: str) -> str:
-    """The notice for a KiCad that is open while a library changed (POST-05); the log gets the same text."""
-    return f"KiCad is running. Reopen KiCad's Symbol and Footprint editors to see {library}."
-
-
 class ElidedLabel(QLabel):
     """One-line plain-text label that elides its text to fit the width; the full text stays available.
 
@@ -276,9 +271,9 @@ class ImportResultView(QWidget):
 
     # -- updates from the dialog and the main window ---------------------------------------------
 
-    def set_kicad_running(self, library: str):
-        """Show the notice that KiCad is open and must reopen its editors (POST-05, D-18)."""
-        self._kicad_notice.setText(f"⚠ {kicad_running_text(library)}")
+    def set_kicad_running(self, text: str):
+        """Show the notice that KiCad is open and must reopen its editors (POST-05, D-18); the dialog words it."""
+        self._kicad_notice.setText(f"⚠ {text}")
         self._kicad_notice.show()
 
     def set_status(self, row: str, text: str, severity: Severity):
