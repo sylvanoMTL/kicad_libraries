@@ -5,9 +5,12 @@ import re
 import types
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLabel, QPushButton, QTreeWidgetItem
+from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTreeWidgetItem
 
+from kicad_lib_manager.importer.commit_plan import CommitFile, CommitPlan
+from kicad_lib_manager.importer.commit_step import CommitProbe
 from kicad_lib_manager.importer.plan import Conflict, InstallResult
+from kicad_lib_manager.widgets.commit_panel import CommitPanel
 from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
 from kicad_lib_manager.widgets.import_result import ImportResultView
@@ -107,6 +110,67 @@ def test_help_import_page_failure_and_tables_claims():
         "keeps a backup of the replaced file",
     ):
         assert claim in page, claim
+
+
+def _panel_texts(panel) -> list[str]:
+    return [w.text() for w in panel.findChildren(QLabel)] + [w.text() for w in panel.findChildren(QAbstractButton)]
+
+
+def _commit_plan(tmp_path) -> CommitPlan:
+    """A small CommitPlan, in the shape of make_cplan in tests/test_commit_panel.py."""
+    rels = (
+        ("Symbols/IC_Test.kicad_sym", "symbol"),
+        ("Footprints/IC_Test.pretty/FP_X.kicad_mod", "footprint"),
+        ("3DModels/x.step", "model"),
+    )
+    files = tuple(
+        CommitFile(rel, f"Custom/{rel}", tmp_path / "Custom" / rel, kind, "0" * 64, None) for rel, kind in rels
+    )
+    return CommitPlan(
+        repo_root=tmp_path, custom_dir=tmp_path / "Custom", custom_rel="Custom", files=files,
+        library="IC_Test", new_library=False, symbol="PartX", footprint="IC_Test:FP_X", model="x.step",
+        vendor="Ultra Librarian", package="x.zip", date="2026-01-02", overwrite=False, backup_dir=None,
+        issues=(),
+    )
+
+
+def test_help_import_page_describes_commit_step(qtbot, tmp_path):
+    page = _page_text("importing")
+
+    # the labels a real panel shows, in the ready state and in the offer-to-switch state, are on the page
+    panel = CommitPanel()
+    qtbot.addWidget(panel)
+    panel.show_plan(_commit_plan(tmp_path))
+    panel.apply_probe(CommitProbe(
+        state="ready", branch="main", head="abc1234def5678", parent_ok=True, parent_branch="main",
+        gitlink_old="1111111aaaa", parent_dir=tmp_path,
+    ))
+    ready_texts = _panel_texts(panel)
+    panel.apply_probe(CommitProbe(
+        state="offer_switch", head="abc1234def",
+        reason="Custom is on a detached HEAD at abc1234 that is on main's history.",
+    ))
+    offer_texts = _panel_texts(panel)
+    shown = ready_texts + offer_texts
+    for label in ("Files to commit", "Also commit the Custom ref in the parent repo", "Switch to main"):
+        assert any(text.startswith(label) for text in shown), f"the panel no longer shows {label!r}"
+        assert label in page, label
+    assert panel.commit_button.text() == "Commit"
+    assert "<b>Commit</b>" in HELP_PAGES["importing"]  # the button, named as a button
+    assert "<h3>Commit</h3>" in HELP_PAGES["importing"]
+
+    # the section sits right after "Install and result" and before "Library tables"
+    raw = HELP_PAGES["importing"]
+    assert raw.index("<h3>Install and result</h3>") < raw.index("<h3>Commit</h3>") < raw.index("<h3>Library tables</h3>")
+
+    lowered = page.lower()
+    for claim in ("never pushed", "hooks", "detached", "uncommitted"):
+        assert claim in lowered, claim
+
+    # static text: no formatted vendor, user or path value (T-06-25)
+    section = raw[raw.index("<h3>Commit</h3>"):raw.index("<h3>Library tables</h3>")]
+    assert "{" not in section and "%s" not in section
+    assert str(tmp_path) not in section and "Ultra Librarian" not in section
 
 
 def test_help_dialog_opens_importing_page(qtbot):
