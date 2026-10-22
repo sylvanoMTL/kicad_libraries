@@ -918,10 +918,11 @@ class MainWindow(QMainWindow):
         about.exec()
 
     def closeEvent(self, event: QCloseEvent):
-        # An install cannot be interrupted: the window stays until it ends (D-10, T-05-33)
+        # An install or a git job cannot be interrupted: the window stays until it ends
+        # (D-07, D-10, T-05-33, T-06-24)
         dialog = self._import_dialog
         if dialog is not None:
-            if dialog.is_installing():
+            if dialog.is_installing() or dialog.is_committing():
                 event.ignore()
                 return
             # Waits for the dialog's workers and closes the opened package first
