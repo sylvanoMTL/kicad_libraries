@@ -657,6 +657,23 @@ def test_main_window_close_ignored_while_installing(make_window):
         w._import_dialog = None
 
 
+# -- plan 06-06 Task 1: nor can it close a dialog that runs a git job (D-07, T-06-24) -----------------
+
+def test_main_window_close_ignored_while_committing(make_window):
+    w = make_window([scan_with()])
+    w._import_dialog = types.SimpleNamespace(
+        is_installing=lambda: False,
+        is_committing=lambda: True,
+        reject=lambda: pytest.fail("rejected"),
+    )
+    try:
+        event = QCloseEvent()
+        w.closeEvent(event)
+        assert not event.isAccepted()
+    finally:
+        w._import_dialog = None
+
+
 # -- plan 05-11 Task 2: the status rows of the Result view (POST-01, POST-02, D-16, D-17) ----------------
 
 class RecordingDialog:
@@ -666,6 +683,9 @@ class RecordingDialog:
         self.calls = []
 
     def is_installing(self):
+        return False
+
+    def is_committing(self):
         return False
 
     def reject(self):
