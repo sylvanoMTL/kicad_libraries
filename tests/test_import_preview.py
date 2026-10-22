@@ -173,8 +173,9 @@ def test_rows_refused_plan(ul_package, ul_layout):
     sections = _sections(plan, candidate, options)
     assert sections["Files"].title == "Files (0)"
     assert list(sections) == ["Files", "Issues"]
-    first = sections["Issues"].rows[0]
-    assert first.text.startswith("✖ ") and first.tone == "error"
+    errors = [r for r in sections["Issues"].rows if r.tone == "error"]
+    assert len(errors) == 1 and errors[0].text.startswith("✖ ")
+    assert "SubCategory" in errors[0].text
     assert file_counts(plan, candidate, options) == FileCounts(0, 0, 0)
 
 
