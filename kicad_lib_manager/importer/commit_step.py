@@ -84,6 +84,47 @@ def _unavailable(state: str, reason: str) -> CommitProbe:
     return CommitProbe(state=state, reason=reason, issues=(_probe_issue(state, reason),))
 
 
+_LOCAL_MAIN = "refs/heads/main"
+_ORIGIN_MAIN = "refs/remotes/origin/main"
+
+
+def _detached_state(ctx: GitContext, cplan: CommitPlan, short: str) -> tuple[str, str, str | None, int]:
+    """Decide what a detached Custom HEAD allows: (state, reason, main ref, commits main is ahead).
+
+    A plain switch to main is offered only when main contains HEAD (D-15). A local main that does not
+    contain it while origin/main does is refused: committing there would move the parent's gitlink backwards.
+    """
+    custom = cplan.custom_dir
+    ref = gitops.main_ref(ctx, custom)
+    if ref is None:
+        return "refused", "Custom has no main branch (neither main nor origin/main exists)", None, 0
+    if gitops.is_ancestor(ctx, custom, "HEAD", ref) is True:
+        ahead = gitops.count_commits(ctx, custom, f"HEAD..{ref}") or 0
+        where = "main" if ref == _LOCAL_MAIN else "origin/main"
+        reason = (
+            f"Custom is on a detached HEAD at {short} that is on {where}'s history. "
+            f"main is {ahead} commit{'s' if ahead != 1 else ''} ahead."
+        )
+        if ref != _LOCAL_MAIN:
+            reason += " Switching creates a local main that tracks origin/main."
+        return "offer_switch", reason, ref, ahead
+    if (
+        ref == _LOCAL_MAIN
+        and gitops.has_ref(ctx, custom, _ORIGIN_MAIN)
+        and gitops.is_ancestor(ctx, custom, "HEAD", _ORIGIN_MAIN) is True
+    ):
+        reason = (
+            f"Custom's local main is behind origin/main and does not contain the checked-out commit {short}. "
+            "Update local main first, then commit the imported files by hand. Nothing was switched or committed."
+        )
+        return "refused", reason, ref, 0
+    reason = (
+        f"Custom is on a detached HEAD at {short} that is not on main's history. "
+        "Nothing was switched or committed."
+    )
+    return "refused", reason, ref, 0
+
+
 def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitProbe:
     """Read the git state of Custom and the parent repo; nothing is changed."""
     ctx = _context(cplan, git)
@@ -100,7 +141,9 @@ def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitP
     head = gitops.head_commit(ctx, custom) or ""
     if branch is None:
         short = gitops.short_hash(ctx, custom) or head[:7] or "unknown"
-        return _unavailable("refused", f"Custom is on a detached HEAD at {short}")
+        state, reason, ref, ahead = _detached_state(ctx, cplan, short)
+        issues = (_probe_issue(state, reason),) if state == "refused" else ()
+        return CommitProbe(state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead, issues=issues)
 
     parent_ok, parent_reason, parent_branch, gitlink_old = False, "", None, None
     parent_top = gitops.show_toplevel(ctx, cplan.repo_root)
@@ -117,12 +160,46 @@ def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitP
         state="ready",
         branch=branch,
         head=head,
+        not_main=branch != "main",  # a named branch is committed on as it is (D-14)
         parent_dir=cplan.repo_root,
         parent_ok=parent_ok,
         parent_reason=parent_reason,
         parent_branch=parent_branch,
         gitlink_old=gitlink_old,
     )
+
+
+@dataclass(frozen=True)
+class SwitchOutcome:
+    ok: bool
+    issues: tuple[Issue, ...] = ()
+    output: str = ""
+
+
+def switch_to_main(cplan: CommitPlan, *, git: GitContext | None = None) -> SwitchOutcome:
+    """Switch a detached Custom to main with a plain `git switch main`; the user's changes come along (D-15).
+
+    Nothing is stashed, reset or forced. Git refuses when the switch would overwrite local changes; that
+    refusal is reported as it is and HEAD, the index and the work tree stay as they were.
+    """
+    ctx = _context(cplan, git)
+    if isinstance(ctx, Issue):
+        return SwitchOutcome(False, (_probe_issue("unavailable", ctx.text),))
+    custom = cplan.custom_dir
+    branch = gitops.current_branch(ctx, custom)
+    if branch is not None:
+        return SwitchOutcome(False, (_probe_issue("refused", f"Custom is on branch {branch}, not a detached HEAD"),))
+    head = gitops.head_commit(ctx, custom) or ""
+    short = gitops.short_hash(ctx, custom) or head[:7] or "unknown"
+    state, reason, _, _ = _detached_state(ctx, cplan, short)
+    if state != "offer_switch":
+        return SwitchOutcome(False, (_probe_issue("refused", reason),))
+    run = gitops.switch_branch(ctx, custom, "main")
+    output = run.text if isinstance(run, Issue) else run.output
+    if _run_failed(run):
+        text = f"git refused to switch Custom to main; nothing was committed\n{output}"
+        return SwitchOutcome(False, (Issue(Severity.ERROR, "commit.switch_failed", text),), output)
+    return SwitchOutcome(True, (Issue(Severity.SUCCESS, "commit.switched", "Switched Custom to main"),), output)
 
 
 def _failed(code: str, text: str, output: str = "") -> CommitOutcome:

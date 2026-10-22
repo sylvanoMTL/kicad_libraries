@@ -129,6 +129,36 @@ def short_hash(ctx: GitContext, repo: Path, rev: str = "HEAD") -> str | None:
     return run.stdout.strip() or None if _ok(run) else None
 
 
+def has_ref(ctx: GitContext, repo: Path, ref: str) -> bool:
+    """True when ref names a commit; the exit code decides."""
+    return _ok(run_git(ctx, repo, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}"))
+
+
+def main_ref(ctx: GitContext, repo: Path) -> str | None:
+    """The ref that stands for main: the local branch when it exists, else origin/main, else None."""
+    for ref in ("refs/heads/main", "refs/remotes/origin/main"):
+        if has_ref(ctx, repo, ref):
+            return ref
+    return None
+
+
+def is_ancestor(ctx: GitContext, repo: Path, ancestor: str, descendant: str) -> bool | None:
+    """Whether ancestor is reachable from descendant (merge-base exits 0 or 1); None when git cannot tell."""
+    run = run_git(ctx, repo, "merge-base", "--is-ancestor", ancestor, descendant)
+    if isinstance(run, Issue) or run.returncode not in (0, 1):
+        return None
+    return run.returncode == 0
+
+
+def count_commits(ctx: GitContext, repo: Path, revs: str) -> int | None:
+    """How many commits `revs` selects (for example "HEAD..main"); None when git cannot count them."""
+    run = run_git(ctx, repo, "rev-list", "--count", revs)
+    try:
+        return int(run.stdout.strip()) if _ok(run) else None
+    except ValueError:
+        return None
+
+
 def committed_gitlink(ctx: GitContext, parent: Path, rel: str) -> str | None:
     """The commit the parent's HEAD records for the submodule at rel; None when HEAD has no such entry."""
     run = run_git(ctx, parent, "ls-tree", "-z", "HEAD", "--", rel)
@@ -179,6 +209,14 @@ def upstream_ahead(ctx: GitContext, repo: Path) -> tuple[str, int] | None:
 
 
 # -- writes: only the listed paths, nothing else ----------------------------------------------------
+
+
+def switch_branch(ctx: GitContext, repo: Path, name: str) -> GitRun | Issue:
+    """A plain `git switch name`: local changes come along, and git itself refuses a conflict.
+
+    A success also writes to stderr, so callers use the exit code only. Never forced, merged or discarded.
+    """
+    return run_git(ctx, repo, "switch", name)
 
 
 def _nul_paths(rels) -> bytes:
