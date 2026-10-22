@@ -639,6 +639,17 @@ def build_plan(
         empty.append(_err("install.empty_required", "MPN cannot be empty: it names the 3D model file; enter a part number"))
     if empty:
         return refuse(*empty)
+    # WR-02: creating a library needs its Custom folder; say so before anything is read or written
+    for exists, folder, code in (
+        (library in sym_libs, layout.symbols_dir, "install.symbols_dir_missing"),
+        (library in pretty_libs, layout.footprints_dir, "install.footprints_dir_missing"),
+    ):
+        if not exists and not folder.is_dir():
+            try:
+                shown = folder.relative_to(layout.repo_root).as_posix()
+            except ValueError:
+                shown = folder.name
+            return refuse(_err(code, f"Cannot create {library}: the {shown} folder is missing. Check the Custom submodule is checked out."))
     sym_item, fp_items, model_item, problems = _select(candidate, options)
     if problems or sym_item is None:
         return refuse(*problems)
