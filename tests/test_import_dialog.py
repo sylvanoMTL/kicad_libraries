@@ -3148,3 +3148,374 @@ def test_no_commit_step_after_failed_or_empty_install(qtbot, make_install_dialog
     assert other._stack.currentWidget() is other._result_view
     assert slot.isHidden() and slot.maximumHeight() == 0
     assert commit_panel_of(other) == []
+
+
+# -- Phase 6 plan 06-08 Task 1: the dialog drives the whole commit step ---------------------------------
+
+from PySide6.QtWidgets import QMessageBox, QScrollArea  # noqa: E402
+
+from kicad_lib_manager.importer.commit_step import CommitOutcome, CommitProbe, SwitchOutcome  # noqa: E402
+from kicad_lib_manager.importer.content import ContentText  # noqa: E402
+
+D02_TEXT = "Not committed — commit manually: the imported files stay as uncommitted changes in Custom."
+
+
+def fake_ready_probe(branch: str = "main", **fields):
+    """A probe_commit fake that reports a ready Custom on `branch` and a ready parent."""
+
+    def probe(cplan, **kwargs):
+        return CommitProbe(
+            state="ready", branch=branch, not_main=branch != "main",
+            parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main", **fields,
+        )
+
+    return probe
+
+
+def fake_committed(text: str = "Committed abc1234 on main in Custom") -> CommitOutcome:
+    done = Issue(Severity.SUCCESS, "commit.custom_done", text)
+    return CommitOutcome(custom_commit="abc1234", custom_branch="main", issues=(done,))
+
+
+def watch_logged(dialog: ImportDialog) -> list:
+    """Every Issue the dialog sends to the log, in order."""
+    logged: list = []
+    dialog.issues_logged.connect(lambda issues: logged.extend(issues))
+    return logged
+
+
+def logged_codes(logged: list, code: str) -> list:
+    return [issue for issue in logged if issue.code == code]
+
+
+def gated(gates, started: threading.Event, make_value):
+    """A fake that signals `started`, waits for a gate from the gates fixture, then returns make_value()."""
+
+    def run(*args, **kwargs):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return make_value()
+
+    return run
+
+
+def test_commit_switch_flow(qtbot, make_install_dialog, gates):
+    probes: list[int] = []
+    started = threading.Event()
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        if len(probes) == 1:
+            return CommitProbe(
+                state="offer_switch", reason="Custom is on a detached HEAD at abc1234.", head="abc1234" + "0" * 33,
+                parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main",
+            )
+        return fake_ready_probe()(cplan)
+
+    switched = SwitchOutcome(ok=True, issues=(Issue(Severity.SUCCESS, "commit.switched", "Switched Custom to main"),))
+    dialog = make_install_dialog(probe_commit=probe, switch_to_main=gated(gates, started, lambda: switched))
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "offer_switch", timeout=30000)
+
+    panel._switch_button.click()
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+    assert panel.state() == "switching"
+    assert dialog.is_committing()
+    assert not dialog._result_view.close_button.isEnabled()
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    assert len(probes) == 2
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert [i.text for i in logged_codes(logged, "commit.switched")] == ["Switched Custom to main"]
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    assert dialog._result_view.close_button.isEnabled()
+
+
+def test_commit_switch_failure_shows_reason(qtbot, make_install_dialog):
+    probes: list[int] = []
+    commits: list[int] = []
+    reason = "git refused to switch Custom to main; nothing was committed\nerror: Your local changes would be overwritten"
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return CommitProbe(
+            state="offer_switch", reason="Custom is on a detached HEAD at abc1234.", head="abc1234" + "0" * 33,
+            parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main",
+        )
+
+    def refuse(cplan, **kwargs):
+        return SwitchOutcome(ok=False, issues=(Issue(Severity.ERROR, "commit.switch_failed", reason),), output="error")
+
+    def count_commit(*args, **kwargs):
+        commits.append(1)
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=probe, switch_to_main=refuse, run_commit=count_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "offer_switch", timeout=30000)
+    panel._switch_button.click()
+    qtbot.waitUntil(lambda: bool(panel.outcome_lines()), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+
+    assert panel.state() == "offer_switch"
+    assert panel.outcome_lines()[0] == "✖ git refused to switch Custom to main; nothing was committed"
+    assert len(probes) == 1
+    assert commits == []
+    assert not panel.committed()
+
+
+def test_commit_unavailable_logged_once(qtbot, make_install_dialog):
+    issue = Issue(Severity.WARNING, "commit.unavailable", "Commit unavailable: git was not found on PATH")
+
+    def probe(cplan, **kwargs):
+        return CommitProbe(state="unavailable", reason="git was not found on PATH", issues=(issue,))
+
+    dialog = make_install_dialog(probe_commit=probe)
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "unavailable", timeout=30000)
+    finish_workers(qtbot, dialog)
+
+    found = logged_codes(logged, "commit.unavailable")
+    assert [(i.severity, i.text) for i in found] == [(Severity.WARNING, "Commit unavailable: git was not found on PATH")]
+    view = dialog._result_view
+    assert view._banner.text() == "✓ Installed CSD85301Q2 into IC_Battery_Charger_TI"
+    assert view._files_heading.text() == "Files written (3)"
+    assert logged_codes(logged, "commit.not_committed") == []  # nothing closed yet
+
+
+def test_commit_close_button_disabled_while_git_runs(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    calls: list[int] = []
+    release = gated(gates, started, fake_committed)
+
+    def counting_commit(*args, **kwargs):
+        calls.append(1)
+        return release()
+
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(), run_commit=counting_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    assert dialog._result_view.close_button.isEnabled()
+
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
+    close_button = dialog._result_view.close_button
+    assert not close_button.isEnabled()
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    dialog.reject()
+    dialog.close()
+    assert dialog.isVisible()
+    panel.commit_requested.emit("a second message", True)  # a second request while git runs is dropped
+    qtbot.wait(100)
+    assert calls == [1]
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    assert close_button.isEnabled()
+    close_button.click()
+    assert not dialog.isVisible()
+
+
+def test_commit_passes_expected_branch(qtbot, make_install_dialog):
+    seen: list[tuple] = []
+
+    def record(cplan, message, bump, *, expected_branch=None, progress=None, git=None):
+        seen.append((message, bump, expected_branch))
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=fake_ready_probe("feature/x"), run_commit=record)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel._message.setPlainText("My own message")
+    panel._parent_check.setChecked(False)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
+    assert seen == [("My own message", False, "feature/x")]
+
+
+def test_commit_step_texts_shown(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    block = gated(gates, started, fake_committed)
+
+    def stepping(cplan, message, bump, *, expected_branch=None, progress=None, git=None):
+        progress("Committing in Custom...", 0, 2)
+        return block()
+
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(), run_commit=stepping)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+    qtbot.waitUntil(lambda: panel._step.text() == "Committing in Custom...", timeout=30000)
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+
+
+def forbid_message_boxes(monkeypatch):
+    def refuse(*args, **kwargs):
+        pytest.fail("a message box was opened")
+
+    for name in ("exec", "exec_", "question", "warning", "information", "critical", "open", "show"):
+        monkeypatch.setattr(QMessageBox, name, refuse, raising=False)
+
+
+def test_commit_not_committed_logged_on_close(qtbot, make_install_dialog, monkeypatch):
+    forbid_message_boxes(monkeypatch)
+    dialog = make_install_dialog(probe_commit=fake_ready_probe())
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    assert logged_codes(logged, "commit.not_committed") == []
+
+    dialog.close()
+    dialog.reject()  # a second close path must not log it a second time
+    assert not dialog.isVisible()
+    found = logged_codes(logged, "commit.not_committed")
+    assert [(i.severity, i.text) for i in found] == [(Severity.WARNING, D02_TEXT)]
+
+
+def test_commit_not_logged_after_a_commit(qtbot, make_install_dialog, monkeypatch):
+    forbid_message_boxes(monkeypatch)
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(), run_commit=lambda *a, **k: fake_committed())
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done" and not dialog.is_committing(), timeout=30000)
+
+    dialog._result_view.close_button.click()
+    assert not dialog.isVisible()
+    assert logged_codes(logged, "commit.not_committed") == []
+
+
+def test_no_commit_step_for_noop_plan(qtbot, make_install_dialog, tmp_path):
+    dialog = make_install_dialog()
+    dialog._start_commit_step(types.SimpleNamespace(is_noop=True), fake_result(tmp_path))
+    assert dialog._commit_panel is None
+    assert commit_panel_of(dialog) == []
+    assert dialog._result_view.commit_slot.isHidden()
+    assert not dialog.is_committing()
+
+
+def test_dirty_file_double_click_opens_diff(qtbot, make_install_dialog):
+    rel = "Symbols/IC_Battery_Charger_TI.kicad_sym"
+    title = f"Custom/{rel} - HEAD vs before this import"
+    main_thread = threading.get_ident()
+    seen: list[tuple] = []
+
+    def diff(cplan, path, **kwargs):
+        seen.append((path, threading.get_ident()))
+        return ContentText(title=title, header="", body="-old\n+new", kind="diff")
+
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(dirty_before=frozenset({rel})), pre_import_diff=diff)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    files = panel._files_list
+    item = next(files.item(i) for i in range(files.count()) if files.item(i).data(Qt.ItemDataRole.UserRole) == rel)
+    files.itemActivated.emit(item)
+
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == title
+    assert [path for path, _ in seen] == [rel]
+    assert seen[0][1] != main_thread
+
+
+@requires_git
+def test_git_state_changes_only_after_click(qtbot, tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    before_install: list[list] = []
+    before_click: list[list] = []
+    after_click: list[list] = []
+    state = {"installed": False, "clicked": False}
+    real_run = subprocess.run
+
+    def run(args, *a, **kw):
+        argv = [str(part) for part in args] if isinstance(args, (list, tuple)) else [str(args)]
+        if "git" in Path(argv[0]).name.lower():
+            bucket = after_click if state["clicked"] else before_click if state["installed"] else before_install
+            bucket.append(argv)
+        return real_run(args, *a, **kw)
+
+    def apply_then_flag(plan, *, backup_root=None, progress=None):
+        result = real_apply_plan(plan, backup_root=backup_root, progress=progress)
+        state["installed"] = True  # git may only start after this point
+        return result
+
+    monkeypatch.setattr(subprocess, "run", run)
+    core = replace(
+        ImportCore(),
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        downloads_dir=lambda: None,
+        suggest_library=_good_suggestion,
+        kicad_running=lambda: [],
+        apply_plan=apply_then_flag,
+    )
+    dialog = ImportDialog(
+        repos.parent, RepoLayout.for_repo(repos.parent), core=core, backup_root=tmp_path / "backups"
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+
+    read_only = {
+        "--version", "rev-parse", "symbolic-ref", "status", "merge-base", "rev-list", "log", "ls-tree",
+        "cat-file", "var", "ls-files",
+    }
+    assert before_install == []
+    assert before_click, "the probe should have run git"
+    assert {argv[6] for argv in before_click} <= read_only
+    assert after_click == []
+
+    state["clicked"] = True
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=60000)
+    subcommands = {argv[6] for argv in after_click}
+    assert {"add", "commit"} <= subcommands
+    assert not [argv for argv in before_click + after_click if "push" in argv]
+
+
+def test_result_view_scrolls_at_minimum_size(qtbot, make_install_dialog):
+    earlier = tuple((f"abc{n:04d}", f"Earlier Custom commit number {n}") for n in range(10))
+    probe = fake_ready_probe(gitlink_old="485d530" + "0" * 33, earlier=earlier)
+    dialog = make_install_dialog(probe_commit=probe)
+    dialog.resize(900, 600)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    dialog.resize(900, 600)
+    qtbot.wait(100)
+
+    view = dialog._result_view
+    (scroll,) = view.findChildren(QScrollArea)
+    assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert scroll.widgetResizable()
+    body = scroll.widget()
+    assert body.width() <= scroll.viewport().width()
+    assert body.minimumSizeHint().width() <= scroll.viewport().width()
+    assert body.height() > scroll.viewport().height()
+    assert scroll.verticalScrollBar().maximum() > 0
+    assert view.close_button.isVisible()
+    assert not scroll.isAncestorOf(view.close_button)
+    assert scroll.isAncestorOf(view.commit_slot)
