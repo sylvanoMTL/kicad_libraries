@@ -14,7 +14,8 @@ from ..models import Issue, Severity
 from .plan import InstallPlan, InstallResult
 
 NEW_PLACEHOLDER = "<new commit>"  # stands for the Custom commit that does not exist yet (RESEARCH Pattern 5)
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+# Controls (C0, DEL, C1) plus the Unicode line and paragraph separators, which str.splitlines treats as breaks
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
 
 
 @dataclass(frozen=True)
@@ -197,6 +198,9 @@ def pre_install_bytes(cfile: CommitFile, backup_dir: Path | None) -> bytes | Non
 def default_message(cplan: CommitPlan) -> str:
     """The Custom commit message of D-18: subject, what was installed, then the Import-* trailers."""
     symbol, library = sanitize_line(cplan.symbol), sanitize_line(cplan.library)
+    footprint = sanitize_line(cplan.footprint or "")
+    model = sanitize_line(cplan.model or "")
+    package = sanitize_line(cplan.package or "")  # the base name only: never a path (T-06-18)
     if cplan.overwrite:
         subject = f"Update {symbol} in {library}"
     elif cplan.new_library:
@@ -206,13 +210,13 @@ def default_message(cplan: CommitPlan) -> str:
     body = []
     if symbol:
         body.append(f"Symbol: {symbol}")
-    if cplan.footprint:
-        body.append(f"Footprint: {sanitize_line(cplan.footprint)}")
-    if cplan.model:
-        body.append(f"3D model: {sanitize_line(cplan.model)}")
-    trailers = [f"Import-Vendor: {sanitize_line(cplan.vendor)}"]
-    if cplan.package:
-        trailers.append(f"Import-Package: {sanitize_line(cplan.package)}")
+    if footprint:
+        body.append(f"Footprint: {footprint}")
+    if model:
+        body.append(f"3D model: {model}")
+    trailers = [f"Import-Vendor: {sanitize_line(cplan.vendor) or 'Unknown vendor'}"]
+    if package:
+        trailers.append(f"Import-Package: {package}")
     trailers.append(f"Import-Date: {sanitize_line(cplan.date)}")
     paragraphs = [subject, *(["\n".join(body)] if body else []), "\n".join(trailers)]
     return "\n\n".join(paragraphs)
