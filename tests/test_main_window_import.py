@@ -359,6 +359,30 @@ def test_tables_new_library_add_only(qtbot, make_window, tmp_path):
     assert selected(w._scan_result, FFC_SYM_REL)
 
 
+def test_tables_new_library_declined_keeps_kicad_config(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo)
+    first = scan_with(with_installed=False, with_ffc=True)
+    second = scan_with(lib=NEW_LIB, with_ffc=True)
+    make_window.answer = QMessageBox.StandardButton.No
+    w = make_window([first, second], repo=repo)
+    deselect_all_but_ffc(w)
+    config_before = make_window.config_file.read_bytes()
+
+    w._on_import_installed(install_result(), stub_plan(repo, NEW_LIB, new_library=True))
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    sym_line = _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8")
+    fp_line = _managed(NEW_LIB, NEW_FP_REL).encode("utf-8")
+    assert (repo / "sym-lib-table").read_bytes() == old_sym[:-2] + sym_line + b")\n"
+    assert (repo / "fp-lib-table").read_bytes() == old_fp[:-2] + fp_line + b")\n"
+    assert make_window.config_file.read_bytes() == config_before
+    assert not (tmp_path / "backups").exists()
+    assert len(make_window.questions) == 1
+    assert "KiCad path variables left unchanged" in log_text(w)
+
+
 def test_tables_existing_library_not_in_tables_warns(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

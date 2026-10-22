@@ -257,6 +257,24 @@ def test_generate_declined_leaves_kicad_config_untouched(make_window, tmp_path):
     assert "KiCad path variables left unchanged" in w._log._text.toPlainText()
 
 
+def test_generate_from_worktree_refuses_without_asking(make_window, tmp_path):
+    w = make_window([_new_lib_scan()])
+    repo = make_window.repo
+    (repo / ".git").write_text("gitdir: elsewhere\n")
+    config_before = make_window.config_file.read_bytes()
+
+    w._on_generate()
+
+    assert make_window.questions == []
+    assert make_window.config_file.read_bytes() == config_before
+    assert not (tmp_path / "backups").exists()
+    assert (repo / "sym-lib-table").exists()
+    assert (repo / "fp-lib-table").exists()
+    html = w._log._text.toHtml()
+    line = next(ln for ln in html.splitlines() if "git worktree" in ln)
+    assert COLORS["warning"].lower() in line.lower()
+
+
 def test_generate_confirmed_shows_old_and_new_values(make_window):
     w = make_window([_new_lib_scan()])
     repo_str = str(make_window.repo).replace("\\", "/")
