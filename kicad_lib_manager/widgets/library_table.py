@@ -1,6 +1,6 @@
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
-    QLabel, QMenu,
+    QLabel, QMenu, QHeaderView,
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QFont
@@ -22,10 +22,14 @@ class LibraryTableWidget(QWidget):
         sym_col.addWidget(sym_label)
         self._sym_tree = QTreeWidget()
         self._sym_tree.setHeaderLabels(["Library Name", "Source", "Linked Footprints", "Status"])
-        self._sym_tree.setColumnWidth(0, 280)
-        self._sym_tree.setColumnWidth(1, 130)
-        self._sym_tree.setColumnWidth(2, 300)
-        self._sym_tree.setColumnWidth(3, 60)
+        sym_header = self._sym_tree.header()
+        sym_header.setStretchLastSection(False)
+        sym_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        sym_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        sym_header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        sym_header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self._sym_tree.setColumnWidth(0, 240)
+        self._sym_tree.setColumnWidth(1, 100)
         self._sym_tree.setAlternatingRowColors(True)
         self._sym_tree.setRootIsDecorated(True)
         self._sym_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -42,9 +46,13 @@ class LibraryTableWidget(QWidget):
         fp_col.addWidget(fp_label)
         self._fp_tree = QTreeWidget()
         self._fp_tree.setHeaderLabels(["Library Name", "Source", "Status"])
-        self._fp_tree.setColumnWidth(0, 280)
-        self._fp_tree.setColumnWidth(1, 130)
-        self._fp_tree.setColumnWidth(2, 60)
+        fp_header = self._fp_tree.header()
+        fp_header.setStretchLastSection(False)
+        fp_header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        fp_header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        fp_header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self._fp_tree.setColumnWidth(0, 240)
+        self._fp_tree.setColumnWidth(1, 100)
         self._fp_tree.setAlternatingRowColors(True)
         self._fp_tree.setRootIsDecorated(True)
         self._fp_tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
@@ -71,7 +79,14 @@ class LibraryTableWidget(QWidget):
         return font
 
     def populate(self, scan_result: ScanResult):
+        previous = self._updating
         self._updating = True
+        try:
+            self._populate_trees(scan_result)
+        finally:
+            self._updating = previous
+
+    def _populate_trees(self, scan_result: ScanResult):
         self._sym_tree.clear()
         self._fp_tree.clear()
         self._sym_items.clear()
@@ -128,6 +143,9 @@ class LibraryTableWidget(QWidget):
                     if has_missing:
                         tip += "; Missing FP"
                     item.setToolTip(0, tip)
+                    item.setToolTip(3, tip)
+                else:
+                    item.setToolTip(3, status)
                 group.addChild(item)
                 self._sym_items[lib.rel_path] = item
 
@@ -156,14 +174,37 @@ class LibraryTableWidget(QWidget):
                     orange = QBrush(QColor(AMBER))
                     for col in range(item.columnCount()):
                         item.setForeground(col, orange)
-                    item.setToolTip(0, self._collision_tip(lib))
+                    tip = self._collision_tip(lib)
+                    item.setToolTip(0, tip)
+                    item.setToolTip(2, tip)
+                else:
+                    item.setToolTip(2, "OK")
                 group.addChild(item)
                 self._fp_items[lib.rel_path] = item
 
             group.setExpanded(True)
 
         # Render the selected flags as given; footprint selection is never recomputed here
-        self._updating = False
+
+    def reveal(self, sym_rel_path: str | None, fp_rel_path: str | None) -> None:
+        """Expand, make current and scroll to the rows of one library in both trees; check states are not touched (D-16)"""
+        previous = self._updating
+        self._updating = True
+        try:
+            for tree, items, rel_path in (
+                (self._sym_tree, self._sym_items, sym_rel_path),
+                (self._fp_tree, self._fp_items, fp_rel_path),
+            ):
+                item = items.get(rel_path) if rel_path is not None else None
+                if item is None:
+                    continue
+                parent = item.parent()
+                if parent is not None:
+                    parent.setExpanded(True)
+                tree.setCurrentItem(item)
+                tree.scrollToItem(item)
+        finally:
+            self._updating = previous
 
     def _on_sym_item_changed(self, item: QTreeWidgetItem, column: int):
         if self._updating or column != 0:
