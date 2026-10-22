@@ -277,3 +277,55 @@ def advance_remote_main(repos: GitRepos, n: int = 1) -> str:
 def delete_local_branch(repos: GitRepos, name: str) -> None:
     """Delete a local branch of Custom (it must not be checked out)."""
     repos.git(repos.custom, "branch", "-D", name)
+
+
+# -- availability and layout helpers (Phase 6 plan 05) -----------------------------------------------
+
+
+def git_path(repos: GitRepos, repo: Path, name: str) -> Path:
+    """Where git keeps `name` for repo (rev-parse --git-path); a relative answer is taken from repo."""
+    found = Path(repos.git(repo, "rev-parse", "--git-path", name).strip())
+    return found if found.is_absolute() else repo / found
+
+
+def start_merge_conflict(repos: GitRepos, repo: Path, rel: str) -> None:
+    """Leave repo in the middle of a merge that stopped on a conflict in rel (a tracked file).
+
+    Two branches change rel differently; the merge exits non-zero and MERGE_HEAD stays.
+    """
+    base = repos.git(repo, "rev-parse", "--abbrev-ref", "HEAD").strip()
+    repos.git(repo, "switch", "-c", "conflict_side")
+    commit_file(repos, repo, rel, b"side\n", "Side change")
+    repos.git(repo, "switch", base)
+    commit_file(repos, repo, rel, b"base\n", "Base change")
+    repos.git(repo, "merge", "conflict_side", check=False)
+
+
+def clone_parent_without_submodule(repos: GitRepos, name: str = "plain_clone") -> Path:
+    """A fresh clone of the parent remote with no `submodule update`: Custom/ is an empty folder."""
+    clone = repos.root / name
+    repos.git(repos.root, "clone", str(repos.parent_remote), str(clone))
+    return clone
+
+
+def make_worktree(repos: GitRepos, name: str = "wt", branch: str = "feature/x", *, autocrlf: bool = False) -> GitRepos:
+    """A linked worktree of the parent on a new branch, with its own initialised Custom on main.
+
+    The worktree's Custom keeps its git directory under the parent's .git/worktrees/<name>/modules/Custom,
+    the layout of the real checkout. The returned GitRepos points parent and custom into the worktree.
+    """
+    wt = repos.root / name
+    repos.git(repos.parent, "worktree", "add", str(wt), "-b", branch)
+    repos.git(wt, "submodule", "update", "--init")
+    found = GitRepos(
+        root=repos.root,
+        parent=wt,
+        custom=wt / "Custom",
+        custom_remote=repos.custom_remote,
+        parent_remote=repos.parent_remote,
+        env=repos.env,
+    )
+    for repo in (found.parent, found.custom):
+        _local_config(found, repo, autocrlf)
+    found.git(found.custom, "switch", "main")
+    return found

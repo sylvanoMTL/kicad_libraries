@@ -7,6 +7,7 @@ output, never stderr text. Qt-free; imports only models.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -22,6 +23,17 @@ ALLOWED_SUBCOMMANDS = frozenset({
 })
 DEFAULT_TIMEOUT = 30.0
 COMMIT_TIMEOUT = 300.0  # hooks can be slow
+MIN_GIT_VERSION = (2, 25)  # --pathspec-from-file; assumed to appear in 2.25 (RESEARCH A4), so older git is refused
+# (marker under the git directory, label) in the order they are checked; --git-path finds each one in a linked worktree
+_BUSY_MARKERS = (
+    ("MERGE_HEAD", "a merge"),
+    ("rebase-merge", "a rebase"),
+    ("rebase-apply", "a rebase"),
+    ("CHERRY_PICK_HEAD", "a cherry-pick"),
+    ("REVERT_HEAD", "a revert"),
+    ("BISECT_LOG", "a bisect"),
+)
+_VERSION_RE = re.compile(r"git version (\d+(?:\.\d+)*)")
 
 
 @dataclass(frozen=True)
@@ -45,9 +57,9 @@ class GitRun:
         return "\n".join(part for part in (self.stdout.strip(), self.stderr.strip()) if part)
 
 
-def find_git(repo_root: Path, *, which: Callable[[str], str | None] = shutil.which) -> Path | Issue:
+def find_git(repo_root: Path, *, which: Callable[[str], str | None] | None = None) -> Path | Issue:
     """Resolve git once; a git found inside the repository is refused, never run."""
-    found = which("git")
+    found = (which or shutil.which)("git")  # looked up per call, so a test can replace shutil.which
     if not found:
         return Issue(Severity.WARNING, "git.not_found", "git was not found on PATH")
     path = Path(found).resolve()
@@ -106,6 +118,34 @@ def run_git(
 
 def _ok(run: GitRun | Issue) -> bool:
     return isinstance(run, GitRun) and run.returncode == 0
+
+
+def git_version(ctx: GitContext) -> tuple[int, ...] | None:
+    """The leading numbers of `git --version` ("git version 2.49.0.windows.1" gives (2, 49, 0)); None when unreadable."""
+    run = run_git(ctx, Path("."), "--version")
+    found = _VERSION_RE.search(run.stdout) if _ok(run) else None
+    return tuple(int(part) for part in found.group(1).split(".")) if found else None
+
+
+def busy_operation(ctx: GitContext, repo: Path) -> str | None:
+    """"a merge", "a rebase", "a cherry-pick", "a revert" or "a bisect" when one is in progress in repo, else None.
+
+    Each marker's place comes from `rev-parse --git-path`, so it is found when the git directory
+    is private to a linked worktree (.git/worktrees/<wt>/modules/Custom) and not under repo/.git.
+    """
+    for marker, label in _BUSY_MARKERS:
+        run = run_git(ctx, repo, "rev-parse", "--git-path", marker)
+        if not _ok(run) or not run.stdout.strip():
+            continue
+        path = Path(run.stdout.strip())
+        if (path if path.is_absolute() else Path(repo) / path).exists():
+            return label
+    return None
+
+
+def identity_known(ctx: GitContext, repo: Path) -> bool:
+    """True when git knows the committer (user.name and user.email); `var` exits non-zero otherwise."""
+    return _ok(run_git(ctx, repo, "var", "GIT_COMMITTER_IDENT"))
 
 
 def show_toplevel(ctx: GitContext, path: Path) -> Path | None:
@@ -179,6 +219,40 @@ def tracked_paths(ctx: GitContext, repo: Path, rels) -> set[str] | Issue:
     if run.returncode != 0:
         return Issue(Severity.ERROR, "git.failed", f"git ls-files failed (git exit {run.returncode})\n{run.output}")
     return {name for name in run.stdout.split("\0") if name}
+
+
+def head_blob(ctx: GitContext, repo: Path, rel: str) -> bytes | None:
+    """What HEAD holds for rel, as the work tree would have it (`cat-file --filters`); None when HEAD lacks the path.
+
+    The smudge filter is applied, so a clean file under core.autocrlf=true hashes the same as its CRLF
+    work-tree copy, which the raw blob would not.
+    """
+    run = run_git(ctx, repo, "cat-file", "--filters", f"HEAD:{rel}")
+    return run.raw if _ok(run) else None
+
+
+def status_entries(ctx: GitContext, repo: Path) -> list[str] | Issue:
+    """The path of every changed or untracked file (`status --porcelain=v1 -z -uall`), each counted once.
+
+    A rename or copy entry is followed by its source path in the next NUL field; it is skipped, so the
+    entry counts once under its new path.
+    """
+    run = run_git(ctx, repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if isinstance(run, Issue):
+        return run
+    if run.returncode != 0:
+        return Issue(Severity.ERROR, "git.failed", f"git status failed (git exit {run.returncode})\n{run.output}")
+    fields = run.stdout.split("\0")
+    paths, index = [], 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:  # the empty field after the last NUL
+            continue
+        if entry[0] in "RC" or entry[1] in "RC":
+            index += 1
+        paths.append(entry[3:])
+    return paths
 
 
 def log_range(ctx: GitContext, repo: Path, old: str, new: str) -> list[tuple[str, str]] | None:

@@ -5,6 +5,7 @@ git call goes through gitops, which holds no way to reach another repository. Th
 path-limited (`commit --only` with the listed files), so unrelated changes stay exactly as they were.
 """
 
+import hashlib
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -122,47 +123,131 @@ def _detached_state(ctx: GitContext, cplan: CommitPlan, short: str) -> tuple[str
     return "refused", reason, ref, 0
 
 
-def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitProbe:
-    """Read the git state of Custom and the parent repo; nothing is changed."""
-    ctx = _context(cplan, git)
-    if isinstance(ctx, Issue):
-        return _unavailable("unavailable", ctx.text)
+def _custom_unavailable(ctx: GitContext, cplan: CommitPlan) -> str | None:
+    """Why Custom cannot be committed to at all, or None. The first failing check decides (D-05, D-16)."""
+    version = gitops.git_version(ctx)
+    if version is None:
+        return "git did not report its version"
+    if version < gitops.MIN_GIT_VERSION:
+        needed = ".".join(str(part) for part in gitops.MIN_GIT_VERSION)
+        return f"git {needed} or newer is needed (found {'.'.join(str(part) for part in version)})"
     errors = [issue for issue in cplan.issues if issue.severity is Severity.ERROR]
     if errors:
-        return _unavailable("unavailable", errors[0].text)
+        return errors[0].text
     custom = cplan.custom_dir
     top = gitops.show_toplevel(ctx, custom)
+    # an uninitialised submodule folder resolves to the parent repo, which must never be committed to (T-06-07)
     if top is None or not _same_dir(top, custom):
-        return _unavailable("unavailable", "Custom is not a git work tree")
-    branch = gitops.current_branch(ctx, custom)
-    head = gitops.head_commit(ctx, custom) or ""
-    if branch is None:
-        short = gitops.short_hash(ctx, custom) or head[:7] or "unknown"
-        state, reason, ref, ahead = _detached_state(ctx, cplan, short)
-        issues = (_probe_issue(state, reason),) if state == "refused" else ()
-        return CommitProbe(state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead, issues=issues)
+        return "Custom is not a git work tree"
+    busy = gitops.busy_operation(ctx, custom)
+    if busy:
+        return f"{busy} is in progress in Custom"
+    if not gitops.identity_known(ctx, custom):
+        return "git does not know who you are: set user.name and user.email"
+    return None
 
-    parent_ok, parent_reason, parent_branch, gitlink_old = False, "", None, None
-    parent_top = gitops.show_toplevel(ctx, cplan.repo_root)
-    if parent_top is None or not _same_dir(parent_top, cplan.repo_root):
-        parent_reason = f"no parent git repository at {cplan.repo_root}"
-    else:
-        parent_branch = gitops.current_branch(ctx, cplan.repo_root)
-        if parent_branch is None:
-            parent_reason = "the parent repo is on a detached HEAD"
-        else:
-            parent_ok = True
-            gitlink_old = gitops.committed_gitlink(ctx, cplan.repo_root, cplan.custom_rel)
-    return CommitProbe(
-        state="ready",
-        branch=branch,
-        head=head,
-        not_main=branch != "main",  # a named branch is committed on as it is (D-14)
+
+def _parent_state(ctx: GitContext, cplan: CommitPlan) -> tuple[bool, str, str | None, str | None]:
+    """(parent_ok, reason, branch, committed Custom gitlink): what the parent repo allows; it never blocks Custom (D-16)."""
+    root = cplan.repo_root
+    top = gitops.show_toplevel(ctx, root)
+    if top is None or not _same_dir(top, root):
+        return False, f"no parent git repository at {root.as_posix()}", None, None
+    branch = gitops.current_branch(ctx, root)
+    busy = gitops.busy_operation(ctx, root)
+    if busy:
+        return False, f"{busy} is in progress in the parent repo", branch, None
+    if branch is None:
+        return False, "the parent repo is on a detached HEAD", None, None
+    return True, "", branch, gitops.committed_gitlink(ctx, root, cplan.custom_rel)
+
+
+def _dirty_before(ctx: GitContext, cplan: CommitPlan) -> frozenset[str]:
+    """Files the install changed that already differed from HEAD, or were not in HEAD, before it ran (D-09).
+
+    base_sha256 None means the install created the file: never dirty. Otherwise the hash of what HEAD
+    would put in the work tree is compared with the content the install replaced.
+    """
+    dirty = set()
+    for file in cplan.files:
+        if file.base_sha256 is None:
+            continue
+        blob = gitops.head_blob(ctx, cplan.custom_dir, file.rel)
+        if blob is None or hashlib.sha256(blob).hexdigest() != file.base_sha256:
+            dirty.add(file.rel)
+    return frozenset(dirty)
+
+
+def _other_changes(ctx: GitContext, cplan: CommitPlan) -> tuple[int, tuple[Issue, ...]]:
+    """How many changed or untracked files in Custom are not part of the commit (D-10)."""
+    entries = gitops.status_entries(ctx, cplan.custom_dir)
+    if isinstance(entries, Issue):
+        text = f"Could not count the other changes in Custom: {entries.text}"
+        return 0, (Issue(Severity.WARNING, "commit.status_failed", text),)
+    touched = {file.rel.casefold() for file in cplan.files}
+    return sum(1 for path in entries if path.casefold() not in touched), ()
+
+
+def _earlier(
+    ctx: GitContext, cplan: CommitPlan, gitlink_old: str | None, head: str
+) -> tuple[tuple[tuple[str, str], ...], bool]:
+    """(Custom commits from the parent's committed gitlink to Custom's HEAD, oldest first; whether they could be listed)."""
+    if gitlink_old is None or not head:
+        return (), False
+    if gitlink_old == head:
+        return (), True
+    pairs = gitops.log_range(ctx, cplan.custom_dir, gitlink_old, "HEAD")
+    return (tuple(pairs), True) if pairs is not None else ((), False)
+
+
+def _preexisting(ctx: GitContext, cplan: CommitPlan, head: str) -> dict:
+    """The probe fields about the parent repo and about what was already there before the import."""
+    parent_ok, parent_reason, parent_branch, gitlink_old = _parent_state(ctx, cplan)
+    others, issues = _other_changes(ctx, cplan)
+    earlier, listed = _earlier(ctx, cplan, gitlink_old, head)
+    return dict(
         parent_dir=cplan.repo_root,
         parent_ok=parent_ok,
         parent_reason=parent_reason,
         parent_branch=parent_branch,
         gitlink_old=gitlink_old,
+        earlier=earlier,
+        earlier_listed=listed,
+        dirty_before=_dirty_before(ctx, cplan),
+        other_changes=others,
+        issues=issues,
+    )
+
+
+def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitProbe:
+    """Read the git state of Custom and the parent repo; nothing is changed."""
+    ctx = _context(cplan, git)
+    if isinstance(ctx, Issue):
+        return _unavailable("unavailable", ctx.text)
+    reason = _custom_unavailable(ctx, cplan)
+    if reason:
+        return _unavailable("unavailable", reason)
+    custom = cplan.custom_dir
+    branch = gitops.current_branch(ctx, custom)
+    head = gitops.head_commit(ctx, custom) or ""
+    if branch is None:
+        short = gitops.short_hash(ctx, custom) or head[:7] or "unknown"
+        state, reason, ref, ahead = _detached_state(ctx, cplan, short)
+        if state == "refused":
+            return CommitProbe(
+                state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead,
+                issues=(_probe_issue(state, reason),),
+            )
+        return CommitProbe(
+            state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead, **_preexisting(ctx, cplan, head)
+        )
+
+    return CommitProbe(
+        state="ready",
+        branch=branch,
+        head=head,
+        not_main=branch != "main",  # a named branch is committed on as it is (D-14)
+        **_preexisting(ctx, cplan, head),
     )
 
 
