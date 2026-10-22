@@ -140,10 +140,22 @@ def _write_config(base, version, obj, *, crlf=False, bom=False):
     return path
 
 
-def _sync(repo, cfg, backups, running=lambda: []):
+def _sync(repo, cfg, backups, running=lambda: [], confirm=lambda changes: True):
     return library_scanner.sync_kicad_path_vars(
-        repo, config_base=cfg, backup_root=backups, running=running
+        repo, config_base=cfg, backup_root=backups, running=running, confirm=confirm
     )
+
+
+def _recorder(answer=True):
+    """A confirm callback that records every list of changes it is asked about."""
+    calls = []
+
+    def confirm(changes):
+        calls.append(changes)
+        return answer
+
+    confirm.calls = calls
+    return confirm
 
 
 def _codes(issues):
@@ -396,3 +408,63 @@ def test_unremovable_old_backup_warns_without_failing_the_sync(repo, cfg, backup
     (warn,) = _by_code(issues, "config.prune_failed")
     assert warn.severity is Severity.WARNING
     assert "kicad_common.json_backup_1" in warn.text
+
+
+# -- Quick 261022-gnn: path variables are never written silently ------------------
+
+
+def test_declined_change_writes_nothing_and_makes_no_backup(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    before = path.read_bytes()
+    confirm = _recorder(answer=False)
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    assert len(confirm.calls) == 1
+    _assert_untouched(path, before, backups)
+    (declined,) = _by_code(issues, "config.declined")
+    assert declined.severity is Severity.INFO
+    assert declined.text.startswith("KiCad path variables left unchanged")
+    assert not _by_code(issues, "config.var_set")
+    assert not _by_code(issues, "config.written")
+
+
+def test_unchanged_values_never_ask(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", {"environment": {"vars": _desired(repo)}})
+    before = path.read_bytes()
+    confirm = _recorder()
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    assert confirm.calls == []
+    assert _codes(issues) == ["config.var_ok", "config.var_ok"]
+    _assert_untouched(path, before, backups)
+
+
+def test_confirm_gets_only_the_changing_variables(repo, cfg, backups):
+    repo_str = _desired(repo)["KICAD_LIB_GITHUB"]
+    _write_config(cfg, "10.0", _null_vars_config())
+    confirm = _recorder()
+    _sync(repo, cfg, backups, confirm=confirm)
+    assert confirm.calls == [[
+        ("KICAD_LIB_GITHUB", None, repo_str),
+        ("CUSTOM_3DMODEL_DIR", None, repo_str + "/Custom/3DModels"),
+    ]]
+
+    _write_config(cfg, "10.0", {"environment": {"vars": {"KICAD_LIB_GITHUB": repo_str}}})
+    confirm = _recorder()
+    _sync(repo, cfg, backups, confirm=confirm)
+    assert confirm.calls == [[("CUSTOM_3DMODEL_DIR", None, repo_str + "/Custom/3DModels")]]
+
+
+def test_missing_confirm_writes_nothing(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    before = path.read_bytes()
+
+    issues = library_scanner.sync_kicad_path_vars(
+        repo, config_base=cfg, backup_root=backups, running=lambda: [], confirm=None
+    )
+
+    (warn,) = _by_code(issues, "config.confirm_required")
+    assert warn.severity is Severity.WARNING
+    _assert_untouched(path, before, backups)

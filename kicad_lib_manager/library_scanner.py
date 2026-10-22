@@ -116,8 +116,13 @@ def sync_kicad_path_vars(
     config_base: Path | None = None,
     backup_root: Path | None = None,
     running: Callable[[], list[str]] | None = None,
+    confirm: Callable[[list[tuple[str, str | None, str]]], bool] | None = None,
 ) -> list[Issue]:
     """Set KICAD_LIB_GITHUB and CUSTOM_3DMODEL_DIR in the newest kicad_common.json.
+
+    Nothing is written unless the values would change and confirm(changes) returns
+    True. changes lists only the variables that would change, as (variable, old value
+    or None, new value). A missing confirm writes nothing.
 
     The file is backed up first, re-parsed to prove only environment.vars changed,
     then replaced atomically. Older KiCad versions are never touched.
@@ -176,8 +181,11 @@ def sync_kicad_path_vars(
 
     issues: list[Issue] = []
     set_issues: list[Issue] = []
+    changes: list[tuple[str, str | None, str]] = []
     for key, value in desired.items():
         old = old_vars.get(key)
+        if old != value:
+            changes.append((key, old, value))
         if old == value:
             issues.append(Issue(
                 Severity.INFO, "config.var_ok", f"KiCad path '{key}' already set correctly"
@@ -194,6 +202,19 @@ def sync_kicad_path_vars(
             ))
     if not set_issues:
         return issues
+
+    if confirm is None:
+        return issues + [Issue(
+            Severity.WARNING,
+            "config.confirm_required",
+            "Not changing KiCad path variables: no confirmation step was provided",
+        )]
+    if not confirm(changes):
+        return issues + [Issue(
+            Severity.INFO,
+            "config.declined",
+            "KiCad path variables left unchanged (change declined)",
+        )]
 
     new_config = copy.deepcopy(config)
     new_config.setdefault("environment", {})["vars"] = {**old_vars, **desired}

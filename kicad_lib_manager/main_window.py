@@ -615,8 +615,9 @@ class MainWindow(QMainWindow):
             self._log_issues(add_library_entries(
                 dest, pending.library, pending.sym_rel_path, pending.fp_rel_path
             ))
-            # Same rule as Generate: the path variables follow every table write
-            self._log_issues(sync_kicad_path_vars(REPO_ROOT))
+            # Same rule as Generate: the path variables are offered for change after every
+            # table write, never written silently
+            self._sync_path_vars()
             return
 
         listed = True
@@ -735,6 +736,33 @@ class MainWindow(QMainWindow):
         for issue in issues:
             self._log.log_issue(issue)
 
+    # Intentional exception to the convention that QMessageBox is only used for About:
+    # the owner requires an explicit confirmation before KiCad's global settings change
+    # (PROJECT.md Safety constraint: no write without a preview first).
+    def _confirm_path_var_changes(self, changes) -> bool:
+        lines = [
+            f"{var}: {old if old else '(not set)'} -> {new}" for var, old, new in changes
+        ]
+        text = (
+            "These KiCad path variables in kicad_common.json would change:\n\n"
+            + "\n".join(lines)
+            + "\n\nKiCad loads its libraries from these paths after a restart. Change them?"
+        )
+        answer = QMessageBox.question(
+            self,
+            "Change KiCad path variables?",
+            text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _sync_path_vars(self):
+        """Offer the KiCad path variable change through the confirmation dialog."""
+        self._log_issues(
+            sync_kicad_path_vars(REPO_ROOT, confirm=self._confirm_path_var_changes)
+        )
+
     def _on_generate(self):
         if not self._scan_result:
             self._log.log("No scan results available. Please wait for scan.", "error")
@@ -762,8 +790,9 @@ class MainWindow(QMainWindow):
             dest, self._scan_result.symbol_libs, self._scan_result.footprint_libs
         ))
 
-        # Sync KiCad path variables, independent of how the table writes went
-        self._log_issues(sync_kicad_path_vars(REPO_ROOT))
+        # Offer KiCad path variable changes (never written silently), independent of
+        # how the table writes went
+        self._sync_path_vars()
 
         # Save destination to history
         history = add_dest_to_history(str(dest))
