@@ -22,6 +22,7 @@ from gitfixtures import (
     make_worktree,
     requires_git,
     start_merge_conflict,
+    write_hook,
 )
 
 from kicad_lib_manager import gitops
@@ -629,3 +630,205 @@ def test_unavailable_probe_leaves_defaults(tmp_path):
 
     assert probe.state == "unavailable"
     assert probe.dirty_before == frozenset() and probe.other_changes == 0 and probe.earlier == ()
+
+
+# -- refusals before any git write, and clean failures (D-03, D-06, D-11, D-16) -----------------------
+
+HOOK_REJECT = "#!/bin/sh\necho 'hook says no'\necho 'on stderr' >&2\nexit 1\n"
+MESSAGE = "Add FP1 to IC_Battery_Charger_TI"
+
+
+def _subcommands(calls):
+    return [argv[6] for argv in calls]
+
+
+def _writes(calls):
+    return [name for name in _subcommands(calls) if name in ("add", "reset", "commit")]
+
+
+def _single_error(outcome, code):
+    (issue,) = outcome.issues
+    assert issue.severity is Severity.ERROR and issue.code == code, issue
+    return issue
+
+
+def _status(repos, repo=None):
+    return repos.git(repo or repos.custom, "status", "--porcelain=v1", "-z", "-uall", "--ignored")
+
+
+@requires_git
+def test_run_commit_refuses_stale_file(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    (repos.custom / FP_NEW).write_bytes(b"edited in KiCad after the install\n")
+    ctx, calls = _recording_ctx()
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=ctx)
+
+    assert outcome.custom_commit is None and outcome.failed
+    issue = _single_error(outcome, "commit.stale_file")
+    assert f"Custom/{FP_NEW}" in issue.text and "changed after the install" in issue.text
+    assert _head(repos) == before
+    assert _writes(calls) == []
+
+
+@requires_git
+def test_run_commit_refuses_deleted_file(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    (repos.custom / FP_NEW).unlink()
+
+    outcome = commit_step.run_commit(plan, MESSAGE, False, git=_ctx())
+
+    issue = _single_error(outcome, "commit.stale_file")
+    assert f"Custom/{FP_NEW}" in issue.text
+
+
+@requires_git
+def test_run_commit_refuses_when_branch_changed(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    repos.git(repos.custom, "switch", "-c", "feature/z")
+    ctx, calls = _recording_ctx()
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, False, expected_branch="main", git=ctx)
+
+    issue = _single_error(outcome, "commit.branch_changed")
+    assert issue.text == "Custom's branch changed from main to feature/z since the check; nothing was committed"
+    assert _head(repos) == before and _writes(calls) == []
+
+
+@requires_git
+def test_run_commit_refuses_detached_at_commit_time(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    detach(repos, "main")
+    ctx, calls = _recording_ctx()
+
+    outcome = commit_step.run_commit(plan, MESSAGE, False, expected_branch="main", git=ctx)
+
+    issue = _single_error(outcome, "commit.refused")
+    assert issue.text == "Not committed: Custom is on a detached HEAD."
+    assert outcome.custom_commit is None and _writes(calls) == []
+
+
+@requires_git
+def test_run_commit_refuses_parent_not_ok_before_commit(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    repos.git(repos.parent, "switch", "--detach")
+    ctx, calls = _recording_ctx()
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=ctx)
+
+    issue = _single_error(outcome, "commit.parent_unavailable")
+    assert issue.text == (
+        "Not committed: the parent repo is on a detached HEAD. Untick the parent option to commit in Custom only."
+    )
+    assert _head(repos) == before and _writes(calls) == []
+    # the same state does not stop a Custom-only commit
+    assert commit_step.run_commit(plan, MESSAGE, False, git=_ctx()).committed
+
+
+@requires_git
+def test_run_commit_refuses_ignored_path(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = import_files(repos, {"3DModels/x.tmp": b"scratch\n"})
+    ctx, calls = _recording_ctx()
+    status_before = _status(repos)
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, False, git=ctx)
+
+    issue = _single_error(outcome, "commit.ignored")
+    assert "3DModels/x.tmp" in issue.text and "ignored by Custom's .gitignore" in issue.text
+    assert _head(repos) == before and _writes(calls) == []
+    assert _status(repos) == status_before
+
+
+@requires_git
+def test_custom_hook_rejection_undoes_intent(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    edited = (repos.custom / SYM_FFC).read_bytes() + b"; imported\n"
+    plan = import_files(repos, {FP_NEW: b'(footprint "FP1")\n', SYM_FFC: edited})
+    write_hook(repos, repos.custom, "pre-commit", HOOK_REJECT)
+    ctx, calls = _recording_ctx()
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=ctx)
+
+    assert outcome.custom_commit is None and outcome.parent_commit is None
+    issue = _single_error(outcome, "commit.custom_failed")
+    for text in (issue.text, outcome.output):
+        assert "hook says no" in text and "on stderr" in text
+    assert _head(repos) == before
+    assert f"?? {FP_NEW}" in repos.git(repos.custom, "status", "--porcelain=v1", "-uall").splitlines()
+    assert _subcommands(calls).count("commit") == 1
+
+
+@requires_git
+def test_parent_hook_rejection_keeps_custom_commit(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    write_hook(repos, repos.parent, "pre-commit", "#!/bin/sh\necho 'parent hook says no'\nexit 1\n")
+    ctx, calls = _recording_ctx()
+    custom_before = _head(repos)
+    parent_before = repos.git(repos.parent, "rev-parse", "HEAD").strip()
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=ctx)
+
+    assert outcome.custom_commit is not None and _head(repos) != custom_before
+    assert outcome.parent_commit is None and repos.git(repos.parent, "rev-parse", "HEAD").strip() == parent_before
+    issue = next(i for i in outcome.issues if i.code == "commit.parent_failed")
+    assert issue.severity is Severity.ERROR
+    assert "was kept" in issue.text and "parent hook says no" in issue.text and "Finish it by hand: git -C" in issue.text
+    assert outcome.manual_command.endswith("-- Custom")
+    assert outcome.manual_command in issue.text
+    first_commit = _subcommands(calls).index("commit")
+    assert "reset" not in _subcommands(calls)[first_commit:]
+
+
+@requires_git
+def test_commit_timeout_reported(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[6] == "commit":
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+        return subprocess.run(argv, **kwargs)
+
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=GitContext(Path(GIT), runner))
+
+    issue = _single_error(outcome, "commit.custom_failed")
+    assert "did not finish within 300 s" in issue.text
+    assert _subcommands(calls).count("commit") == 1 and _subcommands(calls).count("reset") == 1
+    assert _head(repos) == before
+    assert f"?? {FP_NEW}" in repos.git(repos.custom, "status", "--porcelain=v1", "-uall").splitlines()
+
+
+@requires_git
+def test_index_lock_reported(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    lock = git_path(repos, repos.custom, "index.lock")
+    lock.write_bytes(b"")
+    ctx, calls = _recording_ctx()
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, False, git=ctx)
+
+    issue = _single_error(outcome, "commit.custom_failed")
+    assert "index.lock" in issue.text
+    assert _head(repos) == before
+    assert [name for name in _subcommands(calls) if name in ("add", "commit")] == ["add"]
+
+    lock.unlink()
+    assert commit_step.run_commit(plan, MESSAGE, False, git=_ctx()).committed
