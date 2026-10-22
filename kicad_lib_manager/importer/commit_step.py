@@ -122,18 +122,54 @@ def _detached_state(ctx: GitContext, cplan: CommitPlan, short: str) -> tuple[str
     return "refused", reason, ref, 0
 
 
+def _custom_unavailable(ctx: GitContext, cplan: CommitPlan) -> str | None:
+    """Why Custom cannot be committed to at all, or None. The first failing check decides (D-05, D-16)."""
+    version = gitops.git_version(ctx)
+    if version is None:
+        return "git did not report its version"
+    if version < gitops.MIN_GIT_VERSION:
+        needed = ".".join(str(part) for part in gitops.MIN_GIT_VERSION)
+        return f"git {needed} or newer is needed (found {'.'.join(str(part) for part in version)})"
+    errors = [issue for issue in cplan.issues if issue.severity is Severity.ERROR]
+    if errors:
+        return errors[0].text
+    custom = cplan.custom_dir
+    top = gitops.show_toplevel(ctx, custom)
+    # an uninitialised submodule folder resolves to the parent repo, which must never be committed to (T-06-07)
+    if top is None or not _same_dir(top, custom):
+        return "Custom is not a git work tree"
+    busy = gitops.busy_operation(ctx, custom)
+    if busy:
+        return f"{busy} is in progress in Custom"
+    if not gitops.identity_known(ctx, custom):
+        return "git does not know who you are: set user.name and user.email"
+    return None
+
+
+def _parent_state(ctx: GitContext, cplan: CommitPlan) -> tuple[bool, str, str | None, str | None]:
+    """(parent_ok, reason, branch, committed Custom gitlink): what the parent repo allows; it never blocks Custom (D-16)."""
+    root = cplan.repo_root
+    top = gitops.show_toplevel(ctx, root)
+    if top is None or not _same_dir(top, root):
+        return False, f"no parent git repository at {root.as_posix()}", None, None
+    branch = gitops.current_branch(ctx, root)
+    busy = gitops.busy_operation(ctx, root)
+    if busy:
+        return False, f"{busy} is in progress in the parent repo", branch, None
+    if branch is None:
+        return False, "the parent repo is on a detached HEAD", None, None
+    return True, "", branch, gitops.committed_gitlink(ctx, root, cplan.custom_rel)
+
+
 def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitProbe:
     """Read the git state of Custom and the parent repo; nothing is changed."""
     ctx = _context(cplan, git)
     if isinstance(ctx, Issue):
         return _unavailable("unavailable", ctx.text)
-    errors = [issue for issue in cplan.issues if issue.severity is Severity.ERROR]
-    if errors:
-        return _unavailable("unavailable", errors[0].text)
+    reason = _custom_unavailable(ctx, cplan)
+    if reason:
+        return _unavailable("unavailable", reason)
     custom = cplan.custom_dir
-    top = gitops.show_toplevel(ctx, custom)
-    if top is None or not _same_dir(top, custom):
-        return _unavailable("unavailable", "Custom is not a git work tree")
     branch = gitops.current_branch(ctx, custom)
     head = gitops.head_commit(ctx, custom) or ""
     if branch is None:
@@ -142,17 +178,7 @@ def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitP
         issues = (_probe_issue(state, reason),) if state == "refused" else ()
         return CommitProbe(state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead, issues=issues)
 
-    parent_ok, parent_reason, parent_branch, gitlink_old = False, "", None, None
-    parent_top = gitops.show_toplevel(ctx, cplan.repo_root)
-    if parent_top is None or not _same_dir(parent_top, cplan.repo_root):
-        parent_reason = f"no parent git repository at {cplan.repo_root}"
-    else:
-        parent_branch = gitops.current_branch(ctx, cplan.repo_root)
-        if parent_branch is None:
-            parent_reason = "the parent repo is on a detached HEAD"
-        else:
-            parent_ok = True
-            gitlink_old = gitops.committed_gitlink(ctx, cplan.repo_root, cplan.custom_rel)
+    parent_ok, parent_reason, parent_branch, gitlink_old = _parent_state(ctx, cplan)
     return CommitProbe(
         state="ready",
         branch=branch,
