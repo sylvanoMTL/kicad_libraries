@@ -219,7 +219,7 @@ Plans:
   3. If `Custom` is on a detached HEAD that lies on `main`'s history, the user is offered a switch to `main` before committing. Otherwise the commit is refused with an explanation and nothing is committed.
   4. No importer code path pushes. After a commit, the local branches are ahead of their remotes and no remote has changed.
 
-**Plans**: 4/8 plans executed
+**Plans**: 6/8 plans executed
 
 Plans:
 **Wave 1**
@@ -231,8 +231,8 @@ Plans:
 - [x] 06-04-PLAN.md — Commit plan and messages without git: files only, on-disk spelling, outside-Custom refusal, D-11 stale check, D-09 backup lookup, D-18 messages with sanitised provenance trailers and no local paths (GIT-04) (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 06-05-PLAN.md — Probe pre-checks on real git: unavailable cases (git missing/old, uninitialised Custom, busy, identity), parent pre-checks, worktree-private gitdir, D-09 amber files, D-10 count, D-13 earlier commits (wave 3)
-- [ ] 06-06-PLAN.md — Main-window close guard while a git job runs, and the Commit section of the Importing Parts help page checked against a real CommitPanel (wave 3)
+- [x] 06-05-PLAN.md — Probe pre-checks on real git: unavailable cases (git missing/old, uninitialised Custom, busy, identity), parent pre-checks, worktree-private gitdir, D-09 amber files, D-10 count, D-13 earlier commits (wave 3)
+- [x] 06-06-PLAN.md — Main-window close guard while a git job runs, and the Commit section of the Importing Parts help page checked against a real CommitPanel (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 06-07-PLAN.md — Exact commit on real git: refusals before any write (D-11 stale file, changed branch, parent re-check, ignored path), hook/lock/timeout handling (D-06, D-03), bystanders untouched, awkward names, trailers round trip, final parent message, D-09 diff content (wave 4)
@@ -268,7 +268,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
-| 6. Git Commit Step | 4/8 | In Progress | - |
+| 6. Git Commit Step | 6/8 | In Progress | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
 
 ## Backlog
