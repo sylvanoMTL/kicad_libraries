@@ -221,6 +221,40 @@ def tracked_paths(ctx: GitContext, repo: Path, rels) -> set[str] | Issue:
     return {name for name in run.stdout.split("\0") if name}
 
 
+def head_blob(ctx: GitContext, repo: Path, rel: str) -> bytes | None:
+    """What HEAD holds for rel, as the work tree would have it (`cat-file --filters`); None when HEAD lacks the path.
+
+    The smudge filter is applied, so a clean file under core.autocrlf=true hashes the same as its CRLF
+    work-tree copy, which the raw blob would not.
+    """
+    run = run_git(ctx, repo, "cat-file", "--filters", f"HEAD:{rel}")
+    return run.raw if _ok(run) else None
+
+
+def status_entries(ctx: GitContext, repo: Path) -> list[str] | Issue:
+    """The path of every changed or untracked file (`status --porcelain=v1 -z -uall`), each counted once.
+
+    A rename or copy entry is followed by its source path in the next NUL field; it is skipped, so the
+    entry counts once under its new path.
+    """
+    run = run_git(ctx, repo, "status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if isinstance(run, Issue):
+        return run
+    if run.returncode != 0:
+        return Issue(Severity.ERROR, "git.failed", f"git status failed (git exit {run.returncode})\n{run.output}")
+    fields = run.stdout.split("\0")
+    paths, index = [], 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if len(entry) < 4:  # the empty field after the last NUL
+            continue
+        if entry[0] in "RC" or entry[1] in "RC":
+            index += 1
+        paths.append(entry[3:])
+    return paths
+
+
 def log_range(ctx: GitContext, repo: Path, old: str, new: str) -> list[tuple[str, str]] | None:
     """(short hash, subject) of the commits in old..new, oldest first; None when git cannot list them."""
     run = run_git(ctx, repo, "log", "--reverse", "--format=%h%x09%s", f"{old}..{new}")

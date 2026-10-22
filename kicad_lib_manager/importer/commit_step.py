@@ -5,6 +5,7 @@ git call goes through gitops, which holds no way to reach another repository. Th
 path-limited (`commit --only` with the listed files), so unrelated changes stay exactly as they were.
 """
 
+import hashlib
 import os
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -161,6 +162,63 @@ def _parent_state(ctx: GitContext, cplan: CommitPlan) -> tuple[bool, str, str | 
     return True, "", branch, gitops.committed_gitlink(ctx, root, cplan.custom_rel)
 
 
+def _dirty_before(ctx: GitContext, cplan: CommitPlan) -> frozenset[str]:
+    """Files the install changed that already differed from HEAD, or were not in HEAD, before it ran (D-09).
+
+    base_sha256 None means the install created the file: never dirty. Otherwise the hash of what HEAD
+    would put in the work tree is compared with the content the install replaced.
+    """
+    dirty = set()
+    for file in cplan.files:
+        if file.base_sha256 is None:
+            continue
+        blob = gitops.head_blob(ctx, cplan.custom_dir, file.rel)
+        if blob is None or hashlib.sha256(blob).hexdigest() != file.base_sha256:
+            dirty.add(file.rel)
+    return frozenset(dirty)
+
+
+def _other_changes(ctx: GitContext, cplan: CommitPlan) -> tuple[int, tuple[Issue, ...]]:
+    """How many changed or untracked files in Custom are not part of the commit (D-10)."""
+    entries = gitops.status_entries(ctx, cplan.custom_dir)
+    if isinstance(entries, Issue):
+        text = f"Could not count the other changes in Custom: {entries.text}"
+        return 0, (Issue(Severity.WARNING, "commit.status_failed", text),)
+    touched = {file.rel.casefold() for file in cplan.files}
+    return sum(1 for path in entries if path.casefold() not in touched), ()
+
+
+def _earlier(
+    ctx: GitContext, cplan: CommitPlan, gitlink_old: str | None, head: str
+) -> tuple[tuple[tuple[str, str], ...], bool]:
+    """(Custom commits from the parent's committed gitlink to Custom's HEAD, oldest first; whether they could be listed)."""
+    if gitlink_old is None or not head:
+        return (), False
+    if gitlink_old == head:
+        return (), True
+    pairs = gitops.log_range(ctx, cplan.custom_dir, gitlink_old, "HEAD")
+    return (tuple(pairs), True) if pairs is not None else ((), False)
+
+
+def _preexisting(ctx: GitContext, cplan: CommitPlan, head: str) -> dict:
+    """The probe fields about the parent repo and about what was already there before the import."""
+    parent_ok, parent_reason, parent_branch, gitlink_old = _parent_state(ctx, cplan)
+    others, issues = _other_changes(ctx, cplan)
+    earlier, listed = _earlier(ctx, cplan, gitlink_old, head)
+    return dict(
+        parent_dir=cplan.repo_root,
+        parent_ok=parent_ok,
+        parent_reason=parent_reason,
+        parent_branch=parent_branch,
+        gitlink_old=gitlink_old,
+        earlier=earlier,
+        earlier_listed=listed,
+        dirty_before=_dirty_before(ctx, cplan),
+        other_changes=others,
+        issues=issues,
+    )
+
+
 def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitProbe:
     """Read the git state of Custom and the parent repo; nothing is changed."""
     ctx = _context(cplan, git)
@@ -175,20 +233,21 @@ def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitP
     if branch is None:
         short = gitops.short_hash(ctx, custom) or head[:7] or "unknown"
         state, reason, ref, ahead = _detached_state(ctx, cplan, short)
-        issues = (_probe_issue(state, reason),) if state == "refused" else ()
-        return CommitProbe(state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead, issues=issues)
+        if state == "refused":
+            return CommitProbe(
+                state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead,
+                issues=(_probe_issue(state, reason),),
+            )
+        return CommitProbe(
+            state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead, **_preexisting(ctx, cplan, head)
+        )
 
-    parent_ok, parent_reason, parent_branch, gitlink_old = _parent_state(ctx, cplan)
     return CommitProbe(
         state="ready",
         branch=branch,
         head=head,
         not_main=branch != "main",  # a named branch is committed on as it is (D-14)
-        parent_dir=cplan.repo_root,
-        parent_ok=parent_ok,
-        parent_reason=parent_reason,
-        parent_branch=parent_branch,
-        gitlink_old=gitlink_old,
+        **_preexisting(ctx, cplan, head),
     )
 
 
