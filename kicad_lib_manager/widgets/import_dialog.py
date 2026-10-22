@@ -31,6 +31,8 @@ from PySide6.QtWidgets import (
 
 from ..importer.applier import apply_plan
 from ..importer.candidate import ImportCandidate
+from ..importer.commit_plan import CommitPlan, build_commit_plan
+from ..importer.commit_step import CommitOutcome, CommitProbe, probe_commit, run_commit
 from ..importer.content import ContentText, op_content, unchanged_content
 from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
@@ -48,6 +50,7 @@ from ..importer.suggest import LibrarySuggestion, suggest_library
 from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
+from .commit_panel import CommitPanel
 from .conflict_row import ConflictRow
 from .content_view import ContentViewDialog
 from .import_result import ElidedLabel, ImportResultView
@@ -207,6 +210,8 @@ class ImportCore:
     downloads_dir: Callable = default_downloads_dir
     op_content: Callable = op_content
     unchanged_content: Callable = unchanged_content
+    probe_commit: Callable = probe_commit
+    run_commit: Callable = run_commit
 
 
 @dataclass(frozen=True)
@@ -309,6 +314,11 @@ class ImportDialog(QDialog):
         self._workers: list[TaskWorker] = []
         self._open_worker: TaskWorker | None = None
         self._install_worker: TaskWorker | None = None
+        # The Phase 6 commit step: one panel per installed part and at most one git worker at a time
+        self._commit_panel: CommitPanel | None = None
+        self._commit_plan: CommitPlan | None = None
+        self._commit_probe: CommitProbe | None = None
+        self._git_worker: TaskWorker | None = None
         self._closing = False
 
         self.setWindowTitle("Import Part")
@@ -2097,6 +2107,84 @@ class ImportDialog(QDialog):
         view.close_button.setDefault(True)
         view.close_button.setFocus()
         self._start_kicad_check(result.library)
+        self._start_commit_step(plan, result)
+
+    # -- commit step (Phase 6): nothing is committed before the user clicks Commit ---------------------
+
+    def is_committing(self) -> bool:
+        """True while a git job (the probe or the commit) runs; the dialog cannot close then (D-07)."""
+        return self._git_worker is not None
+
+    def _start_commit_step(self, plan: InstallPlan, result: InstallResult):
+        """Show the commit panel for the part that was just installed and probe git for it (D-01, D-08)."""
+        self._commit_panel = self._commit_plan = self._commit_probe = None
+        if not result.ok or plan.is_noop or not result.touched:
+            return
+        cplan = build_commit_plan(result, plan, vendor_label=vendor_label(result.vendor))
+        panel = CommitPanel()
+        panel.commit_requested.connect(self._on_commit_requested)
+        self._commit_panel, self._commit_plan = panel, cplan
+        self._result_view.set_commit_panel(panel)
+        panel.show_plan(cplan)
+        core = self._core
+        worker = self._spawn(lambda progress, cp=cplan: core.probe_commit(cp))
+        self._git_worker = worker
+        worker.result.connect(lambda probe, w=worker: self._on_probe_done(w, probe))
+        worker.failed.connect(lambda text, w=worker: self._on_probe_failed(w, text))
+        worker.start()
+
+    def _on_probe_done(self, worker: TaskWorker, probe: CommitProbe):
+        if self._git_worker is worker:
+            self._git_worker = None
+        if self._closing or self._commit_panel is None:
+            return
+        self._commit_probe = probe
+        self._commit_panel.apply_probe(probe)
+        if probe.issues:
+            self.issues_logged.emit(list(probe.issues))
+
+    def _on_probe_failed(self, worker: TaskWorker, text: str):
+        if self._git_worker is worker:
+            self._git_worker = None
+        if self._closing or self._commit_panel is None:
+            return
+        issue = Issue(Severity.ERROR, "commit.step_failed", f"Commit step failed: {text}")
+        self.issues_logged.emit([issue])
+        self._commit_panel.apply_probe(CommitProbe(state="unavailable", reason=text))
+
+    def _on_commit_requested(self, message: str, bump_parent: bool):
+        panel, cplan, probe = self._commit_panel, self._commit_plan, self._commit_probe
+        if self._git_worker is not None or self._closing or panel is None or cplan is None or probe is None:
+            return
+        core = self._core
+        panel.set_committing()
+        worker = self._spawn(
+            lambda progress, cp=cplan, m=message, b=bump_parent, br=probe.branch: core.run_commit(
+                cp, m, b, expected_branch=br, progress=progress
+            )
+        )
+        self._git_worker = worker
+        worker.progress.connect(self._on_commit_progress)
+        worker.result.connect(lambda outcome, w=worker: self._on_commit_done(w, outcome))
+        worker.failed.connect(lambda text, w=worker: self._on_commit_failed(w, text))
+        worker.start()
+
+    def _on_commit_progress(self, message: str, current: int, total: int):
+        if self._commit_panel is not None and self.is_committing():
+            self._commit_panel.set_step(message)
+
+    def _on_commit_done(self, worker: TaskWorker, outcome: CommitOutcome):
+        if self._git_worker is worker:
+            self._git_worker = None
+        if self._closing or self._commit_panel is None:
+            return
+        self._commit_panel.show_outcome(outcome)
+        if outcome.issues:
+            self.issues_logged.emit(list(outcome.issues))
+
+    def _on_commit_failed(self, worker: TaskWorker, text: str):
+        issue = Issue(Severity.ERROR, "commit.step_failed", f"Commit step failed: {text}")
+        self._on_commit_done(worker, CommitOutcome(issues=(issue,)))
 
     def set_post_install_status(self, row: str, text: str, severity: Severity):
         """Set a status row of the Result view: library_list, tables or generate_hint (D-16, D-17)."""
@@ -2185,20 +2273,21 @@ class ImportDialog(QDialog):
         self._discard_package()
 
     def done(self, r: int):
-        # An install cannot be cancelled: closing waits until it ends (D-10, T-05-33)
-        if self.is_installing():
+        # An install cannot be cancelled: closing waits until it ends (D-10, T-05-33); the same holds
+        # for a git job, which may run a slow hook (D-07)
+        if self.is_installing() or self.is_committing():
             return
         self._shutdown()
         super().done(r)
 
     def keyPressEvent(self, event: QKeyEvent):
-        if self.is_installing() and event.key() == Qt.Key.Key_Escape:
+        if (self.is_installing() or self.is_committing()) and event.key() == Qt.Key.Key_Escape:
             event.accept()
             return
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent):
-        if self.is_installing():
+        if self.is_installing() or self.is_committing():
             event.ignore()
             return
         self._shutdown()

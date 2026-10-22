@@ -49,7 +49,13 @@ def gates():
 
 def core_with(**changes) -> ImportCore:
     # kicad_running is faked: the real one lists the machine's processes
-    fields = {"detect_tools": lambda kicad_fp_dir: ToolContext(), "kicad_running": lambda: [], **changes}
+    fields = {
+        "detect_tools": lambda kicad_fp_dir: ToolContext(),
+        "kicad_running": lambda: [],
+        "probe_commit": no_git_probe,
+        "run_commit": no_git_commit,
+        **changes,
+    }
     return replace(ImportCore(), **fields)
 
 
@@ -276,7 +282,7 @@ def test_close_refused_while_installing(qtbot, make_dialog, gates):
 
     gates[0].set()
     qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
-    qtbot.waitUntil(lambda: not dialog.is_installing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing(), timeout=30000)
     dialog.reject()
     assert not dialog.isVisible()
 
@@ -808,6 +814,8 @@ def make_item_dialog(qtbot, item_layout, gates, recorded):
             "downloads_dir": lambda: None,
             "build_plan": recording_build(recorded),
             "kicad_running": lambda: [],
+            "probe_commit": no_git_probe,
+            "run_commit": no_git_commit,
             **changes,
         }
         dialog = ImportDialog(item_layout.repo_root, item_layout, core=replace(ImportCore(), **fields))
@@ -2439,6 +2447,8 @@ def make_install_dialog(qtbot, item_layout, gates, recorded, tmp_path):
             "build_plan": recording_build(recorded),
             "suggest_library": _good_suggestion,
             "kicad_running": lambda: [],
+            "probe_commit": no_git_probe,
+            "run_commit": no_git_commit,
             **changes,
         }
         dialog = ImportDialog(
@@ -2537,7 +2547,7 @@ def test_install_close_esc_reject_ignored(qtbot, make_install_dialog, gates):
     assert dialog.is_installing()
 
     gates[0].set()
-    qtbot.waitUntil(lambda: dialog.result is not None and not dialog.is_installing(), timeout=60000)
+    qtbot.waitUntil(lambda: dialog.result is not None and not dialog.is_installing() and not dialog.is_committing(), timeout=60000)
     assert dialog.isVisible()
     dialog.close()
     assert not dialog.isVisible()
@@ -2741,7 +2751,7 @@ def test_result_view_success_ul(qtbot, make_install_dialog):
     assert view._backup_label.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
     assert not view._kicad_notice.isVisible()
     slot = view.findChild(QWidget, "commitSlot")
-    assert slot is view.commit_slot and slot.isHidden() and slot.height() == 0 and slot.maximumHeight() == 0
+    assert slot is view.commit_slot and slot.isVisible() and slot.maximumHeight() > 0  # Phase 6: the commit panel
     assert dialog.result is result
     assert dialog.result_plan is dialog._plan
     assert view.close_button.isDefault() and dialog.focusWidget() is view.close_button
@@ -2953,6 +2963,7 @@ def test_import_flow_modules_do_not_import_subprocess():
     modules = (
         "widgets/import_dialog.py", "widgets/import_result.py", "widgets/conflict_row.py",
         "importer/preview.py", "importer/form.py", "importer/content.py", "importer/downloads.py",
+        "widgets/commit_panel.py", "importer/commit_plan.py", "importer/commit_step.py",
     )
     for module in modules:
         assert "subprocess" not in source_imports(PACKAGE_ROOT / module), module
@@ -2978,3 +2989,162 @@ def test_import_flow_never_runs_git(qtbot, make_install_dialog, monkeypatch):
     finish_workers(qtbot, dialog)
     names = [Path(str(a[0] if isinstance(a, (list, tuple)) else a).split()[0]).name.lower() for a in calls]
     assert not [n for n in names if "git" in n], names
+
+
+# -- Phase 6 commit step (plan 06-01): the Result view's commit panel --------------------------
+
+from datetime import date  # noqa: E402
+
+from gitfixtures import make_superproject, remote_refs, requires_git  # noqa: E402
+
+
+def no_git_probe(cplan, **kwargs):
+    """A probe_commit fake: the commit step is unavailable, so no test but the tracer starts git."""
+    from kicad_lib_manager.importer.commit_step import CommitProbe
+
+    return CommitProbe(state="unavailable", reason="git is not used by this test")
+
+
+def no_git_commit(*args, **kwargs):
+    """A run_commit fake that fails loudly if a test clicks Commit without meaning to."""
+    from kicad_lib_manager.importer.commit_step import CommitOutcome
+
+    issue = Issue(Severity.ERROR, "commit.step_failed", "run_commit must not run in this test")
+    return CommitOutcome(issues=(issue,))
+
+
+def commit_panel_of(dialog: ImportDialog):
+    from kicad_lib_manager.widgets.commit_panel import CommitPanel
+
+    return dialog._result_view.commit_slot.findChildren(CommitPanel)
+
+
+def panel_files(panel) -> list[str]:
+    return [panel._files_list.item(i).text() for i in range(panel._files_list.count())]
+
+
+CUSTOM_REL = sorted(path.removeprefix("Custom/") for path in UL_REL)
+
+
+@requires_git
+def test_tracer_commit_end_to_end(qtbot, tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    core = replace(
+        ImportCore(),
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        downloads_dir=lambda: None,
+        suggest_library=_good_suggestion,
+        kicad_running=lambda: [],
+    )
+    dialog = ImportDialog(
+        repos.parent, RepoLayout.for_repo(repos.parent), core=core, backup_root=tmp_path / "backups"
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    install_ul(qtbot, dialog)
+
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert panel_files(panel) == UL_REL
+    lines = panel.message().splitlines()
+    assert lines[0] == "Add CSD85301Q2 to IC_Battery_Charger_TI"
+    assert "Import-Vendor: Ultra Librarian" in lines
+    assert "Import-Package: ul_CSD85301Q2.zip" in lines
+    assert f"Import-Date: {date.today().isoformat()}" in lines
+    assert panel._parent_check.isChecked()
+    assert panel._parent_check.text() == "Also commit the Custom ref in the parent repo (main)"
+
+    refs = remote_refs(repos)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=60000)
+
+    in_custom = repos.git(repos.custom, "show", "--name-only", "--format=", "HEAD").split()
+    assert sorted(in_custom) == CUSTOM_REL
+    assert repos.git(repos.custom, "status", "--porcelain").strip() == ""
+    assert repos.git(repos.parent, "show", "--name-only", "--format=", "HEAD").split() == ["Custom"]
+    gitlink = repos.git(repos.parent, "ls-tree", "HEAD", "Custom").split()[2]
+    assert gitlink == repos.git(repos.custom, "rev-parse", "HEAD").strip()
+    assert remote_refs(repos) == refs
+    assert "Not pushed — Custom is 1 commit ahead of origin/main (as last fetched)" in panel.outcome_lines()
+    trailers = repos.git(repos.custom, "log", "-1", "--format=%(trailers:only,unfold)").split("\n")
+    assert [t for t in trailers if t] == [
+        "Import-Vendor: Ultra Librarian",
+        "Import-Package: ul_CSD85301Q2.zip",
+        f"Import-Date: {date.today().isoformat()}",
+    ]
+
+
+def test_commit_slot_holds_panel_after_install(qtbot, make_install_dialog):
+    dialog = make_install_dialog(probe_commit=no_git_probe, run_commit=no_git_commit)
+    install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    view = dialog._result_view
+    slot = view.findChild(QWidget, "commitSlot")
+
+    assert slot is view.commit_slot and slot.isVisible() and slot.maximumHeight() > 0
+    (panel,) = commit_panel_of(dialog)
+    assert panel.state() == "unavailable"
+    assert panel_files(panel) == UL_REL
+
+
+def test_commit_close_refused_while_git_runs(qtbot, make_install_dialog, gates):
+    from kicad_lib_manager.importer.commit_step import CommitOutcome, CommitProbe
+
+    started = threading.Event()
+
+    def ready_probe(cplan, **kwargs):
+        return CommitProbe(state="ready", branch="main", parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main")
+
+    def blocking_commit(cplan, message, bump, **kwargs):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        done = Issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom")
+        return CommitOutcome(custom_commit="abc1234", custom_branch="main", issues=(done,))
+
+    dialog = make_install_dialog(probe_commit=ready_probe, run_commit=blocking_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
+    assert panel.state() == "committing"
+
+    dialog.reject()
+    dialog.close()
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert dialog.isVisible()
+    assert dialog.is_committing()
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    assert panel.state() == "done"
+    dialog._result_view.close_button.click()
+    assert not dialog.isVisible()
+
+
+def test_no_commit_step_after_failed_or_empty_install(qtbot, make_install_dialog):
+    dialog = make_install_dialog(
+        apply_plan=failing_apply(stale()), probe_commit=no_git_probe, run_commit=no_git_commit
+    )
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    slot = dialog._result_view.commit_slot
+    assert slot.isHidden() and slot.maximumHeight() == 0
+    assert commit_panel_of(dialog) == []
+    wait_current(qtbot, dialog)
+
+    def empty_apply(plan, *, backup_root=None, progress=None):
+        return InstallResult(ok=True, library=plan.library, new_library=False, touched=(), issues=())
+
+    other = make_install_dialog(apply_plan=empty_apply, probe_commit=no_git_probe, run_commit=no_git_commit)
+    other._install_btn.click()
+    qtbot.waitUntil(lambda: other.result is not None, timeout=30000)
+    slot = other._result_view.commit_slot
+    assert other._stack.currentWidget() is other._result_view
+    assert slot.isHidden() and slot.maximumHeight() == 0
+    assert commit_panel_of(other) == []
