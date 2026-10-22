@@ -179,7 +179,7 @@ Plans:
   4. Every conflict with an existing symbol, footprint or 3D model appears in the preview with its own overwrite / rename / skip choice. There is no "overwrite all" option.
   5. After install, the library list rescans and shows the new or updated library selected. `sym-lib-table` / `fp-lib-table` are regenerated when a new library was created. If KiCad appears to be running, the user is told to reopen KiCad's library editors.
 
-**Plans**: 8/11 plans executed
+**Plans**: 9/11 plans executed
 
 Plans:
 **Wave 1**
@@ -197,7 +197,7 @@ Plans:
 - [x] 05-08-PLAN.md — UX-01 drag and drop, toolbar button, busy state incl. Select/Deselect All, primary button style, help pages (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 05-09-PLAN.md — Target library combo with badge and token line, Updating indicators, clickable blocking-reason strip with amber field frames, Phase 3 D-04 placeholder block, Ctrl+Return (wave 4)
+- [x] 05-09-PLAN.md — Target library combo with badge and token line, Updating indicators, clickable blocking-reason strip with amber field frames, Phase 3 D-04 placeholder block, Ctrl+Return (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 05-10-PLAN.md — PREV-05 per-conflict Overwrite/Rename/Skip rows kept by key (D-14a), no bulk control; content view from file rows and conflicts through one serial build queue (wave 5)
@@ -247,7 +247,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 2. Hardening Existing Code | 9/9 | Complete    | 2026-10-19 |
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
-| 5. Import UI and Post-Install | 8/11 | In Progress | - |
+| 5. Import UI and Post-Install | 9/11 | In Progress | - |
 | 6. Git Commit Step | 0/TBD | Not started | - |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
 
