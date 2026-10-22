@@ -7,15 +7,19 @@ GIT_CONFIG_GLOBAL and GIT_CONFIG_NOSYSTEM from its environment: only repo-local 
 the tests independent of the machine they run on.
 """
 
+import hashlib
 import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 from zipfixtures import CURRENT_CUSTOM_FOOTPRINT_LIBS, CURRENT_CUSTOM_SYMBOL_LIBS, symbol_lib
+
+from kicad_lib_manager.importer.commit_plan import CommitFile, CommitPlan
 
 GIT = shutil.which("git")
 requires_git = pytest.mark.skipif(GIT is None, reason="git is not on PATH")
@@ -173,3 +177,55 @@ def remote_refs(repos: GitRepos) -> dict[str, str]:
             ref, _, sha = line.partition(" ")
             found[f"{label}:{ref}"] = sha
     return found
+
+
+def _kind_of(rel: str) -> str:
+    """The install op kind for a Custom-relative path."""
+    if rel.startswith("Symbols/"):
+        return "symbol_lib"
+    if rel.startswith("3DModels/"):
+        return "model"
+    return "footprint"
+
+
+def import_files(
+    repos: GitRepos,
+    files: Mapping[str, bytes],
+    *,
+    library: str = "IC_Battery_Charger_TI",
+    symbol: str = "PART1",
+    vendor: str = "Ultra Librarian",
+    package: str = "ul_PART1.zip",
+    new_library: bool = False,
+) -> CommitPlan:
+    """Stand in for an install: write files (Custom-relative posix path -> bytes) and return their CommitPlan.
+
+    base_sha256 is the hash of what was on disk before (None for a new file), expected_sha256 the
+    hash of what was written, exactly as the real install records them.
+    """
+    commit_files = []
+    for rel, data in files.items():
+        path = repos.custom / rel
+        base = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        commit_files.append(
+            CommitFile(rel, f"Custom/{rel}", path, _kind_of(rel), hashlib.sha256(data).hexdigest(), base)
+        )
+    return CommitPlan(
+        repo_root=repos.parent,
+        custom_dir=repos.custom,
+        custom_rel="Custom",
+        files=tuple(commit_files),
+        library=library,
+        new_library=new_library,
+        symbol=symbol,
+        footprint=f"{library}:FP1",
+        model=None,
+        vendor=vendor,
+        package=package,
+        date="2026-10-22",
+        overwrite=False,
+        backup_dir=None,
+        issues=(),
+    )
