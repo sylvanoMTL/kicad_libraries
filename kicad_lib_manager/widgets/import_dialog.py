@@ -35,17 +35,19 @@ from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
 from ..importer.form import (
     FIELD_LABELS, FIELD_NAMES, UPDATING_REASON, FieldDefaults, FormStatus, FormValues, Reason,
-    blocking_reasons, build_options, field_defaults, library_badge, library_tokens, noop_text, ready_text,
+    blocking_reasons, build_options, carry_resolutions, field_defaults, library_badge, library_tokens,
+    noop_text, ready_text,
 )
 from ..importer.layout import RepoLayout, list_existing_libraries
 from ..importer.package import Package, open_package
-from ..importer.plan import InstallOptions, InstallPlan, InstallResult, Resolution, ToolContext
+from ..importer.plan import Conflict, InstallOptions, InstallPlan, InstallResult, Resolution, ToolContext
 from ..importer.planner import build_plan, detect_tools
 from ..importer.preview import file_counts, preview_sections
 from ..importer.suggest import LibrarySuggestion, suggest_library
 from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
+from .conflict_row import ConflictRow
 from .preview_tree import PreviewTree
 from .theme import (
     AMBER, AMBER_TINT, BORDER, ERROR, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY, MONO_PT, MUTED,
@@ -249,10 +251,12 @@ class ImportDialog(QDialog):
         self._defaults = FieldDefaults()
         self._edited: set[str] = set()  # field names the user changed; only these reach the planner
         self._fp_name_edited = False
-        self._resolutions: dict[str, Resolution] = {}  # conflict choices; plan 05-10 fills them
+        # Conflict choices by Conflict.key (D-14a): pruned to the keys of each accepted plan
+        self._resolutions: dict[str, Resolution] = {}
+        self._conflict_rows: dict[str, ConflictRow] = {}
         # Blocked-field highlight (D-09): a reason's target names the control to focus and its amber frame.
-        # Keys: "library", "footprint_name", "footprints", the field names; plan 05-10 adds
-        # "conflict:{key}" and "rename:{key}" entries and removes them with their rows.
+        # Keys: "library", "footprint_name", "footprints", the field names, and per conflict row
+        # "conflict:{key}" (the Overwrite button) and "rename:{key}" (the rename field), removed with the row.
         self._reason_targets: dict[str, QWidget] = {}
         self._field_frames: dict[str, QFrame] = {}
         self._strip_reasons: list[Reason] = []  # the reasons the strip links point at
@@ -458,6 +462,7 @@ class ImportDialog(QDialog):
         left_lay.addSpacing(SP_MD)
         self._build_fields_section(left_lay)
         left_lay.addSpacing(SP_MD)
+        self._build_conflicts_section(left_lay)
         left_lay.addStretch()
         self._left_scroll.setWidget(left)
         self._left_scroll.setMinimumWidth(380)
@@ -736,6 +741,21 @@ class ImportDialog(QDialog):
             self._field_edits[name] = edit
             self._field_restore[name] = restore
         left_lay.addLayout(form)
+
+    def _build_conflicts_section(self, left_lay: QVBoxLayout):
+        """The Conflicts section (D-12): last in the left pane, hidden until the plan has a conflict."""
+        box = QWidget()
+        box_lay = QVBoxLayout(box)
+        box_lay.setContentsMargins(0, 0, 0, 0)
+        box_lay.setSpacing(SP_SM)
+        box_lay.addWidget(self._heading("Conflicts"))
+        self._conflicts_layout = QVBoxLayout()
+        self._conflicts_layout.setContentsMargins(0, 0, 0, 0)
+        self._conflicts_layout.setSpacing(SP_SM)
+        box_lay.addLayout(self._conflicts_layout)
+        box.hide()
+        self._conflicts_box = box
+        left_lay.addWidget(box)
 
     # -- opening a package ------------------------------------------------------
 
@@ -1030,7 +1050,7 @@ class ImportDialog(QDialog):
         self._install_failure = ""
         self._first_plan_seen = False
         self._defaults = FieldDefaults()
-        self._resolutions = {}
+        self._clear_conflicts()
         self._clear_items()
         self._preview.render(())
         self._preview_stack.setCurrentWidget(self._building_page)
@@ -1324,6 +1344,74 @@ class ImportDialog(QDialog):
         combo.setToolTip(combo.currentText())
         self._request_rebuild()
 
+    # -- conflicts: one row per conflict, choices kept by key (PREV-05, D-12, D-14a) ----------------
+
+    def _sync_conflicts(self, plan: InstallPlan):
+        """Show the accepted plan's conflicts: prune the choices to its keys, update rows in place by key.
+
+        A row that stays keeps its widgets, so focus and typed rename text survive the rebuild. A key
+        that vanished takes its row and choice with it; a new key starts unresolved.
+        """
+        self._resolutions = carry_resolutions(self._resolutions, plan)
+        wanted = [conflict.key for conflict in plan.conflicts]
+        for key in [key for key in self._conflict_rows if key not in wanted]:
+            self._remove_conflict_row(key)
+        for index, conflict in enumerate(plan.conflicts):
+            row = self._conflict_rows.get(conflict.key)
+            if row is None:
+                row = self._add_conflict_row(conflict)
+            else:
+                row.update_conflict(conflict)
+            resolution = self._resolutions.get(conflict.key)
+            if row.current_resolution() != resolution:
+                row.set_resolution(resolution)
+            if self._conflicts_layout.indexOf(row) != index:
+                self._conflicts_layout.removeWidget(row)
+                self._conflicts_layout.insertWidget(index, row)
+        self._conflicts_box.setVisible(bool(wanted))
+
+    def _add_conflict_row(self, conflict: Conflict) -> ConflictRow:
+        key = conflict.key
+        row = ConflictRow(conflict)
+        row.choice_changed.connect(self._on_conflict_choice)
+        row.rename_edited.connect(self._on_conflict_rename)
+        self._conflict_rows[key] = row
+        self._conflicts_layout.addWidget(row)
+        self._reason_targets[f"conflict:{key}"] = row.overwrite_button
+        self._reason_targets[f"rename:{key}"] = row.rename_edit
+        self._field_frames[f"rename:{key}"] = row.rename_frame
+        return row
+
+    def _remove_conflict_row(self, key: str):
+        row = self._conflict_rows.pop(key)
+        for target in (f"conflict:{key}", f"rename:{key}"):
+            self._reason_targets.pop(target, None)
+            self._field_frames.pop(target, None)
+        self._conflicts_layout.removeWidget(row)
+        row.hide()
+        row.setParent(None)
+        row.deleteLater()
+
+    def _clear_conflicts(self):
+        """Forget every conflict row and choice (a new or discarded package)."""
+        for key in list(self._conflict_rows):
+            self._remove_conflict_row(key)
+        self._resolutions = {}
+        self._conflicts_box.hide()
+
+    def _on_conflict_choice(self, key: str, resolution: Resolution | None):
+        """A button was picked: keep the choice and rebuild at once (it supersedes any typing timer)."""
+        if resolution is None:
+            self._resolutions.pop(key, None)
+        else:
+            self._resolutions[key] = resolution
+        self._request_rebuild()
+
+    def _on_conflict_rename(self, key: str, text: str):
+        """The rename field was typed in: the text goes to the planner exactly as typed, after the quiet period."""
+        self._resolutions[key] = Resolution("rename", text)
+        self._mark_dirty()
+
     def _show_plan_in_form(self, plan: InstallPlan):
         """Show what the accepted plan says: the extends note, the symbol name, the fields and the Footprint field."""
         note = self._extends_note
@@ -1518,6 +1606,7 @@ class ImportDialog(QDialog):
             self._preview.render(preview_sections(plan, self._candidate, worker.options))
             self._preview_stack.setCurrentWidget(self._preview)
             self._show_plan_in_form(plan)
+            self._sync_conflicts(plan)
         # else: a newer request exists; this result is stale and dropped untouched
         self._build_ended(worker)
         self._update_install_state()

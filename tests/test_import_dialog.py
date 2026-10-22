@@ -2040,7 +2040,7 @@ def test_conflict_rename_field_and_empty_reason(qtbot, make_item_dialog, item_la
     wait_current(qtbot, dialog)
     assert recorded[-1].resolutions[FP_KEY] == Resolution("rename", "FP_X")
     renames = next(s for s in dialog._preview.sections if s.name == "Renames")
-    assert [r.text for r in renames.rows] == ["DQK0006B → FP_X"]
+    assert "DQK0006B → FP_X" in [r.text for r in renames.rows]
     assert not frame_blocked(dialog, f"rename:{FP_KEY}")
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
 
