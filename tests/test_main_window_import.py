@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
-from PySide6.QtGui import QDragEnterEvent, QDropEvent, QKeySequence
+from PySide6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QKeySequence
 from PySide6.QtWidgets import QMessageBox
 
 from kicad_lib_manager import library_scanner, main_window, settings
@@ -642,3 +642,37 @@ def test_toolbar_import_button_first(qtbot, make_window, monkeypatch):
 def test_generate_button_primary_style(make_window):
     w = make_window([scan_with()])
     assert w._generate_btn.styleSheet() == theme.PRIMARY_BUTTON_QSS
+
+
+# -- plan 05-11 Task 1: the main window cannot close an installing dialog (D-10, T-05-33) -------------
+
+def test_main_window_close_ignored_while_installing(make_window):
+    w = make_window([scan_with()])
+    w._import_dialog = types.SimpleNamespace(is_installing=lambda: True, reject=lambda: pytest.fail("rejected"))
+    try:
+        event = QCloseEvent()
+        w.closeEvent(event)
+        assert not event.isAccepted()
+    finally:
+        w._import_dialog = None
+
+
+def test_main_window_close_closes_idle_dialog_first(qtbot, make_window, tmp_path):
+    w = make_window([scan_with()])
+    w._open_import()
+    dialog = w._import_dialog
+    assert isinstance(dialog, ImportDialog)
+    order = []
+    real_reject = dialog.reject
+    dialog.reject = lambda: (order.append("dialog"), real_reject())
+    real_save = main_window.save_window_geometry
+    main_window.save_window_geometry = lambda geometry: (order.append("geometry"), real_save(geometry))
+    try:
+        event = QCloseEvent()
+        w.closeEvent(event)
+    finally:
+        main_window.save_window_geometry = real_save
+    assert event.isAccepted()
+    assert order == ["dialog", "geometry"]
+    assert w._import_dialog is None
+    assert dialog._closing

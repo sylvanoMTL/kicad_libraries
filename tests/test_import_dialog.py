@@ -48,7 +48,9 @@ def gates():
 
 
 def core_with(**changes) -> ImportCore:
-    return replace(ImportCore(), detect_tools=lambda kicad_fp_dir: ToolContext(), **changes)
+    # kicad_running is faked: the real one lists the machine's processes
+    fields = {"detect_tools": lambda kicad_fp_dir: ToolContext(), "kicad_running": lambda: [], **changes}
+    return replace(ImportCore(), **fields)
 
 
 @pytest.fixture
@@ -804,6 +806,7 @@ def make_item_dialog(qtbot, item_layout, gates, recorded):
             "detect_tools": lambda kicad_fp_dir: ToolContext(),
             "downloads_dir": lambda: None,
             "build_plan": recording_build(recorded),
+            "kicad_running": lambda: [],
             **changes,
         }
         dialog = ImportDialog(item_layout.repo_root, item_layout, core=replace(ImportCore(), **fields))
@@ -2410,3 +2413,253 @@ def test_builds_never_overlap(qtbot, make_item_dialog, item_layout, gates):
     wait_view(qtbot, dialog)
     assert running["calls"] == 3
     assert running["max"] == 1
+
+
+# -- plan 05-11 Task 1: install progress, locked inputs, failure banner (D-10, D-15) ---------------------
+
+from PySide6.QtCore import QSize  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+
+from kicad_lib_manager.widgets.theme import ERROR_TINT  # noqa: E402
+
+CLOSING_RETRY = "Fix the problem and click Install Part again."
+TITLE_RESTORED = "Install failed. Every file was restored."
+TITLE_NOT_RESTORED = "Install failed and some files could not be restored."
+
+
+@pytest.fixture
+def make_install_dialog(qtbot, item_layout, gates, recorded, tmp_path):
+    """A shown dialog on a synthetic Custom layout with the UL sample planned; backups go to tmp_path."""
+
+    def make(package: Path = UL_ZIP, **changes) -> ImportDialog:
+        fields = {
+            "detect_tools": lambda kicad_fp_dir: ToolContext(),
+            "downloads_dir": lambda: None,
+            "build_plan": recording_build(recorded),
+            "suggest_library": _good_suggestion,
+            "kicad_running": lambda: [],
+            **changes,
+        }
+        dialog = ImportDialog(
+            item_layout.repo_root, item_layout, core=replace(ImportCore(), **fields), backup_root=tmp_path / "backups"
+        )
+        qtbot.addWidget(dialog)
+        dialog.show()
+        dialog.open_path(package)
+        wait_current(qtbot, dialog)
+        return dialog
+
+    return make
+
+
+def failing_apply(*issues, backup_dir=None):
+    """An apply_plan fake that reports a rolled-back install with these issues."""
+
+    def apply(plan, *, backup_root=None, progress=None):
+        return InstallResult(
+            ok=False, library=plan.library, new_library=False, touched=(), issues=tuple(issues), backup_dir=backup_dir
+        )
+
+    return apply
+
+
+def blocking_apply(gates, steps=(), started=None):
+    """An apply_plan fake that emits the given progress steps, then waits for a gate and installs for real."""
+
+    def apply(plan, *, backup_root=None, progress=None):
+        for step in steps:
+            progress(*step)
+        gate = threading.Event()
+        gates.append(gate)
+        if started is not None:
+            started.set()
+        assert gate.wait(30)
+        return real_apply_plan(plan, backup_root=backup_root, progress=progress)
+
+    return apply
+
+
+def stale(text: str = "X appeared") -> Issue:
+    return Issue(Severity.ERROR, "install.stale_plan", text)
+
+
+def banner_lines(dialog: ImportDialog) -> list[str]:
+    return dialog._failure_body.toPlainText().splitlines()
+
+
+def test_install_progress_and_lock(qtbot, make_install_dialog, gates):
+    steps = [("Writing a", 0, 4), ("Writing b", 1, 4)]
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, steps))
+    assert dialog._install_btn.isEnabled()
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._install_step.full_text() == "Writing b", timeout=30000)
+
+    assert dialog.is_installing()
+    assert dialog._install_bar.value() == 25
+    assert (dialog._install_bar.minimum(), dialog._install_bar.maximum()) == (0, 100)
+    assert dialog._install_bar.minimumSize() == QSize(240, 16) == dialog._install_bar.maximumSize()
+    assert dialog._install_btn.text() == "Installing..."
+    assert not dialog._install_btn.isEnabled()
+    assert not dialog._left_scroll.isEnabled()
+    assert not dialog._change_btn.isEnabled()
+    assert not dialog._header_row.isEnabled()
+    assert dialog._preview.isEnabled()  # the tree stays scrollable and its rows can be opened
+    assert dialog._install_row.isVisible() and not dialog._strip.isVisible()
+    assert MUTED.lower() in dialog._install_step.styleSheet().lower()
+    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel"]
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    assert dialog._install_bar.value() == 100  # apply_plan's index never reaches total
+
+
+def test_install_rows_can_be_opened_while_installing(qtbot, make_install_dialog, gates):
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog.is_installing() and bool(gates), timeout=30000)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "DQK0006B.kicad_mod"))
+    wait_view(qtbot, dialog)
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+
+
+def test_install_close_esc_reject_ignored(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+
+    dialog.close()
+    dialog.reject()
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert dialog.isVisible()
+    assert dialog.is_installing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None and not dialog.is_installing(), timeout=60000)
+    assert dialog.isVisible()
+    dialog.close()
+    assert not dialog.isVisible()
+
+
+def test_install_failure_banner_and_rebuild(qtbot, make_install_dialog, recorded):
+    dialog = make_install_dialog(apply_plan=failing_apply(stale("X appeared")))
+    builds = len(recorded)
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._edit_page.layout().itemAt(0).widget() is dialog._failure_banner  # above the package row
+    assert dialog._failure_title.text() == TITLE_RESTORED
+    assert banner_lines(dialog) == ["X appeared", CLOSING_RETRY]
+    banner_style = dialog._failure_banner.styleSheet().lower()
+    assert ERROR_TINT.lower() in banner_style and f"2px solid {ERROR}".lower() in banner_style
+    assert ERROR.lower() in dialog._failure_title.styleSheet().lower()
+    assert dialog._failure_title.font().bold() and dialog._failure_title.font().pointSize() == 12
+    wait_current(qtbot, dialog)
+    assert len(recorded) == builds + 1  # the plan was rebuilt at once, so a retry cannot hit the stale-plan guard
+    assert dialog._left_scroll.isEnabled() and dialog._header_row.isEnabled() and dialog._change_btn.isEnabled()
+    assert dialog._install_btn.text() == "Install Part" and dialog._install_btn.isEnabled()
+    assert dialog._strip.isVisible() and not dialog._install_row.isVisible()
+    assert dialog.result is None
+
+
+def test_install_failure_restore_failed_variant(qtbot, make_install_dialog, tmp_path):
+    kept = tmp_path / "bk"
+    restore = Issue(Severity.ERROR, "install.rollback_failed", "Foo.kicad_sym could not be restored (denied)")
+    dialog = make_install_dialog(apply_plan=failing_apply(stale("Y changed"), restore, backup_dir=kept))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    assert dialog._failure_title.text() == TITLE_NOT_RESTORED
+    assert banner_lines(dialog) == [
+        "Y changed", "Foo.kicad_sym could not be restored (denied)", f"The original files are in {kept}.",
+    ]
+    wait_current(qtbot, dialog)
+
+
+def test_install_failure_without_backup_dir_keeps_retry_line(qtbot, make_install_dialog):
+    restore = Issue(Severity.ERROR, "install.rollback_failed", "a.stp could not be removed (denied)")
+    dialog = make_install_dialog(apply_plan=failing_apply(restore))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    assert dialog._failure_title.text() == TITLE_NOT_RESTORED
+    assert banner_lines(dialog)[-1] == CLOSING_RETRY
+    wait_current(qtbot, dialog)
+
+
+def test_install_failure_ignores_non_error_issues(qtbot, make_install_dialog):
+    warn = Issue(Severity.WARNING, "verify.name_elsewhere", "a warning")
+    dialog = make_install_dialog(apply_plan=failing_apply(warn, stale("only this")))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    assert banner_lines(dialog) == ["only this", CLOSING_RETRY]
+    wait_current(qtbot, dialog)
+
+
+def test_install_worker_exception_shows_banner(qtbot, make_install_dialog, recorded):
+    def boom(plan, *, backup_root=None, progress=None):
+        raise RuntimeError("worker died")
+
+    dialog = make_install_dialog(apply_plan=boom)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    builds = len(recorded)
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    assert dialog._failure_title.text() == "Install failed."
+    assert "Import step failed: RuntimeError: worker died" in banner_lines(dialog)
+    assert any(i.text.startswith("Import step failed: RuntimeError: worker died") for i in logged)
+    wait_current(qtbot, dialog)
+    assert len(recorded) == builds + 1
+    assert dialog._install_btn.isEnabled()
+
+
+def test_failure_banner_dismiss_and_cap(qtbot, make_install_dialog, gates):
+    reasons = [stale(f"Reason number {n} " + "wrapping words " * 6) for n in range(10)]
+    calls = {"n": 0}
+    second = blocking_apply(gates)
+
+    def apply(plan, *, backup_root=None, progress=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return failing_apply(*reasons)(plan)
+        return second(plan, backup_root=backup_root, progress=progress)
+
+    dialog = make_install_dialog(apply_plan=apply)
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    wait_current(qtbot, dialog)
+
+    body = dialog._failure_body
+    assert body.isReadOnly()
+    margins = 2 * body.frameWidth() + 2 * int(body.document().documentMargin())
+    limit = 6 * body.fontMetrics().lineSpacing() + margins + 2
+    qtbot.waitUntil(lambda: body.verticalScrollBar().maximum() > 0, timeout=5000)  # more than 6 lines: it scrolls
+    assert body.height() <= limit
+    assert len(banner_lines(dialog)) == 11
+
+    dismiss = dialog._failure_banner.findChild(QToolButton)
+    assert dismiss.accessibleName() == "Dismiss failure message"
+    assert dismiss.text() == "✕"
+    dismiss.click()
+    assert not dialog._failure_banner.isVisible()
+
+    # a failure shown again is dismissed by the next Install click
+    dialog._show_failure([stale("again")], None)
+    assert dialog._failure_banner.isVisible()
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog.is_installing(), timeout=30000)
+    assert not dialog._failure_banner.isVisible()
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+
+
+def test_progress_stall_holds_value(qtbot, make_install_dialog, gates):
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, [("Writing a", 0, 4), ("Writing b", 2, 4)]))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._install_step.full_text() == "Writing b", timeout=30000)
+    qtbot.wait(300)
+    assert dialog._install_bar.value() == 50
+    assert dialog._install_step.full_text() == "Writing b"
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
