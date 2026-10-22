@@ -2648,7 +2648,7 @@ def test_failure_banner_dismiss_and_cap(qtbot, make_install_dialog, gates):
     dialog._show_failure([stale("again")], None)
     assert dialog._failure_banner.isVisible()
     dialog._install_btn.click()
-    qtbot.waitUntil(lambda: dialog.is_installing(), timeout=30000)
+    qtbot.waitUntil(lambda: dialog.is_installing() and bool(gates), timeout=30000)
     assert not dialog._failure_banner.isVisible()
     gates[0].set()
     qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)

@@ -21,12 +21,12 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QStandardPaths, QThread, QTimer, Signal
 from PySide6.QtGui import (
-    QCloseEvent, QColor, QFont, QKeySequence, QPalette, QResizeEvent, QShortcut, QShowEvent,
+    QCloseEvent, QColor, QFont, QKeyEvent, QKeySequence, QPalette, QResizeEvent, QShortcut, QShowEvent,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QListView, QListWidget, QListWidgetItem, QProgressBar, QPushButton, QScrollArea,
-    QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
+    QLineEdit, QListView, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton,
+    QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from ..importer.applier import apply_plan
@@ -50,10 +50,11 @@ from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
 from .conflict_row import ConflictRow
 from .content_view import ContentViewDialog
+from .import_result import ElidedLabel
 from .preview_tree import PreviewTree
 from .theme import (
-    AMBER, AMBER_TINT, BORDER, ERROR, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY, MONO_PT, MUTED,
-    SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
+    AMBER, AMBER_TINT, BORDER, DISPLAY_PT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY,
+    MONO_PT, MUTED, SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
 )
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
@@ -70,6 +71,11 @@ _NO_FOOTPRINT_FIELD = "(none)"
 _TOKEN_HINT = "Amber parts are guesses or placeholders. Pick an existing library or type a real name."
 _BUSY_DELAY_MS = 150  # the busy strip shows only if a rebuild takes longer than this (no flicker)
 _ZWSP = "​"  # lets a long library name wrap after each "_"
+_FAILURE_LINES = 6  # reason lines shown in the failure banner before its body scrolls
+_FAILED_RESTORED = "Install failed. Every file was restored."
+_FAILED_NOT_RESTORED = "Install failed and some files could not be restored."
+_FAILED_PLAIN = "Install failed."
+_FAILED_RETRY = "Fix the problem and click Install Part again."
 
 # Vendor names of the adapters (importer/adapters) as shown in the package header
 _VENDOR_LABELS = {"UltraLibrarian": "Ultra Librarian", "Loose": "Loose files", "Unknown": "Unknown vendor"}
@@ -241,6 +247,8 @@ class ImportDialog(QDialog):
 
         # Public: the successful InstallResult. Shadows QDialog.result() on this instance (by design).
         self.result: InstallResult | None = None
+        # Public: the plan that produced result (Phase 6 reads both to commit the installed part)
+        self.result_plan: InstallPlan | None = None
 
         self._package: Package | None = None
         self._candidate: ImportCandidate | None = None
@@ -261,7 +269,6 @@ class ImportDialog(QDialog):
         self._plan_gen = -1
         self._plan_options: InstallOptions | None = None
         self._build_failed = False
-        self._install_failure = ""
 
         # Left-pane choices (plan 05-07). The item controls exist only for the package that is open.
         self._symbol_combo: QComboBox | None = None
@@ -437,8 +444,14 @@ class ImportDialog(QDialog):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
 
-        # Package header: name (bold), vendor (muted), Change... on the right, over a 1px line
-        header = QHBoxLayout()
+        # The failure banner of a rolled-back install sits above everything else (D-15)
+        self._build_failure_banner(lay)
+
+        # Package header: name (bold), vendor (muted), Change... on the right, over a 1px line.
+        # In its own widget so an install can lock the whole row (D-10).
+        self._header_row = QWidget()
+        header = QHBoxLayout(self._header_row)
+        header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(8)
         self._package_label = QLabel()
         self._package_label.setTextFormat(Qt.TextFormat.PlainText)
@@ -454,7 +467,7 @@ class ImportDialog(QDialog):
         self._change_btn = QPushButton("Change...")
         self._change_btn.clicked.connect(self._on_change)
         header.addWidget(self._change_btn)
-        lay.addLayout(header)
+        lay.addWidget(self._header_row)
         rule = QFrame()
         rule.setFrameShape(QFrame.Shape.HLine)
         rule.setFixedHeight(1)
@@ -560,6 +573,23 @@ class ImportDialog(QDialog):
         self._strip.setPalette(palette)
         self._strip.linkActivated.connect(self._on_reason_link)
         bottom.addWidget(self._strip, stretch=1)
+        # While installing the strip is replaced by the step text and a determinate bar (D-10)
+        self._install_row = QWidget()
+        install_lay = QHBoxLayout(self._install_row)
+        install_lay.setContentsMargins(0, 0, 0, 0)
+        install_lay.setSpacing(SP_SM)
+        self._install_step = ElidedLabel()
+        self._install_step.setStyleSheet(f"color: {MUTED};")
+        self._install_step.setAccessibleName("Install step")
+        install_lay.addWidget(self._install_step, stretch=1)
+        self._install_bar = QProgressBar()
+        self._install_bar.setRange(0, 100)
+        self._install_bar.setTextVisible(False)
+        self._install_bar.setFixedSize(240, 16)
+        self._install_bar.setAccessibleName("Install progress")
+        install_lay.addWidget(self._install_bar)
+        self._install_row.hide()
+        bottom.addWidget(self._install_row, stretch=1)
         self._install_btn = QPushButton("Install Part")
         self._install_btn.setMinimumWidth(112)
         self._install_btn.clicked.connect(self._on_install_clicked)
@@ -568,6 +598,88 @@ class ImportDialog(QDialog):
 
         self._edit_page = page
         self._stack.addWidget(page)
+
+    def _build_failure_banner(self, page_layout: QVBoxLayout):
+        """The banner of a failed install (D-15): tinted, with a 2 px left bar, a title, the reasons and a dismiss button.
+
+        The reasons are plain text in a read-only editor that is at most six lines tall and scrolls beyond that.
+        """
+        banner = QFrame()
+        banner.setObjectName("failureBanner")
+        banner.setStyleSheet(
+            f"QFrame#failureBanner {{ background-color: {ERROR_TINT}; border-left: 2px solid {ERROR}; }}"
+        )
+        outer = QHBoxLayout(banner)
+        outer.setContentsMargins(SP_MD, SP_SM, SP_SM, SP_SM)
+        outer.setSpacing(SP_SM)
+        column = QVBoxLayout()
+        column.setSpacing(SP_XS)
+        title = QLabel()
+        title.setTextFormat(Qt.TextFormat.PlainText)
+        title.setWordWrap(True)
+        font = title.font()
+        font.setPointSize(DISPLAY_PT)
+        font.setBold(True)
+        title.setFont(font)
+        title.setStyleSheet(f"color: {ERROR};")
+        column.addWidget(title)
+        body = QPlainTextEdit()
+        body.setReadOnly(True)
+        body.setFrameShape(QFrame.Shape.NoFrame)
+        body.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        body.setStyleSheet("QPlainTextEdit { background: transparent; }")
+        body.setAccessibleName("Install failure reasons")
+        column.addWidget(body)
+        outer.addLayout(column, stretch=1)
+        dismiss = QToolButton()
+        dismiss.setText("✕")
+        dismiss.setAccessibleName("Dismiss failure message")
+        dismiss.setToolTip("Dismiss")
+        dismiss.setAutoRaise(True)
+        dismiss.clicked.connect(banner.hide)
+        outer.addWidget(dismiss, alignment=Qt.AlignmentFlag.AlignTop)
+        banner.hide()
+        page_layout.addWidget(banner)
+        self._failure_banner, self._failure_title, self._failure_body = banner, title, body
+
+    def _show_failure(self, issues, backup_dir: Path | None, *, title: str | None = None):
+        """Show why an install failed: every ERROR text on its own line, then the closing line (D-15).
+
+        A rollback that could not restore a file changes the title and points at the backup folder.
+        """
+        restore_failed = any(issue.code == "install.rollback_failed" for issue in issues)
+        if title is None:
+            title = _FAILED_NOT_RESTORED if restore_failed else _FAILED_RESTORED
+        closing = _FAILED_RETRY
+        if restore_failed and backup_dir is not None:
+            closing = f"The original files are in {backup_dir}."
+        lines = [issue.text for issue in issues if issue.severity is Severity.ERROR]
+        self._failure_title.setText(title)
+        self._failure_body.setPlainText("\n".join([*lines, closing]))
+        self._failure_banner.show()
+        self._edit_page.layout().activate()
+        self._fit_failure_body()
+        self._failure_body.verticalScrollBar().setValue(0)
+        QTimer.singleShot(0, self._fit_failure_body)  # once the banner has its real width
+
+    def _fit_failure_body(self):
+        """Size the reasons box to its wrapped text, at most _FAILURE_LINES lines; beyond that it scrolls."""
+        body = self._failure_body
+        if self._closing or not self._failure_banner.isVisible():
+            return
+        metrics = body.fontMetrics()
+        margins = 2 * body.frameWidth() + 2 * int(body.document().documentMargin())
+        width = max(body.width() - margins, 40)
+        flags = Qt.TextFlag.TextWordWrap.value
+        lines = 0
+        for part in body.toPlainText().split("\n"):
+            height = metrics.boundingRect(0, 0, width, 100000, flags, part or " ").height()
+            lines += max(1, round(height / metrics.lineSpacing()))
+        body.setFixedHeight(min(lines, _FAILURE_LINES) * metrics.lineSpacing() + margins)
+
+    def resizeEvent(self, event: QResizeEvent):
+        super().resizeEvent(event)
+        self._fit_failure_body()
 
     def _build_result_page(self):
         page = QWidget()
@@ -1080,7 +1192,7 @@ class ImportDialog(QDialog):
         self._plan_gen = -1
         self._plan_options = None
         self._build_failed = False
-        self._install_failure = ""
+        self._failure_banner.hide()
         self._first_plan_seen = False
         self._defaults = FieldDefaults()
         self._clear_conflicts()
@@ -1487,6 +1599,8 @@ class ImportDialog(QDialog):
             if op is not None:
                 self._run_content(lambda: core.op_content(op, repo_root, conflict=True))
                 return
+        if self.is_installing():
+            return  # no one-off build reads the files while the install writes them
         options = self._snapshot_options()
         options = replace(options, resolutions={**options.resolutions, key: Resolution("overwrite")})
         self._oneoff_jobs.append(
@@ -1882,30 +1996,25 @@ class ImportDialog(QDialog):
 
     def _render_strip(self, reasons: list[Reason], plan: InstallPlan | None):
         """The bottom-left line: why Install is off (links), or the ready or no-op line (D-09)."""
-        failure = self._install_failure
         self._strip_reasons = reasons
-        if self._candidate is None:
-            self._set_strip(failure)
+        if self._candidate is None or plan is None and not reasons:
+            self._set_strip("")
         elif reasons and reasons[0].text == UPDATING_REASON:
-            self._set_strip(f"{failure}  {UPDATING_REASON}" if failure else UPDATING_REASON, style=f"color: {MUTED};")
+            self._set_strip(UPDATING_REASON, style=f"color: {MUTED};")
         elif reasons:
             links = " · ".join(
                 f'<a href="reason:{i}" style="color:{LINK}">{html.escape(reason.text)}</a>'
                 for i, reason in enumerate(reasons)
             )
-            body = f"⚠ Install is blocked: {links}"
-            if failure:
-                body = f"{html.escape(failure)}  {body}"
             tooltip = "<br>".join(html.escape(reason.text) for reason in reasons)
-            self._set_strip(body, rich=True, style=f"background-color: {AMBER_TINT};", tooltip=tooltip)
-        elif plan is None:
-            self._set_strip(failure)
+            self._set_strip(
+                f"⚠ Install is blocked: {links}", rich=True, style=f"background-color: {AMBER_TINT};", tooltip=tooltip
+            )
         elif plan.is_noop:
-            self._set_strip(f"{failure}  {noop_text(plan.library)}" if failure else noop_text(plan.library), style=f"color: {MUTED};")
+            self._set_strip(noop_text(plan.library), style=f"color: {MUTED};")
         else:
             counts = file_counts(plan, self._candidate, self._plan_options)
-            text = ready_text(counts)
-            self._set_strip(f"{failure}  {text}" if failure else text, style=f"color: {SUCCESS};")
+            self._set_strip(ready_text(counts), style=f"color: {SUCCESS};")
 
     def _on_reason_link(self, href: str):
         """A reason in the strip was clicked: focus the control that fixes it and scroll it into view."""
@@ -1936,47 +2045,61 @@ class ImportDialog(QDialog):
             return
         plan = self._plan  # the rendered object, never a rebuilt copy (PREV-07)
         core, backup_root = self._core, self._backup_root
-        self._install_failure = ""
+        self._failure_banner.hide()
         # self._plan cannot change while installing: the inputs are locked and a build result is
         # not accepted until the install ends (_on_build_result)
         worker = self._spawn(
             lambda progress: core.apply_plan(self._plan, backup_root=backup_root, progress=progress)
         )
         self._install_worker = worker
-        self._left_scroll.setEnabled(False)
-        self._change_btn.setEnabled(False)
-        self._install_btn.setEnabled(False)
-        self._install_btn.setText("Installing...")
-        self._set_strip("Installing...")
+        self._install_step.set_full_text("Installing...")
+        self._install_bar.setValue(0)
+        self._set_install_ui(True)
         worker.progress.connect(self._on_install_progress)
         worker.result.connect(lambda result, w=worker, p=plan: self._on_install_done(w, p, result))
         worker.failed.connect(lambda text, w=worker: self._on_install_failed(w, text))
         worker.start()
 
+    def _set_install_ui(self, installing: bool):
+        """Lock or unlock the inputs for an install (D-10); the preview tree stays usable either way."""
+        self._left_scroll.setEnabled(not installing)
+        self._header_row.setEnabled(not installing)
+        self._strip.setVisible(not installing)
+        self._install_row.setVisible(installing)
+        if installing:
+            self._install_btn.setEnabled(False)
+            self._install_btn.setText("Installing...")
+
     def _on_install_progress(self, message: str, current: int, total: int):
+        """A step of the install. A callback that stops arriving leaves the last text and value in place."""
         if self.is_installing():
-            self._set_strip(message)
+            self._install_step.set_full_text(message)
+            self._install_bar.setValue(max(0, min(100, int(current * 100 / max(total, 1)))))
 
     def _on_install_done(self, worker: TaskWorker, plan: InstallPlan, result: InstallResult):
         if self._install_worker is worker:
             self._install_worker = None
+        self._install_bar.setValue(100)  # apply_plan's step index never reaches the total
+        self._set_install_ui(False)
         self.issues_logged.emit(list(result.issues))
         if result.ok:
             self.result = result
+            self.result_plan = plan
             self._show_result(plan, result)
             self.installed.emit(result, plan)
             return
-        errors = [i.text for i in result.issues if i.severity is Severity.ERROR]
-        self._install_failure = "Install failed: " + " · ".join(errors) if errors else "Install failed."
+        self._show_failure(result.issues, result.backup_dir)
         # Files on disk may have changed: rebuild so a retry cannot hit the stale-plan guard
         self._request_rebuild()
 
     def _on_install_failed(self, worker: TaskWorker, text: str):
         if self._install_worker is worker:
             self._install_worker = None
+        self._set_install_ui(False)
         issue = Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")
         self.issues_logged.emit([issue])
-        self._install_failure = f"Install failed: {text}"
+        # The worker itself broke, so nothing says every file was restored
+        self._show_failure([issue], None, title=_FAILED_PLAIN)
         self._request_rebuild()
 
     def _show_result(self, plan: InstallPlan, result: InstallResult):
@@ -2039,10 +2162,17 @@ class ImportDialog(QDialog):
         self._discard_package()
 
     def done(self, r: int):
+        # An install cannot be cancelled: closing waits until it ends (D-10, T-05-33)
         if self.is_installing():
             return
         self._shutdown()
         super().done(r)
+
+    def keyPressEvent(self, event: QKeyEvent):
+        if self.is_installing() and event.key() == Qt.Key.Key_Escape:
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent):
         if self.is_installing():
