@@ -14,7 +14,7 @@ from pathlib import Path
 from .. import gitops
 from ..gitops import GitContext, GitRun
 from ..models import Issue, Severity
-from .commit_plan import CommitPlan, parent_message, subject_of
+from .commit_plan import CommitPlan, changed_since_install, parent_message, subject_of
 
 
 @dataclass(frozen=True)
@@ -307,6 +307,68 @@ def _run_failed(run: GitRun | Issue) -> bool:
     return isinstance(run, Issue) or run.returncode != 0
 
 
+def _precheck(ctx: GitContext, cplan: CommitPlan, expected_branch: str | None, bump_parent: bool) -> Issue | None:
+    """The first reason the commit must not start, or None. Reads only; nothing is written (D-11, D-16).
+
+    Everything the probe saw is checked again here, because the Result view can stay open while the
+    files or either repo change.
+    """
+    errors = [issue for issue in cplan.issues if issue.severity is Severity.ERROR]
+    if errors:
+        return errors[0]
+    stale = changed_since_install(cplan)
+    if stale:
+        plural = "s" if len(stale) != 1 else ""
+        return Issue(
+            Severity.ERROR, "commit.stale_file",
+            f"Not committed: {', '.join(stale)} changed after the install (for example, edited in KiCad). "
+            f"Check the file{plural} and commit by hand.",
+        )
+    reason = _custom_unavailable(ctx, cplan)
+    if reason:
+        return Issue(Severity.ERROR, "commit.refused", f"Not committed: {reason}")
+    custom = cplan.custom_dir
+    branch = gitops.current_branch(ctx, custom)
+    if branch is None:
+        return Issue(Severity.ERROR, "commit.refused", "Not committed: Custom is on a detached HEAD.")
+    if expected_branch is not None and branch != expected_branch:
+        return Issue(
+            Severity.ERROR, "commit.branch_changed",
+            f"Custom's branch changed from {expected_branch} to {branch} since the check; nothing was committed",
+        )
+    if bump_parent:
+        parent_ok, parent_reason, _, _ = _parent_state(ctx, cplan)
+        if not parent_ok:
+            return Issue(
+                Severity.ERROR, "commit.parent_unavailable",
+                f"Not committed: {parent_reason}. Untick the parent option to commit in Custom only.",
+            )
+    rels = [f.rel for f in cplan.files]
+    tracked = gitops.tracked_paths(ctx, custom, rels)
+    if isinstance(tracked, Issue):
+        return Issue(Severity.ERROR, "commit.custom_failed", f"Commit in Custom failed: {tracked.text}; nothing was committed")
+    ignored = gitops.ignored_paths(ctx, custom, [rel for rel in rels if rel not in tracked])
+    if isinstance(ignored, Issue):
+        return Issue(Severity.ERROR, "commit.custom_failed", f"Commit in Custom failed: {ignored.text}; nothing was committed")
+    if ignored:  # never added with a force flag (RESEARCH Pitfall 4)
+        verb = "is" if len(ignored) == 1 else "are"
+        return Issue(Severity.ERROR, "commit.ignored", f"Not committed: {', '.join(ignored)} {verb} ignored by Custom's .gitignore.")
+    return None
+
+
+def _custom_failure(run: GitRun | Issue, *, committing: bool) -> CommitOutcome:
+    """The ERROR outcome of a rejected Custom write; hook output arrives on stderr and is kept whole (Pitfall 6)."""
+    output = run.text if isinstance(run, Issue) else run.output
+    if committing and isinstance(run, Issue) and run.code == "git.timeout":
+        text = (
+            f"Commit in Custom did not finish within {gitops.COMMIT_TIMEOUT:g} s "
+            "(check for a stuck hook or a leftover index.lock); nothing was committed."
+        )
+    else:
+        text = f"Commit in Custom failed ({_exit_text(run)}); nothing was committed\n{output}"
+    return _failed("commit.custom_failed", text, output)
+
+
 def run_commit(
     cplan: CommitPlan,
     message: str,
@@ -318,14 +380,19 @@ def run_commit(
 ) -> CommitOutcome:
     """Commit exactly the plan's files in Custom, then (optionally) only the Custom gitlink in the parent.
 
-    A failed parent commit keeps the Custom commit (D-03); nothing is retried and nothing is pushed.
-    expected_branch is the branch the probe saw; the refusals that use it come with plan 06-07.
+    Every refusal is decided by _precheck before the first git write. A rejected Custom commit leaves
+    HEAD unchanged and undoes the app's own intent-to-add entries; a failed parent commit keeps the
+    Custom commit (D-03). Nothing is retried and nothing is pushed.
+    expected_branch is the branch the probe saw.
     """
     ctx = _context(cplan, git)
     if isinstance(ctx, Issue):
         return _failed("commit.custom_failed", f"Commit unavailable: {ctx.text}")
     step = progress or (lambda *args: None)
     custom = cplan.custom_dir
+    refusal = _precheck(ctx, cplan, expected_branch, bump_parent)
+    if refusal is not None:
+        return CommitOutcome(issues=(refusal,))
     step("Committing in Custom...", 0, 2)
     rels = [f.rel for f in cplan.files]
     tracked = gitops.tracked_paths(ctx, custom, rels)
@@ -336,22 +403,12 @@ def run_commit(
         added = gitops.add_intent(ctx, custom, new)
         if _run_failed(added):
             gitops.unstage(ctx, custom, new)
-            output = added.text if isinstance(added, Issue) else added.output
-            return _failed(
-                "commit.custom_failed",
-                f"Commit in Custom failed ({_exit_text(added)}); nothing was committed\n{output}",
-                output,
-            )
+            return _custom_failure(added, committing=False)
     run = gitops.commit_paths(ctx, custom, message, rels)
     if _run_failed(run):
         if new:
             gitops.unstage(ctx, custom, new)
-        output = run.text if isinstance(run, Issue) else run.output
-        return _failed(
-            "commit.custom_failed",
-            f"Commit in Custom failed ({_exit_text(run)}); nothing was committed\n{output}",
-            output,
-        )
+        return _custom_failure(run, committing=True)
 
     short = gitops.short_hash(ctx, custom) or "?"
     branch = gitops.current_branch(ctx, custom) or "HEAD"
