@@ -306,6 +306,7 @@ class ImportDialog(QDialog):
         self._model_worker: TaskWorker | None = None
         self._add_model_btn: QPushButton | None = None
         self._model_slot: QVBoxLayout | None = None
+        self._model_note: QLabel | None = None
         self._extends_note: QLabel | None = None
         self._linked_fp: str | None = None  # vendor name of the linked footprint
         self._defaults = FieldDefaults()
@@ -1268,7 +1269,7 @@ class ImportDialog(QDialog):
         self._symbol_combo = self._model_combo = None
         self._symbol_label = self._fp_label = self._model_label = None
         self._fp_list = self._make_linked_btn = None
-        self._add_model_btn = self._model_slot = None
+        self._add_model_btn = self._model_slot = self._model_note = None
         # The checklist and its frame are deleted with their row
         self._field_frames.pop("footprints", None)
         self._reason_targets.pop("footprints", None)
@@ -1409,7 +1410,28 @@ class ImportDialog(QDialog):
         button.setEnabled(self._model_worker is None)
         lay.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
         self._add_model_btn = button
+        # Why the last attach found nothing (or that it is still reading). File names and Issue texts come
+        # from the downloaded source, so the label never reads them as markup (T-07-30)
+        note = QLabel()
+        note.setTextFormat(Qt.TextFormat.PlainText)
+        note.setWordWrap(True)
+        note.hide()
+        lay.addWidget(note)
+        self._model_note = note
         return host
+
+    def _set_model_note(self, text: str, *, tone: str):
+        """Show text under the 3D model row in the muted or amber tone, or hide the note (tone "hidden")."""
+        note = self._model_note
+        if note is None:
+            return
+        if tone == "hidden" or not text:
+            note.hide()
+            note.setText("")
+            return
+        note.setStyleSheet(f"color: {AMBER if tone == 'amber' else MUTED};")
+        note.setText(text)
+        note.show()
 
     def _refresh_model_row(self, select: str | None = None):
         """Rebuild only the label or combo of the 3D model row after an attach.
@@ -1609,6 +1631,7 @@ class ImportDialog(QDialog):
         self._model_worker = worker
         if self._add_model_btn is not None:
             self._add_model_btn.setEnabled(False)
+        self._set_model_note(f"Reading {path.name}...", tone="muted")
         worker.result.connect(lambda outcome, w=worker: self._on_model_attached(w, outcome))
         worker.failed.connect(lambda text, w=worker: self._on_model_failed(w, text))
         worker.start()
@@ -1631,11 +1654,22 @@ class ImportDialog(QDialog):
         )
         if stale:
             outcome.package.close()
+            if outcome.session == self._session:
+                self._set_model_note("", tone="hidden")
             return
         self.issues_logged.emit(list(outcome.issues))
         if outcome.candidate is None:
-            outcome.package.close()  # plan 07-08 adds the visible note
+            # Nothing was attached: the candidate, the row and the generation stay as they were
+            outcome.package.close()
+            errors = [i for i in outcome.issues if i.severity is Severity.ERROR]
+            if errors:
+                self._set_model_note(errors[0].text, tone="amber")
+            elif outcome.issues:
+                self._set_model_note(outcome.issues[0].text, tone="muted")
+            else:
+                self._set_model_note("", tone="hidden")
             return
+        self._set_model_note("", tone="hidden")
         self._model_packages.append(outcome.package)
         added = [m for m in outcome.candidate.models if m not in self._candidate.models]
         self._candidate = outcome.candidate
@@ -1646,7 +1680,9 @@ class ImportDialog(QDialog):
         self._end_model_worker(worker)
         if self._closing:
             return
-        self.issues_logged.emit([Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")])
+        issue = Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")
+        self.issues_logged.emit([issue])
+        self._set_model_note(issue.text, tone="amber")
 
     # -- conflicts: one row per conflict, choices kept by key (PREV-05, D-12, D-14a) ----------------
 
