@@ -21,6 +21,8 @@ class PartMeta:
     fp_filters: str = ""
     manufacturer: str = ""
     mpn: str = ""
+    # Vendor part category from package metadata, for example SamacSys PartCategory
+    category: str = ""
 
 
 @dataclass(frozen=True)

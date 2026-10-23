@@ -159,7 +159,7 @@ def registered_domain(host: str) -> str:
     return ".".join(labels[-2:])
 
 
-def type_choice(reference: str) -> TokenChoice:
+def type_choice(reference: str, category: str = "") -> TokenChoice:
     """Map the leading letters of a reference designator to a library Type token."""
     match = re.match(r"[A-Za-z]+", reference.strip())
     if match is not None:

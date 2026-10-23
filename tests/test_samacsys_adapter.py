@@ -7,9 +7,11 @@ download is exercised by tests/test_real_vendor_samples.py where it is present.
 from pathlib import Path
 
 from vendorfixtures import (
+    SAMACSYS_FOOTPRINT,
+    SAMACSYS_MANUFACTURER,
+    SAMACSYS_MPN,
     SAMACSYS_OTHER_CAD,
     SAMACSYS_PART,
-    SAMACSYS_FOOTPRINT,
     SAMACSYS_PART_INFO,
     SAMACSYS_ZIP_NAME,
     samacsys_members,
@@ -17,13 +19,27 @@ from vendorfixtures import (
     samacsys_zip,
     snapeda_members,
 )
-from zipfixtures import footprint, make_zip, symbol_lib
+from zipfixtures import (
+    CURRENT_CUSTOM_FOOTPRINT_LIBS,
+    CURRENT_CUSTOM_SYMBOL_LIBS,
+    footprint,
+    make_zip,
+    symbol_lib,
+    write_custom_layout,
+)
 
 from kicad_lib_manager.importer import package as package_module
-from kicad_lib_manager.importer.adapters.samacsys import SAMACSYS_RULES, SamacSysAdapter, parse_part_info
+from kicad_lib_manager.importer.adapters.base import PartHints
+from kicad_lib_manager.importer.adapters.samacsys import SAMACSYS_RULES, SamacSysAdapter, parse_part_info, part_hints
 from kicad_lib_manager.importer.detect import detect_candidate
+from kicad_lib_manager.importer.form import field_defaults
+from kicad_lib_manager.importer.layout import RepoLayout, list_existing_libraries
 from kicad_lib_manager.importer.package import Package, open_package
-from kicad_lib_manager.models import Severity
+from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
+from kicad_lib_manager.importer.planner import build_plan
+from kicad_lib_manager.importer.suggest import suggest_library
+from kicad_lib_manager.kicad_files import find_property, find_symbol, parse_bytes
+from kicad_lib_manager.models import Issue, Severity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UL_ZIP = REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip"
@@ -192,3 +208,80 @@ def test_samacsys_symbol_helper_omits_fields():
     assert b"Manufacturer_Name" not in samacsys_symbol(omit=("Manufacturer_Name",))
     assert b"Extra One" in samacsys_symbol(extra=(("Extra One", "x"),))
     assert samacsys_members(part_info=None)[2][0] != f"{SAMACSYS_PART}/part_info.txt"
+
+
+# -- part_info.txt feeds the suggestion and the fields (D-11, D-12) ------------------------------------------
+
+LIBRARY = "PowerSupply_DCDC_RECOM"
+
+
+def _layout(root, symbol_libs=CURRENT_CUSTOM_SYMBOL_LIBS, footprint_libs=CURRENT_CUSTOM_FOOTPRINT_LIBS):
+    write_custom_layout(root / "repo", symbol_libs, footprint_libs)
+    return RepoLayout.for_repo(root / "repo")
+
+
+def test_samacsys_suggestion(tmp_path):
+    existing = list_existing_libraries(_layout(tmp_path))
+    with _open_full(tmp_path) as package:
+        candidate, _ = detect_candidate(package)
+    assert candidate is not None
+    suggestion = suggest_library(candidate.symbols[0].meta, existing)
+    assert suggestion.name == "PowerSupply_SubCategory_RECOM"
+    assert suggestion.placeholders == ("SubCategory",)
+    assert suggestion.type.source == "part_info"
+    assert suggestion.manufacturer.token == "RECOM"
+
+
+def test_part_info_fills_missing_fields(tmp_path):
+    symbol = samacsys_symbol(omit=("Manufacturer_Name", "Manufacturer_Part_Number"))
+    layout = _layout(tmp_path / "lib", [LIBRARY], [LIBRARY])
+    zip_path = samacsys_zip(tmp_path / "src" / SAMACSYS_ZIP_NAME, symbol=symbol)
+    with open_package(zip_path, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+        assert candidate is not None
+        meta = candidate.symbols[0].meta
+        assert (meta.manufacturer, meta.mpn, meta.category) == (SAMACSYS_MANUFACTURER, SAMACSYS_MPN, "Power Supply")
+        plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, ToolContext())
+        loaded = parse_bytes(next(op for op in plan.ops if op.kind == "symbol_lib").data, "lib")
+        assert not isinstance(loaded, Issue)
+        installed = find_symbol(loaded.root, SAMACSYS_PART)
+        assert installed is not None
+        assert find_property(installed.node, "Manufacturer").value == SAMACSYS_MANUFACTURER
+        assert find_property(installed.node, "MPN").value == SAMACSYS_MPN
+        assert plan.model_file == f"{SAMACSYS_PART}.stp"
+        defaults = field_defaults(candidate, SAMACSYS_PART)
+        assert (defaults.manufacturer, defaults.mpn) == (SAMACSYS_MANUFACTURER, SAMACSYS_MPN)
+
+
+def test_symbol_fields_win_over_part_info(tmp_path):
+    symbol = samacsys_symbol(
+        omit=("Manufacturer_Name", "Manufacturer_Part_Number"),
+        extra=(("Manufacturer_Name", "Other Corp"), ("MPN", "MY-1")),
+    )
+    zip_path = samacsys_zip(tmp_path / "src" / SAMACSYS_ZIP_NAME, symbol=symbol)
+    with open_package(zip_path, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+    assert candidate is not None
+    meta = candidate.symbols[0].meta
+    assert (meta.manufacturer, meta.mpn) == ("Other Corp", "MY-1")
+    assert meta.category == "Power Supply"
+
+
+def test_mpn_hint_needs_one_symbol(tmp_path):
+    symbol = symbol_lib(("PSU_A", "PSU_B"))
+    zip_path = make_zip(tmp_path / "pkg.zip", samacsys_members(symbol=symbol))
+    with open_package(zip_path, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+    assert candidate is not None
+    assert candidate.vendor == "SamacSys"
+    assert [s.name for s in candidate.symbols] == ["PSU_A", "PSU_B"]
+    for item in candidate.symbols:
+        assert item.meta.mpn == ""
+        assert item.meta.manufacturer == SAMACSYS_MANUFACTURER
+        assert item.meta.category == "Power Supply"
+
+
+def test_part_hints_none_when_empty():
+    assert part_hints({}) is None
+    assert part_hints({"version": "1"}) is None
+    assert part_hints({"partcategory": "Power Supply"}) == PartHints(category="Power Supply")

@@ -20,7 +20,7 @@ import unicodedata
 from ...models import Issue, Severity
 from ..fieldrules import GENERIC_VOLATILE, FieldRules
 from ..package import Package
-from .base import SNIFF_FILES, Detection, read_head
+from .base import SNIFF_FILES, Detection, PartHints, read_head
 
 SAMACSYS_CLAIM_POINTS = 5
 
@@ -53,6 +53,10 @@ def parse_part_info(text: str) -> dict[str, str]:
             continue
         found[key] = _printable(value).strip()[:PART_INFO_VALUE_MAX]
     return found
+
+
+def part_hints(info: dict[str, str]) -> PartHints | None:
+    return None
 
 
 def _printable(text: str) -> str:
