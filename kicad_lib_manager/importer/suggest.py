@@ -43,6 +43,46 @@ REFERENCE_TYPE = {
     "TP": "TestPoint",
     "BT": "Battery",
     "B": "Battery",
+    "PS": "PowerSupply",
+}
+
+# Vendor part categories (SamacSys PartCategory) by their casefolded letters and digits. Only "Power
+# Supply" is observed in a real download; the other keys are assumed SamacSys wording and simply fall
+# through to the Reference map when wrong. An unmapped category is never used as a token (D-11).
+PART_CATEGORY_TYPE = {
+    "powersupply": "PowerSupply",
+    "integratedcircuit": "IC",
+    "integratedcircuits": "IC",
+    "ic": "IC",
+    "connector": "Connector",
+    "connectors": "Connector",
+    "capacitor": "Capacitor",
+    "capacitors": "Capacitor",
+    "resistor": "Resistor",
+    "resistors": "Resistor",
+    "inductor": "Inductor",
+    "inductors": "Inductor",
+    "ferrite": "Ferrite",
+    "ferritebead": "Ferrite",
+    "ferritebeads": "Ferrite",
+    "diode": "Diode",
+    "diodes": "Diode",
+    "transistor": "Transistor",
+    "transistors": "Transistor",
+    "led": "LED",
+    "leds": "LED",
+    "crystal": "Oscillator",
+    "crystals": "Oscillator",
+    "oscillator": "Oscillator",
+    "oscillators": "Oscillator",
+    "fuse": "Fuse",
+    "fuses": "Fuse",
+    "switch": "Switch",
+    "switches": "Switch",
+    "relay": "Relay",
+    "relays": "Relay",
+    "battery": "Battery",
+    "batteries": "Battery",
 }
 
 HOST_TOKENS = {
@@ -81,6 +121,8 @@ MANUFACTURER_ALIASES = {
     "memsic": "Memsic",
     "ublox": "uBlox",
     "abracon": "Abracon",
+    "recom": "RECOM",
+    "recompower": "RECOM",
 }
 _CORPORATE_WORDS = frozenset(
     {"inc", "ltd", "gmbh", "corp", "corporation", "co", "ag", "llc", "plc", "limited", "incorporated"}
@@ -107,7 +149,7 @@ AGGREGATOR_DOMAINS = frozenset(
 @dataclass(frozen=True)
 class TokenChoice:
     token: str
-    # reference | vocab | property | name_alias | host_table | host_guess | placeholder
+    # part_info | reference | vocab | property | name_alias | host_table | host_guess | placeholder
     source: str
     confident: bool
 
@@ -160,7 +202,10 @@ def registered_domain(host: str) -> str:
 
 
 def type_choice(reference: str, category: str = "") -> TokenChoice:
-    """Map the leading letters of a reference designator to a library Type token."""
+    """Map a vendor part category, else the leading letters of a reference designator, to a library Type token."""
+    mapped = PART_CATEGORY_TYPE.get(re.sub(r"[^a-z0-9]", "", category.casefold()))
+    if mapped is not None:
+        return TokenChoice(mapped, "part_info", True)
     match = re.match(r"[A-Za-z]+", reference.strip())
     if match is not None:
         found = REFERENCE_TYPE.get(match.group(0).upper())
@@ -245,7 +290,7 @@ def _subcategory(
 
     A library matches only when every one of its middle tokens is a whole word of the part
     text; the match with the most middle tokens wins, ties broken by casefolded name. When the
-    Type came from the Reference prefix only libraries of that Type count. Spelling rule: the
+    Type came from the Reference prefix or the part category only libraries of that Type count. Spelling rule: the
     SubCategory copies the matched library's middle tokens verbatim, so adding to an existing
     library reuses its exact text; Type and Manufacturer are never re-spelled from the library
     and keep their canonical tokens. An existing ic_battery_charger_ti therefore gives
@@ -259,7 +304,7 @@ def _subcategory(
         if parsed is None:
             continue
         lib_type, middle, _ = parsed
-        if type_.source == "reference" and lib_type.casefold() != type_.token.casefold():
+        if type_.source in ("reference", "part_info") and lib_type.casefold() != type_.token.casefold():
             continue
         if all(token.casefold() in part_tokens for token in middle):
             matches.append((-len(middle), lib.name.casefold(), lib.name, lib_type, middle))
@@ -303,7 +348,7 @@ def suggest_library(meta: PartMeta, existing: Sequence[ExistingLibrary] = ()) ->
     alternatives are only offered beside it and never replace it.
     """
     part_tokens = _part_tokens(meta)
-    type_, subcategory = _subcategory(type_choice(meta.reference), part_tokens, existing)
+    type_, subcategory = _subcategory(type_choice(meta.reference, meta.category), part_tokens, existing)
     manufacturer = manufacturer_choice(meta)
     cleaned = sanitize_name("_".join((type_.token, subcategory.token, manufacturer.token)))
     name = cleaned.sanitized

@@ -1,6 +1,6 @@
 """Adapter contract plus the shared locate step that reads names and metadata from inside the files."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
 from typing import Protocol
 
@@ -269,6 +269,27 @@ def _legacy_rules(
     return issues
 
 
+def _apply_hints(symbols: list[SymbolItem], hints: PartHints) -> list[SymbolItem]:
+    """Fill PartMeta gaps from package metadata; a symbol property always wins (D-11).
+
+    The part number applies only when the package holds exactly one symbol, because a hint for a
+    whole package cannot say which of several symbols it names.
+    """
+    single = len(symbols) == 1
+    return [
+        replace(
+            item,
+            meta=replace(
+                item.meta,
+                manufacturer=item.meta.manufacturer or hints.manufacturer,
+                mpn=item.meta.mpn or (hints.mpn if single else ""),
+                category=hints.category or item.meta.category,
+            ),
+        )
+        for item in symbols
+    ]
+
+
 def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | None, list[Issue]]:
     """Find the symbols, footprints and models of a staged package; names come from inside the files."""
     issues: list[Issue] = []
@@ -303,6 +324,8 @@ def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | No
             item = _locate_footprint(pf, loaded, issues)
             if item is not None:
                 footprints.append(item)
+    if detection.hints is not None:
+        symbols = _apply_hints(symbols, detection.hints)
     issues.extend(_legacy_rules(package, symbols, footprints, models))
     if any(i.severity is Severity.ERROR for i in issues):
         return None, issues

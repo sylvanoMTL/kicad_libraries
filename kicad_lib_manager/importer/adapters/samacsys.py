@@ -56,7 +56,13 @@ def parse_part_info(text: str) -> dict[str, str]:
 
 
 def part_hints(info: dict[str, str]) -> PartHints | None:
-    return None
+    """The PartHints a parsed part_info.txt gives, or None when it names no category, manufacturer or part number."""
+    hints = PartHints(
+        category=info.get("partcategory", ""),
+        manufacturer=info.get("manufacturer", ""),
+        mpn=info.get("partnumber", ""),
+    )
+    return hints if (hints.category or hints.manufacturer or hints.mpn) else None
 
 
 def _printable(text: str) -> str:
@@ -139,6 +145,7 @@ class SamacSysAdapter:
             points += 5
             reasons.append("SamacSys_ECAD_Model generator")
         text = package.marker_text("part_info.txt")
+        info: dict[str, str] = {}
         if text is not None:
             info = parse_part_info(text)
             if "manufacturer" in info and "partnumber" in info:
@@ -176,6 +183,7 @@ class SamacSysAdapter:
             min(points, 10) / 10,
             tuple(reasons),
             rules=SAMACSYS_RULES,
+            hints=part_hints(info),
             ignored_note=folder_summary(package),
             notes=tuple(notes),
         )

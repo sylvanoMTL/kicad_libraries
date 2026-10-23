@@ -256,7 +256,7 @@ def test_part_info_fills_missing_fields(tmp_path):
 def test_symbol_fields_win_over_part_info(tmp_path):
     symbol = samacsys_symbol(
         omit=("Manufacturer_Name", "Manufacturer_Part_Number"),
-        extra=(("Manufacturer_Name", "Other Corp"), ("MPN", "MY-1")),
+        extra=(("MF", "Other Corp"), ("MPN", "MY-1")),
     )
     zip_path = samacsys_zip(tmp_path / "src" / SAMACSYS_ZIP_NAME, symbol=symbol)
     with open_package(zip_path, REPO_ROOT) as package:
