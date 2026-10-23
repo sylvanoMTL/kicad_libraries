@@ -27,13 +27,19 @@ IMPORTER = PACKAGE / "importer"
 
 # Allowed package-internal imports per importer module, keyed by dotted path relative to
 # kicad_lib_manager. Phase 7 adapters are registered here when they are added.
+# Phase 7 forward registrations: importer.fieldrules (plan 07-02 creates it; the empty set is what
+# proves it imports nothing) and importer.adapters.samacsys (plan 07-05 creates it). layering_errors
+# only checks modules found on disk, so an unused key raises no error. importer.adapters.snapeda is
+# created by plan 07-01 and is in CORE_MODULES; the two forward modules are not, because
+# test_importer_core_modules_exist needs every CORE_MODULES key on disk.
 ALLOWED: dict[str, set[str]] = {
     "importer": set(),
     "importer.adapters": set(),
     "importer.package": {"models", "fsutil"},
+    "importer.fieldrules": set(),
     # naming is registered now for the name_check properties plan 03-05 adds;
     # naming itself imports only models, so there is no cycle
-    "importer.candidate": {"models", "importer.package", "importer.naming"},
+    "importer.candidate": {"models", "importer.package", "importer.naming", "importer.fieldrules"},
     "importer.naming": {"models"},
     "importer.layout": {"models", "importer.candidate"},
     "importer.suggest": {"models", "importer.candidate", "importer.naming"},
@@ -44,6 +50,7 @@ ALLOWED: dict[str, set[str]] = {
         "sexpr",
         "importer.package",
         "importer.candidate",
+        "importer.fieldrules",
     },
     "importer.adapters.ultralibrarian": {
         "models",
@@ -55,6 +62,18 @@ ALLOWED: dict[str, set[str]] = {
         "importer.package",
         "importer.adapters.base",
     },
+    "importer.adapters.snapeda": {
+        "models",
+        "importer.package",
+        "importer.adapters.base",
+        "importer.fieldrules",
+    },
+    "importer.adapters.samacsys": {
+        "models",
+        "importer.package",
+        "importer.adapters.base",
+        "importer.fieldrules",
+    },
     "importer.detect": {
         "models",
         "importer.package",
@@ -62,6 +81,8 @@ ALLOWED: dict[str, set[str]] = {
         "importer.adapters.base",
         "importer.adapters.ultralibrarian",
         "importer.adapters.loose",
+        "importer.adapters.snapeda",
+        "importer.adapters.samacsys",
     },
     # Phase 4 install modules. importer.kicad_cli is a forward registration (plan 04-03 creates it);
     # layering_errors only checks modules found on disk, so an unused key raises no error
@@ -82,6 +103,7 @@ ALLOWED: dict[str, set[str]] = {
         "importer.adapters.base",
         "importer.kicad_cli",
         "importer.verify",
+        "importer.fieldrules",
     },
     "importer.applier": {
         "models",
@@ -104,6 +126,7 @@ ALLOWED: dict[str, set[str]] = {
         "importer.candidate",
         "importer.suggest",
         "importer.naming",
+        "importer.fieldrules",
     },
     "importer.content": {"models", "fsutil", "importer.plan"},
     "importer.downloads": set(),
@@ -121,6 +144,7 @@ CORE_MODULES = (
     "importer.suggest",
     "importer.adapters.base",
     "importer.adapters.ultralibrarian",
+    "importer.adapters.snapeda",
     "importer.plan",
     "importer.planner",
     "importer.applier",
