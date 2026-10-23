@@ -37,6 +37,7 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 - [x] **INTK-06**: Zips are read safely: no extraction into the repo, path traversal, absolute names and symlinks are rejected, and size and count limits stop zip bombs
 - [x] **INTK-07**: When a package holds several symbols, footprints or models, the user picks which ones to import
 - [x] **INTK-08**: A package with no 3D model can still be installed, and the preview and log warn that no model was found
+- [ ] **FMT2-02**: A separately downloaded 3D model (a bare `.step` / `.stp` / `.wrl`, or a `.zip` holding one, which is how SnapEDA ships it) can be added in the import dialog to the part being imported. It is checked like a package, copied to `Custom/3DModels/` as `<MPN>.<ext>` and linked as `${CUSTOM_3DMODEL_DIR}/<file>`
 
 ### Target Library
 
@@ -98,7 +99,6 @@ Deferred to a future release. Tracked but not in the current roadmap.
 ### Formats
 
 - **FMT2-01**: Convert legacy KiCad 5 `.lib` / `.dcm` / `.mod` packages instead of rejecting them
-- **FMT2-02**: Attach a separately downloaded STEP to a part whose package has none
 
 ### Metadata
 
@@ -152,6 +152,7 @@ Which phases cover which requirements. Updated during roadmap creation.
 | INTK-06 | Phase 3 | Complete |
 | INTK-07 | Phase 5 | Complete |
 | INTK-08 | Phase 4 | Complete |
+| FMT2-02 | Phase 7 | Pending |
 | LIB-01 | Phase 3 | Complete |
 | LIB-02 | Phase 4 | Complete |
 | LIB-03 | Phase 3 | Complete |
@@ -185,10 +186,10 @@ Which phases cover which requirements. Updated during roadmap creation.
 | UX-02 | Phase 5 | Complete |
 
 **Coverage:**
-- v1 requirements: 53 total
-- Mapped to phases: 53
+- v1 requirements: 54 total
+- Mapped to phases: 54
 - Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-10-18*
-*Last updated: 2026-10-18 after roadmap creation (traceability mapped)*
+*Last updated: 2026-10-23 after Phase 7 UAT (FMT2-02 moved into v1, gap G-07-2)*

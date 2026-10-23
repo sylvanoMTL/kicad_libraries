@@ -17,11 +17,12 @@ from gitfixtures import GIT, requires_git
 from zipfixtures import CURRENT_CUSTOM_FOOTPRINT_LIBS, CURRENT_CUSTOM_SYMBOL_LIBS, write_custom_layout
 
 from kicad_lib_manager.importer import kicad_cli
+from kicad_lib_manager.importer.adapters.base import attach_models
 from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.candidate import ExistingLibrary
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import RepoLayout
-from kicad_lib_manager.importer.package import open_package
+from kicad_lib_manager.importer.package import open_model_source, open_package
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, InstallOptions, ToolContext
 from kicad_lib_manager.importer.planner import build_plan, detect_tools
 from kicad_lib_manager.importer.suggest import suggest_library
@@ -33,11 +34,17 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 SAMPLES = REPO_ROOT / "downloaded_examples"
 REAL_SNAPEDA = SAMPLES / "USB4145-03-0170-C_REVA2.zip"
 REAL_SAMACSYS = SAMPLES / "LIB_RS3-1212S_H3.zip"
+REAL_SNAPEDA_MODEL = SAMPLES / "194150990-659-usb4145-03-0170-c.zip"
 
 _SNAPEDA_SKIP = "downloaded_examples/USB4145-03-0170-C_REVA2.zip not present (licence-restricted SnapEDA sample, kept local)"
 requires_snapeda = pytest.mark.skipif(not REAL_SNAPEDA.exists(), reason=_SNAPEDA_SKIP)
 _SAMACSYS_SKIP = "downloaded_examples/LIB_RS3-1212S_H3.zip not present (licence-restricted SamacSys sample, kept local)"
 requires_samacsys = pytest.mark.skipif(not REAL_SAMACSYS.exists(), reason=_SAMACSYS_SKIP)
+_SNAPEDA_MODEL_SKIP = (
+    "downloaded_examples/194150990-659-usb4145-03-0170-c.zip not present "
+    "(licence-restricted SnapEDA 3D model download, kept local)"
+)
+requires_snapeda_model = pytest.mark.skipif(not REAL_SNAPEDA_MODEL.exists(), reason=_SNAPEDA_MODEL_SKIP)
 NO_CLI = ToolContext()
 
 
@@ -92,6 +99,7 @@ def _check_ignore(relative: str) -> int:
 def test_vendor_zips_stay_local():
     assert _check_ignore("downloaded_examples/USB4145-03-0170-C_REVA2.zip") == 0
     assert _check_ignore("downloaded_examples/LIB_RS3-1212S_H3.zip") == 0
+    assert _check_ignore("downloaded_examples/194150990-659-usb4145-03-0170-c.zip") == 0
     assert _check_ignore("downloaded_examples/ul_CSD85301Q2.zip") == 1
     listed = subprocess.run(
         [GIT, "ls-files", "downloaded_examples"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
@@ -201,6 +209,68 @@ def test_real_snapeda_installs(staging_root, tmp_path):
         assert gone not in values, gone
     assert [i.severity for i in plan.issues if i.code == "install.no_model"] == [Severity.WARNING]
     assert "verify.pin_pad_mismatch" not in [i.code for i in issues]
+    assert not _errors(issues)
+
+
+# -- the real SnapEDA 3D model download, the second file of the two-file delivery (G-07-2, D-02) ----------
+
+
+@requires_snapeda_model
+def test_real_snapeda_model_zip_opens(staging_root):
+    with open_model_source(REAL_SNAPEDA_MODEL, REPO_ROOT) as package:
+        assert package.refused is False
+        assert package.kind == "zip"
+        assert [f.member for f in package.files] == ["usb4145-03-0170-c.stp"]
+        model = package.files[0]
+        assert model.kind == "model"
+        assert model.staged is True
+        assert model.size == 2443718
+        staging = package.staging_dir
+        assert staging is not None
+        assert model.path.is_relative_to(staging)
+        assert staging.is_relative_to(staging_root)
+        assert not staging.is_relative_to(REPO_ROOT)
+        with model.path.open("rb") as handle:
+            assert handle.read(len(b"ISO-10303-21;")) == b"ISO-10303-21;"
+        assert package.ignored == ["usb4145-03-0170-c.txt"]
+    assert not staging.exists()
+
+
+@requires_snapeda
+@requires_snapeda_model
+def test_real_snapeda_installs_with_separate_model(staging_root, tmp_path):
+    library = "Connector_USB_GCT"
+    write_custom_layout(tmp_path / "repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    layout = RepoLayout.for_repo(tmp_path / "repo")
+    # Both packages stay open until apply_plan has returned: the plan reads the staged model from the second one.
+    with (
+        open_package(REAL_SNAPEDA, REPO_ROOT) as package,
+        open_model_source(REAL_SNAPEDA_MODEL, REPO_ROOT) as model_package,
+    ):
+        candidate, _ = detect_candidate(package)
+        assert candidate is not None
+        attached, _ = attach_models(candidate, model_package)
+        assert attached is not None
+        plan = build_plan(attached, InstallOptions(library=library), layout, NO_CLI)
+        assert not plan.blocked, [i.text for i in plan.issues]
+        result = apply_plan(plan, backup_root=tmp_path / "bk")
+        assert result.ok, [i.text for i in result.issues]
+        issues = [*plan.issues, *result.issues]
+        values = _symbol_values(layout, library, "USB4145-03-0170-C_REVA2")
+        installed = layout.footprints_dir / f"{library}.pretty" / "GCT_USB4145-03-0170-C_REVA2.kicad_mod"
+        footprint = load(installed)
+        model_file = layout.models_dir / "USB4145-03-0170-C.stp"
+        model_size = model_file.stat().st_size
+    assert plan.model_file == "USB4145-03-0170-C.stp"
+    codes = [i.code for i in issues]
+    assert "intake.model_attached" in codes
+    assert "intake.no_model" not in codes
+    assert "install.no_model" not in codes
+    assert model_size == 2443718
+    assert [m.path for m in find_models(footprint_name(footprint.root).node)] == [
+        f"{MODEL_DIR_VAR}/USB4145-03-0170-C.stp"
+    ]
+    assert values["Footprint"] == "Connector_USB_GCT:GCT_USB4145-03-0170-C_REVA2"
     assert not _errors(issues)
 
 
