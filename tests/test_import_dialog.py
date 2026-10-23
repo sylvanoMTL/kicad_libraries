@@ -768,7 +768,14 @@ def test_change_returns_to_start_and_closes_package(qtbot, make_start_dialog):
 
 @pytest.mark.parametrize(
     ("vendor", "label"),
-    [("UltraLibrarian", "Ultra Librarian"), ("Loose", "Loose files"), ("Unknown", "Unknown vendor"), ("Odd", "Odd")],
+    [
+        ("UltraLibrarian", "Ultra Librarian"),
+        ("Loose", "Loose files"),
+        ("Unknown", "Unknown vendor"),
+        ("SnapEDA", "SnapEDA"),
+        ("SamacSys", "SamacSys"),
+        ("Odd", "Odd"),
+    ],
 )
 def test_vendor_labels(vendor, label):
     assert import_dialog_module.vendor_label(vendor) == label
