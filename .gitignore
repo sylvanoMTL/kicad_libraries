@@ -26,3 +26,7 @@ _autosave-*
 
 # Notes
 REFLECTION.md
+
+# Vendor downloads: licence-restricted, kept local (Phase 7 D-01, D-02); the UL sample stays tracked
+downloaded_examples/*
+!downloaded_examples/ul_CSD85301Q2.zip
