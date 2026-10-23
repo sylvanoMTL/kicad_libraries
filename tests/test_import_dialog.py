@@ -3591,3 +3591,69 @@ def test_install_worker_uses_captured_plan(qtbot, make_install_dialog, gates, mo
 
     assert len(seen) == 1 and seen[0] is rendered
     assert off_thread_reads == []
+
+
+# -- Add 3D model... (plan 07-07, G-07-2): a separately downloaded SnapEDA model joins an open import -----
+
+
+def test_add_model_tracer_snapeda_end_to_end(qtbot, make_item_dialog, item_layout, recorded, tmp_path, monkeypatch):
+    from vendorfixtures import (
+        SNAPEDA_FOOTPRINT,
+        SNAPEDA_MODEL_STEM,
+        SNAPEDA_MODEL_ZIP_NAME,
+        SNAPEDA_MPN,
+        SNAPEDA_SYMBOL,
+        snapeda_model_zip,
+        snapeda_zip,
+    )
+    from zipfixtures import STEP_BYTES
+
+    from kicad_lib_manager.importer.plan import MODEL_DIR_VAR
+    from kicad_lib_manager.kicad_files import find_models, footprint_name, load
+
+    dialog = make_item_dialog(snapeda_zip(tmp_path / "src" / f"{SNAPEDA_SYMBOL}.zip"), show=True)
+    wait_current(qtbot, dialog)
+    assert dialog._model_label.full_text() == "No 3D model in this package"
+    assert dialog._add_model_btn.text() == "Add 3D model..."
+
+    model_zip = snapeda_model_zip(tmp_path / "dl" / SNAPEDA_MODEL_ZIP_NAME)
+    filters: list[str] = []
+
+    def fake_open_file(parent, caption, directory, file_filter):
+        filters.append(file_filter)
+        return str(model_zip), ""
+
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getOpenFileName", staticmethod(fake_open_file))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(lambda: dialog._model_worker is None and len(dialog._candidate.models) == 1, timeout=30000)
+    wait_current(qtbot, dialog)
+
+    filename = f"{SNAPEDA_MODEL_STEM}.stp"
+    assert dialog._model_label.full_text() == filename
+    assert recorded[-1].model == filename
+    assert dialog._plan.model_file == f"{SNAPEDA_MPN}.stp"
+    codes = [i.code for i in dialog._plan.issues]
+    assert "intake.model_attached" in codes
+    assert "intake.no_model" not in codes and "install.no_model" not in codes
+    _title, rows = files_rows(dialog)
+    assert any(row.endswith(f"{SNAPEDA_MPN}.stp") for row in rows), rows
+    for suffix in ("*.step", "*.stp", "*.wrl", "*.zip"):
+        assert suffix in filters[-1]
+
+    set_library(dialog, "Connector_USB_GCT")
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    staging = dialog._model_packages[-1].staging_dir
+    assert staging is not None and staging.is_dir()
+    with qtbot.waitSignal(dialog.installed, timeout=60000):
+        dialog._install_btn.click()
+    assert dialog.result.ok
+    assert (item_layout.models_dir / f"{SNAPEDA_MPN}.stp").read_bytes() == STEP_BYTES
+    installed = item_layout.footprints_dir / "Connector_USB_GCT.pretty" / f"{SNAPEDA_FOOTPRINT}.kicad_mod"
+    loaded = load(installed)
+    ref = footprint_name(loaded.root)
+    assert ref is not None
+    assert [m.path for m in find_models(ref.node)] == [f"{MODEL_DIR_VAR}/{SNAPEDA_MPN}.stp"]
+
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    dialog.reject()
+    assert not staging.exists()

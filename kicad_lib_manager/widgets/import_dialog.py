@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
+from ..importer.adapters.base import attach_models
 from ..importer.applier import apply_plan
 from ..importer.candidate import ImportCandidate
 from ..importer.commit_plan import CommitPlan, build_commit_plan
@@ -44,7 +45,7 @@ from ..importer.form import (
     library_tokens, noop_text, ready_text,
 )
 from ..importer.layout import RepoLayout, list_existing_libraries
-from ..importer.package import Package, open_package
+from ..importer.package import Package, open_model_source, open_package
 from ..importer.plan import Conflict, InstallOptions, InstallPlan, InstallResult, Resolution, ToolContext
 from ..importer.planner import build_plan, detect_tools
 from ..importer.preview import file_counts, preview_sections
@@ -202,6 +203,8 @@ class ImportCore:
     """The import core functions the dialog calls; tests replace single fields with fakes."""
 
     open_package: Callable = open_package
+    open_model_source: Callable = open_model_source
+    attach_models: Callable = attach_models
     detect_candidate: Callable = detect_candidate
     detect_tools: Callable = detect_tools
     build_plan: Callable = build_plan
@@ -228,6 +231,16 @@ class OpenOutcome:
     tools: ToolContext | None
     suggestion: LibrarySuggestion | None
     existing: tuple
+
+
+@dataclass(frozen=True)
+class ModelOutcome:
+    """What the Add 3D model... worker hands to the GUI thread; the dialog owns the model package from then on."""
+
+    package: Package
+    candidate: ImportCandidate | None
+    issues: tuple
+    session: int
 
 
 class ImportDialog(QDialog):
@@ -287,6 +300,12 @@ class ImportDialog(QDialog):
         self._make_linked_btn: QPushButton | None = None
         self._model_combo: QComboBox | None = None
         self._model_label: _OfferLabel | None = None
+        # Add 3D model... (G-07-2): second-source packages stay open until Change..., a new open or close,
+        # because an attached model's file is read again by every rebuild and by apply_plan (WR-04)
+        self._model_packages: list[Package] = []
+        self._model_worker: TaskWorker | None = None
+        self._add_model_btn: QPushButton | None = None
+        self._model_slot: QVBoxLayout | None = None
         self._extends_note: QLabel | None = None
         self._linked_fp: str | None = None  # vendor name of the linked footprint
         self._defaults = FieldDefaults()
@@ -1036,7 +1055,7 @@ class ImportDialog(QDialog):
         finished threads are never deleted early.
         """
         worker.wait()
-        if not isinstance(worker.value, OpenOutcome):
+        if not isinstance(worker.value, (OpenOutcome, ModelOutcome)):
             worker.value = None
 
     def _on_open_progress(self, message: str, current: int, total: int):
@@ -1249,6 +1268,7 @@ class ImportDialog(QDialog):
         self._symbol_combo = self._model_combo = None
         self._symbol_label = self._fp_label = self._model_label = None
         self._fp_list = self._make_linked_btn = None
+        self._add_model_btn = self._model_slot = None
         # The checklist and its frame are deleted with their row
         self._field_frames.pop("footprints", None)
         self._reason_targets.pop("footprints", None)
@@ -1347,30 +1367,84 @@ class ImportDialog(QDialog):
             self._fp_label = self._item_label("No footprint in this package", missing=True)
             form.addRow("Footprints", self._fp_label)
 
-        # 3D model: several give a combo that ends with "No model"
-        models = [m.filename for m in candidate.models]
-        if len(models) > 1:
-            combo = self._item_combo([*models, _NO_MODEL], "3D model")
-            combo.setItemData(len(models), None)
-            combo.setItemData(len(models), _NO_MODEL, Qt.ItemDataRole.ToolTipRole)
-            combo.currentIndexChanged.connect(self._on_model_changed)
-            self._model_combo = combo
-            form.addRow("3D model", combo)
-        elif models:
-            self._model_label = self._item_label(models[0])
-            form.addRow("3D model", self._model_label)
-        else:
-            self._model_label = self._item_label("No 3D model in this package", missing=True)
-            form.addRow("3D model", self._model_label)
+        # 3D model: several give a combo that ends with "No model"; Add 3D model... sits beside it
+        form.addRow("3D model", self._build_model_row())
 
         self._reset_fp_name()
         self._reload_symbol_defaults()
         self._set_tab_order()
 
+    def _make_model_widget(self) -> QWidget:
+        """The label (none or one model) or combo (several, ending with "No model") for the candidate's models."""
+        models = [m.filename for m in self._candidate.models]
+        self._model_combo = self._model_label = None
+        if len(models) > 1:
+            combo = self._item_combo([*models, _NO_MODEL], "3D model")
+            combo.setItemData(len(models), None)
+            combo.setItemData(len(models), _NO_MODEL, Qt.ItemDataRole.ToolTipRole)
+            self._model_combo = combo
+            return combo
+        if models:
+            self._model_label = self._item_label(models[0])
+            return self._model_label
+        self._model_label = self._item_label("No 3D model in this package", missing=True)
+        return self._model_label
+
+    def _build_model_row(self) -> QWidget:
+        """The 3D model row: the label or combo, then the Add 3D model... button (G-07-2)."""
+        # The button sits under the label or combo, like Make linked: beside it, the row would not fit a narrow pane
+        host = QWidget()
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(4)
+        self._model_slot = lay
+        widget = self._make_model_widget()
+        lay.addWidget(widget)
+        if self._model_combo is not None:
+            self._model_combo.currentIndexChanged.connect(self._on_model_changed)
+        button = QPushButton("Add 3D model...")
+        button.setAutoDefault(False)
+        button.setDefault(False)
+        button.clicked.connect(self._on_add_model)
+        button.setEnabled(self._model_worker is None)
+        lay.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._add_model_btn = button
+        return host
+
+    def _refresh_model_row(self, select: str | None = None):
+        """Rebuild only the label or combo of the 3D model row after an attach.
+
+        It never calls _populate_items, _clear_items, _clear_form, _reload_symbol_defaults or
+        _reset_fp_name: those wipe the user's edits.
+        """
+        lay = self._model_slot
+        if lay is None or self._candidate is None:
+            return
+        old = lay.itemAt(0).widget()
+        lay.removeWidget(old)
+        old.deleteLater()
+        widget = self._make_model_widget()
+        lay.insertWidget(0, widget)
+        combo = self._model_combo
+        if combo is not None:
+            if select is not None:
+                index = combo.findData(select)
+                if index >= 0:
+                    combo.blockSignals(True)
+                    try:
+                        combo.setCurrentIndex(index)
+                        combo.setToolTip(combo.currentText())
+                    finally:
+                        combo.blockSignals(False)
+            combo.currentIndexChanged.connect(self._on_model_changed)
+        self._set_tab_order()
+
     def _set_tab_order(self):
         """Items come after the page's widgets in creation order, so chain the whole left pane by hand."""
         chain: list[QWidget] = [self._change_btn]
-        for widget in (self._symbol_combo, self._fp_list, self._make_linked_btn, self._model_combo):
+        for widget in (
+            self._symbol_combo, self._fp_list, self._make_linked_btn, self._model_combo, self._add_model_btn
+        ):
             if widget is not None:
                 chain.append(widget)
         chain += [self._library_combo, self._fp_name_edit, self._fp_name_restore, self._fp_field]
@@ -1490,6 +1564,89 @@ class ImportDialog(QDialog):
             return
         combo.setToolTip(combo.currentText())
         self._request_rebuild()
+
+    # -- Add 3D model... (G-07-2): a second intake source for a separately downloaded model ---------
+
+    def _model_busy(self) -> bool:
+        return (
+            self._closing
+            or self._candidate is None
+            or self._open_worker is not None
+            or self._model_worker is not None
+            or self.is_installing()
+            or self.is_committing()
+        )
+
+    def _on_add_model(self):
+        if self._model_busy():
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Add 3D model",
+            str(self._browse_start_dir()),
+            "3D models (*.step *.stp *.wrl *.zip)",
+        )
+        if path:
+            save_import_dir(Path(path).parent)
+            self._start_model_attach(Path(path))
+
+    def _start_model_attach(self, path: Path):
+        """Open the picked model source and attach its models to the open candidate, on one worker."""
+        if self._model_busy():
+            return
+        core, repo_root, candidate, session = self._core, self._repo_root, self._candidate, self._session
+
+        def task(progress):
+            package = core.open_model_source(path, repo_root, progress)
+            try:
+                attached, issues = core.attach_models(candidate, package)
+            except BaseException:
+                package.close()
+                raise
+            return ModelOutcome(package, attached, tuple(issues), session)
+
+        worker = self._spawn(task)
+        self._model_worker = worker
+        if self._add_model_btn is not None:
+            self._add_model_btn.setEnabled(False)
+        worker.result.connect(lambda outcome, w=worker: self._on_model_attached(w, outcome))
+        worker.failed.connect(lambda text, w=worker: self._on_model_failed(w, text))
+        worker.start()
+
+    def _end_model_worker(self, worker: TaskWorker):
+        if self._model_worker is worker:
+            self._model_worker = None
+        if self._add_model_btn is not None:
+            self._add_model_btn.setEnabled(True)
+
+    def _on_model_attached(self, worker: TaskWorker, outcome: ModelOutcome):
+        worker.value = None  # handled here, so _shutdown does not close the package a second time
+        self._end_model_worker(worker)
+        stale = (
+            self._closing
+            or outcome.session != self._session
+            or self._candidate is None
+            or self.is_installing()
+            or self._stack.currentWidget() is not self._edit_page
+        )
+        if stale:
+            outcome.package.close()
+            return
+        self.issues_logged.emit(list(outcome.issues))
+        if outcome.candidate is None:
+            outcome.package.close()  # plan 07-08 adds the visible note
+            return
+        self._model_packages.append(outcome.package)
+        added = [m for m in outcome.candidate.models if m not in self._candidate.models]
+        self._candidate = outcome.candidate
+        self._refresh_model_row(select=added[0].filename if added else None)
+        self._request_rebuild()
+
+    def _on_model_failed(self, worker: TaskWorker, text: str):
+        self._end_model_worker(worker)
+        if self._closing:
+            return
+        self.issues_logged.emit([Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")])
 
     # -- conflicts: one row per conflict, choices kept by key (PREV-05, D-12, D-14a) ----------------
 
@@ -2344,6 +2501,10 @@ class ImportDialog(QDialog):
         package, self._package = self._package, None
         if package is not None:
             package.close()
+        # Attached model packages are released with the main package: Change..., a new open and close
+        models, self._model_packages = self._model_packages, []
+        for model_package in models:
+            model_package.close()
 
     def _shutdown(self):
         """Wait for every open and build worker, then close the package; idempotent."""
@@ -2357,8 +2518,8 @@ class ImportDialog(QDialog):
             worker.wait()
         for worker in list(self._workers):
             value = worker.value
-            if isinstance(value, OpenOutcome):
-                value.package.close()  # an open that finished while closing
+            if isinstance(value, (OpenOutcome, ModelOutcome)):
+                value.package.close()  # an open or an attach that finished while closing
         self._discard_package()
 
     def done(self, r: int):

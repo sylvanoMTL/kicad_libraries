@@ -7,8 +7,9 @@ like ``zipfixtures``. It imports the standard library and ``zipfixtures`` only.
 Everything here is written from scratch. The builders copy each vendor's layout, file
 names, property names and markers, never its geometry, models or licence text, because
 the vendor downloads are licence-restricted and both GitHub repos are public. Every
-builder returns bytes (or a list of name/bytes members), and ``snapeda_zip`` writes only
-under the path the test passes (``tmp_path``).
+builder returns bytes (or a list of name/bytes members), and ``snapeda_zip`` and
+``snapeda_model_zip`` (the separate SnapEDA 3D model download) write only under the path
+the test passes (``tmp_path``).
 """
 
 from pathlib import Path
@@ -161,6 +162,33 @@ def snapeda_zip(path: Path, **kwargs) -> Path:
     """Write a synthetic SnapEDA zip to path (creating its folder) and return path."""
     path.parent.mkdir(parents=True, exist_ok=True)
     return make_zip(path, snapeda_members(**kwargs))
+
+
+# SnapEDA ships the 3D model as a second download: a zip holding the .stp and a small .txt note.
+# The file name is an invented number in the vendor's naming shape.
+SNAPEDA_MODEL_ZIP_NAME = "100000001-001-usbc4242-01-0099-a.zip"
+SNAPEDA_MODEL_STEM = SNAPEDA_MPN.lower()
+SNAPEDA_MODEL_NOTE = (
+    b"Mount metadata (invented for tests)\r\n"
+    b"Units: mm\r\n"
+    b"Origin: centre of the shell\r\n"
+    b"Rotation: 0 0 0\r\n"
+    b"Board side: top\r\n"
+)
+
+
+def snapeda_model_members(*, suffix: str = ".stp") -> list[tuple[str, bytes]]:
+    """Return the members of a SnapEDA 3D model download, at the zip root: the model and its note."""
+    return [
+        (f"{SNAPEDA_MODEL_STEM}{suffix}", STEP_BYTES),
+        (f"{SNAPEDA_MODEL_STEM}.txt", SNAPEDA_MODEL_NOTE),
+    ]
+
+
+def snapeda_model_zip(path: Path, **kwargs) -> Path:
+    """Write a synthetic SnapEDA model download to path (creating its folder) and return path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return make_zip(path, snapeda_model_members(**kwargs))
 
 
 # -- SamacSys / Component Search Engine -----------------------------------------------
