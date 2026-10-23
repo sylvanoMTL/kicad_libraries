@@ -25,14 +25,10 @@ SAMPLES = REPO_ROOT / "downloaded_examples"
 REAL_SNAPEDA = SAMPLES / "USB4145-03-0170-C_REVA2.zip"
 REAL_SAMACSYS = SAMPLES / "LIB_RS3-1212S_H3.zip"
 
-requires_snapeda = pytest.mark.skipif(
-    not REAL_SNAPEDA.exists(),
-    reason="downloaded_examples/USB4145-03-0170-C_REVA2.zip not present (licence-restricted SnapEDA sample, kept local)",
-)
-requires_samacsys = pytest.mark.skipif(
-    not REAL_SAMACSYS.exists(),
-    reason="downloaded_examples/LIB_RS3-1212S_H3.zip not present (licence-restricted SamacSys sample, kept local)",
-)
+_SNAPEDA_SKIP = "downloaded_examples/USB4145-03-0170-C_REVA2.zip not present (licence-restricted SnapEDA sample, kept local)"
+requires_snapeda = pytest.mark.skipif(not REAL_SNAPEDA.exists(), reason=_SNAPEDA_SKIP)
+_SAMACSYS_SKIP = "downloaded_examples/LIB_RS3-1212S_H3.zip not present (licence-restricted SamacSys sample, kept local)"
+requires_samacsys = pytest.mark.skipif(not REAL_SAMACSYS.exists(), reason=_SAMACSYS_SKIP)
 
 
 @pytest.fixture
