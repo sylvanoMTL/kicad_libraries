@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
+from vendorfixtures import snapeda_footprint
 from zipfixtures import symbol_lib, write_custom_layout
 
 from kicad_lib_manager import library_scanner
@@ -255,6 +256,21 @@ def test_pin_pad_ignores_empty(tmp_path):
     assert _mismatch(verify.verify_install(plan)) is None
     root = parse_bytes(vendor_footprint("FP", pads=("1",), npth=True), "fp.kicad_mod").root
     assert verify.footprint_pad_numbers(footprint_name(root).node) == {"1"}
+
+
+def test_np_thru_hole_pads_ignored():
+    root = parse_bytes(snapeda_footprint(), "fp.kicad_mod").root
+    assert verify.footprint_pad_numbers(footprint_name(root).node) == {"1", "2", "3", "4"}
+
+    plain = b"""(footprint "FP" (layer "F.Cu")
+  (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu"))
+  (pad "5" np_thru_hole circle (at 3 0) (size 1 1) (drill 1) (layers "*.Cu"))
+  (pad None thru_hole circle (at 6 0) (size 1.6 1.6) (drill 1) (layers "*.Cu"))
+)
+"""
+    root = parse_bytes(plain, "fp.kicad_mod").root
+    # the non-plated hole carries no net; a plated pad that is literally named None still counts
+    assert verify.footprint_pad_numbers(footprint_name(root).node) == {"1", "None"}
 
 
 def test_pin_pad_extends_child(tmp_path):
