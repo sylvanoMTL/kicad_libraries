@@ -24,6 +24,7 @@ from ..fieldrules import (
     MANUFACTURER_FIELDS,
     MPN_FIELDS,
     FieldRules,
+    is_placeholder,
 )
 from ..package import Package, PackageFile
 
@@ -72,10 +73,11 @@ def _prop(symbol: SymbolRef, name: str) -> str:
     return found.value if found is not None else ""
 
 
-def _first(symbol: SymbolRef, names: tuple[str, ...]) -> str:
+def _first(symbol: SymbolRef, names: tuple[str, ...], *, skip_placeholders: bool = False) -> str:
+    """Return the first non-empty value among the named properties; placeholders such as "N/A" count as absent when asked."""
     for name in names:
         value = _prop(symbol, name)
-        if value:
+        if value and not (skip_placeholders and is_placeholder(value)):
             return value
     return ""
 
@@ -91,8 +93,8 @@ def part_meta(symbol: SymbolRef, rules: FieldRules = GENERIC_RULES) -> PartMeta:
         keywords=_prop(symbol, "ki_keywords"),
         footprint_field=_prop(symbol, "Footprint"),
         fp_filters=_prop(symbol, "ki_fp_filters"),
-        manufacturer=_first(symbol, rules.manufacturer_aliases),
-        mpn=_first(symbol, rules.mpn_aliases),
+        manufacturer=_first(symbol, rules.manufacturer_aliases, skip_placeholders=True),
+        mpn=_first(symbol, rules.mpn_aliases, skip_placeholders=True),
     )
 
 
