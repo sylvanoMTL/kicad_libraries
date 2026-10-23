@@ -52,6 +52,19 @@ created: "2026-10-23"
 | T-07-17 | Information Disclosure | synthetic fixtures copying vendor bytes into the public repo | high | mitigate | test_fixture_originality (SHA-256 against every real member plus real-part-name guard, ran against both real zips), test_fixture_members_small (4096-byte cap) | closed |
 | T-07-18 | Tampering | failed vendor install leaving Custom/ half-written | medium | mitigate | INST-07 rollback; test_vendor_install_rolls_back_on_failed_write asserts byte-identical snapshot and no temp file | closed |
 | T-07-19 | Information Disclosure | real zips read by tests ending up in the repo | high | mitigate | real members read in memory, staged outside the repo; test_vendor_zips_stay_local | closed |
+| T-07-20 | Tampering / Elevation | `package.open_model_source` zip branch (G-07-2) | high | mitigate | reuses `_open_zip` / `_stage_zip` / `_prescan` unchanged with `kinds=MODEL_SOURCE_KINDS`, staging outside the repo; test_model_zip_hostile_refused, test_model_zip_nested_one_level. Residual (zip opened by path with no handle re-check) logged as AR-07-03 | closed |
+| T-07-21 | Information Disclosure / Tampering | `package._open_model_file` bare model read in place | medium | mitigate | no-follow `_lstat`; `S_ISLNK` and `FILE_ATTRIBUTE_REPARSE_POINT` refused (`intake.link_refused`); `S_ISREG` required; opened handle `(st_dev, st_ino)` must match; "rb" only; test_bare_model_symlink_refused (skips without the symlink privilege), test_bare_model_reparse*, test_bare_model_handle* | closed |
+| T-07-22 | Denial of Service | `open_model_source` size handling | medium | mitigate | `MAX_MEMBER_BYTES` on the lstat size and on real counted bytes; zip caps unchanged; test_bare_model_oversize_refused | closed |
+| T-07-23 | Spoofing / Tampering | `adapters.base.attach_models` | medium | mitigate | every second-source model passes `_check_model` (ISO-10303-21; / #VRML magic) before attach; test_attach_rejects_wrong_magic, test_attach_keeps_good_drops_bad | closed |
+| T-07-24 | Tampering | bare model edited between preview and install | medium | mitigate | applier source SHA-256 re-check reused unchanged (six contract modules unchanged since c2b75c8); test_attach_source_edited_after_preview, test_attach_zip_closed_before_install | closed |
+| T-07-25 | Information Disclosure | attach Issue texts naming local folders | low | mitigate | `intake.model_attached` / `no_model_in_source` texts use `source.name` only; test_attach_zip_model | closed |
+| T-07-26 | Denial of Service | per-model-source byte budget | low | accept | AR-07-02 | closed |
+| T-07-27 | Denial of Service / Tampering | model package lifetime in the dialog | medium | mitigate | packages close only in `_discard_package` (Change..., open, close) and `_shutdown`, never during install; test_add_model_package_open_until_install_ends, test_add_model_close_while_reading_closes_package | closed |
+| T-07-28 | Tampering | late attach result after Change... or during close | medium | mitigate | session counter plus closing / installing / page guards close and drop the result; test_add_model_result_after_change_is_dropped | closed |
+| T-07-29 | Tampering | Install from a preview that does not show the model yet | medium | mitigate | `_updating()` counts `_model_worker`, so Install shows Updating until the plan is current; test_add_model_blocks_install_while_reading | closed |
+| T-07-30 | Tampering / Spoofing | `_model_note` rendering untrusted names | low | mitigate | `Qt.TextFormat.PlainText`; test_add_model_note_is_plain_text | closed |
+| T-07-31 | Information Disclosure (licence) | real SnapEDA model zip `194150990-659-usb4145-03-0170-c.zip` | high | mitigate | `downloaded_examples/*` ignore rule; test_vendor_zips_stay_local asserts check-ignore for it and that `git ls-files downloaded_examples` lists only the UL sample; no commit of 07-07..07-09 touches `downloaded_examples/` | closed |
+| T-07-32 | Information Disclosure (licence) | synthetic SnapEDA model fixture | medium | mitigate | test_fixture_originality[snapeda_model] hashes every real model-zip member against the synthetic members and rejects the real part name in both cases; members < 4096 bytes | closed |
 | T-07-SC | Tampering | npm/pip/cargo installs | high | accept | no package is installed by any Phase 7 plan (RESEARCH Package Legitimacy Audit: nothing to audit) | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -65,6 +78,9 @@ created: "2026-10-23"
 | Risk ID | Threat Ref | Rationale | Accepted By | Date |
 |---------|------------|-----------|-------------|------|
 | AR-07-01 | T-07-SC | No third-party package was added in this phase; the dependency set (PySide6, pytest, pytest-qt) is unchanged, so there is no supply-chain surface to mitigate | plan-time threat model (07-01..07-06 PLAN.md) | 2026-10-23 |
+| AR-07-02 | T-07-26 | Each model source gets its own budget and temp staging folder outside the repo, removed on Change... or close; every source is an explicit user pick and bare files are never staged | plan-time threat model (07-07 PLAN.md) | 2026-10-24 |
+| AR-07-03 | T-07-20 (residual) | The model zip is lstat'ed (link or reparse point refused) and then opened by path with no handle-identity re-check, unlike the bare-file branch. Acceptable because `_stage_zip` fully checks every member of whatever file is actually read, and the path is the user's own pick | plan-time threat model (07-07 PLAN.md) | 2026-10-24 |
+| AR-07-04 | T-07-SC (07-07..07-09) | Gap closure added no third-party package (stdlib and PySide6 only) | plan-time threat model (07-07..07-09 PLAN.md) | 2026-10-24 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -86,3 +102,11 @@ created: "2026-10-23"
 - [x] `status: verified` set in frontmatter
 
 **Approval:** verified 2026-10-23
+
+## Security Audit 2026-10-23
+
+| Metric | Count |
+|---|---|
+| Threats found | 33 |
+| Closed | 33 |
+| Open | 0 |
