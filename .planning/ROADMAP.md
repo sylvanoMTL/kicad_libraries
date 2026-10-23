@@ -17,7 +17,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 3: Package Intake and Naming** - Headless, safe reading of Ultra Librarian and loose-file packages, plus library name suggestion and sanitisation (completed 2026-10-19)
 - [x] **Phase 4: Plan and Install Core** - Headless, transactional install of a part into `Custom/` with linking, rollback and verification (completed 2026-10-20)
 - [x] **Phase 5: Import UI and Post-Install** - Import dialog with an editable preview, per-item conflict resolution, rescan and table refresh (completed 2026-10-22)
-- [ ] **Phase 6: Git Commit Step** - Confirmed commit of exactly the imported files in `Custom/` plus the parent ref bump, never pushing
+- [x] **Phase 6: Git Commit Step** - Confirmed commit of exactly the imported files in `Custom/` plus the parent ref bump, never pushing (completed 2026-10-23)
 - [ ] **Phase 7: SnapEDA and SamacSys Adapters** - Remaining vendor formats, gated on real downloads in `downloaded_examples/`
 
 ## Phase Details
@@ -219,7 +219,7 @@ Plans:
   3. If `Custom` is on a detached HEAD that lies on `main`'s history, the user is offered a switch to `main` before committing. Otherwise the commit is refused with an explanation and nothing is committed.
   4. No importer code path pushes. After a commit, the local branches are ahead of their remotes and no remote has changed.
 
-**Plans**: 8/8 plans executed
+**Plans**: 8/8 plans complete
 
 Plans:
 **Wave 1**
@@ -268,7 +268,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 3. Package Intake and Naming | 10/10 | Complete    | 2026-10-19 |
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
-| 6. Git Commit Step | 8/8 | In Progress | - |
+| 6. Git Commit Step | 8/8 | Complete    | 2026-10-23 |
 | 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
 
 ## Backlog

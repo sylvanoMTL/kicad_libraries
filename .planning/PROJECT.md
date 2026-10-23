@@ -55,19 +55,20 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ Preview before any write: every file, rename, path rewrite and format/kicad-cli action, with diffs and a file content view; footprint name and Value/Datasheet/Description/Manufacturer/MPN editable, explicit clear supported, Footprint field `<Lib>:<FP>` kept in sync; preview and install share one plan (PREV-01..PREV-07) — Phase 5
 - ✓ Per-conflict Overwrite / Rename / Skip with no bulk control and nothing pre-selected; Install blocked until every conflict is decided (PREV-05) — Phase 5
 - ✓ After install: Result view, rescan with the library checked and current, add-only `sym-lib-table` / `fp-lib-table` entries for a new library, a Generate hint for an existing unlisted one, and a "reopen KiCad's editors" notice when KiCad is running (POST-01, POST-02, POST-05) — Phase 5
+- ✓ Commit step in the Result view: shows the Custom branch, the parent repo and branch, the exact installed files and an editable message with Import-Vendor / Import-Package / Import-Date trailers; on click commits only those files in `Custom` (`commit --only`, bystander changes untouched), then only the `Custom` gitlink in the parent; detached HEAD on `main`'s history offers a plain `switch main`, otherwise refuses; never pushes, reports "Not pushed — N commits ahead" (GIT-01..GIT-05) — Phase 6
 
 ### Active
 
 **Importer — input**
 - [ ] Open and auto-detect SnapEDA and SamacSys/CSE zips (Ultra Librarian and loose files done in Phases 3-5; Phase 7, gated on real downloads)
 
-**Importer — install**
-- [ ] After install: ask for confirmation, then commit the new part in the `Custom` submodule and bump the parent repo's submodule ref. Commit only, never push.
-
 **Quality**
 - [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code (harness and parser tests done in Phase 1, hardened-table/config/scan tests in Phase 2, importer intake/install/UI tests in Phases 3-5; SnapEDA/SamacSys fixtures still to come)
-- [ ] Phase 5 review warnings, open and non-blocking: WR-01 misleading "already listed" text, WR-02 table write to the process cwd when Destination is empty, WR-03 one-off build can overlap Install, WR-04 worker reads `self._plan` / `open_path` has no install guard, WR-05 GUI thread waits up to 60 s on kicad-cli, WR-06 stale `kicad_common.json` content after the confirm dialog (05-REVIEW-DISPOSITION.md)
+- [ ] Phase 5 review warnings, open and non-blocking: WR-01 misleading "already listed" text, WR-02 table write to the process cwd when Destination is empty, WR-03 one-off build can overlap Install, WR-05 GUI thread waits up to 60 s on kicad-cli, WR-06 stale `kicad_common.json` content after the confirm dialog (05-REVIEW-DISPOSITION.md)
 - [ ] Help dialog styling outside the theme tokens (hard-coded colours, px font sizes) per 05-UI-REVIEW.md
+- [ ] Phase 6 review findings, open and non-blocking (06-REVIEW-DISPOSITION.md): WR-01 a commit timeout is reported as "nothing committed" without checking HEAD, WR-02 parent-message preview differs from the committed text when `gitlink_old` is None, WR-03 the "finish it by hand" command uses POSIX quoting on Windows, WR-04 files identical to HEAD raise a spurious "missing" error, WR-05 a refusal leaves the panel on a stale probe; IN-01..IN-03
+- [ ] Phase 6 UI review (06-UI-REVIEW.md 17/24): Commit button not styled as the primary action, "Committed" label in the parent-failed state, error/success outcomes untinted, off-scale sizes in `commit_panel.py`
+- [ ] Tests that read the real `Custom/` tree (`test_build_from_real_ul_plan`, `test_tracer_ul_import_end_to_end`, `test_preview_sections_follow_plan_ops`) fail while the CSD85301Q2 UAT files sit uncommitted in `Custom/`; they should use an isolated fixture
 
 ### Out of Scope
 
@@ -108,7 +109,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | Footprint link set automatically; other fields editable in preview | Footprint link is the most error-prone manual step | ✓ Good — Phase 5 UAT passed |
 | No 3D model → install without it and warn | Keep the flow simple; models can be added later | — Pending |
 | One package per import | Simpler review; batch not needed | ✓ Good — Phase 5 UAT passed |
-| Commit in `Custom` + bump parent ref after confirmation; never push | Matches the CLAUDE.md git workflow; pushing stays a deliberate act | — Pending |
+| Commit in `Custom` + bump parent ref after confirmation; never push | Matches the CLAUDE.md git workflow; pushing stays a deliberate act | ✓ Good — Phase 6 UAT passed on the real repo; remote unchanged |
 | Fix all High/Medium-High concerns from the codebase map | Importer builds on table/scan/write code that has known data-loss risks | ✓ Good — HARD-01..09 verified and UAT passed (Phase 2) |
 | Managed table entries identified by URI tail after `${KICAD_LIB_GITHUB}/`, not by nickname | Nicknames can collide across sources; the path cannot | ✓ Good (Phase 2) |
 | Scan busy guard is both disabled controls and a refusing `_start_scan` | A disabled control doesn't stop a programmatic caller (e.g. post-import rescan) | ✓ Good (Phase 2) |
@@ -124,6 +125,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | kicad-cli normalises only the incoming symbol, and only when its output version equals the target header; footprints are copied as-is | Never change a library's version header; mixed versions load in KiCad 9 (D-01, D-02) | ✓ Good — loads in kicad-cli 9.0.9; KiCad 10 re-test deferred (backlog 999.1) |
 | Post-install table update is add-only: one entry per table for a new library, a no-op when listed, never the tree selection; an existing unlisted library gets a Generate hint | Import must not rewrite the owner's tables or apply an ungenerated selection | ✓ Good (Phase 5) |
 | The import flow never runs git; the Result view holds a hidden commit slot for Phase 6 | Commit needs its own confirmation step (GIT-01..05) | ✓ Good (Phase 5) |
+| Git runs as `git --literal-pathspecs -c core.quotepath=false -C <repo>` from an allow-list with no remote subcommand, `GIT_*` env stripped, paths on stdin (`--pathspec-file-nul`), message via `-F`; owner hooks always run (no `--no-verify`, D-06) | Package-derived names are untrusted; the user's other changes and the remote must never be touched | ✓ Good — 06-SECURITY.md 26/26 threats closed (Phase 6) |
 | KiCad path variables are never written silently: Generate and the post-install table update show `VAR: old -> new` and ask (default No); a git worktree or a checkout other than the configured `KICAD_LIB_GITHUB` is refused with a WARNING; no confirm callback means no write | 2026-10-21: Generate from the dev worktree repointed KiCad 10 at it; 89 WurthElektronik libraries went missing and an ERC error followed | ✓ Good (Quick 261022-gnn) |
 
 ## Evolution
@@ -144,4 +146,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-22 after Phase 5*
+*Last updated: 2026-10-23 after Phase 6*

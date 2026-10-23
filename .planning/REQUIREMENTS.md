@@ -76,11 +76,11 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 
 ### Git
 
-- [ ] **GIT-01**: After install, user is asked to confirm a commit and sees the branch, the exact file list and an editable message
-- [ ] **GIT-02**: On confirm, only the files touched by the install are committed in the `Custom` submodule (never `add -A`), and then the parent repo's `Custom` ref is committed
-- [ ] **GIT-03**: If `Custom` is on a detached HEAD that is on `main`'s history, user is offered a switch to `main` before committing. Otherwise the commit is refused with an explanation.
-- [ ] **GIT-04**: The commit message records provenance: vendor, original package filename and date
-- [ ] **GIT-05**: The importer never pushes
+- [x] **GIT-01**: After install, user is asked to confirm a commit and sees the branch, the exact file list and an editable message
+- [x] **GIT-02**: On confirm, only the files touched by the install are committed in the `Custom` submodule (never `add -A`), and then the parent repo's `Custom` ref is committed
+- [x] **GIT-03**: If `Custom` is on a detached HEAD that is on `main`'s history, user is offered a switch to `main` before committing. Otherwise the commit is refused with an explanation.
+- [x] **GIT-04**: The commit message records provenance: vendor, original package filename and date
+- [x] **GIT-05**: The importer never pushes
 
 ### Usability
 
@@ -176,11 +176,11 @@ Which phases cover which requirements. Updated during roadmap creation.
 | POST-03 | Phase 4 | Complete |
 | POST-04 | Phase 4 | Complete |
 | POST-05 | Phase 5 | Complete |
-| GIT-01 | Phase 6 | Pending |
-| GIT-02 | Phase 6 | Pending |
-| GIT-03 | Phase 6 | Pending |
-| GIT-04 | Phase 6 | Pending |
-| GIT-05 | Phase 6 | Pending |
+| GIT-01 | Phase 6 | Complete |
+| GIT-02 | Phase 6 | Complete |
+| GIT-03 | Phase 6 | Complete |
+| GIT-04 | Phase 6 | Complete |
+| GIT-05 | Phase 6 | Complete |
 | UX-01 | Phase 5 | Complete |
 | UX-02 | Phase 5 | Complete |
 

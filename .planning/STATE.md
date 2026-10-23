@@ -1,43 +1,43 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 06
-current_phase_name: Git Commit Step
-status: executing
-stopped_at: Phase 6 context gathered
-last_updated: "2026-10-22T17:41:00.874Z"
-last_activity: 2026-10-22
-last_activity_desc: Phase 06 execution started
-state_head: ec3bb43b993c91ff8e50cc0fab91a424f36920e9
+current_phase: 7
+current_phase_name: SnapEDA and SamacSys Adapters
+status: planning
+stopped_at: Phase 06 complete, ready to plan Phase 7
+last_updated: "2026-10-23T06:57:24.190Z"
+last_activity: 2026-10-23
+last_activity_desc: Phase 06 complete, transitioned to Phase 7
+state_head: 88b1ca5f53502badd31fd0c9af821c3db19578d7
 progress:
   total_phases: 7
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 57
-  completed_plans: 49
-  percent: 71
+  completed_plans: 57
+  percent: 86
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-22)
+See: .planning/PROJECT.md (updated 2026-10-23)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 06 — Git Commit Step
+**Current focus:** Phase 7 — SnapEDA and SamacSys Adapters
 
 ## Current Position
 
-Phase: 06 (Git Commit Step) — EXECUTING
-Plan: 1 of 8
-Status: Executing Phase 06
-Last activity: 2026-10-22 — Phase 06 execution started
+Phase: 7 — SnapEDA and SamacSys Adapters
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-23 — Phase 06 complete, transitioned to Phase 7
 
-Progress: [███████░░░] 71%
+Progress: [█████████░] 86%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 49
+- Total plans completed: 57
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -50,6 +50,7 @@ Progress: [███████░░░] 71%
 | 03 | 10 | - | - |
 | 04 | 13 | - | - |
 | 05 | 11 | - | - |
+| 06 | 8 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -103,6 +104,8 @@ Recent decisions affecting current work:
 - [Phase 05]: Emptied preview fields are explicit clears (Datasheet written empty, cleared Manufacturer skips inference, cleared MPN refused); KiCad loads an empty Datasheet (UAT)
 - [Phase 05]: Post-install table write is add-only (one entry per table for a new library); an existing unlisted library gets a Generate hint
 - [Phase 05]: The import flow never runs git; `ImportDialog.result` / `result_plan` and `ImportResultView.commit_slot` are the hand-off for Phase 6
+- [Phase 06]: Git runs through one allow-listed `run_git` (no remote subcommand, `--literal-pathspecs`, `GIT_*` env stripped, paths on stdin, message via `-F`); `commit --only` commits exactly the installed files and then only the `Custom` gitlink; owner hooks always run (D-06); the app never pushes.
+- [Phase 06]: Detached `Custom` HEAD on `main`'s history offers a plain `switch main`; a stale local main (origin/main contains HEAD, main does not) is refused. Every git write follows a click; only the read-only probe runs after install.
 - [Quick 261022-gnn]: KiCad path variables are never written silently: `sync_kicad_path_vars` writes only after `confirm(changes)` returns True (no callback = no write); a git worktree (`.git` is a file) or a checkout other than a non-empty configured `KICAD_LIB_GITHUB` (normalised compare) is refused with a WARNING and never prompts. Later phases must not add a silent caller.
 
 ### Pending Todos
@@ -113,10 +116,11 @@ None yet.
 
 - [Phase 2]: `Custom` `main` is 1 commit ahead of `origin/main` (485d530, HARD-09 cleanup). Owner must push it before removing this worktree.
 - [Phase 4, review]: Still open, non-blocking: WR-04 (`build_plan` ~531 lines), IN-01/02/03/05. See 04-REVIEW-DISPOSITION.md. (WR-06, IN-04, WR-02 and the Phase 2 UI-review items were closed in Phase 5.)
-- [Phase 5, review]: Open, non-blocking: WR-01..WR-06 in 05-REVIEW-DISPOSITION.md. WR-04 (worker reads `self._plan`, `open_path` lacks an install guard) and WR-05 (GUI thread waits up to 60 s on kicad-cli) touch the dialog Phase 6 extends.
+- [Phase 5, review]: Open, non-blocking: WR-01..WR-06 in 05-REVIEW-DISPOSITION.md. WR-04 was closed in Phase 6 (captured plan, `open_path` busy guard); WR-05 (GUI thread waits up to 60 s on kicad-cli) is still open.
 - [Phase 5, UI review]: 05-UI-REVIEW.md 17/24; help dialog hard-codes colours and px font sizes outside `theme.py`; `conflict_row.py` has `#FFFFFF` literals.
 - [Phase 4]: KiCad 9 load of a mixed-version library verified by kicad-cli 9.0.9 and the owner's GUI UAT. KiCad 10 (format 20251024) and case-sensitive-volume rollback are deferred re-tests (ROADMAP backlog 999.1, 999.2).
-- [Phase 6]: Research flag. Spike git in this worktree early: detached HEAD, worktree-private module gitdir, and the owner's hooks on `commit -- Custom`.
+- [Phase 6, review]: Open, non-blocking: WR-01..WR-05, IN-01..IN-03 in 06-REVIEW-DISPOSITION.md. The UI audit (06-UI-REVIEW.md, 17/24) ranks WR-05 (stale probe after a refusal), WR-01 (timeout reported as nothing committed without checking HEAD) and WR-03 (POSIX quoting in the Windows "finish by hand" command) as the top fixes.
+- [Phase 6, environment]: The CSD85301Q2 UAT install is still uncommitted in `Custom/` (`3DModels/CSD85301Q2.stp`, `IC_PowerManagementMosfet_TI.*`). While it is there, 3 tests that read the real `Custom/` tree fail (`test_build_from_real_ul_plan`, `test_tracer_ul_import_end_to_end`, `test_preview_sections_follow_plan_ops`); they should use an isolated fixture.
 - [Phase 7]: Blocked until real SnapEDA and SamacSys/CSE downloads are added to `downloaded_examples/`. Check redistribution terms before committing fixtures.
 - [Phase 5, environment]: 7 real-kicad-cli tests fail on the phase base too, because the installed KiCad 10 CLI writes symbol format 20251024 where the tests expect 20241209: `test_install_plan.py` (3), `test_kicad_cli.py::test_real_cli_upgrades_ul_symbol_deterministically`, `test_install_e2e.py` (3). Not a phase 5 regression; owner to decide whether the tests follow the installed CLI version.
 
@@ -136,6 +140,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-22T15:42:30.516Z
-Stopped at: Phase 6 context gathered
-Resume file: .planning/phases/06-git-commit-step/06-CONTEXT.md
+Last session: 2026-10-23
+Stopped at: Phase 06 complete, ready to plan Phase 7
+Resume file: None
