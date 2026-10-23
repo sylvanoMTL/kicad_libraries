@@ -253,7 +253,7 @@ Plans:
   2. A real SamacSys / CSE zip in `downloaded_examples/` is recognised, and its KiCad v6+ symbol, footprint and 3D model are found. Legacy `.lib` / `.dcm` files alongside them are ignored instead of causing a rejection.
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
 
-**Plans**: 6/6 plans executed
+**Plans**: 6/9 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2)
 
 Plans:
 **Wave 1**
@@ -271,6 +271,14 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [x] 07-06-PLAN.md — Both vendors install into a synthetic Custom/ like the UL sample, roll back, re-install as no-op, name the vendor in the commit, load in kicad-cli (D-04); fixture originality guard; real SamacSys zip recognised and suggested; real-zip installs and loads (wave 5)
+
+**Gap closure** *(07-UAT.md gap G-07-2: SnapEDA ships its 3D model as a separate download)*
+**Gap wave 1**
+- [ ] 07-07-PLAN.md — Tracer: SnapEDA CAD zip plus a separate model zip through Add 3D model..., install linked as ${CUSTOM_3DMODEL_DIR}/<MPN>.stp; open_model_source (model-only zip with every Phase 3 refusal, bare .step/.stp/.wrl read in place behind link, regular-file, handle and size checks); attach_models (magic, clash, duplicate rules); plan contract unchanged (gap wave 1)
+
+**Gap wave 2** *(blocked on gap wave 1 completion)*
+- [ ] 07-08-PLAN.md — Dialog: every model-row state, user edits kept, plain-text refusal note, Install blocked while a model is read, model packages open until apply_plan returns and released on Change.../close, help page (gap wave 2)
+- [ ] 07-09-PLAN.md — Real SnapEDA model download opened, attached and installed when present, kept git-ignored, originality guard extended; FMT2-02 moved into v1 in REQUIREMENTS, PROJECT, ROADMAP and 07-CONTEXT (gap wave 2)
 
 **Research flag**: Unblocked (2026-10-23): both real downloads are in `downloaded_examples/` (local only, licence-restricted). SnapEDA ships no 3D model; SamacSys ships legacy files alongside v6 files.
 
