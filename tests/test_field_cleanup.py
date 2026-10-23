@@ -6,11 +6,19 @@ row. The tests run on synthetic packages in a synthetic Custom/ under tmp_path, 
 kicad-cli, because kicad-cli 10 trims descriptions itself and would hide the rule under test.
 """
 
+import dataclasses
 from contextlib import contextmanager
 from pathlib import Path
 
 from installfixtures import vendor_footprint, vendor_symbol_lib
-from vendorfixtures import SNAPEDA_MANUFACTURER, SNAPEDA_MPN, SNAPEDA_SYMBOL, snapeda_zip
+from vendorfixtures import (
+    SNAPEDA_DESCRIPTION,
+    SNAPEDA_DESCRIPTION_RAW,
+    SNAPEDA_MANUFACTURER,
+    SNAPEDA_MPN,
+    SNAPEDA_SYMBOL,
+    snapeda_zip,
+)
 from zipfixtures import (
     CURRENT_CUSTOM_FOOTPRINT_LIBS,
     CURRENT_CUSTOM_SYMBOL_LIBS,
@@ -20,9 +28,9 @@ from zipfixtures import (
     write_custom_layout,
 )
 
+from kicad_lib_manager.importer import fieldrules, form
 from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.detect import detect_candidate
-from kicad_lib_manager.importer import fieldrules
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
 from kicad_lib_manager.importer.plan import FieldChange, InstallOptions, ToolContext
@@ -65,9 +73,9 @@ def _open_snapeda(tmp_path):
 
 
 @contextmanager
-def _open_vendor(tmp_path, symbol):
+def _open_vendor(tmp_path, symbol, model="part.step"):
     """Open a one-symbol vendor zip (symbol PART, footprint FP, a STEP model); yields (package, candidate)."""
-    members = [("part.kicad_sym", symbol), ("FP.kicad_mod", vendor_footprint("FP")), ("part.step", STEP_BYTES)]
+    members = [("part.kicad_sym", symbol), ("FP.kicad_mod", vendor_footprint("FP")), (model, STEP_BYTES)]
     (tmp_path / "src").mkdir(exist_ok=True)
     zip_path = make_zip(tmp_path / "src" / "pkg.zip", members)
     with open_package(zip_path, REPO_ROOT) as package:
@@ -134,6 +142,7 @@ def _snapeda_changes():
             s, "drop", "Check_prices", "https://www.snapeda.com/parts/USBC4242-01-0099-A/prices/", "", "volatile"
         ),
         FieldChange(s, "rename", "MP", "", "MPN", "alias"),
+        FieldChange(s, "clean", "Description", SNAPEDA_DESCRIPTION_RAW, SNAPEDA_DESCRIPTION, "whitespace"),
         FieldChange(s, "drop", "MANUFACTURER", "GCT", "", "duplicate"),
         FieldChange(s, "drop", "Availability", "In Stock", "", "volatile"),
         FieldChange(s, "drop", "SNAPEDA_PN", SNAPEDA_MPN, "", "duplicate"),
@@ -149,6 +158,7 @@ def test_snapeda_symbol_cleaned(tmp_path):
         assert _property_names(symbol) == SNAPEDA_NAMES
         assert find_property(symbol.node, "Manufacturer").value == SNAPEDA_MANUFACTURER
         assert find_property(symbol.node, "MPN").value == SNAPEDA_MPN
+        assert find_property(symbol.node, "Description").value == SNAPEDA_DESCRIPTION
         assert list(plan.field_changes) == _snapeda_changes()
 
 
@@ -304,3 +314,56 @@ def test_remove_property_edit_edges():
     prop = next(p for p in list_properties(node) if p.name == "A")
     out = apply_edits(text, [remove_property_edit(text, prop)])
     assert out.count("\r\n") == out.count("\n")
+
+
+# -- descriptions (D-07) and the MPN fallback (Pattern 4) --------------------------------------------
+
+
+def test_description_whitespace_collapsed(tmp_path):
+    layout = _snapeda_layout(tmp_path)
+    with _open_snapeda(tmp_path) as (_, candidate):
+        options = InstallOptions(library=SNAPEDA_LIBRARY)
+        plan = build_plan(candidate, options, layout, ToolContext())
+        assert not plan.blocked, [i.text for i in plan.issues]
+        assert _value_of(plan, "Description", SNAPEDA_SYMBOL) == SNAPEDA_DESCRIPTION
+        clean = FieldChange(SNAPEDA_SYMBOL, "clean", "Description", SNAPEDA_DESCRIPTION_RAW, SNAPEDA_DESCRIPTION, "whitespace")
+        changes = list(plan.field_changes)
+        assert clean in changes
+        assert changes.index(FieldChange(SNAPEDA_SYMBOL, "rename", "MP", "", "MPN", "alias")) + 1 == changes.index(clean)
+        assert changes[changes.index(clean) + 1].field == "MANUFACTURER"
+        section = next(s for s in preview_sections(plan, candidate, options) if s.name == "Field changes")
+        row = next(r for r in section.rows if r.text == "Clean Description")
+        assert row.detail.endswith("→ USB Type-C receptacle, 16 pins")
+        assert "\\n" in row.detail and "\n" not in row.detail
+
+
+def test_ki_description_collapsed(tmp_path):
+    plan, _ = _plan_vendor(tmp_path, {"ki_description": "  two   spaces "})
+    assert not plan.blocked, [i.text for i in plan.issues]
+    assert _value_of(plan, "ki_description") == "two spaces"
+    assert FieldChange(VENDOR, "clean", "ki_description", "  two   spaces ", "two spaces", "whitespace") in plan.field_changes
+
+
+def test_description_override_not_cleaned(tmp_path):
+    layout = _snapeda_layout(tmp_path)
+    with _open_snapeda(tmp_path) as (_, candidate):
+        options = InstallOptions(library=SNAPEDA_LIBRARY, description="Typed  text")
+        plan = build_plan(candidate, options, layout, ToolContext())
+        assert not plan.blocked, [i.text for i in plan.issues]
+        assert _value_of(plan, "Description", SNAPEDA_SYMBOL) == "Typed  text"
+        assert not [c for c in plan.field_changes if c.field == "Description"]
+
+
+def test_mpn_fallback_is_meta_mpn(tmp_path):
+    layout = _library_layout(tmp_path)
+    with _open_vendor(tmp_path, vendor_symbol_lib(VENDOR), model="part.stp") as (_, candidate):
+        item = candidate.symbols[0]
+        hinted = dataclasses.replace(candidate, symbols=(dataclasses.replace(item, meta=dataclasses.replace(item.meta, mpn="HINT-9")),))
+        plan = build_plan(hinted, InstallOptions(library=LIBRARY), layout, ToolContext())
+        assert not plan.blocked, [i.text for i in plan.issues]
+        assert _value_of(plan, "MPN") == "HINT-9"
+        assert plan.model_file == "HINT-9.stp"
+        assert form.field_defaults(hinted, VENDOR).mpn == "HINT-9"
+        # Without a hint the vendor symbol name stays the fallback
+        plain = build_plan(candidate, InstallOptions(library=LIBRARY), layout, ToolContext())
+        assert _value_of(plain, "MPN") == VENDOR
