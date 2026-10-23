@@ -16,6 +16,12 @@ DESCRIPTION_FIELDS = ("Description", "ki_description")
 GENERIC_VOLATILE = ("price", "prices", "stock", "availability", "check_prices", "*price/stock")
 
 
+# Values vendors write for "nothing here" (D-06), compared trimmed and casefolded
+PLACEHOLDER_VALUES = frozenset({"", "none", "n/a"})
+# The KiCad standard fields; the cleanup never drops them, whatever their value
+STANDARD_FIELDS = ("Reference", "Value", "Footprint", "Datasheet", "Description")
+
+
 @dataclass(frozen=True)
 class FieldRules:
     """Per-adapter rules carried on the candidate (D-05, D-08, D-09)."""
@@ -26,6 +32,25 @@ class FieldRules:
 
 
 GENERIC_RULES = FieldRules()
+
+
+def is_placeholder(value: str) -> bool:
+    """Return True when a property value is empty, "None" or "N/A", ignoring case and surrounding blanks."""
+    return value.strip().casefold() in PLACEHOLDER_VALUES
+
+
+def is_protected(name: str) -> bool:
+    """Return True for a property the cleanup must never drop: a KiCad standard field or any ki_* name.
+
+    The ki_* rule is wider than the standard list on purpose: KiCad reserves every ki_ name, and the
+    Ultra Librarian symbol carries an empty ki_locked that must survive the placeholder rule.
+    """
+    return name in STANDARD_FIELDS or name.casefold().startswith("ki_")
+
+
+def clean_description(value: str) -> str:
+    """Trim a description and collapse every whitespace run, newlines included, to one space (D-07)."""
+    return " ".join(value.split())
 
 
 def is_volatile(name: str, rules: FieldRules = GENERIC_RULES) -> bool:

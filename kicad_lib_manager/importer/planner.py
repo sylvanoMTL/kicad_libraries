@@ -51,7 +51,7 @@ from ..sexpr import Edit, Node, apply_edits, parse
 from . import kicad_cli
 from . import package as _package
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
-from .fieldrules import FieldRules, is_volatile
+from .fieldrules import DESCRIPTION_FIELDS, FieldRules, clean_description, is_placeholder, is_protected, is_volatile
 from .layout import RepoLayout, list_footprint_libs, list_model_files, list_symbol_libs
 from .naming import MAX_NAME_LEN, NameResult, case_clash, sanitize_filename, sanitize_name
 from .package import PackageFile
@@ -124,6 +124,8 @@ class _Fields:
     value: str | None = None
     datasheet: str | None = None
     description: str | None = None
+    # MPN used when the symbol carries no value of its own and the caller typed none; "" means the symbol name
+    mpn_default: str = ""
 
 
 def _edit_symbol(
@@ -133,12 +135,15 @@ def _edit_symbol(
 
     Every property receives at most one edit, computed from its final value. New properties are
     hidden copies of an existing hidden one in the style of `version`. Properties the rules call
-    volatile are removed and each removal is returned as a FieldChange, in property order.
+    volatile, duplicate Manufacturer/MPN aliases and placeholder-valued fields are removed; KiCad's
+    standard and ki_* fields never are. Each rename and removal is returned as a FieldChange, in
+    property order.
     """
     text, eol, node = work.source.text, work.source.eol, ref.node
     edits: list[Edit] = []
     inserts: list[str] = []
-    changes: list[FieldChange] = []
+    # Each field change with the position of the property it names, so renames and drops list in property order
+    positioned: list[tuple[int, FieldChange]] = []
     # node.start of every property this function found and may edit, so no property gets two edits
     handled: set[int] = set()
     template = hidden_template(node)
@@ -163,20 +168,33 @@ def _edit_symbol(
             edits.append(set_property_edit(found, value))
 
     def role(name: str, aliases: tuple[str, ...], override: str | None, fallback: str) -> str:
-        """Make `name` exist (D-12): keep the exact property, else rename the first vendor alias in place, else add it."""
+        """Make `name` exist (D-12): keep the exact property, else rename the first vendor alias in place, else add it.
+
+        A placeholder alias value counts as absent (D-06). Every other present alias is a duplicate and is
+        removed (D-08). The rename and each removal are recorded as field changes.
+        """
         present = [p for p in (find_property(node, alias) for alias in aliases) if p is not None]
-        vendor_value = next((p.value for p in present if p.value), "")
+        usable = [p for p in present if not is_placeholder(p.value)]
+        vendor_value = usable[0].value if usable else ""
         value = override if override is not None else (vendor_value or fallback)
         exact = find_property(node, name)
-        target = exact or next((p for p in present if p.value), present[0] if present else None)
+        target = exact or (usable[0] if usable else (present[0] if present else None))
         if target is None:
             add(name, value)
             return value
         handled.add(target.node.start)
         if target is not exact:
             edits.append(rename_property_edit(target, name))
+            positioned.append((target.node.start, FieldChange(new_name, "rename", target.name, "", name, "alias")))
         if target.value != value:
             edits.append(set_property_edit(target, value))
+        for alias in present:
+            # Compare node positions, never names: MANUFACTURER and Manufacturer are different properties
+            if alias.node.start in handled:
+                continue
+            handled.add(alias.node.start)
+            edits.append(remove_property_edit(text, alias))
+            positioned.append((alias.node.start, FieldChange(new_name, "drop", alias.name, alias.value, "", "duplicate")))
         return value
 
     def retoken(name: str) -> None:
@@ -191,7 +209,7 @@ def _edit_symbol(
     put("ki_fp_filters", fields.filters)
     forced = fields.manufacturer if fields.manufacturer_forced else None
     role("Manufacturer", rules.manufacturer_aliases, forced, fields.manufacturer)
-    mpn = role("MPN", rules.mpn_aliases, fields.mpn, ref.name)
+    mpn = role("MPN", rules.mpn_aliases, fields.mpn, fields.mpn_default or ref.name)
     if fields.value is not None:
         put("Value", fields.value)
     elif new_name != ref.name:
@@ -202,13 +220,34 @@ def _edit_symbol(
         put("Datasheet", fields.datasheet)
     if fields.description is not None:
         put(description_field_name(node, version), fields.description)
+    for description_name in DESCRIPTION_FIELDS:
+        found = find_property(node, description_name)
+        # A description the caller typed is already handled and is written exactly as typed
+        if found is None or found.node.start in handled:
+            continue
+        handled.add(found.node.start)
+        cleaned = clean_description(found.value)
+        if cleaned != found.value:
+            edits.append(set_property_edit(found, cleaned))
+            positioned.append(
+                (found.node.start, FieldChange(new_name, "clean", found.name, found.value, cleaned, "whitespace"))
+            )
     for prop in list_properties(node):
-        if prop.node.start not in handled and is_volatile(prop.name, rules):
-            edits.append(remove_property_edit(text, prop))
-            changes.append(FieldChange(new_name, "drop", prop.name, prop.value, "", "volatile"))
+        if prop.node.start in handled or is_protected(prop.name):
+            continue
+        # D-05 volatile first, then D-06 placeholder values
+        if is_volatile(prop.name, rules):
+            reason = "volatile"
+        elif is_placeholder(prop.value):
+            reason = "placeholder"
+        else:
+            continue
+        edits.append(remove_property_edit(text, prop))
+        positioned.append((prop.node.start, FieldChange(new_name, "drop", prop.name, prop.value, "", reason)))
     for block in inserts:
         # Zero-width inserts at one position keep their list order
         edits.append(property_insert_edit(text, node, block, eol))
+    changes = [change for _, change in sorted(positioned, key=lambda item: item[0])]
     return edits, mpn, changes
 
 
@@ -808,7 +847,12 @@ def build_plan(
             return renders[memo]
         fields = replace(base_fields, footprint=link, filters=filters)
         chosen_fields = replace(
-            fields, mpn=options.mpn, value=options.value, datasheet=options.datasheet, description=options.description
+            fields,
+            mpn=options.mpn,
+            value=options.value,
+            datasheet=options.datasheet,
+            description=options.description,
+            mpn_default=meta.mpn,
         )
         all_edits: list[Edit] = []
         all_changes: list[FieldChange] = []

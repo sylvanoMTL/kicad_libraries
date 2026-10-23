@@ -67,6 +67,13 @@ def test_build_options_copies_resolutions():
 from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
+from vendorfixtures import (  # noqa: E402
+    SNAPEDA_DESCRIPTION,
+    SNAPEDA_MANUFACTURER,
+    SNAPEDA_MPN,
+    SNAPEDA_SYMBOL,
+    snapeda_zip,
+)
 from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib, write_custom_layout  # noqa: E402
 
 from kicad_lib_manager.importer import form  # noqa: E402
@@ -105,11 +112,17 @@ def _equivalence_package(case: str, tmp_path: Path) -> tuple[Path, str]:
     if case == "inferred":
         # No manufacturer property: the planner infers TI from the datasheet host
         return _synthetic(tmp_path, symbol_lib(("PART",), props=_TI_DATASHEET)), TEST_LIBRARY
+    if case == "snapeda":
+        # SnapEDA rules: MF/MP renamed, MANUFACTURER/SNAPEDA_PN dropped, the raw description collapsed
+        return snapeda_zip(tmp_path / "snapeda.zip", with_model=True), TEST_LIBRARY
+    if case == "placeholder_mf":
+        # A placeholder alias counts as absent, so the planner infers TI from the datasheet host
+        return _synthetic(tmp_path, symbol_lib(("PART",), props={**_TI_DATASHEET, "MF": "N/A"})), TEST_LIBRARY
     # "renamed": the vendor name changes when it is sanitised, and Value follows it
     return _synthetic(tmp_path, symbol_lib(("PART/1",), props=_TI_DATASHEET)), TEST_LIBRARY
 
 
-@pytest.mark.parametrize("case", ["ul", "aliases", "inferred", "renamed"])
+@pytest.mark.parametrize("case", ["ul", "aliases", "inferred", "renamed", "snapeda", "placeholder_mf"])
 def test_field_defaults_equivalence(case, eq_layout, tmp_path):
     """What the form shows equals what the planner writes: typing every default changes nothing (Pitfall 9)."""
     zip_path, library = _equivalence_package(case, tmp_path)
@@ -148,6 +161,16 @@ def test_field_defaults_equivalence(case, eq_layout, tmp_path):
         assert defaults.manufacturer == "TI"
     if case == "renamed":
         assert (defaults.value, defaults.mpn) == ("PART_1", "PART/1")
+    if case == "snapeda":
+        assert defaults == FieldDefaults(
+            value=SNAPEDA_SYMBOL,
+            datasheet="",
+            description=SNAPEDA_DESCRIPTION,
+            manufacturer=SNAPEDA_MANUFACTURER,
+            mpn=SNAPEDA_MPN,
+        )
+    if case == "placeholder_mf":
+        assert defaults.manufacturer == "TI"
 
 
 def test_field_defaults_value_follows_final_name(tmp_path):

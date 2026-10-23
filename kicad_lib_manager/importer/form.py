@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from ..kicad_files import replace_exact_tokens
 from ..models import Issue, Severity
 from .candidate import ImportCandidate
+from .fieldrules import clean_description
 from .plan import Conflict, InstallOptions, InstallPlan, Resolution
 from .suggest import LibrarySuggestion, manufacturer_choice, placeholder_tokens
 
@@ -247,10 +248,12 @@ def field_defaults(candidate: ImportCandidate, symbol_name: str, final_name: str
     """The field values build_plan writes for the vendor symbol symbol_name when no override is given.
 
     This mirrors planner._edit_symbol and the manufacturer step of build_plan: Value keeps the vendor
-    value with the exact symbol-name tokens following the final name; Datasheet and Description are
-    the vendor ones; Manufacturer is the vendor value, else the inferred token unless that is a
-    placeholder; MPN is the vendor value, else the vendor symbol name. test_field_defaults_equivalence
-    proves the equality against the planner.
+    value with the exact symbol-name tokens following the final name; Datasheet is the vendor one and
+    Description the vendor one with its whitespace collapsed (D-07); Manufacturer is the vendor value,
+    else the inferred token unless that is a placeholder; MPN is meta.mpn, which is the vendor value or
+    one supplied by package metadata, else the vendor symbol name. part_meta keeps the raw description on
+    purpose: tests/test_locate_text_caps.py compares the raw text of an 8 MiB symbol, and the cleaning is
+    cheap here. test_field_defaults_equivalence proves the equality against the planner.
     """
     item = next((s for s in candidate.symbols if s.name == symbol_name), None)
     if item is None:
@@ -267,7 +270,7 @@ def field_defaults(candidate: ImportCandidate, symbol_name: str, final_name: str
     return FieldDefaults(
         value=value,
         datasheet=meta.datasheet,
-        description=meta.description,
+        description=clean_description(meta.description),
         manufacturer=manufacturer,
         mpn=meta.mpn or symbol_name,
     )
