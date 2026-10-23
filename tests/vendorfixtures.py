@@ -13,7 +13,7 @@ under the path the test passes (``tmp_path``).
 
 from pathlib import Path
 
-from zipfixtures import BS, STEP_BYTES, _quote, make_zip
+from zipfixtures import BS, LEGACY_DCM_BYTES, LEGACY_LIB_BYTES, LEGACY_MOD_BYTES, STEP_BYTES, _quote, make_zip
 
 # -- SnapEDA ---------------------------------------------------------------------
 
@@ -161,3 +161,156 @@ def snapeda_zip(path: Path, **kwargs) -> Path:
     """Write a synthetic SnapEDA zip to path (creating its folder) and return path."""
     path.parent.mkdir(parents=True, exist_ok=True)
     return make_zip(path, snapeda_members(**kwargs))
+
+
+# -- SamacSys / Component Search Engine -----------------------------------------------
+
+SAMACSYS_PART = "PSU7-0505S_Q1"
+SAMACSYS_MPN = "PSU7-0505S/Q1"
+SAMACSYS_FOOTPRINT = "PSU7"
+SAMACSYS_MANUFACTURER = "RECOM Power"
+SAMACSYS_ZIP_NAME = f"LIB_{SAMACSYS_PART}.zip"
+# The other-CAD folders of the vendor layout, in the order the members list them
+SAMACSYS_OTHER_CAD = (
+    "Altium",
+    "Allegro",
+    "CADSTAR",
+    "DesignSpark PCB",
+    "Eagle",
+    "OrCAD_Allegro16",
+    "PADS",
+    "Proteus",
+    "SOLIDWORKS PCB",
+    "TARGET 3001!",
+    "DEHDL",
+    "Capture",
+)
+
+SAMACSYS_PART_INFO = (
+    b"Manufacturer=RECOM Power\r\n"
+    b"PartNumber=PSU7-0505S/Q1\r\n"
+    b"PartCategory=Power Supply\r\n"
+    b"PackageCategory=Through Hole\r\n"
+    b"PinCount=4\r\n"
+    b"Version=1\r\n"
+    b"Released=2024-01-01\r\n"
+    b"Downloaded=2026-10-01\r\n"
+    b"3D=Y\r\n"
+)
+SAMACSYS_LICENSE = (
+    b"Synthetic test fixture written for kicad_lib_manager. "
+    b"It only carries the SamacSys marker word and grants nothing.\r\n"
+)
+VERSION_BIN = b"\x01\x00\x07\x00\x00\x00\x00"
+
+
+def samacsys_symbol(*, omit: tuple[str, ...] = (), extra: tuple[tuple[str, str], ...] = ()) -> bytes:
+    """Build a SamacSys-style .kicad_sym: CRLF text, the SamacSys_ECAD_Model generator and the vendor's property names.
+
+    Names in omit are left out and extra (name, value) pairs are appended. Values and pins are invented.
+    """
+    properties = [
+        ("Reference", "PS"),
+        ("Value", SAMACSYS_PART),
+        ("Footprint", SAMACSYS_FOOTPRINT),
+        ("Datasheet", "https://www.example.com/datasheets/psu7.pdf"),
+        ("ki_description", "Isolated DC/DC converter 1W, 5V in, 5V out"),
+        ("Height", ""),
+        ("Manufacturer_Name", SAMACSYS_MANUFACTURER),
+        ("Manufacturer_Part_Number", SAMACSYS_MPN),
+        ("Mouser Part Number", "919-PSU7-0505S/Q1"),
+        ("Mouser Price/Stock", "https://www.mouser.co.uk/ProductDetail/example-psu7"),
+        ("Arrow Part Number", ""),
+        ("Arrow Price/Stock", ""),
+        *extra,
+    ]
+    lines = [
+        "(kicad_symbol_lib (version 20211014) (generator SamacSys_ECAD_Model)",
+        f"  (symbol {_quote(SAMACSYS_PART)} (in_bom yes) (on_board yes)",
+    ]
+    index = 0
+    for prop_name, value in properties:
+        if prop_name in omit:
+            continue
+        effects = _SHOWN if prop_name in ("Reference", "Value") else _HIDDEN
+        lines.append(f"    (property {_quote(prop_name)} {_quote(value)} (id {index}) (at 0 0 0) {effects})")
+        index += 1
+    lines.append(f"    (symbol {_quote(SAMACSYS_PART + '_0_1')}")
+    lines.append("      (rectangle (start -5.08 5.08) (end 5.08 -5.08)")
+    lines.append("        (stroke (width 0.254) (type default) (color 0 0 0 0))")
+    lines.append("        (fill (type background))")
+    lines.append("      )")
+    lines.append("    )")
+    lines.append(f"    (symbol {_quote(SAMACSYS_PART + '_1_1')}")
+    pins = (
+        ("power_in", "VIN", "1", "3.81"),
+        ("power_in", "GND", "2", "1.27"),
+        ("power_out", "VOUT", "3", "-1.27"),
+        ("power_out", "0V", "4", "-3.81"),
+    )
+    for electrical, pin_name, number, y in pins:
+        lines.append(f"      (pin {electrical} line (at -10.16 {y} 0) (length 5.08)")
+        lines.append(f"        (name {_quote(pin_name)} {_PIN_EFFECTS})")
+        lines.append(f"        (number {_quote(number)} {_PIN_EFFECTS})")
+        lines.append("      )")
+    lines.append("    )")
+    lines.append("  )")
+    lines.append(")")
+    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+
+
+def samacsys_footprint() -> bytes:
+    """Build a SamacSys-style .kicad_mod: CRLF, the KiCad 5 (module ...) head and a bare model file name."""
+    lines = [
+        f"(module {_quote(SAMACSYS_FOOTPRINT)} (layer F.Cu)",
+        "  (fp_text reference REF** (at 0 -4) (layer F.SilkS)",
+        "    (effects (font (size 1 1) (thickness 0.15)))",
+        "  )",
+        f"  (fp_text value {SAMACSYS_FOOTPRINT} (at 0 4) (layer F.Fab)",
+        "    (effects (font (size 1 1) (thickness 0.15)))",
+        "  )",
+    ]
+    for number, x in (("1", "-3.75"), ("2", "-1.25"), ("3", "1.25"), ("4", "3.75")):
+        lines.append(f"  (pad {number} thru_hole circle (at {x} 0) (size 1.5 1.5) (drill 0.8) (layers *.Cu *.Mask))")
+    lines.append(f"  (model {SAMACSYS_PART}.stp (at (xyz 0 0 0)) (scale (xyz 1 1 1)) (rotate (xyz 0 0 0)))")
+    lines.append(")")
+    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
+
+
+def samacsys_members(
+    *, part_info: bytes | None = SAMACSYS_PART_INFO, license: bytes = SAMACSYS_LICENSE, symbol: bytes | None = None
+) -> list[tuple[str, bytes]]:
+    """Return the members of a SamacSys download, in the vendor's order.
+
+    The license and version.bin sit at the zip root and everything else under a folder named after the
+    part. part_info=None leaves part_info.txt out. The legacy .lib, .dcm and .mod files and the other-CAD
+    folders are placeholders: the layout is the vendor's, the bytes are invented.
+    """
+    p = SAMACSYS_PART
+    members: list[tuple[str, bytes]] = [("license.txt", license), ("version.bin", VERSION_BIN)]
+    if part_info is not None:
+        members.append((f"{p}/part_info.txt", part_info))
+    members.append((f"{p}/How_To_Use_Models.pdf", b"%PDF-1.4\n%synthetic\n"))
+    members.append((f"{p}/{p}.epw", b"synthetic epw placeholder\n"))
+    for folder in SAMACSYS_OTHER_CAD:
+        if folder == "Proteus":
+            members.append((f"{p}/Proteus/8.8 or earlier/Readme.html", b"<html>synthetic</html>\n"))
+        elif folder == "DEHDL":
+            members.append((f"{p}/DEHDL/psu7/sym_1/symbol.css", b"/* synthetic */\n"))
+        else:
+            members.append((f"{p}/{folder}/placeholder.txt", b"synthetic placeholder\n"))
+        if folder == "CADSTAR":
+            members.append((f"{p}/CADSTAR/{p}.lib", LEGACY_LIB_BYTES))
+    members.append((f"{p}/KiCad/{p}.kicad_sym", symbol if symbol is not None else samacsys_symbol()))
+    members.append((f"{p}/KiCad/{SAMACSYS_FOOTPRINT}.kicad_mod", samacsys_footprint()))
+    members.append((f"{p}/KiCad/{p}.lib", LEGACY_LIB_BYTES))
+    members.append((f"{p}/KiCad/{p}.dcm", LEGACY_DCM_BYTES))
+    members.append((f"{p}/KiCad/{p}.mod", LEGACY_MOD_BYTES))
+    members.append((f"{p}/3D/{p}.stp", STEP_BYTES))
+    return members
+
+
+def samacsys_zip(path: Path, **kwargs) -> Path:
+    """Write a synthetic SamacSys zip to path (creating its folder) and return path."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return make_zip(path, samacsys_members(**kwargs))
