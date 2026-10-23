@@ -10,6 +10,7 @@ from kicad_lib_manager.importer import detect
 from kicad_lib_manager.importer import package as package_module
 from kicad_lib_manager.importer.adapters.base import Detection, locate
 from kicad_lib_manager.importer.adapters.loose import LOOSE_CONFIDENCE, LooseAdapter
+from kicad_lib_manager.importer.adapters.snapeda import SnapEDAAdapter
 from kicad_lib_manager.importer.adapters.ultralibrarian import UltraLibrarianAdapter
 from kicad_lib_manager.importer.detect import ADAPTERS, detect_candidate
 from kicad_lib_manager.importer.package import Package, PackageFile, open_package
@@ -46,8 +47,9 @@ def test_ultra_sample_end_to_end():
 
 
 def test_ultra_adapter_registry_holds_the_ultra_adapter():
-    # Plan 03-04 registers the loose-folder adapter after the Ultra Librarian one (D-09)
-    assert [a.name for a in ADAPTERS] == ["UltraLibrarian", "Loose"]
+    # Plan 03-04 registers the loose-folder adapter after the Ultra Librarian one (D-09);
+    # plan 07-01 slots SnapEDA in before Loose so a vendor beats Loose's low score
+    assert [a.name for a in ADAPTERS] == ["UltraLibrarian", "SnapEDA", "Loose"]
 
 
 def test_ultra_sample_part_meta():
@@ -410,10 +412,10 @@ class _Fake:
 
 
 def test_registry_extension_point(tmp_path, monkeypatch):
-    assert [type(a) for a in detect.ADAPTERS] == [UltraLibrarianAdapter, LooseAdapter]
-    monkeypatch.setattr(detect, "ADAPTERS", [*detect.ADAPTERS, _Fake("SnapEDA", 0.95)])
+    assert [type(a) for a in detect.ADAPTERS] == [UltraLibrarianAdapter, SnapEDAAdapter, LooseAdapter]
+    monkeypatch.setattr(detect, "ADAPTERS", [*detect.ADAPTERS, _Fake("Extra", 0.95)])
     candidate, issues, _ = _detect_zip(tmp_path, GENERIC_MEMBERS)
-    assert candidate.vendor == "SnapEDA"
+    assert candidate.vendor == "Extra"
     assert not _codes(issues, "intake.unknown_vendor")
     with open_package(UL_ZIP, REPO_ROOT) as package:
         ul, _ = detect_candidate(package)

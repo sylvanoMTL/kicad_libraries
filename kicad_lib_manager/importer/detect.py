@@ -5,11 +5,13 @@ from dataclasses import replace
 from ..models import Issue, Severity
 from .adapters.base import GENERIC_CONFIDENCE, GENERIC_VENDOR, Adapter, Detection, locate
 from .adapters.loose import LooseAdapter
+from .adapters.snapeda import SnapEDAAdapter
 from .adapters.ultralibrarian import UltraLibrarianAdapter
 from .candidate import ImportCandidate
 from .package import Package
 
-ADAPTERS: list[Adapter] = [UltraLibrarianAdapter(), LooseAdapter()]
+# Vendors come before Loose so a vendor folder beats Loose's low score; ties go to registry order
+ADAPTERS: list[Adapter] = [UltraLibrarianAdapter(), SnapEDAAdapter(), LooseAdapter()]
 
 
 def detect_candidate(package: Package) -> tuple[ImportCandidate | None, list[Issue]]:
