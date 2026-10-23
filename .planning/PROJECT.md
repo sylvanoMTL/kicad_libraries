@@ -61,6 +61,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 
 **Importer — input**
 - [ ] Open and auto-detect SnapEDA and SamacSys/CSE zips (Ultra Librarian and loose files done in Phases 3-5; Phase 7, gated on real downloads)
+- [ ] Attach a separately downloaded 3D model (bare STEP/STP/WRL, or a zip holding one, as SnapEDA ships it) in the import dialog (Phase 7 gap G-07-2, FMT2-02)
 
 **Quality**
 - [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code (harness and parser tests done in Phase 1, hardened-table/config/scan tests in Phase 2, importer intake/install/UI tests in Phases 3-5; SnapEDA/SamacSys fixtures still to come)
@@ -75,7 +76,6 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - Downloading parts from vendor websites or APIs. The user downloads manually; the importer starts from a file on disk.
 - Pushing to remotes. The importer commits only; pushing stays manual.
 - Importing into the WurthElektronik submodule or other third-party libraries. They're upstream-owned, so imports go only into `Custom/`.
-- Attaching a separately downloaded STEP file when the package has none. Decided: install without 3D and warn; models can be added later.
 - Batch or queued imports. Decided: one package at a time.
 - Non-KiCad formats inside packages (Altium, Eagle, OrCAD). Only the KiCad v6+ files are used.
 - Editing symbol graphics or footprint geometry. Only names, fields and paths are changed.
@@ -108,6 +108,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | Footprint keeps vendor name by default, editable | Package codes are often the right name; user can override | ✓ Good — Phase 5 UAT passed |
 | Footprint link set automatically; other fields editable in preview | Footprint link is the most error-prone manual step | ✓ Good — Phase 5 UAT passed |
 | No 3D model → install without it and warn | Keep the flow simple; models can be added later | — Pending |
+| A separately downloaded 3D model is added in the import dialog as a second intake source with the same safety checks; the plan contract is unchanged | SnapEDA ships the model as a separate download (bare file or zip); the Phase 7 UAT (G-07-2) reversed the earlier Out of Scope choice | — Pending |
 | One package per import | Simpler review; batch not needed | ✓ Good — Phase 5 UAT passed |
 | Commit in `Custom` + bump parent ref after confirmation; never push | Matches the CLAUDE.md git workflow; pushing stays a deliberate act | ✓ Good — Phase 6 UAT passed on the real repo; remote unchanged |
 | Fix all High/Medium-High concerns from the codebase map | Importer builds on table/scan/write code that has known data-loss risks | ✓ Good — HARD-01..09 verified and UAT passed (Phase 2) |
@@ -146,4 +147,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-23 after Phase 6*
+*Last updated: 2026-10-23 after Phase 7 UAT (G-07-2)*

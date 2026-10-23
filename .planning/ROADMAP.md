@@ -247,11 +247,12 @@ Plans:
 
 **Goal**: SnapEDA and SamacSys / Component Search Engine downloads import through the same flow as Ultra Librarian packages
 **Depends on**: Phase 6
-**Requirements**: INTK-03, INTK-04
+**Requirements**: INTK-03, INTK-04, FMT2-02
 **Success Criteria** (what must be TRUE):
   1. A real SnapEDA zip in `downloaded_examples/` is recognised as SnapEDA, and its symbol, footprint and any 3D model are found. If it ships no model, it installs with the "no 3D model found" warning.
   2. A real SamacSys / CSE zip in `downloaded_examples/` is recognised, and its KiCad v6+ symbol, footprint and 3D model are found. Legacy `.lib` / `.dcm` files alongside them are ignored instead of causing a rejection.
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
+  4. The user can add a separately downloaded SnapEDA 3D model (a bare `.step` / `.stp` / `.wrl`, or a zip holding one) to the SnapEDA CAD package in the import dialog. It installs as `Custom/3DModels/<MPN>.<ext>` linked as `${CUSTOM_3DMODEL_DIR}/<file>`, every intake safety check applies to it, and nothing is written before the preview (gap G-07-2).
 
 **Plans**: 7/9 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2)
 
@@ -280,7 +281,7 @@ Plans:
 - [ ] 07-08-PLAN.md — Dialog: every model-row state, user edits kept, plain-text refusal note, Install blocked while a model is read, model packages open until apply_plan returns and released on Change.../close, help page (gap wave 2)
 - [ ] 07-09-PLAN.md — Real SnapEDA model download opened, attached and installed when present, kept git-ignored, originality guard extended; FMT2-02 moved into v1 in REQUIREMENTS, PROJECT, ROADMAP and 07-CONTEXT (gap wave 2)
 
-**Research flag**: Unblocked (2026-10-23): both real downloads are in `downloaded_examples/` (local only, licence-restricted). SnapEDA ships no 3D model; SamacSys ships legacy files alongside v6 files.
+**Research flag**: Unblocked (2026-10-23): both real downloads are in `downloaded_examples/` (local only, licence-restricted). The SnapEDA CAD zip ships no 3D model, and the model is a separate download attached per criterion 4; SamacSys ships legacy files alongside v6 files.
 
 ## Progress
 
