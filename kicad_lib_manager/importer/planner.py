@@ -51,7 +51,7 @@ from ..sexpr import Edit, Node, apply_edits, parse
 from . import kicad_cli
 from . import package as _package
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
-from .fieldrules import FieldRules, is_placeholder, is_protected, is_volatile
+from .fieldrules import DESCRIPTION_FIELDS, FieldRules, clean_description, is_placeholder, is_protected, is_volatile
 from .layout import RepoLayout, list_footprint_libs, list_model_files, list_symbol_libs
 from .naming import MAX_NAME_LEN, NameResult, case_clash, sanitize_filename, sanitize_name
 from .package import PackageFile
@@ -124,6 +124,8 @@ class _Fields:
     value: str | None = None
     datasheet: str | None = None
     description: str | None = None
+    # MPN used when the symbol carries no value of its own and the caller typed none; "" means the symbol name
+    mpn_default: str = ""
 
 
 def _edit_symbol(
@@ -207,7 +209,7 @@ def _edit_symbol(
     put("ki_fp_filters", fields.filters)
     forced = fields.manufacturer if fields.manufacturer_forced else None
     role("Manufacturer", rules.manufacturer_aliases, forced, fields.manufacturer)
-    mpn = role("MPN", rules.mpn_aliases, fields.mpn, ref.name)
+    mpn = role("MPN", rules.mpn_aliases, fields.mpn, fields.mpn_default or ref.name)
     if fields.value is not None:
         put("Value", fields.value)
     elif new_name != ref.name:
@@ -218,6 +220,18 @@ def _edit_symbol(
         put("Datasheet", fields.datasheet)
     if fields.description is not None:
         put(description_field_name(node, version), fields.description)
+    for description_name in DESCRIPTION_FIELDS:
+        found = find_property(node, description_name)
+        # A description the caller typed is already handled and is written exactly as typed
+        if found is None or found.node.start in handled:
+            continue
+        handled.add(found.node.start)
+        cleaned = clean_description(found.value)
+        if cleaned != found.value:
+            edits.append(set_property_edit(found, cleaned))
+            positioned.append(
+                (found.node.start, FieldChange(new_name, "clean", found.name, found.value, cleaned, "whitespace"))
+            )
     for prop in list_properties(node):
         if prop.node.start in handled or is_protected(prop.name):
             continue
@@ -833,7 +847,12 @@ def build_plan(
             return renders[memo]
         fields = replace(base_fields, footprint=link, filters=filters)
         chosen_fields = replace(
-            fields, mpn=options.mpn, value=options.value, datasheet=options.datasheet, description=options.description
+            fields,
+            mpn=options.mpn,
+            value=options.value,
+            datasheet=options.datasheet,
+            description=options.description,
+            mpn_default=meta.mpn,
         )
         all_edits: list[Edit] = []
         all_changes: list[FieldChange] = []

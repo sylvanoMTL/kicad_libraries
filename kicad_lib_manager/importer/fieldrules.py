@@ -48,6 +48,11 @@ def is_protected(name: str) -> bool:
     return name in STANDARD_FIELDS or name.casefold().startswith("ki_")
 
 
+def clean_description(value: str) -> str:
+    """Trim a description and collapse every whitespace run, newlines included, to one space (D-07)."""
+    return " ".join(value.split())
+
+
 def is_volatile(name: str, rules: FieldRules = GENERIC_RULES) -> bool:
     """Return True when a property name matches one of the rules' volatile patterns, ignoring case."""
     folded = name.strip().casefold()
