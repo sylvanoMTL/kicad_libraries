@@ -24,6 +24,11 @@ MAX_KICAD_TEXT_NODES = 1_000_000
 # Most bytes of one symbol or footprint file handed to the parser, apart from the model cap above (CR-01)
 MAX_KICAD_TEXT_BYTES = 8 * 1024 * 1024
 MAX_FOLDER_DEPTH = 8
+# D-13: small non-staged text files read in memory so a vendor adapter can score them; never written to disk.
+# Real markers are 194 to 445 bytes. A larger file only loses its detection points (an INFO note, not a refusal).
+MAX_MARKER_BYTES = 64 * 1024
+MAX_MARKERS = 16
+MARKER_NAMES = frozenset({"part_info.txt", "license.txt", "how-to-import.htm", "how-to-import.html"})
 STAGING_PREFIX = "kicad_import_"
 STAGE_KINDS = {
     ".kicad_sym": "symbol",
@@ -92,8 +97,19 @@ class Package:
     ignored: list[str] = field(default_factory=list)
     legacy: list[str] = field(default_factory=list)
     issues: list[Issue] = field(default_factory=list)
+    # Member name to its bounded bytes (MAX_MARKER_BYTES, MAX_MARKERS); held in memory, never written to disk (D-13)
+    markers: dict[str, bytes] = field(default_factory=dict)
     staging_dir: Path | None = None
     _tmp: tempfile.TemporaryDirectory | None = field(default=None, repr=False)
+
+    def marker_text(self, basename: str) -> str | None:
+        """The shallowest marker whose file name is basename (case-insensitive), decoded as UTF-8; None when absent."""
+        want = basename.casefold()
+        matches = [k for k in self.markers if k.replace("\\", "/").rsplit("/", 1)[-1].casefold() == want]
+        if not matches:
+            return None
+        key = min(matches, key=lambda k: (k.count("/"), k))
+        return self.markers[key].decode("utf-8-sig", errors="replace")
 
     @property
     def refused(self) -> bool:
@@ -216,10 +232,29 @@ def _is_junk_name(name: str) -> bool:
     return any(p.casefold() == "__macosx" for p in parts) or parts[-1].startswith("._")
 
 
+def _is_marker(name: str) -> bool:
+    """True for a non-junk member whose last path segment is one of MARKER_NAMES (case-insensitive)."""
+    if _is_junk_name(name):
+        return False
+    return name.replace("\\", "/").rsplit("/", 1)[-1].casefold() in MARKER_NAMES
+
+
+def _keep_marker(package: Package, name: str, label: str, data: bytes) -> bool:
+    """Store data as a marker unless it is over MAX_MARKER_BYTES; True when kept."""
+    if len(data) > MAX_MARKER_BYTES:
+        package.issues.append(
+            Issue(Severity.INFO, "intake.marker_skipped", f"Skipped {name} of {label}: larger than {MAX_MARKER_BYTES} bytes")
+        )
+        return False
+    package.markers[name] = data
+    return True
+
+
 def _refuse(package: Package, issue: Issue) -> Package:
     package.issues.append(issue)
     package.close()
     package.files.clear()
+    package.markers.clear()
     return package
 
 
@@ -316,6 +351,8 @@ def _stage_zip(
     # (archive, header, member name shown to callers, lowercase extension)
     staged: list[tuple[zipfile.ZipFile, zipfile.ZipInfo, str, str]] = []
     nested: list[tuple[zipfile.ZipInfo, str]] = []
+    # (archive, header, member name) of marker members; read in memory after staging (D-13)
+    markers: list[tuple[zipfile.ZipFile, zipfile.ZipInfo, str]] = []
     for info in zf.infolist():
         if info.is_dir():
             continue
@@ -330,6 +367,8 @@ def _stage_zip(
             package.legacy.append(name)
         else:
             package.ignored.append(name)
+            if _is_marker(name):
+                markers.append((zf, info, name))
 
     try:
         tmp = tempfile.TemporaryDirectory(prefix=STAGING_PREFIX, ignore_cleanup_errors=True)
@@ -389,6 +428,8 @@ def _stage_zip(
                     package.legacy.append(full)
                 else:
                     package.ignored.append(full)
+                    if _is_marker(full):
+                        markers.append((inner, inner_info, full))
 
         total = len(staged)
         for i, (source, info, name, ext) in enumerate(staged):
@@ -401,6 +442,20 @@ def _stage_zip(
             if issue is not None:
                 return issue
             package.files.append(PackageFile(name, target, kind, copied, sha.hexdigest(), True))
+
+        # D-13: marker members already passed _prescan and the unchanged hostile-zip refusals and caps (D-05,
+        # D-06, D-19); this adds a smaller per-member cap and relaxes none. Bytes stay in memory, never extracted.
+        for source, info, name in markers[:MAX_MARKERS]:
+            try:
+                with source.open(info) as handle:
+                    data = handle.read(MAX_MARKER_BYTES + 1)
+            except _READ_ERRORS as e:
+                package.issues.append(
+                    Issue(Severity.INFO, "intake.marker_skipped", f"Could not read {name} of {path.name}: {e}")
+                )
+                continue
+            if _keep_marker(package, name, path.name, data):
+                budget.actual += len(data)
 
     for j in range(len(nested)):
         try:
@@ -464,6 +519,7 @@ def _open_folder(path: Path, repo_root: Path, progress: Callable | None) -> Pack
     wanted: list[tuple[str, str, Path, int]] = []
     links: list[str] = []
     too_deep: list[str] = []
+    marker_files: list[tuple[str, Path]] = []
     while queue:
         folder, depth = queue.popleft()
         try:
@@ -509,6 +565,8 @@ def _open_folder(path: Path, repo_root: Path, progress: Callable | None) -> Pack
                 package.legacy.append(rel)
             elif what != "stage":
                 package.ignored.append(rel)  # junk, a nested .zip (never opened here) or any other file
+                if _is_marker(rel):
+                    marker_files.append((rel, Path(entry.path)))
             else:
                 if size > MAX_MEMBER_BYTES:
                     return _refuse(
@@ -551,6 +609,19 @@ def _open_folder(path: Path, repo_root: Path, progress: Callable | None) -> Pack
         size, digest = counted
         budget.actual += size
         package.files.append(PackageFile(rel, file_path, kind, size, digest, False))
+
+    # D-13: bounded in-memory read of marker files; a failure is an INFO note, never a refusal
+    for rel, file_path in marker_files[:MAX_MARKERS]:
+        try:
+            with open(file_path, "rb") as handle:
+                data = handle.read(MAX_MARKER_BYTES + 1)
+        except OSError as e:
+            package.issues.append(
+                Issue(Severity.INFO, "intake.marker_skipped", f"Could not read {rel} of {path.name}: {e.strerror or e}")
+            )
+            continue
+        if _keep_marker(package, rel, path.name, data):
+            budget.actual += len(data)
 
     if links:
         package.issues.append(
