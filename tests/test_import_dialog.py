@@ -3657,3 +3657,211 @@ def test_add_model_tracer_snapeda_end_to_end(qtbot, make_item_dialog, item_layou
     qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
     dialog.reject()
     assert not staging.exists()
+
+
+# -- Add 3D model... from every row state (plan 07-08, G-07-2) ------------------------------------------
+
+
+def pick_model(monkeypatch, *paths) -> None:
+    """Make the file dialog return these paths in order."""
+    queue = list(paths)
+
+    def fake_open_file(parent, caption, directory, file_filter):
+        return str(queue.pop(0)), ""
+
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getOpenFileName", staticmethod(fake_open_file))
+
+
+def attach_model(qtbot, dialog: ImportDialog, monkeypatch, path: Path) -> None:
+    """Click Add 3D model..., pick path, wait for the worker and for the plan that follows."""
+    pick_model(monkeypatch, path)
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    wait_current(qtbot, dialog)
+
+
+def bare_model(folder: Path, name: str, data: bytes | None = None) -> Path:
+    from zipfixtures import STEP_BYTES
+
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    path.write_bytes(STEP_BYTES if data is None else data)
+    return path
+
+
+def model_names(dialog: ImportDialog) -> list[str]:
+    combo = dialog._model_combo
+    return [combo.itemText(i) for i in range(combo.count())]
+
+
+def test_add_model_button_on_every_row_state(qtbot, make_item_dialog, tmp_path):
+    one = ul_dialog(make_item_dialog, qtbot)
+    assert one._model_label is not None and one._model_combo is None
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    several = make_item_dialog(multi_zip(tmp_path / "a"), show=True)
+    wait_current(qtbot, several)
+    assert several._model_combo is not None and model_names(several)[-1] == "No model"
+    none = make_item_dialog(multi_zip(tmp_path / "b", models=()), show=True)
+    wait_current(qtbot, none)
+    assert none._model_label is not None and none._model_label.full_text() == "No 3D model in this package"
+    for dialog in (one, several, none):
+        assert dialog._add_model_btn is not None
+        assert dialog._add_model_btn.isEnabled()
+        assert dialog._add_model_btn.text() == "Add 3D model..."
+
+
+def test_add_model_to_part_with_model_selects_it(qtbot, make_item_dialog, recorded, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    before = len(recorded)
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "other.stp"))
+    assert dialog._model_combo is not None
+    assert model_names(dialog) == ["DLV0006A.stp", "other.stp", "No model"]
+    assert dialog._model_combo.currentIndex() == 1
+    assert recorded[-1].model == "other.stp"
+    assert len(recorded) == before + 1  # exactly one rebuild for the attach
+    assert dialog._plan.model_file == "CSD85301Q2.stp"
+    assert dialog._model_note.isHidden()
+
+    # a third model joins the combo and is selected in turn
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl2", "third.step", b"ISO-10303-21;\nthird\n"))
+    assert model_names(dialog) == ["DLV0006A.stp", "other.stp", "third.step", "No model"]
+    assert dialog._model_combo.currentIndex() == 2
+    assert recorded[-1].model == "third.step"
+
+
+def test_add_model_clash_listed_with_suffix(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from zipfixtures import STEP_BYTES
+
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    clash = bare_model(tmp_path / "dl", "dlv0006a.STP", STEP_BYTES.replace(b"test", b"nope"))
+    attach_model(qtbot, dialog, monkeypatch, clash)
+    assert "dlv0006a_2.STP" in model_names(dialog)
+    assert dialog._model_combo.currentText() == "dlv0006a_2.STP"
+
+
+def test_add_model_keeps_edits(qtbot, make_item_dialog, recorded, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["value"], "MyValue")
+    type_text(qtbot, dialog._field_edits["description"], "My description")
+    type_text(qtbot, dialog._fp_name_edit, "MYFP")
+    type_text(qtbot, dialog._library_combo.lineEdit(), "Typed_Lib_X")
+    wait_current(qtbot, dialog)
+    texts = {
+        "value": dialog._field_edits["value"].text(),
+        "description": dialog._field_edits["description"].text(),
+        "fp_name": dialog._fp_name_edit.text(),
+        "library": dialog._library_combo.currentText(),
+    }
+    assert texts["library"] == "Typed_Lib_X"
+    edited, fp_edited, resolutions = set(dialog._edited), dialog._fp_name_edited, dict(dialog._resolutions)
+    assert fp_edited and {"value", "description"} <= edited
+
+    calls: list[str] = []
+    for name in ("_populate_items", "_reload_symbol_defaults", "_clear_items", "_clear_form", "_reset_fp_name"):
+        original = getattr(dialog, name)
+
+        def counting(*args, _original=original, _name=name, **kwargs):
+            calls.append(_name)
+            return _original(*args, **kwargs)
+
+        setattr(dialog, name, counting)
+
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "other.stp"))
+    assert calls == []
+    assert dialog._field_edits["value"].text() == texts["value"]
+    assert dialog._field_edits["description"].text() == texts["description"]
+    assert dialog._fp_name_edit.text() == texts["fp_name"]
+    assert dialog._library_combo.currentText() == texts["library"]
+    assert dialog._edited == edited
+    assert dialog._fp_name_edited is fp_edited
+    assert dialog._resolutions == resolutions
+    last = recorded[-1]
+    assert last.value == "MyValue" and last.description == "My description"
+    assert dict(last.footprint_names) == {"DQK0006B": "MYFP"}
+    assert last.library == "Typed_Lib_X"
+    assert last.model == "other.stp"
+
+
+def test_add_model_refusal_shows_note(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from zipfixtures import make_zip
+
+    opened: list = []
+
+    def open_recording(path, repo_root, progress=None):
+        package = import_dialog_module.open_model_source(path, repo_root, progress)
+        opened.append((package, package.staging_dir))
+        return package
+
+    dialog = make_item_dialog(
+        multi_zip(tmp_path, symbols=("S1",), footprints=("F1",), models=()), show=True, open_model_source=open_recording
+    )
+    wait_current(qtbot, dialog)
+    candidate = dialog._candidate
+    logged: list = []
+    dialog.issues_logged.connect(logged.append)
+    assert dialog._model_note.isHidden()
+
+    def assert_refused(source: Path) -> str:
+        attach_model(qtbot, dialog, monkeypatch, source)
+        assert dialog._candidate is candidate
+        assert dialog._model_label.full_text() == "No 3D model in this package"
+        assert dialog._model_combo is None and dialog._model_packages == []
+        note = dialog._model_note
+        assert note.isVisible()
+        assert note.textFormat() == Qt.TextFormat.PlainText
+        assert AMBER.lower() in note.styleSheet().lower()
+        errors = [i for i in logged[-1] if i.severity is Severity.ERROR]
+        assert errors and "intake.no_model_in_source" in {i.code for i in errors}
+        assert note.text() == errors[0].text
+        return note.text()
+
+    # a zip with no model at all: refused at intake
+    assert_refused(make_zip(tmp_path / "notes.zip", [("readme.txt", b"hello")]))
+    # a renamed non-STEP file in a zip: staged, then refused by the magic check; the staging folder goes
+    first = assert_refused(make_zip(tmp_path / "fake.zip", [("fake.stp", b"this is not a STEP file")]))
+    package, staging = opened[-1]
+    assert staging is not None and not staging.exists() and package.staging_dir is None
+    # a bare renamed file
+    second = assert_refused(bare_model(tmp_path / "dl", "fake.stp", b"not a step file either"))
+    assert "fake.stp" in second and first != second
+
+
+def test_add_model_note_is_plain_text(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from kicad_lib_manager.importer.package import Package
+
+    hostile = "Refused <b>x</b>.stp &amp; <i>y</i>"
+
+    def refusing(path, repo_root, progress=None):
+        package = Package(Path(path), "file")
+        package.issues.append(Issue(Severity.ERROR, "intake.unsupported", hostile))
+        return package
+
+    dialog = make_item_dialog(
+        multi_zip(tmp_path, symbols=("S1",), footprints=("F1",), models=()), show=True, open_model_source=refusing
+    )
+    wait_current(qtbot, dialog)
+    attach_model(qtbot, dialog, monkeypatch, tmp_path / "anything.stp")
+    note = dialog._model_note
+    assert note.isVisible() and note.textFormat() == Qt.TextFormat.PlainText
+    assert note.text() == hostile
+    assert note.wordWrap()
+
+
+def test_add_model_duplicate_is_noted(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = make_item_dialog(
+        multi_zip(tmp_path, symbols=("S1",), footprints=("F1",), models=()), show=True
+    )
+    wait_current(qtbot, dialog)
+    model = bare_model(tmp_path / "dl", "same.stp")
+    attach_model(qtbot, dialog, monkeypatch, model)
+    assert len(dialog._candidate.models) == 1
+    assert dialog._model_label.full_text() == "same.stp"
+    candidate, gen = dialog._candidate, dialog._gen
+
+    attach_model(qtbot, dialog, monkeypatch, model)
+    note = dialog._model_note
+    assert note.isVisible() and "already listed" in note.text()
+    assert MUTED.lower() in note.styleSheet().lower()
+    assert dialog._candidate is candidate and len(dialog._candidate.models) == 1
+    assert dialog._gen == gen
