@@ -253,7 +253,7 @@ Plans:
   2. A real SamacSys / CSE zip in `downloaded_examples/` is recognised, and its KiCad v6+ symbol, footprint and 3D model are found. Legacy `.lib` / `.dcm` files alongside them are ignored instead of causing a rejection.
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
 
-**Plans**: 4/6 plans executed
+**Plans**: 5/6 plans executed
 
 Plans:
 **Wave 1**
@@ -267,7 +267,7 @@ Plans:
 - [x] 07-04-PLAN.md — Bounded in-memory marker reads (D-13), SnapEDA how-to-import marker, np_thru_hole pads ignored by the pin/pad check, real SnapEDA zip recognised, gitignore guard test (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 07-05-PLAN.md — SamacSys adapter: recognition, part_info.txt parsing, other-CAD folder summary (D-16), part_info naming hints, PowerSupply/RECOM tokens, synthetic SamacSys part suggested as PowerSupply_SubCategory_RECOM (wave 4)
+- [x] 07-05-PLAN.md — SamacSys adapter: recognition, part_info.txt parsing, other-CAD folder summary (D-16), part_info naming hints, PowerSupply/RECOM tokens, synthetic SamacSys part suggested as PowerSupply_SubCategory_RECOM (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 07-06-PLAN.md — Both vendors install into a synthetic Custom/ like the UL sample, roll back, re-install as no-op, name the vendor in the commit, load in kicad-cli (D-04); fixture originality guard; real SamacSys zip recognised and suggested; real-zip installs and loads (wave 5)
@@ -287,7 +287,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
 | 6. Git Commit Step | 8/8 | Complete    | 2026-10-23 |
-| 7. SnapEDA and SamacSys Adapters | 4/6 | In Progress | - |
+| 7. SnapEDA and SamacSys Adapters | 5/6 | In Progress | - |
 
 ## Backlog
 
