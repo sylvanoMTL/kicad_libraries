@@ -26,6 +26,11 @@ _BOM = b"\xef\xbb\xbf"
 _ASCII_SPACE = b" \t\r\n\x0b\x0c"
 _LISTED_NAMES = 20
 
+# Vendor adapters sniff at most SNIFF_FILES staged files, SNIFF_BYTES from the start of each.
+# SnapEDA's marker properties start about 3 KiB in; this is far below MAX_KICAD_TEXT_BYTES.
+SNIFF_BYTES = 64 * 1024
+SNIFF_FILES = 8
+
 MANUFACTURER_FIELDS = ("Manufacturer", "MF", "MANUFACTURER", "Manufacturer_Name")
 MPN_FIELDS = ("MPN", "MP", "Manufacturer_Part_Number", "MANUFACTURER_PART_NUMBER")
 DESCRIPTION_FIELDS = ("Description", "ki_description")
@@ -42,6 +47,19 @@ class Adapter(Protocol):
     name: str
 
     def detect(self, package: Package) -> Detection | None: ...
+
+
+def read_head(pf: PackageFile, limit: int = SNIFF_BYTES) -> bytes:
+    """Return the first limit bytes of a staged file, or b"" when it cannot be read; never raises.
+
+    It only reads files open_package already staged, so the Phase 3 hostile-zip refusals and size
+    caps (D-05, D-06, D-19) have run, unchanged, before it. It adds a smaller cap and relaxes none.
+    """
+    try:
+        with open(pf.path, "rb") as handle:
+            return handle.read(limit)
+    except OSError:
+        return b""
 
 
 def _prop(symbol: SymbolRef, name: str) -> str:
