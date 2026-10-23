@@ -25,6 +25,7 @@ from vendorfixtures import (
     samacsys_symbol,
     snapeda_footprint,
     snapeda_members,
+    snapeda_model_members,
     snapeda_symbol,
 )
 
@@ -37,14 +38,15 @@ SAMPLES = REPO_ROOT / "downloaded_examples"
 REAL_ZIPS = {
     "snapeda": SAMPLES / "USB4145-03-0170-C_REVA2.zip",
     "samacsys": SAMPLES / "LIB_RS3-1212S_H3.zip",
+    "snapeda_model": SAMPLES / "194150990-659-usb4145-03-0170-c.zip",
 }
-REAL_PART_NAMES = (b"USB4145-03-0170-C", b"RS3-1212S")
+REAL_PART_NAMES = (b"USB4145-03-0170-C", b"usb4145-03-0170-c", b"RS3-1212S")
 MAX_MEMBER_BYTES = 4096
 
 
 def _all_members():
-    """Every member of both builders, with the model-carrying SnapEDA variant."""
-    return [*snapeda_members(with_model=True), *samacsys_members()]
+    """Every member of the builders, with the model-carrying SnapEDA variant and the SnapEDA model download."""
+    return [*snapeda_members(with_model=True), *samacsys_members(), *snapeda_model_members()]
 
 
 def _parsed(name, data):
@@ -121,7 +123,7 @@ def _real_member_hashes(path):
     return hashes
 
 
-@pytest.mark.parametrize("vendor", ["snapeda", "samacsys"])
+@pytest.mark.parametrize("vendor", ["snapeda", "samacsys", "snapeda_model"])
 def test_fixture_originality(vendor):
     real = REAL_ZIPS[vendor]
     if not real.exists():
