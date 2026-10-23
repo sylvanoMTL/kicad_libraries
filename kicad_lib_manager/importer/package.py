@@ -38,8 +38,12 @@ STAGE_KINDS = {
     ".wrl": "model",
 }
 LEGACY_EXTENSIONS = (".lib", ".dcm", ".mod")
+# open_model_source stages only these kinds of file (a separately downloaded 3D model, G-07-2)
+MODEL_SOURCE_KINDS = frozenset({"model"})
 
 _COPY_CHUNK = 65536
+# The only caller is open_model_source; tests patch this name, never the os module, so a stub reaches nothing else
+_lstat = os.lstat
 _STAGED_PREFIX = {"symbol": "sym", "footprint": "fp", "model": "model"}
 _IGNORED_LISTED = 20
 _WINDOWS_REPARSE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
@@ -91,7 +95,7 @@ class Package:
     """
 
     source: Path
-    kind: str  # "zip" | "folder"
+    kind: str  # "zip" | "folder" | "file" (one bare 3D model read in place)
     names: list[str] = field(default_factory=list)
     files: list[PackageFile] = field(default_factory=list)
     ignored: list[str] = field(default_factory=list)
@@ -303,6 +307,48 @@ def open_package(path: Path, repo_root: Path, progress: Callable | None = None) 
     return package
 
 
+def open_model_source(path: Path, repo_root: Path, progress: Callable | None = None) -> Package:
+    """Open a second intake source that holds 3D models only: a .zip, or one bare .step/.stp/.wrl.
+
+    A zip stages only its model members under the same hostile-zip refusals and caps as open_package
+    (D-05, D-06, D-07, D-08, D-19); every other member is listed in one "Not imported from ..." note and
+    never written. A zip without a model is refused with intake.no_model_in_source. Expected failures come
+    back as ERROR Issues on the returned Package and are never raised.
+    """
+    path = Path(path)
+    try:
+        st = _lstat(path)
+    except FileNotFoundError:
+        package = Package(path, "file")
+        package.issues.append(
+            Issue(Severity.ERROR, "intake.not_found", f"Could not open {path}: no such file or folder")
+        )
+        return package
+    except OSError as e:
+        package = Package(path, "file")
+        package.issues.append(
+            Issue(Severity.ERROR, "intake.unreadable_source", f"Could not read {path.name}: {e.strerror or e}")
+        )
+        return package
+    if stat.S_ISREG(st.st_mode) and path.suffix.casefold() == ".zip":
+        package = _open_zip(path, repo_root, progress, kinds=MODEL_SOURCE_KINDS)
+        if not package.refused and not any(f.kind == "model" for f in package.files):
+            return _refuse(
+                package,
+                Issue(Severity.ERROR, "intake.no_model_in_source", f"{path.name} holds no 3D model (.step, .stp or .wrl)"),
+            )
+        return package
+    package = Package(path, "file")
+    package.issues.append(
+        Issue(
+            Severity.ERROR,
+            "intake.unsupported",
+            f"Could not open {path.name}: pick a .step, .stp or .wrl file, or a .zip holding one",
+        )
+    )
+    return package
+
+
 def _classify(name: str) -> tuple[str, str]:
     """Return (class, lowercase extension) for a member name: stage, nested, legacy or ignored."""
     last = PurePosixPath(name).name
@@ -339,10 +385,31 @@ def _copy_member(
     return copied, None
 
 
+def _narrow(what: str, ext: str, kinds: frozenset[str] | None) -> str:
+    """Apply a kinds filter to a member class: other staged kinds and legacy files become 'skipped' (ignored)."""
+    if kinds is None:
+        return what
+    if what == "stage" and STAGE_KINDS[ext] not in kinds:
+        return "skipped"
+    if what == "legacy":
+        return "skipped"
+    return what
+
+
 def _stage_zip(
-    zf: zipfile.ZipFile, path: Path, repo_root: Path, progress: Callable | None, package: Package
+    zf: zipfile.ZipFile,
+    path: Path,
+    repo_root: Path,
+    progress: Callable | None,
+    package: Package,
+    *,
+    kinds: frozenset[str] | None = None,
 ) -> Issue | None:
-    """Pre-scan, classify and stage an opened zip into package; return the refusal Issue, or None on success."""
+    """Pre-scan, classify and stage an opened zip into package; return the refusal Issue, or None on success.
+
+    kinds None stages every kind (full intake). A set of kinds stages only those; every other staged
+    kind and every legacy file is listed as ignored, and no marker is read.
+    """
     budget = _Budget()
     refusal = _prescan(zf.infolist(), path.name, budget)
     if refusal is not None:
@@ -359,6 +426,7 @@ def _stage_zip(
         name = info.filename.replace("\\", "/")
         package.names.append(name)
         what, ext = _classify(name)
+        what = _narrow(what, ext, kinds)
         if what == "stage":
             staged.append((zf, info, name, ext))
         elif what == "nested":
@@ -367,7 +435,7 @@ def _stage_zip(
             package.legacy.append(name)
         else:
             package.ignored.append(name)
-            if _is_marker(name):
+            if kinds is None and _is_marker(name):
                 markers.append((zf, info, name))
 
     try:
@@ -416,6 +484,7 @@ def _stage_zip(
                 full = f"{member}/{inner_name}"
                 package.names.append(full)
                 what, ext = _classify(inner_name)
+                what = _narrow(what, ext, kinds)
                 if what == "nested":
                     return Issue(
                         Severity.ERROR,
@@ -428,7 +497,7 @@ def _stage_zip(
                     package.legacy.append(full)
                 else:
                     package.ignored.append(full)
-                    if _is_marker(full):
+                    if kinds is None and _is_marker(full):
                         markers.append((inner, inner_info, full))
 
         total = len(staged)
@@ -465,7 +534,9 @@ def _stage_zip(
     return None
 
 
-def _open_zip(path: Path, repo_root: Path, progress: Callable | None) -> Package:
+def _open_zip(
+    path: Path, repo_root: Path, progress: Callable | None, *, kinds: frozenset[str] | None = None
+) -> Package:
     package = Package(path, "zip")
     try:
         zf = zipfile.ZipFile(path)
@@ -474,7 +545,7 @@ def _open_zip(path: Path, repo_root: Path, progress: Callable | None) -> Package
             package, Issue(Severity.ERROR, "intake.corrupt", f"Could not read {path.name}: {e}")
         )
     with zf:
-        issue = _stage_zip(zf, path, repo_root, progress, package)
+        issue = _stage_zip(zf, path, repo_root, progress, package, kinds=kinds)
     if issue is not None:
         # Every zip handle is closed by now, so the staging folder can be removed on Windows too.
         return _refuse(package, issue)

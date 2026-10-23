@@ -1,4 +1,4 @@
-"""Adapter contract plus the shared locate step that reads names and metadata from inside the files."""
+"""Adapter contract, the shared locate step that reads names and metadata from inside the files, and attach_models, which adds a second source's 3D models to a candidate."""
 
 from dataclasses import dataclass, replace
 from pathlib import PurePosixPath
@@ -342,3 +342,39 @@ def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | No
         field_rules=detection.rules,
     )
     return candidate, issues
+
+
+def attach_models(candidate: ImportCandidate, model_package: Package) -> tuple[ImportCandidate | None, list[Issue]]:
+    """Add the 3D models of a second source (open_model_source) to a candidate.
+
+    Each model must pass the same magic check locate uses (ISO-10303-21; or #VRML), so a non-model
+    renamed .stp is never attached. Returns (new candidate, issues to show). With nothing usable the
+    candidate is None and the issues say why. The input candidate is never mutated, intake.no_model is
+    dropped from the new one, and Issue texts name files and the source file name only, never a folder.
+    The plan contract is unchanged: the planner saves the chosen model as <MPN>.<ext> (Phase 3 D-15).
+    """
+    if model_package.refused:
+        return None, list(model_package.issues)
+    source = model_package.source.name
+    problems: list[Issue] = []
+    new: list[ModelItem] = []
+    for pf in model_package.files:
+        if pf.kind != "model":
+            continue
+        problem = _check_model(pf)
+        if problem is None:
+            new.append(ModelItem(PurePosixPath(pf.member).name, pf))
+        else:
+            problems.append(problem)
+    if not new:
+        return None, [
+            *problems,
+            Issue(Severity.ERROR, "intake.no_model_in_source", f"{source} holds no usable 3D model"),
+        ]
+    attached = [
+        Issue(Severity.INFO, "intake.model_attached", f"3D model {item.filename} attached from {source}") for item in new
+    ]
+    notes = [i for i in model_package.issues if i.severity is not Severity.ERROR]
+    added = list(dict.fromkeys([*notes, *problems, *attached]))
+    issues = tuple(dict.fromkeys(i for i in (*candidate.issues, *added) if i.code != "intake.no_model"))
+    return replace(candidate, models=(*candidate.models, *new), issues=issues), added
