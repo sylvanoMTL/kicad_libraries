@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..models import Issue
+from .fieldrules import GENERIC_RULES, FieldRules
 from .naming import NameResult, sanitize_filename, sanitize_name
 from .package import PackageFile
 
@@ -68,6 +69,9 @@ class ImportCandidate:
     issues holds the package's own Issues first (folder depth limit, unreadable files, skipped
     links, ignored members), then the detection Issues. build_plan copies them into the plan,
     so a caller never forwards them by hand (WR-03).
+
+    field_rules are the winning adapter's field-cleanup rules (copied from Detection.rules by
+    locate); the planner reads them from here, never from an adapter.
     """
 
     vendor: str
@@ -79,6 +83,7 @@ class ImportCandidate:
     legacy_ignored: tuple[str, ...]
     ignored: tuple[str, ...]
     issues: tuple[Issue, ...]
+    field_rules: FieldRules = GENERIC_RULES
 
     @property
     def has_model(self) -> bool:

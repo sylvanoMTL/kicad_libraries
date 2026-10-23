@@ -27,11 +27,13 @@ from ..kicad_files import (
     footprint_name_edit,
     footprint_value_edits,
     hidden_template,
+    list_properties,
     model_insert_edit,
     new_property_text,
     next_property_id,
     parse_bytes,
     property_insert_edit,
+    remove_property_edit,
     rename_property_edit,
     rename_symbol_edits,
     replace_exact_tokens,
@@ -48,14 +50,15 @@ from ..models import Issue, Severity
 from ..sexpr import Edit, Node, apply_edits, parse
 from . import kicad_cli
 from . import package as _package
-from .adapters.base import MANUFACTURER_FIELDS, MPN_FIELDS
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
+from .fieldrules import FieldRules, is_volatile
 from .layout import RepoLayout, list_footprint_libs, list_model_files, list_symbol_libs
 from .naming import MAX_NAME_LEN, NameResult, case_clash, sanitize_filename, sanitize_name
 from .package import PackageFile
 from .plan import (
     MODEL_DIR_VAR,
     Conflict,
+    FieldChange,
     FileOp,
     InstallOptions,
     InstallPlan,
@@ -124,16 +127,20 @@ class _Fields:
 
 
 def _edit_symbol(
-    work: LoadedFile, ref: SymbolRef, new_name: str, fields: _Fields, version: int | None
-) -> tuple[list[Edit], str]:
-    """The span edits that turn one vendor symbol into its installed form, and the MPN it ends up with.
+    work: LoadedFile, ref: SymbolRef, new_name: str, fields: _Fields, version: int | None, rules: FieldRules
+) -> tuple[list[Edit], str, list[FieldChange]]:
+    """The span edits that turn one vendor symbol into its installed form, the MPN it ends up with, and the field changes.
 
     Every property receives at most one edit, computed from its final value. New properties are
-    hidden copies of an existing hidden one in the style of `version`.
+    hidden copies of an existing hidden one in the style of `version`. Properties the rules call
+    volatile are removed and each removal is returned as a FieldChange, in property order.
     """
     text, eol, node = work.source.text, work.source.eol, ref.node
     edits: list[Edit] = []
     inserts: list[str] = []
+    changes: list[FieldChange] = []
+    # node.start of every property this function found and may edit, so no property gets two edits
+    handled: set[int] = set()
     template = hidden_template(node)
     next_id = next_property_id(node)
 
@@ -150,7 +157,9 @@ def _edit_symbol(
         found = find_property(node, name)
         if found is None:
             add(name, value)
-        elif found.value != value:
+            return
+        handled.add(found.node.start)
+        if found.value != value:
             edits.append(set_property_edit(found, value))
 
     def role(name: str, aliases: tuple[str, ...], override: str | None, fallback: str) -> str:
@@ -163,6 +172,7 @@ def _edit_symbol(
         if target is None:
             add(name, value)
             return value
+        handled.add(target.node.start)
         if target is not exact:
             edits.append(rename_property_edit(target, name))
         if target.value != value:
@@ -172,6 +182,7 @@ def _edit_symbol(
     def retoken(name: str) -> None:
         found = find_property(node, name)
         if found is not None:
+            handled.add(found.node.start)
             changed = replace_exact_tokens(found.value, ref.name, new_name)
             if changed != found.value:
                 edits.append(set_property_edit(found, changed))
@@ -179,8 +190,8 @@ def _edit_symbol(
     put("Footprint", fields.footprint)
     put("ki_fp_filters", fields.filters)
     forced = fields.manufacturer if fields.manufacturer_forced else None
-    role("Manufacturer", MANUFACTURER_FIELDS, forced, fields.manufacturer)
-    mpn = role("MPN", MPN_FIELDS, fields.mpn, ref.name)
+    role("Manufacturer", rules.manufacturer_aliases, forced, fields.manufacturer)
+    mpn = role("MPN", rules.mpn_aliases, fields.mpn, ref.name)
     if fields.value is not None:
         put("Value", fields.value)
     elif new_name != ref.name:
@@ -191,10 +202,14 @@ def _edit_symbol(
         put("Datasheet", fields.datasheet)
     if fields.description is not None:
         put(description_field_name(node, version), fields.description)
+    for prop in list_properties(node):
+        if prop.node.start not in handled and is_volatile(prop.name, rules):
+            edits.append(remove_property_edit(text, prop))
+            changes.append(FieldChange(new_name, "drop", prop.name, prop.value, "", "volatile"))
     for block in inserts:
         # Zero-width inserts at one position keep their list order
         edits.append(property_insert_edit(text, node, block, eol))
-    return edits, mpn
+    return edits, mpn, changes
 
 
 def _unit_text(vendor: LoadedFile, unit: list[SymbolRef]) -> str:
@@ -782,10 +797,12 @@ def build_plan(
         manufacturer=manufacturer,
         manufacturer_forced=options.manufacturer is not None,
     )
-    renders: dict[tuple, tuple[LoadedFile, dict[str, str], str] | Issue] = {}
+    renders: dict[tuple, tuple[LoadedFile, dict[str, str], str, list[FieldChange]] | Issue] = {}
 
-    def render_symbols(names: dict[str, str], link: str, filters: str) -> tuple[LoadedFile, dict[str, str], str] | Issue:
-        """The unit edited under the given final names and footprint link: (text, block per final name, final MPN)."""
+    def render_symbols(
+        names: dict[str, str], link: str, filters: str
+    ) -> tuple[LoadedFile, dict[str, str], str, list[FieldChange]] | Issue:
+        """The unit edited under the given final names and footprint link: (text, block per final name, final MPN, field changes)."""
         memo = (tuple(names.items()), link, filters)
         if memo in renders:
             return renders[memo]
@@ -794,11 +811,15 @@ def build_plan(
             fields, mpn=options.mpn, value=options.value, datasheet=options.datasheet, description=options.description
         )
         all_edits: list[Edit] = []
+        all_changes: list[FieldChange] = []
         final_mpn = ""
         for ref in work_unit:
             is_chosen = ref is work_unit[-1]
-            symbol_edits, mpn = _edit_symbol(work, ref, names[ref.name], chosen_fields if is_chosen else fields, style)
+            symbol_edits, mpn, symbol_changes = _edit_symbol(
+                work, ref, names[ref.name], chosen_fields if is_chosen else fields, style, candidate.field_rules
+            )
             all_edits.extend(symbol_edits)
+            all_changes.extend(symbol_changes)
             all_edits.extend(rename_symbol_edits(work.root, ref.name, names[ref.name]))
             if is_chosen:
                 final_mpn = mpn
@@ -808,7 +829,7 @@ def build_plan(
             return edited
         placed = {ref.name: ref for ref in find_symbols(edited.root)}
         blocks = {name: edited.source.text[placed[name].node.start:placed[name].node.end] for name in names.values()}
-        renders[memo] = (edited, blocks, final_mpn)
+        renders[memo] = (edited, blocks, final_mpn, all_changes)
         return renders[memo]
 
     first = render_symbols(new_names, f"{library}:{fp_names[0]}", " ".join(fp_names))
@@ -997,7 +1018,7 @@ def build_plan(
         rendered = render_symbols(names, link, filters)
         if isinstance(rendered, Issue):
             return refuse(rendered)
-        edited, blocks, _mpn = rendered
+        edited, blocks, _mpn, changes = rendered
         sym_notes: list[Issue] = []
         states: list[_SymState] = []
         again = False
@@ -1114,6 +1135,8 @@ def build_plan(
         if model_dec is not None and model_file is not None and model_dec.name != model_file and not model_dec.kept
         else []
     )
+    # A kept or identical symbol is not written, so it lists no field change
+    pending = {state.final for state in states if state.kind in ("new", "overwrite", "open")}
     return InstallPlan(
         vendor=candidate.vendor,
         source=candidate.source,
@@ -1134,4 +1157,5 @@ def build_plan(
         conflicts=tuple(conflicts),
         renames=(*sym_renames, *fp_renames, *model_renames),
         issues=tuple(issues),
+        field_changes=tuple(c for c in changes if c.symbol in pending),
     )
