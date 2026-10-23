@@ -18,7 +18,7 @@ from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
-from kicad_lib_manager.importer.plan import InstallOptions, Rename, Resolution, ToolContext
+from kicad_lib_manager.importer.plan import FieldChange, InstallOptions, Rename, Resolution, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.importer.verify import verify_install
 from kicad_lib_manager.kicad_files import (
@@ -879,8 +879,10 @@ def test_fields_exact_manufacturer_kept(tmp_path):
     assert not plan.blocked, plan.issues
     _, symbol = _symbol_in(plan)
     names = _property_names(symbol)
-    assert names.count("Manufacturer") == 1 and names.count("MANUFACTURER") == 1
-    assert (_value_of(plan, "Manufacturer"), _value_of(plan, "MANUFACTURER")) == ("Exact Co", "Other Co")
+    # D-08: the case-twin alias is a duplicate and goes, so one Manufacturer remains
+    assert names.count("Manufacturer") == 1 and names.count("MANUFACTURER") == 0
+    assert _value_of(plan, "Manufacturer") == "Exact Co"
+    assert FieldChange(VENDOR, "drop", "MANUFACTURER", "Other Co", "", "duplicate") in plan.field_changes
 
 
 def test_fields_added_hidden_20211014(tmp_path, ul_package):
