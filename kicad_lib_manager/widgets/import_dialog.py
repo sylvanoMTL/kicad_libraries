@@ -1407,7 +1407,7 @@ class ImportDialog(QDialog):
         button.setAutoDefault(False)
         button.setDefault(False)
         button.clicked.connect(self._on_add_model)
-        button.setEnabled(self._model_worker is None)
+        button.setEnabled(not self._model_busy())
         lay.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
         self._add_model_btn = button
         # Why the last attach found nothing (or that it is still reading). File names and Issue texts come
@@ -1629,9 +1629,9 @@ class ImportDialog(QDialog):
 
         worker = self._spawn(task)
         self._model_worker = worker
-        if self._add_model_btn is not None:
-            self._add_model_btn.setEnabled(False)
         self._set_model_note(f"Reading {path.name}...", tone="muted")
+        # Install is blocked as "Updating" until the plan that shows the model is current (T-07-29)
+        self._update_install_state()
         worker.result.connect(lambda outcome, w=worker: self._on_model_attached(w, outcome))
         worker.failed.connect(lambda text, w=worker: self._on_model_failed(w, text))
         worker.start()
@@ -1639,23 +1639,31 @@ class ImportDialog(QDialog):
     def _end_model_worker(self, worker: TaskWorker):
         if self._model_worker is worker:
             self._model_worker = None
-        if self._add_model_btn is not None:
-            self._add_model_btn.setEnabled(True)
+        self._sync_add_model_button()
+
+    def _sync_add_model_button(self):
+        """Add 3D model... is on only while a package is open and no open, model, install or git job runs."""
+        button = self._add_model_btn
+        if button is not None:
+            button.setEnabled(not self._model_busy())
 
     def _on_model_attached(self, worker: TaskWorker, outcome: ModelOutcome):
+        if self._closing:
+            return  # _shutdown closes the package of an outcome that was not handled (T-07-27)
         worker.value = None  # handled here, so _shutdown does not close the package a second time
         self._end_model_worker(worker)
         stale = (
-            self._closing
-            or outcome.session != self._session
+            outcome.session != self._session
             or self._candidate is None
             or self.is_installing()
             or self._stack.currentWidget() is not self._edit_page
         )
         if stale:
+            # Change..., a new open or an install came first: the package is released and never attached (T-07-28)
             outcome.package.close()
             if outcome.session == self._session:
                 self._set_model_note("", tone="hidden")
+                self._update_install_state()
             return
         self.issues_logged.emit(list(outcome.issues))
         if outcome.candidate is None:
@@ -1668,6 +1676,7 @@ class ImportDialog(QDialog):
                 self._set_model_note(outcome.issues[0].text, tone="muted")
             else:
                 self._set_model_note("", tone="hidden")
+            self._update_install_state()
             return
         self._set_model_note("", tone="hidden")
         self._model_packages.append(outcome.package)
@@ -1683,6 +1692,7 @@ class ImportDialog(QDialog):
         issue = Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")
         self.issues_logged.emit([issue])
         self._set_model_note(issue.text, tone="amber")
+        self._update_install_state()
 
     # -- conflicts: one row per conflict, choices kept by key (PREV-05, D-12, D-14a) ----------------
 
@@ -2099,7 +2109,13 @@ class ImportDialog(QDialog):
         return self._install_worker is not None
 
     def _updating(self) -> bool:
-        return self._building is not None or self._queued is not None or self._dirty
+        # A model being read counts too: the preview does not show it yet, so nothing may install from it
+        return (
+            self._building is not None
+            or self._queued is not None
+            or self._dirty
+            or self._model_worker is not None
+        )
 
     def _sync_updating(self):
         """Show "Updating..." beside the Preview title while a rebuild is pending; the busy strip joins after 150 ms.
@@ -2153,6 +2169,7 @@ class ImportDialog(QDialog):
 
     def _update_install_state(self):
         self._sync_updating()
+        self._sync_add_model_button()
         if self.is_installing():
             return
         plan = self._plan
@@ -2262,6 +2279,7 @@ class ImportDialog(QDialog):
         self._header_row.setEnabled(not installing)
         self._strip.setVisible(not installing)
         self._install_row.setVisible(installing)
+        self._sync_add_model_button()
         if installing:
             self._install_btn.setEnabled(False)
             self._install_btn.setText("Installing...")
@@ -2322,6 +2340,7 @@ class ImportDialog(QDialog):
         focus, so when Close held the focus it gets it back once git is idle again.
         """
         self._git_worker = worker
+        self._sync_add_model_button()
         button = self._result_view.close_button
         busy = worker is not None
         if busy == (not button.isEnabled()):
@@ -2556,6 +2575,7 @@ class ImportDialog(QDialog):
             value = worker.value
             if isinstance(value, (OpenOutcome, ModelOutcome)):
                 value.package.close()  # an open or an attach that finished while closing
+                worker.value = None  # released once: a second _shutdown or a queued result finds nothing
         self._discard_package()
 
     def done(self, r: int):
