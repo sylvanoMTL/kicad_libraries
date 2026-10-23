@@ -330,7 +330,16 @@ def open_model_source(path: Path, repo_root: Path, progress: Callable | None = N
             Issue(Severity.ERROR, "intake.unreadable_source", f"Could not read {path.name}: {e.strerror or e}")
         )
         return package
-    if stat.S_ISREG(st.st_mode) and path.suffix.casefold() == ".zip":
+    if stat.S_ISLNK(st.st_mode) or getattr(st, "st_file_attributes", 0) & _WINDOWS_REPARSE:
+        package = Package(path, "file")
+        package.issues.append(
+            Issue(Severity.ERROR, "intake.link_refused", f"Refused {path.name}: it is a link or junction; pick the file itself")
+        )
+        return package
+    suffix = path.suffix.casefold()
+    if stat.S_ISREG(st.st_mode) and STAGE_KINDS.get(suffix) == "model":
+        return _open_model_file(path, st)
+    if stat.S_ISREG(st.st_mode) and suffix == ".zip":
         package = _open_zip(path, repo_root, progress, kinds=MODEL_SOURCE_KINDS)
         if not package.refused and not any(f.kind == "model" for f in package.files):
             return _refuse(
@@ -346,6 +355,42 @@ def open_model_source(path: Path, repo_root: Path, progress: Callable | None = N
             f"Could not open {path.name}: pick a .step, .stp or .wrl file, or a .zip holding one",
         )
     )
+    return package
+
+
+def _open_model_file(path: Path, st) -> Package:
+    """Read one bare 3D model in place, read-only: no copy, no staging, no write (G-07-2).
+
+    st is the no-follow lstat result of path. The opened handle must be the same regular file, and the
+    real bytes are counted against MAX_MEMBER_BYTES, read from the module global at call time.
+    """
+    package = Package(path, "file")
+
+    def refuse(code: str, text: str) -> Package:
+        package.issues.append(Issue(Severity.ERROR, code, text))
+        return package
+
+    if st.st_size > MAX_MEMBER_BYTES:
+        return refuse(
+            "intake.too_large",
+            f"Refused {path.name}: {st.st_size} bytes, over the {MAX_MEMBER_BYTES} byte limit",
+        )
+    try:
+        with open(path, "rb") as handle:
+            opened = os.fstat(handle.fileno())
+            if (opened.st_dev, opened.st_ino) != (st.st_dev, st.st_ino) or not stat.S_ISREG(opened.st_mode):
+                return refuse("intake.link_refused", f"Refused {path.name}: the file changed while it was opened")
+            sha = hashlib.sha256()
+            total = 0
+            while chunk := handle.read(_COPY_CHUNK):
+                total += len(chunk)
+                if total > MAX_MEMBER_BYTES:
+                    return refuse("intake.too_large", f"Refused {path.name}: it is larger than it was listed")
+                sha.update(chunk)
+    except OSError as e:
+        return refuse("intake.unreadable_source", f"Could not read {path.name}: {e.strerror or e}")
+    package.names.append(path.name)
+    package.files.append(PackageFile(path.name, path, "model", total, sha.hexdigest(), False))
     return package
 
 
