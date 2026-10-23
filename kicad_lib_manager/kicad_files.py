@@ -151,6 +151,19 @@ def find_property(symbol_node: Node, name: str) -> PropertyRef | None:
     return None
 
 
+def list_properties(symbol_node: Node) -> list[PropertyRef]:
+    """Return every direct (property "name" "value" ...) child in source order."""
+    found = []
+    for child in symbol_node.children:
+        if child.head != "property" or len(child.children) < 3:
+            continue
+        name_node, value_node = child.children[1], child.children[2]
+        if not (_is_token(name_node) and _is_token(value_node)):
+            continue
+        found.append(PropertyRef(unquote(name_node.text), unquote(value_node.text), child, name_node, value_node))
+    return found
+
+
 def footprint_name(root: Node) -> NameRef | None:
     """Return the name of the top-level footprint (or legacy module) with its token node."""
     node = _top_level(root, lambda head: head in ("footprint", "module"))
@@ -299,6 +312,18 @@ def hidden_template(symbol_node: Node) -> PropertyRef | None:
 def rename_property_edit(prop: PropertyRef, new_name: str) -> Edit:
     """Return the edit that replaces only the property's name token."""
     return Edit(prop.name_node.start, prop.name_node.end, quote(new_name))
+
+
+def remove_property_edit(text: str, prop: PropertyRef) -> Edit:
+    """Return the edit that removes a whole property block.
+
+    The gap back to the previous token is removed with the node, so the file keeps its own line
+    endings and no blank line is left.
+    """
+    start = prop.node.start
+    while start > 0 and text[start - 1] in " \t\r\n":
+        start -= 1
+    return Edit(start, prop.node.end, "")
 
 
 def synth_property_text(name: str, value: str, *, version: int | None, next_id: int | None) -> str:

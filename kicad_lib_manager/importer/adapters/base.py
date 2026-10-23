@@ -17,6 +17,14 @@ from ...kicad_files import (
 from ...models import Issue, Severity
 from .. import package as _package
 from ..candidate import FootprintItem, ImportCandidate, ModelItem, PartMeta, SymbolItem
+# The field tuples moved to fieldrules and stay importable from here
+from ..fieldrules import (
+    DESCRIPTION_FIELDS,
+    GENERIC_RULES,
+    MANUFACTURER_FIELDS,
+    MPN_FIELDS,
+    FieldRules,
+)
 from ..package import Package, PackageFile
 
 GENERIC_VENDOR = "Unknown"
@@ -31,16 +39,13 @@ _LISTED_NAMES = 20
 SNIFF_BYTES = 64 * 1024
 SNIFF_FILES = 8
 
-MANUFACTURER_FIELDS = ("Manufacturer", "MF", "MANUFACTURER", "Manufacturer_Name")
-MPN_FIELDS = ("MPN", "MP", "Manufacturer_Part_Number", "MANUFACTURER_PART_NUMBER")
-DESCRIPTION_FIELDS = ("Description", "ki_description")
-
 
 @dataclass(frozen=True)
 class Detection:
     vendor: str
     confidence: float
     reasons: tuple[str, ...] = ()
+    rules: FieldRules = GENERIC_RULES
 
 
 class Adapter(Protocol):
@@ -75,8 +80,8 @@ def _first(symbol: SymbolRef, names: tuple[str, ...]) -> str:
     return ""
 
 
-def part_meta(symbol: SymbolRef) -> PartMeta:
-    """Collect the part metadata the naming step reads from a symbol's properties."""
+def part_meta(symbol: SymbolRef, rules: FieldRules = GENERIC_RULES) -> PartMeta:
+    """Collect the part metadata the naming step reads from a symbol's properties; rules name the aliases."""
     return PartMeta(
         symbol_name=symbol.name,
         reference=_prop(symbol, "Reference"),
@@ -86,8 +91,8 @@ def part_meta(symbol: SymbolRef) -> PartMeta:
         keywords=_prop(symbol, "ki_keywords"),
         footprint_field=_prop(symbol, "Footprint"),
         fp_filters=_prop(symbol, "ki_fp_filters"),
-        manufacturer=_first(symbol, MANUFACTURER_FIELDS),
-        mpn=_first(symbol, MPN_FIELDS),
+        manufacturer=_first(symbol, rules.manufacturer_aliases),
+        mpn=_first(symbol, rules.mpn_aliases),
     )
 
 
@@ -139,7 +144,7 @@ def _check_model(pf: PackageFile) -> Issue | None:
     return Issue(Severity.WARNING, "intake.content_mismatch", f"{pf.member} does not look like {magic[1]}")
 
 
-def _locate_symbols(pf: PackageFile, loaded, issues: list[Issue]) -> list[SymbolItem]:
+def _locate_symbols(pf: PackageFile, loaded, issues: list[Issue], rules: FieldRules) -> list[SymbolItem]:
     kind = file_kind(loaded.root)
     if kind != "kicad_symbol_lib":
         issues.append(
@@ -151,7 +156,7 @@ def _locate_symbols(pf: PackageFile, loaded, issues: list[Issue]) -> list[Symbol
         issues.append(Issue(Severity.WARNING, "intake.content_mismatch", f"{pf.member} holds no symbols"))
         return []
     version = file_version(loaded.root)
-    return [SymbolItem(ref.name, pf, part_meta(ref), format_version=version) for ref in refs]
+    return [SymbolItem(ref.name, pf, part_meta(ref, rules), format_version=version) for ref in refs]
 
 
 def _locate_footprint(pf: PackageFile, loaded, issues: list[Issue]) -> FootprintItem | None:
@@ -272,7 +277,7 @@ def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | No
             issues.append(Issue(Severity.WARNING, "intake.unreadable_file", loaded.text))
             continue
         if pf.kind == "symbol":
-            symbols.extend(_locate_symbols(pf, loaded, issues))
+            symbols.extend(_locate_symbols(pf, loaded, issues, detection.rules))
         else:
             item = _locate_footprint(pf, loaded, issues)
             if item is not None:
@@ -290,5 +295,6 @@ def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | No
         legacy_ignored=tuple(package.legacy),
         ignored=tuple(package.ignored),
         issues=tuple(issues),
+        field_rules=detection.rules,
     )
     return candidate, issues

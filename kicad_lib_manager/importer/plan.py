@@ -111,11 +111,32 @@ class Rename:
 
 
 @dataclass(frozen=True)
+class FieldChange:
+    """One incoming symbol property the planner dropped, cleaned or renamed (D-09).
+
+    symbol is the final symbol name and field the property name before the change. old is the
+    value before; new is the value after for a clean and the new property name for a rename, and
+    empty for a drop. action is drop | clean | rename; reason is volatile | placeholder |
+    duplicate | whitespace | alias.
+    """
+
+    symbol: str
+    action: str
+    field: str
+    old: str = ""
+    new: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class InstallPlan:
     """A complete, previewable install.
 
     The Package that produced the candidate must stay open until apply_plan returns (WR-04):
     the model copy reads its bytes from the staged file at apply time.
+
+    field_changes lists every dropped, cleaned or renamed incoming property, in property order,
+    for the preview (D-09).
     """
 
     vendor: str
@@ -136,6 +157,7 @@ class InstallPlan:
     conflicts: tuple[Conflict, ...]
     renames: tuple[Rename, ...]
     issues: tuple[Issue, ...]
+    field_changes: tuple[FieldChange, ...] = ()
 
     @property
     def symbol_name(self) -> str:
