@@ -344,37 +344,83 @@ def locate(package: Package, detection: Detection) -> tuple[ImportCandidate | No
     return candidate, issues
 
 
+def _unique_name(filename: str, taken: set[str]) -> str:
+    """filename, or <stem>_<n><suffix> with the smallest n from 2 that is not in taken (compared casefolded)."""
+    if filename.casefold() not in taken:
+        return filename
+    path = PurePosixPath(filename)
+    n = 2
+    while f"{path.stem}_{n}{path.suffix}".casefold() in taken:
+        n += 1
+    return f"{path.stem}_{n}{path.suffix}"
+
+
 def attach_models(candidate: ImportCandidate, model_package: Package) -> tuple[ImportCandidate | None, list[Issue]]:
     """Add the 3D models of a second source (open_model_source) to a candidate.
 
-    Each model must pass the same magic check locate uses (ISO-10303-21; or #VRML), so a non-model
-    renamed .stp is never attached. Returns (new candidate, issues to show). With nothing usable the
-    candidate is None and the issues say why. The input candidate is never mutated, intake.no_model is
-    dropped from the new one, and Issue texts name files and the source file name only, never a folder.
-    The plan contract is unchanged: the planner saves the chosen model as <MPN>.<ext> (Phase 3 D-15).
+    Rules:
+    - each model must pass the magic check locate uses (ISO-10303-21; or #VRML), so a non-model renamed
+      .stp is never attached; a failing file is reported as a WARNING and the good ones still attach;
+    - a model whose SHA-256 is already on the candidate, or was accepted earlier in this call, is skipped
+      with INFO intake.model_already_present;
+    - a filename that clashes (casefolded) with one already on the candidate is renamed <stem>_<n><ext>;
+    - existing models stay first, new ones follow in source order, and intake.no_model is dropped.
+
+    Returns (new candidate, issues to show). With nothing usable the candidate is None and the issues say
+    why. The input candidate is never mutated, Issue texts use file names and the source file name only
+    (never a folder), and the plan contract is unchanged: the planner saves the chosen model as
+    <MPN>.<ext> (Phase 3 D-15).
     """
     if model_package.refused:
         return None, list(model_package.issues)
     source = model_package.source.name
     problems: list[Issue] = []
-    new: list[ModelItem] = []
+    accepted: list[ModelItem] = []
     for pf in model_package.files:
         if pf.kind != "model":
             continue
         problem = _check_model(pf)
         if problem is None:
-            new.append(ModelItem(PurePosixPath(pf.member).name, pf))
+            accepted.append(ModelItem(PurePosixPath(pf.member).name, pf))
         else:
             problems.append(problem)
+
+    seen = {m.file.sha256: m.filename for m in candidate.models}
+    already: list[Issue] = []
+    new: list[ModelItem] = []
+    for item in accepted:
+        existing = seen.get(item.file.sha256)
+        if existing is not None:
+            already.append(
+                Issue(
+                    Severity.INFO,
+                    "intake.model_already_present",
+                    f"{item.filename} is already listed as {existing}",
+                )
+            )
+            continue
+        seen[item.file.sha256] = item.filename
+        new.append(item)
     if not new:
-        return None, [
-            *problems,
-            Issue(Severity.ERROR, "intake.no_model_in_source", f"{source} holds no usable 3D model"),
-        ]
+        if problems or not already:
+            return None, [
+                *problems,
+                *already,
+                Issue(Severity.ERROR, "intake.no_model_in_source", f"{source} holds no usable 3D model"),
+            ]
+        return None, already
+
+    taken = {m.filename.casefold() for m in candidate.models}
+    renamed: list[ModelItem] = []
+    for item in new:
+        name = _unique_name(item.filename, taken)
+        taken.add(name.casefold())
+        renamed.append(item if name == item.filename else replace(item, filename=name))
     attached = [
-        Issue(Severity.INFO, "intake.model_attached", f"3D model {item.filename} attached from {source}") for item in new
+        Issue(Severity.INFO, "intake.model_attached", f"3D model {item.filename} attached from {source}")
+        for item in renamed
     ]
     notes = [i for i in model_package.issues if i.severity is not Severity.ERROR]
-    added = list(dict.fromkeys([*notes, *problems, *attached]))
+    added = list(dict.fromkeys([*notes, *problems, *already, *attached]))
     issues = tuple(dict.fromkeys(i for i in (*candidate.issues, *added) if i.code != "intake.no_model"))
-    return replace(candidate, models=(*candidate.models, *new), issues=issues), added
+    return replace(candidate, models=(*candidate.models, *renamed), issues=issues), added
