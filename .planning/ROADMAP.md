@@ -253,8 +253,23 @@ Plans:
   2. A real SamacSys / CSE zip in `downloaded_examples/` is recognised, and its KiCad v6+ symbol, footprint and 3D model are found. Legacy `.lib` / `.dcm` files alongside them are ignored instead of causing a rejection.
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
 
-**Plans**: TBD
-**Research flag**: Blocked until the owner adds one real SnapEDA download and one real SamacSys/CSE download to `downloaded_examples/`. The layouts are unverified: SnapEDA may ship no 3D model, and SamacSys may ship legacy files alongside v6 files.
+**Plans**: 5 plans
+
+Plans:
+**Wave 1**
+- [ ] 07-01-PLAN.md — Tracer: a synthetic SnapEDA zip is recognised, its price fields are dropped in the new "Field changes" preview section and in the installed symbol, and the commit trailer names SnapEDA; fixes the FieldRules/FieldChange contracts; .gitignore keeps the vendor zips local (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 07-02-PLAN.md — Field cleanup for every vendor: duplicate Manufacturer/MPN aliases and placeholder fields dropped, ki_* and standard fields protected, descriptions collapsed, renames shown, form defaults equal planner output (D-05..D-09) (wave 2)
+- [ ] 07-03-PLAN.md — Bounded in-memory marker reads (D-13), SnapEDA how-to-import marker, np_thru_hole pads ignored by the pin/pad check, real SnapEDA zip recognised, gitignore guard test (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 07-04-PLAN.md — SamacSys adapter: recognition, part_info.txt parsing, other-CAD folder summary (D-16), part_info naming hints, PowerSupply/RECOM tokens, real SamacSys zip recognised and suggested as PowerSupply_SubCategory_RECOM (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 07-05-PLAN.md — Both vendors install into a synthetic Custom/ like the UL sample, roll back, re-install as no-op, name the vendor in the commit, load in kicad-cli (D-04); fixture originality guard; real-zip installs and loads (wave 4)
+
+**Research flag**: Unblocked (2026-10-23): both real downloads are in `downloaded_examples/` (local only, licence-restricted). SnapEDA ships no 3D model; SamacSys ships legacy files alongside v6 files.
 
 ## Progress
 
@@ -269,7 +284,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
 | 6. Git Commit Step | 8/8 | Complete    | 2026-10-23 |
-| 7. SnapEDA and SamacSys Adapters | 0/TBD | Not started | - |
+| 7. SnapEDA and SamacSys Adapters | 0/5 | Planned | - |
 
 ## Backlog
 
