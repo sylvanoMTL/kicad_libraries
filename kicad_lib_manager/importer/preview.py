@@ -5,11 +5,12 @@ preview can never describe something other than what apply_plan writes. Everythi
 pure function of (plan, candidate, options); the only disk access is an existence check for a file
 the plan leaves unchanged.
 
-Six sections in a fixed order: Files, Renames, Path rewrites, Format, Conflicts, Issues. An empty
-section is hidden, except Files. Values the plan does not carry (the old side of a path rewrite,
-the vendor model file name, the kicad-cli action) come from the candidate, the options and the
-plan's Issue codes (RESEARCH Pitfall 1); the new side of every rewrite is the text the planner
-wrote into the planned bytes.
+Seven sections in a fixed order: Files, Renames, Path rewrites, Field changes, Format, Conflicts,
+Issues. An empty section is hidden, except Files. Field changes lists each incoming property the
+plan drops, cleans or renames, as a pure function of plan.field_changes. Values the plan does not
+carry (the old side of a path rewrite, the vendor model file name, the kicad-cli action) come from
+the candidate, the options and the plan's Issue codes (RESEARCH Pitfall 1); the new side of every
+rewrite is the text the planner wrote into the planned bytes.
 """
 
 from dataclasses import dataclass
@@ -243,6 +244,45 @@ def _rewrites_section(plan: InstallPlan, candidate: ImportCandidate, options: In
     return PreviewSection("Path rewrites", tuple(rows))
 
 
+# -- Field changes ---------------------------------------------------------------------------------
+
+
+_DROP_REASON = {
+    "volatile": "price or stock data goes stale",
+    "placeholder": "empty or placeholder value",
+    "duplicate": "duplicate Manufacturer/MPN alias",
+}
+_SHOWN_LIMIT = 60
+_SHOWN_KEPT = 57
+
+
+def _shown(value: str) -> str:
+    """A property value on one line: CR, LF and TAB as escapes, cut to 57 characters plus "..." past 60."""
+    if not value:
+        return "(empty)"
+    text = value.replace("\r", "\\r").replace("\n", "\\n").replace("\t", "\\t")
+    return text if len(text) <= _SHOWN_LIMIT else text[:_SHOWN_KEPT] + "..."
+
+
+def _field_changes_section(plan: InstallPlan) -> PreviewSection:
+    several = len({change.symbol for change in plan.field_changes}) > 1
+    rows: list[PreviewRow] = []
+    for change in plan.field_changes:
+        if change.action == "drop":
+            label = "Drop"
+            reason = _DROP_REASON.get(change.reason, change.reason)
+            detail = f"{_shown(change.old)} → (removed): {reason}"
+        elif change.action == "clean":
+            label = "Clean"
+            detail = f"{_shown(change.old)} → {_shown(change.new)}"
+        else:
+            label = "Rename"
+            detail = f"→ {change.new}"
+        prefix = f"{change.symbol}: " if several else ""
+        rows.append(PreviewRow(text=f"{prefix}{label} {change.field}", detail=detail, kind="rewrite"))
+    return PreviewSection("Field changes", tuple(rows))
+
+
 # -- Format ---------------------------------------------------------------------------------------
 
 
@@ -319,6 +359,7 @@ def preview_sections(
         _files_section(plan),
         _renames_section(plan, candidate, options),
         _rewrites_section(plan, candidate, options),
+        _field_changes_section(plan),
         _format_section(plan),
         _conflicts_section(plan),
         _issues_section(plan),
