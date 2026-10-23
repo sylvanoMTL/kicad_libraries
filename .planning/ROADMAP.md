@@ -253,11 +253,11 @@ Plans:
   2. A real SamacSys / CSE zip in `downloaded_examples/` is recognised, and its KiCad v6+ symbol, footprint and 3D model are found. Legacy `.lib` / `.dcm` files alongside them are ignored instead of causing a rejection.
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
 
-**Plans**: 6 plans
+**Plans**: 1/6 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 07-01-PLAN.md — Tracer: a synthetic SnapEDA zip is recognised as SnapEDA, installs into a synthetic Custom/ with its Footprint field linked, and the commit trailer names SnapEDA; .gitignore keeps the vendor zips local (wave 1)
+- [x] 07-01-PLAN.md — Tracer: a synthetic SnapEDA zip is recognised as SnapEDA, installs into a synthetic Custom/ with its Footprint field linked, and the commit trailer names SnapEDA; .gitignore keeps the vendor zips local (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 07-02-PLAN.md — Volatile price/stock fields dropped on the tracer path and listed in the new "Field changes" preview section; fixes the FieldRules/FieldChange contracts (D-05, D-09) (wave 2)
@@ -287,7 +287,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
 | 6. Git Commit Step | 8/8 | Complete    | 2026-10-23 |
-| 7. SnapEDA and SamacSys Adapters | 0/6 | Planned | - |
+| 7. SnapEDA and SamacSys Adapters | 1/6 | In Progress | - |
 
 ## Backlog
 
