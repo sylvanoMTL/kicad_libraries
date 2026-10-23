@@ -3865,3 +3865,219 @@ def test_add_model_duplicate_is_noted(qtbot, make_item_dialog, tmp_path, monkeyp
     assert MUTED.lower() in note.styleSheet().lower()
     assert dialog._candidate is candidate and len(dialog._candidate.models) == 1
     assert dialog._gen == gen
+
+
+# -- Add 3D model... is busy-safe and every model package lives as long as it must (plan 07-08) ---------
+
+
+def model_zip(folder: Path, name: str = "model.zip", member: str = "extra.stp") -> Path:
+    from zipfixtures import STEP_BYTES, make_zip
+
+    folder.mkdir(parents=True, exist_ok=True)
+    return make_zip(folder / name, [(member, STEP_BYTES)])
+
+
+def gated_model_source(gates, started=None, events=None, packages=None):
+    """An open_model_source fake that waits for a gate, opens the real package and spies on its close."""
+
+    def open_source(path, repo_root, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        if started is not None:
+            started.set()
+        assert gate.wait(30)
+        package = import_dialog_module.open_model_source(path, repo_root, progress)
+        original = package.close
+        package.staging_at_open = package.staging_dir
+        if packages is not None:
+            packages.append(package)
+
+        def close():
+            if events is not None:
+                events.append("close")
+            original()
+
+        package.close = close
+        return package
+
+    return open_source
+
+
+def test_add_model_blocks_install_while_reading(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    from kicad_lib_manager.importer.form import UPDATING_REASON
+
+    started = threading.Event()
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=gated_model_source(gates, started))
+    assert dialog._install_btn.isEnabled()
+    pick_model(monkeypatch, model_zip(tmp_path / "dl"))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    assert not dialog._add_model_btn.isEnabled()
+    assert not dialog._install_btn.isEnabled()
+    assert dialog._strip.text() == UPDATING_REASON
+    assert dialog._model_note.isVisible() and dialog._model_note.text().startswith("Reading ")
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    wait_current(qtbot, dialog)
+    assert dialog._add_model_btn.isEnabled()
+    assert dialog._model_note.isHidden()
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    assert dialog._plan.model_file == "CSD85301Q2.stp"
+
+
+def test_add_model_result_after_change_is_dropped(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    started = threading.Event()
+    events: list[str] = []
+    packages: list = []
+    dialog = ul_dialog(
+        make_item_dialog, qtbot, open_model_source=gated_model_source(gates, started, events, packages)
+    )
+    pick_model(monkeypatch, model_zip(tmp_path / "dl"))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    dialog._change_btn.click()
+    assert dialog._stack.currentWidget() is dialog._start_page
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    assert events == ["close"]
+    staging = packages[0].staging_at_open
+    assert staging is not None and not staging.exists()
+    assert dialog._model_packages == []
+    assert dialog._candidate is None
+    assert dialog._stack.currentWidget() is dialog._start_page
+
+
+def test_add_model_close_while_reading_closes_package(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    started = threading.Event()
+    events: list[str] = []
+    packages: list = []
+    dialog = ul_dialog(
+        make_item_dialog, qtbot, open_model_source=gated_model_source(gates, started, events, packages)
+    )
+    pick_model(monkeypatch, model_zip(tmp_path / "dl"))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    threading.Timer(0.3, gates[-1].set).start()
+    began = time.monotonic()
+    dialog.reject()
+    assert time.monotonic() - began >= 0.2
+    qtbot.wait(100)  # a queued result must not close the package a second time
+    assert events == ["close"]
+    assert dialog._model_packages == []
+    staging = packages[0].staging_at_open
+    assert staging is not None and not staging.exists()
+
+
+def test_add_model_package_open_until_install_ends(qtbot, make_install_dialog, gates, tmp_path, monkeypatch):
+    events: list[str] = []
+    packages: list = []
+    seen: dict = {}
+    started = threading.Event()
+
+    def apply(plan, *, backup_root=None, progress=None):
+        sources = [op.source.path for op in plan.ops if op.source is not None]
+        seen["exist"] = [path.exists() for path in sources]
+        seen["sources"] = sources
+        events.append("apply_start")
+        started.set()
+        result = real_apply_plan(plan, backup_root=backup_root, progress=progress)
+        events.append("apply_end")
+        return result
+
+    def open_source(path, repo_root, progress=None):
+        package = import_dialog_module.open_model_source(path, repo_root, progress)
+        original = package.close
+
+        def close():
+            events.append("close")
+            original()
+
+        package.close = close
+        packages.append(package)
+        return package
+
+    dialog = make_install_dialog(apply_plan=apply, open_model_source=open_source)
+    attach_model(qtbot, dialog, monkeypatch, model_zip(tmp_path / "dl"))
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    staging = packages[0].staging_dir
+    assert staging is not None and staging.is_dir()
+    with qtbot.waitSignal(dialog.installed, timeout=60000):
+        dialog._install_btn.click()
+    assert seen["exist"] and all(seen["exist"])
+    assert any(staging in path.parents for path in seen["sources"])  # the install read the model package
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing(), timeout=30000)
+    assert staging.is_dir() and "close" not in events  # still open after apply_plan returned
+
+    dialog.reject()
+    assert not staging.exists()
+    assert events.index("apply_end") < events.index("close")
+    assert events.count("close") == 1
+
+
+def test_add_model_change_closes_model_package(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    attach_model(qtbot, dialog, monkeypatch, model_zip(tmp_path / "dl"))
+    assert len(dialog._model_packages) == 1
+    staging = dialog._model_packages[0].staging_dir
+    assert staging is not None and staging.is_dir()
+    dialog._change_btn.click()
+    assert not staging.exists()
+    assert dialog._model_packages == []
+
+
+def test_add_model_disabled_while_installing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+    assert dialog._add_model_btn.isEnabled()
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    assert not dialog._add_model_btn.isEnabled()
+    assert dialog._model_busy()
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing(), timeout=30000)
+
+
+def test_add_model_runs_off_gui_thread(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from kicad_lib_manager.importer.adapters.base import attach_models as real_attach_models
+
+    main = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def spy(name, fn):
+        def wrapper(*args, **kwargs):
+            seen[name] = threading.get_ident()
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    dialog = ul_dialog(
+        make_item_dialog,
+        qtbot,
+        open_model_source=spy("open_model_source", import_dialog_module.open_model_source),
+        attach_models=spy("attach_models", real_attach_models),
+    )
+    attach_model(qtbot, dialog, monkeypatch, model_zip(tmp_path / "dl"))
+    assert set(seen) == {"open_model_source", "attach_models"}
+    assert all(ident != main for ident in seen.values())
+
+
+def test_add_model_worker_failure_logged(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    def broken(path, repo_root, progress=None):
+        raise RuntimeError("disk on fire")
+
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=broken)
+    candidate = dialog._candidate
+    logged: list = []
+    dialog.issues_logged.connect(logged.append)
+    attach_model(qtbot, dialog, monkeypatch, tmp_path / "anything.stp")
+    assert [i.code for i in logged[-1]] == ["import.step_failed"]
+    assert logged[-1][0].severity is Severity.ERROR
+    note = dialog._model_note
+    assert note.isVisible() and "disk on fire" in note.text()
+    assert AMBER.lower() in note.styleSheet().lower()
+    assert dialog._add_model_btn.isEnabled()
+    assert dialog._candidate is candidate
+    assert dialog._install_btn.isEnabled()
