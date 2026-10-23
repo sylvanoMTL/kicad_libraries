@@ -42,11 +42,30 @@ SNIFF_FILES = 8
 
 
 @dataclass(frozen=True)
+class PartHints:
+    """Metadata a vendor ships beside the symbol (SamacSys part_info.txt); symbol properties always win (D-11)."""
+
+    category: str = ""
+    manufacturer: str = ""
+    mpn: str = ""
+
+
+@dataclass(frozen=True)
 class Detection:
+    """A vendor claim on a package.
+
+    hints is package metadata that fills PartMeta gaps. ignored_note replaces the generic
+    "Not imported from ..." Issue when this detection wins (D-16). notes are extra intake Issues
+    the winning adapter wants shown.
+    """
+
     vendor: str
     confidence: float
     reasons: tuple[str, ...] = ()
     rules: FieldRules = GENERIC_RULES
+    hints: PartHints | None = None
+    ignored_note: Issue | None = None
+    notes: tuple[Issue, ...] = ()
 
 
 class Adapter(Protocol):
