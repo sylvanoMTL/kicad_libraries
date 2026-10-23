@@ -182,10 +182,16 @@ def symbol_pin_numbers(root: Node, name: str) -> set[str]:
 
 
 def footprint_pad_numbers(footprint_node: Node) -> set[str]:
-    """Numbers of the footprint's direct pad children; pads with an empty number (mounting holes) are ignored."""
+    """Numbers of the footprint's direct pad children.
+
+    Pads with an empty number and non-plated holes (np_thru_hole) are ignored, because a mounting
+    hole carries no net; a plated pad that is named "None" still counts.
+    """
     found = set()
     for child in footprint_node.children:
         if child.head == "pad" and len(child.children) >= 2:
+            if len(child.children) >= 3 and _token_text(child.children[2]) == "np_thru_hole":
+                continue
             number = _token_text(child.children[1])
             if number:
                 found.add(number)
