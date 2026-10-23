@@ -253,7 +253,7 @@ Plans:
   2. A real SamacSys / CSE zip in `downloaded_examples/` is recognised, and its KiCad v6+ symbol, footprint and 3D model are found. Legacy `.lib` / `.dcm` files alongside them are ignored instead of causing a rejection.
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
 
-**Plans**: 6/9 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2)
+**Plans**: 7/9 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2)
 
 Plans:
 **Wave 1**
@@ -274,7 +274,7 @@ Plans:
 
 **Gap closure** *(07-UAT.md gap G-07-2: SnapEDA ships its 3D model as a separate download)*
 **Gap wave 1**
-- [ ] 07-07-PLAN.md — Tracer: SnapEDA CAD zip plus a separate model zip through Add 3D model..., install linked as ${CUSTOM_3DMODEL_DIR}/<MPN>.stp; open_model_source (model-only zip with every Phase 3 refusal, bare .step/.stp/.wrl read in place behind link, regular-file, handle and size checks); attach_models (magic, clash, duplicate rules); plan contract unchanged (gap wave 1)
+- [x] 07-07-PLAN.md — Tracer: SnapEDA CAD zip plus a separate model zip through Add 3D model..., install linked as ${CUSTOM_3DMODEL_DIR}/<MPN>.stp; open_model_source (model-only zip with every Phase 3 refusal, bare .step/.stp/.wrl read in place behind link, regular-file, handle and size checks); attach_models (magic, clash, duplicate rules); plan contract unchanged (gap wave 1)
 
 **Gap wave 2** *(blocked on gap wave 1 completion)*
 - [ ] 07-08-PLAN.md — Dialog: every model-row state, user edits kept, plain-text refusal note, Install blocked while a model is read, model packages open until apply_plan returns and released on Change.../close, help page (gap wave 2)
@@ -295,7 +295,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
 | 6. Git Commit Step | 8/8 | Complete    | 2026-10-23 |
-| 7. SnapEDA and SamacSys Adapters | 6/6 | In Progress | - |
+| 7. SnapEDA and SamacSys Adapters | 7/9 | In Progress | - |
 
 ## Backlog
 
