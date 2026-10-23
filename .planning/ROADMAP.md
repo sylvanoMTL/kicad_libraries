@@ -254,7 +254,7 @@ Plans:
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
   4. The user can add a separately downloaded SnapEDA 3D model (a bare `.step` / `.stp` / `.wrl`, or a zip holding one) to the SnapEDA CAD package in the import dialog. It installs as `Custom/3DModels/<MPN>.<ext>` linked as `${CUSTOM_3DMODEL_DIR}/<file>`, every intake safety check applies to it, and nothing is written before the preview (gap G-07-2).
 
-**Plans**: 7/9 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2)
+**Plans**: 9/9 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2)
 
 Plans:
 **Wave 1**
@@ -278,8 +278,8 @@ Plans:
 - [x] 07-07-PLAN.md — Tracer: SnapEDA CAD zip plus a separate model zip through Add 3D model..., install linked as ${CUSTOM_3DMODEL_DIR}/<MPN>.stp; open_model_source (model-only zip with every Phase 3 refusal, bare .step/.stp/.wrl read in place behind link, regular-file, handle and size checks); attach_models (magic, clash, duplicate rules); plan contract unchanged (gap wave 1)
 
 **Gap wave 2** *(blocked on gap wave 1 completion)*
-- [ ] 07-08-PLAN.md — Dialog: every model-row state, user edits kept, plain-text refusal note, Install blocked while a model is read, model packages open until apply_plan returns and released on Change.../close, help page (gap wave 2)
-- [ ] 07-09-PLAN.md — Real SnapEDA model download opened, attached and installed when present, kept git-ignored, originality guard extended; FMT2-02 moved into v1 in REQUIREMENTS, PROJECT, ROADMAP and 07-CONTEXT (gap wave 2)
+- [x] 07-08-PLAN.md — Dialog: every model-row state, user edits kept, plain-text refusal note, Install blocked while a model is read, model packages open until apply_plan returns and released on Change.../close, help page (gap wave 2)
+- [x] 07-09-PLAN.md — Real SnapEDA model download opened, attached and installed when present, kept git-ignored, originality guard extended; FMT2-02 moved into v1 in REQUIREMENTS, PROJECT, ROADMAP and 07-CONTEXT (gap wave 2)
 
 **Research flag**: Unblocked (2026-10-23): both real downloads are in `downloaded_examples/` (local only, licence-restricted). The SnapEDA CAD zip ships no 3D model, and the model is a separate download attached per criterion 4; SamacSys ships legacy files alongside v6 files.
 
@@ -296,7 +296,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
 | 6. Git Commit Step | 8/8 | Complete    | 2026-10-23 |
-| 7. SnapEDA and SamacSys Adapters | 7/9 | In Progress | - |
+| 7. SnapEDA and SamacSys Adapters | 9/9 | In Progress | - |
 
 ## Backlog
 
