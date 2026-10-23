@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from vendorfixtures import SNAPEDA_SYMBOL, snapeda_members
+from vendorfixtures import HOW_TO_IMPORT_HTM, SNAPEDA_SYMBOL, snapeda_members
 from zipfixtures import footprint, make_zip, symbol_lib
 
 from kicad_lib_manager.importer.detect import detect_candidate
@@ -47,3 +47,55 @@ def test_snapeda_detect_survives_unreadable_symbol(tmp_path):
         files=[PackageFile("a.kicad_sym", tmp_path / "missing.kicad_sym", "symbol", 1, "0" * 64, True)],
     )
     assert SnapEDAAdapter().detect(package) is None
+
+
+def test_snapeda_full_zip_scores_max(tmp_path):
+    zip_path = make_zip(tmp_path / "full.zip", snapeda_members())
+    from kicad_lib_manager.importer.adapters.snapeda import SnapEDAAdapter
+
+    with open_package(zip_path, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+        detection = SnapEDAAdapter().detect(package)
+    assert candidate is not None
+    assert candidate.vendor == "SnapEDA"
+    assert candidate.confidence == 1.0
+    assert detection is not None
+    assert "how-to-import.htm" in detection.reasons
+    assert "how-to-import.htm points to snapeda.com" in detection.reasons
+
+
+def test_how_to_import_alone(tmp_path):
+    generic = [("a.kicad_sym", symbol_lib(("A",))), ("b.kicad_mod", footprint("B"))]
+    claimed = make_zip(tmp_path / "claimed.zip", [*generic, ("how-to-import.htm", HOW_TO_IMPORT_HTM)])
+    with open_package(claimed, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+    assert candidate is not None
+    assert candidate.vendor == "SnapEDA"
+    assert candidate.confidence == 0.5
+
+    unlinked = make_zip(tmp_path / "unlinked.zip", [*generic, ("how-to-import.htm", b"<html>see the docs</html>")])
+    with open_package(unlinked, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+    assert candidate is not None
+    assert candidate.vendor == "Unknown"
+
+
+def test_snapeda_folder_beats_loose(tmp_path):
+    folder = tmp_path / "snapeda_folder"
+    folder.mkdir()
+    for name, data in snapeda_members():
+        (folder / name).write_bytes(data)
+    with open_package(folder, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+    assert candidate is not None
+    assert candidate.vendor == "SnapEDA"
+
+
+def test_snapeda_detect_twice_same_candidate(tmp_path):
+    zip_path = make_zip(tmp_path / "twice.zip", snapeda_members())
+    with open_package(zip_path, REPO_ROOT) as package:
+        first, _ = detect_candidate(package)
+        issues_after_first = list(package.issues)
+        second, _ = detect_candidate(package)
+        assert list(package.issues) == issues_after_first
+    assert first == second

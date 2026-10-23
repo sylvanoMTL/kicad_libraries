@@ -683,3 +683,113 @@ def test_open_package_never_raises_on_expected_faults(case, tmp_path, _tmpdir, m
     assert _codes(package) == [expected]
     assert package.files == []
     assert package.staging_dir is None
+
+
+# -- D-13: marker texts held in memory, bounded, never written -------------------
+
+
+def _skipped(package):
+    return [i for i in package.issues if i.code == "intake.marker_skipped"]
+
+
+def test_markers_held_in_memory_only(tmp_path, _tmpdir):
+    zip_path = make_zip(
+        tmp_path / "markers.zip",
+        [
+            ("part.kicad_sym", symbol_lib()),
+            ("FP.kicad_mod", footprint()),
+            ("license.txt", b"licence text"),
+            ("sub/part_info.txt", b"part info"),
+            ("how-to-import.htm", b"<html>how</html>"),
+            ("readme.txt", b"not a marker"),
+        ],
+    )
+    with open_package(zip_path, REPO_ROOT) as package:
+        assert _errors(package) == []
+        assert package.markers == {
+            "license.txt": b"licence text",
+            "sub/part_info.txt": b"part info",
+            "how-to-import.htm": b"<html>how</html>",
+        }
+        staged = sorted(p.name for p in package.staging_dir.iterdir())
+        assert staged and all(re.fullmatch(r"(sym|fp|model)_\d{3}\.\w+", n) for n in staged)
+        assert _skipped(package) == []
+
+
+def test_marker_over_cap_skipped(tmp_path, _tmpdir, monkeypatch):
+    monkeypatch.setattr(pkg, "MAX_MARKER_BYTES", 16)
+    zip_path = make_zip(
+        tmp_path / "big.zip",
+        [("part.kicad_sym", symbol_lib()), ("license.txt", b"x" * 17), ("part_info.txt", b"y" * 16)],
+    )
+    with open_package(zip_path, REPO_ROOT) as package:
+        assert package.refused is False
+        assert "license.txt" not in package.markers
+        assert package.markers == {"part_info.txt": b"y" * 16}
+        skipped = _skipped(package)
+        assert len(skipped) == 1
+        assert skipped[0].severity is Severity.INFO
+        assert "license.txt" in skipped[0].text
+
+
+def test_marker_corrupt_member_skipped(tmp_path, _tmpdir):
+    data = zip_bytes(
+        [("p.kicad_sym", symbol_lib(("PART",))), ("license.txt", b"licence text, repeated. " * 20)],
+        compression=zipfile.ZIP_LZMA,
+    )
+    path = tmp_path / "bad_marker.zip"
+    path.write_bytes(corrupt_member(data, 1, _FLIP_OFFSET))
+    with open_package(path, REPO_ROOT) as package:
+        assert _errors(package) == []
+        assert package.refused is False
+        assert "license.txt" not in package.markers
+        skipped = _skipped(package)
+        assert len(skipped) == 1 and skipped[0].severity is Severity.INFO
+        assert "license.txt" in skipped[0].text
+        assert [f.member for f in package.files] == ["p.kicad_sym"]
+
+
+def test_marker_limits(tmp_path, _tmpdir, monkeypatch):
+    members = [
+        ("part.kicad_sym", symbol_lib()),
+        ("__MACOSX/._license.txt", b"junk"),
+        ("docs/readme.txt", b"readme"),
+        ("license.txt", b"first"),
+        ("part_info.txt", b"second"),
+    ]
+    zip_path = make_zip(tmp_path / "limits.zip", members)
+    with open_package(zip_path, REPO_ROOT) as package:
+        assert set(package.markers) == {"license.txt", "part_info.txt"}
+    monkeypatch.setattr(pkg, "MAX_MARKERS", 1)
+    with open_package(zip_path, REPO_ROOT) as package:
+        assert package.markers == {"license.txt": b"first"}
+        assert package.refused is False
+
+
+def test_marker_nested_and_folder(tmp_path, _tmpdir):
+    inner = zip_bytes([("p.kicad_sym", symbol_lib()), ("license.txt", b"inner licence")])
+    outer = make_zip(tmp_path / "outer.zip", [("inner.zip", inner)])
+    with open_package(outer, REPO_ROOT) as package:
+        assert _errors(package) == []
+        assert package.markers == {"inner.zip/license.txt": b"inner licence"}
+        assert package.marker_text("license.txt") == "inner licence"
+
+    folder = tmp_path / "loose"
+    folder.mkdir()
+    (folder / "p.kicad_sym").write_bytes(symbol_lib())
+    (folder / "license.txt").write_bytes(b"folder licence")
+    (folder / "notes.txt").write_bytes(b"other")
+    with open_package(folder, REPO_ROOT) as package:
+        assert package.markers == {"license.txt": b"folder licence"}
+        assert [f.member for f in package.files] == ["p.kicad_sym"]
+    assert (folder / "license.txt").read_bytes() == b"folder licence"
+
+
+def test_marker_text_shallowest():
+    package = pkg.Package(Path("x.zip"), "zip")
+    package.markers = {"a/b/license.txt": b"deep", "license.txt": b"\xef\xbb\xbftop"}
+    assert package.marker_text("LICENSE.TXT") == "top"
+    assert package.marker_text("part_info.txt") is None
+    package.markers = {"license.txt": b"bad \xff\xfe bytes"}
+    text = package.marker_text("license.txt")
+    assert text is not None and "\ufffd" in text
