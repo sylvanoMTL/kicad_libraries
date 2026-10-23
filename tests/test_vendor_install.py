@@ -4,6 +4,7 @@ Every test builds its own Custom/ under ``tmp_path`` and its own vendor zip from
 No test reads the owner's real ``Custom/`` tree or a real vendor download.
 """
 
+import dataclasses
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -25,7 +26,7 @@ from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.fieldrules import GENERIC_RULES
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
-from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
+from kicad_lib_manager.importer.plan import FieldChange, InstallOptions, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.importer.preview import preview_sections
 from kicad_lib_manager.kicad_files import (
@@ -189,3 +190,59 @@ def test_remove_property_edit_basic():
     assert loaded.source.eol == "\r\n"
     assert text.count("\r\n") == text.count("\n")
     assert "\r\n\r\n" not in text
+
+
+# -- the Field changes preview section (D-09, PREV-07) ----------------------------------------------
+
+
+def _field_rows(sections):
+    return next((s for s in sections if s.name == "Field changes"), None)
+
+
+def test_field_changes_section(ul_package, tmp_path):
+    layout = _snapeda_layout(tmp_path)
+    with _open_snapeda(tmp_path) as (package, candidate):
+        plan, options = _plan_snapeda(candidate, layout)
+        sections = preview_sections(plan, candidate, options)
+        names = [s.name for s in sections]
+        assert names.index("Field changes") == names.index("Path rewrites") + 1
+
+        section = _field_rows(sections)
+        assert len(section.rows) == len(plan.field_changes)
+        by_text = {row.text: row for row in section.rows}
+        assert by_text["Drop Price"].detail == "None → (removed): price or stock data goes stale"
+        assert "Drop Check_prices" in by_text
+        assert "Drop Availability" in by_text
+        assert all(row.kind == "rewrite" and row.tone == "default" for row in section.rows)
+
+    _, ul_candidate = ul_package
+    write_custom_layout(tmp_path / "ul", ["IC_Battery_Charger_TI"], ["IC_Battery_Charger_TI"])
+    ul_options = InstallOptions(library="IC_Battery_Charger_TI")
+    ul_plan = build_plan(ul_candidate, ul_options, RepoLayout.for_repo(tmp_path / "ul"), ToolContext())
+    assert _field_rows(preview_sections(ul_plan, ul_candidate, ul_options)) is None
+
+
+def test_field_change_row_format(tmp_path):
+    layout = _snapeda_layout(tmp_path)
+    with _open_snapeda(tmp_path) as (package, candidate):
+        plan, options = _plan_snapeda(candidate, layout)
+        note = "a" * 30 + "\n" + "b" * 10 + "\t" + "c" * 28
+        assert len(note) == 70
+        changes = (
+            FieldChange("A", "drop", "Note", note, "", "placeholder"),
+            FieldChange("A", "drop", "Height", "", "", "placeholder"),
+            FieldChange("B", "clean", "Description", "x  y", "x y", "whitespace"),
+            FieldChange("B", "rename", "MF", "", "Manufacturer", "alias"),
+        )
+        rows = _field_rows(preview_sections(dataclasses.replace(plan, field_changes=changes), candidate, options)).rows
+        escaped = note.replace("\n", "\\n").replace("\t", "\\t")
+        assert [(r.text, r.detail) for r in rows] == [
+            ("A: Drop Note", escaped[:57] + "... → (removed): empty or placeholder value"),
+            ("A: Drop Height", "(empty) → (removed): empty or placeholder value"),
+            ("B: Clean Description", "x  y → x y"),
+            ("B: Rename MF", "→ Manufacturer"),
+        ]
+
+        single = dataclasses.replace(plan, field_changes=changes[:1])
+        only = _field_rows(preview_sections(single, candidate, options)).rows
+        assert [r.text for r in only] == ["Drop Note"]
