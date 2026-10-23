@@ -55,6 +55,12 @@ Filled in by the planner/executor per task. Requirement → test map from RESEAR
 | D-01 | Fixtures parse, markers present, originality guard against the real zips (skips if absent), every synthetic member < 4 KiB | unit | `pytest tests/test_vendorfixtures.py -q` | ✅ | ✅ green |
 | D-02 | `.gitignore` ignores the two vendor zips and keeps `ul_CSD85301Q2.zip` tracked | scripted | `git check-ignore -v downloaded_examples/LIB_RS3-1212S_H3.zip downloaded_examples/USB4145-03-0170-C_REVA2.zip` and `git ls-files downloaded_examples` | n/a | ✅ green |
 | Layering | New importer modules registered; `fieldrules` imports nothing | unit | `pytest tests/test_importer_layering.py tests/test_layering.py -q` | ✅ | ✅ green |
+| FMT2-02 (G-07-2) | `open_model_source`: model-only zip intake (non-model members listed, never written; every Phase 3 hostile-zip refusal; `intake.no_model_in_source`), bare .step/.stp/.wrl read in place behind lstat / reparse / handle / size checks | unit | `pytest tests/test_model_source.py tests/test_package_zip.py tests/test_package_folder.py -q` | ✅ | ✅ green |
+| FMT2-02 (G-07-2) | `attach_models`: magic check, casefolded clash rename, SHA-256 dedupe, `intake.no_model` dropped, `intake.model_attached`; attach → build_plan → apply_plan links `${CUSTOM_3DMODEL_DIR}/<MPN>.stp`; source edited or closed after preview is refused | unit + integration | `pytest tests/test_model_attach.py tests/test_vendor_install.py -q` | ✅ | ✅ green |
+| FMT2-02 (G-07-2) | Dialog "Add 3D model...": tracer end to end, every row state, edits preserved, refusal / duplicate note, Install blocked while reading, model packages released on Change / open / close; help page uses `ADD_MODEL_TEXT` | integration (Qt) | `pytest tests/test_import_dialog.py tests/test_help_dialog.py -k "add_model or help" -q` | ✅ | ✅ green |
+| FMT2-02 (G-07-2) | Real SnapEDA model zip opens (one .stp, 2443718 bytes) and installs with the real CAD zip as `USB4145-03-0170-C.stp` (skips by file name if absent); model zip git-ignored; originality guard covers the synthetic model download | integration | `pytest tests/test_real_vendor_samples.py tests/test_vendorfixtures.py -q` | ✅ | ✅ green |
+| Contract | `plan.py`, `planner.py`, `applier.py`, `commit_plan.py`, `preview.py`, `candidate.py` unchanged by the gap closure; `_lstat` patched on the module, never on `os` | scripted | `git diff --quiet c2b75c8 -- <six modules>`; `grep "^_lstat = os.lstat" kicad_lib_manager/importer/package.py` | n/a | ✅ green |
+| Docs | FMT2-02 in v1 traced to Phase 7; PROJECT Out of Scope reversed; ROADMAP Phase 7 criterion 4; 07-CONTEXT amended | scripted | 07-09 Task 2 `python -I -c ...` docs check | n/a | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -78,7 +84,7 @@ Framework install: none (pytest, pytest-qt and kicad-cli already present).
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| Both real downloads import through the GUI with the right vendor label, a readable "Field changes" preview and the expected names | INTK-03, INTK-04 | The real zips are local only (D-01/D-02), and preview readability needs a human | Open each real zip from `downloaded_examples/` in the Import dialog. Confirm the vendor shows as `SnapEDA` / `SamacSys`, and the "Field changes" section lists the dropped and cleaned fields. Confirm SnapEDA suggests `Connector_USB_GCT` and warns that no 3D model was found. Confirm SamacSys suggests `PowerSupply_SubCategory_RECOM`, the model links as `${CUSTOM_3DMODEL_DIR}/RS3-1212S_H3.stp`, and the log shows one "Not imported: other-CAD folders ..." line. Install into a scratch copy of `Custom/`, or cancel at the preview. If committing, check that the trailer reads `Import-Vendor: SnapEDA` / `SamacSys`. |
+| Both real downloads import through the GUI with the right vendor label, a readable "Field changes" preview and the expected names | INTK-03, INTK-04 | The real zips are local only (D-01/D-02), and preview readability needs a human | Open each real zip from `downloaded_examples/` in the Import dialog. Confirm the vendor shows as `SnapEDA` / `SamacSys`, and the "Field changes" section lists the dropped and cleaned fields. Confirm SnapEDA suggests `Connector_USB_GCT` and warns that no 3D model was found. Then (G-07-2) click "Add 3D model...", pick `downloaded_examples/194150990-659-usb4145-03-0170-c.zip`, and confirm the model row shows `usb4145-03-0170-c.stp`, the preview's Files section lists `Custom/3DModels/USB4145-03-0170-C.stp`, and the warning is gone. Confirm SamacSys suggests `PowerSupply_SubCategory_RECOM`, the model links as `${CUSTOM_3DMODEL_DIR}/RS3-1212S_H3.stp`, and the log shows one "Not imported: other-CAD folders ..." line. Install into a scratch copy of `Custom/`, or cancel at the preview. If committing, check that the trailer reads `Import-Vendor: SnapEDA` / `SamacSys`. |
 
 ---
 
@@ -91,7 +97,7 @@ Framework install: none (pytest, pytest-qt and kicad-cli already present).
 - [x] Feedback latency < 120s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** validated 2026-10-23 (validate-phase audit after execution: 13/13 rows green in the main checkout with both real zips and kicad-cli present, no skips; full suite 1891 passed, failures identical to the 21-id baseline)
+**Approval:** validated 2026-10-23 (validate-phase audit after execution: 13/13 rows green in the main checkout with both real zips and kicad-cli present, no skips; full suite 1891 passed, failures identical to the 21-id baseline). Re-validated 2026-10-24 after gap closure 07-07..07-09 (G-07-2): 19/19 rows green in the main checkout with both real SnapEDA zips present; full suite 1946 passed, failures identical to the 21-id baseline.
 
 ## Validation Audit 2026-10-23
 
@@ -100,3 +106,12 @@ Framework install: none (pytest, pytest-qt and kicad-cli already present).
 | Gaps found | 0 |
 | Resolved | 0 |
 | Escalated | 0 |
+
+## Validation Audit 2026-10-23
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+| Rows added (G-07-2) | 6 |
