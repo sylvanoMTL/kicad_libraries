@@ -31,6 +31,7 @@ from kicad_lib_manager.importer.suggest import (
     manufacturer_token,
     placeholder_tokens,
     suggest_library,
+    type_choice,
 )
 from kicad_lib_manager.models import Severity
 
@@ -413,6 +414,43 @@ def test_placeholder_contract_on_edited_name(tmp_path):
     suggestion = _suggest(_ul_meta(), _existing(tmp_path))
     assert placeholder_tokens(suggestion.name) == ["SubCategory"]
     assert placeholder_tokens("Type_SubCategory_Manufacturer") == ["Type", "SubCategory", "Manufacturer"]
+
+
+# -- Phase 7: PS reference, RECOM alias and the part_info PartCategory (D-11, D-12) -------------------
+
+
+def test_reference_ps_is_powersupply():
+    assert type_choice("PS") == TokenChoice("PowerSupply", "reference", True)
+
+
+def test_recom_aliases():
+    expected = TokenChoice("RECOM", "name_alias", True)
+    for value in ("RECOM", "RECOM Power", "Recom Power GmbH"):
+        assert manufacturer_token(value) == expected
+
+
+def test_part_category_maps_first():
+    assert type_choice("U", "Power Supply") == TokenChoice("PowerSupply", "part_info", True)
+    assert type_choice("U", "Connectors") == TokenChoice("Connector", "part_info", True)
+    assert type_choice("J", "Integrated Circuit") == TokenChoice("IC", "part_info", True)
+
+
+def test_unmapped_category_falls_back(tmp_path):
+    assert type_choice("PS", "Fancy Widgets") == TokenChoice("PowerSupply", "reference", True)
+    assert type_choice("Z", "Fancy Widgets") == TokenChoice("Type", "placeholder", False)
+    for reference in ("PS", "Z", ""):
+        meta = PartMeta("X", reference=reference, category="Fancy Widgets", description="Fancy widgets")
+        name = _suggest(meta, _existing(tmp_path)).name
+        assert "Fancy" not in name and "Widgets" not in name
+
+
+def test_part_info_type_limits_vocab():
+    existing = [ExistingLibrary("IC_Isolated_TI", True, True), ExistingLibrary("PowerSupply_Converter_RECOM", True, True)]
+    text = "isolated converter"
+    by_reference = _suggest(PartMeta("X", reference="U", description=text), existing)
+    assert (by_reference.type.token, by_reference.subcategory.token) == ("IC", "Isolated")
+    by_category = _suggest(PartMeta("X", reference="U", category="Power Supply", description=text), existing)
+    assert (by_category.type, by_category.subcategory.token) == (TokenChoice("PowerSupply", "part_info", True), "Converter")
 
 
 def test_suggest_live_custom():
