@@ -72,6 +72,7 @@ _CLOSING_EMPTY = "Check that you downloaded the KiCad format, then pick another 
 _CHECKLIST_ROWS = 6  # footprint rows shown before the list scrolls
 _LINKED_SUFFIX = "  (linked)"
 _NO_MODEL = "No model"
+ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
 _BLANK_FIELD_HINT = "Empty - the field will be written blank"
 _NO_FOOTPRINT_FIELD = "(none)"
 _TOKEN_HINT = "Amber parts are guesses or placeholders. Pick an existing library or type a real name."
@@ -1368,7 +1369,7 @@ class ImportDialog(QDialog):
             self._fp_label = self._item_label("No footprint in this package", missing=True)
             form.addRow("Footprints", self._fp_label)
 
-        # 3D model: several give a combo that ends with "No model"; Add 3D model... sits beside it
+        # 3D model: several give a combo that ends with "No model"; Add 3D model... sits under it
         form.addRow("3D model", self._build_model_row())
 
         self._reset_fp_name()
@@ -1403,7 +1404,7 @@ class ImportDialog(QDialog):
         lay.addWidget(widget)
         if self._model_combo is not None:
             self._model_combo.currentIndexChanged.connect(self._on_model_changed)
-        button = QPushButton("Add 3D model...")
+        button = QPushButton(ADD_MODEL_TEXT)
         button.setAutoDefault(False)
         button.setDefault(False)
         button.clicked.connect(self._on_add_model)

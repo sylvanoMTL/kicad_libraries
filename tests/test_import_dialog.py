@@ -3708,7 +3708,7 @@ def test_add_model_button_on_every_row_state(qtbot, make_item_dialog, tmp_path):
     for dialog in (one, several, none):
         assert dialog._add_model_btn is not None
         assert dialog._add_model_btn.isEnabled()
-        assert dialog._add_model_btn.text() == "Add 3D model..."
+        assert dialog._add_model_btn.text() == import_dialog_module.ADD_MODEL_TEXT
 
 
 def test_add_model_to_part_with_model_selects_it(qtbot, make_item_dialog, recorded, tmp_path, monkeypatch):

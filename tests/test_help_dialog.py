@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTreeWidgetI
 from kicad_lib_manager.importer.commit_plan import CommitFile, CommitPlan
 from kicad_lib_manager.importer.commit_step import CommitProbe
 from kicad_lib_manager.importer.plan import Conflict, InstallResult
+from kicad_lib_manager.widgets import import_dialog
 from kicad_lib_manager.widgets.commit_panel import CommitPanel
 from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
@@ -94,6 +95,16 @@ def test_help_import_page_matches_finished_flow(qtbot, tmp_path):
     for label in ("Warnings", "Library list", "Library tables", "Files written", "Backup folder", "Open folder"):
         assert any(text.startswith(label) for text in shown), f"the view no longer shows {label!r}"
         assert label in page, label
+
+
+def test_help_import_page_describes_add_model():
+    page = _page_text("importing")
+    assert import_dialog.ADD_MODEL_TEXT in page
+    for text in (".zip", ".step", ".stp", ".wrl"):
+        assert text in page, text
+    items = page[page.index("Items"):page.index("Target library")]
+    assert "SnapEDA" in items
+    assert import_dialog.ADD_MODEL_TEXT in items
 
 
 def test_help_import_page_failure_and_tables_claims():

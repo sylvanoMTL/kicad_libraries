@@ -4,6 +4,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from .import_dialog import ADD_MODEL_TEXT
 from .theme import AMBER
 
 CSS = """
@@ -220,6 +221,10 @@ HELP_PAGES["importing"] = _wrap(
     "<h3>Items</h3>"
     "<p>Pick the symbol, the footprints and the 3D model to import. The first "
     "checked footprint is the one linked to the symbol.</p>"
+    "<p>SnapEDA ships the 3D model as a separate download. Click <b>" + ADD_MODEL_TEXT + "</b> "
+    "on the 3D model row and pick the <code>.step</code>, <code>.stp</code> or "
+    "<code>.wrl</code> file, or the <code>.zip</code> that holds it. The added model is "
+    "checked like a package, and it shows in the preview before anything is written.</p>"
     "<h3>Target library</h3>"
     "<p>Choose an existing <code>Custom/</code> library or type a new name. Amber "
     "parts of a suggested name are guesses. Install stays blocked while the name "
