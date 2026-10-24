@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from .import_dialog import ADD_MODEL_TEXT
+from .import_dialog import ADD_MODEL_TEXT, REMOVE_MODEL_TEXT
 from .theme import AMBER
 
 CSS = """
@@ -224,7 +224,11 @@ HELP_PAGES["importing"] = _wrap(
     "<p>SnapEDA ships the 3D model as a separate download. Click <b>" + ADD_MODEL_TEXT + "</b> "
     "on the 3D model row and pick the <code>.step</code>, <code>.stp</code> or "
     "<code>.wrl</code> file, or the <code>.zip</code> that holds it. The added model is "
-    "checked like a package, and it shows in the preview before anything is written.</p>"
+    "checked like a package, and it shows in the preview before anything is written. "
+    "If the file is not a usable 3D model, or a <code>.zip</code> holds any file that is not, "
+    "nothing from it is added: the 3D model row shows why in red and <b>Install Part</b> "
+    "stays blocked. Click <b>" + REMOVE_MODEL_TEXT + "</b> to clear it, or <b>" + ADD_MODEL_TEXT
+    + "</b> to pick another file.</p>"
     "<h3>Target library</h3>"
     "<p>Choose an existing <code>Custom/</code> library or type a new name. Amber "
     "parts of a suggested name are guesses. Install stays blocked while the name "

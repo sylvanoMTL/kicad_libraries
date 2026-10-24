@@ -137,15 +137,48 @@ def test_attach_rejects_wrong_magic(tmp_path):
         assert candidate.models == ()
 
 
-def test_attach_keeps_good_drops_bad(tmp_path):
+def test_attach_rejects_partly_bad_zip(tmp_path):
+    """G-07-5: one failing file rejects the whole source; the good file beside it is not attached."""
     source = _zip(tmp_path, "two.zip", [("good.stp", STEP_BYTES), ("bad.step", b"MZ not a model")])
     with _candidate(tmp_path) as candidate:
         with open_model_source(source, REPO_ROOT) as model_package:
             attached, issues = attach_models(candidate, model_package)
-        assert attached is not None
-        assert [m.filename for m in attached.models] == ["good.stp"]
-        assert _codes(issues, Severity.WARNING) == ["intake.content_mismatch"]
-        assert "bad.step" in next(i for i in issues if i.code == "intake.content_mismatch").text
+        assert attached is None
+        assert _codes(issues, Severity.ERROR) == ["intake.unusable_model_in_source"]
+        error = next(i for i in issues if i.severity is Severity.ERROR)
+        assert "two.zip" in error.text and "bad.step" in error.text
+        assert "nothing from it was attached" in error.text
+        assert str(tmp_path) not in error.text
+        mismatch = [i for i in issues if i.code == "intake.content_mismatch"]
+        assert len(mismatch) == 1 and "bad.step" in mismatch[0].text
+        assert candidate.models == ()
+
+
+def test_attach_rejects_bad_beside_duplicate(tmp_path):
+    """A bad file beside a duplicate is the partly bad case: the duplicate passes the magic check."""
+    members = [*snapeda_members(), ("part.stp", STEP_BYTES)]
+    source = _zip(tmp_path, "mix.zip", [("dup.stp", STEP_BYTES), ("bad.stp", b"MZ not a model")])
+    with _candidate(tmp_path, members) as candidate:
+        with open_model_source(source, REPO_ROOT) as model_package:
+            attached, issues = attach_models(candidate, model_package)
+        assert attached is None
+        assert _codes(issues, Severity.ERROR) == ["intake.unusable_model_in_source"]
+        assert "intake.model_already_present" not in _codes(issues)
+        assert [m.filename for m in candidate.models] == ["part.stp"]
+
+
+def test_attach_rejects_all_bad_zip(tmp_path):
+    """A zip in which no model passes the check keeps the intake.no_model_in_source wording the user saw."""
+    source = _zip(tmp_path, "allbad.zip", [("a.stp", b"MZ not a model"), ("b.step", b"not a model either")])
+    with _candidate(tmp_path) as candidate:
+        with open_model_source(source, REPO_ROOT) as model_package:
+            attached, issues = attach_models(candidate, model_package)
+        assert attached is None
+        assert _codes(issues, Severity.ERROR) == ["intake.no_model_in_source"]
+        assert next(i for i in issues if i.severity is Severity.ERROR).text == "allbad.zip holds no usable 3D model"
+        assert _codes(issues, Severity.WARNING) == ["intake.content_mismatch", "intake.content_mismatch"]
+        assert "intake.unusable_model_in_source" not in _codes(issues)
+        assert candidate.models == ()
 
 
 def test_attach_refused_package(tmp_path):

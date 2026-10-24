@@ -1681,7 +1681,11 @@ class ImportDialog(QDialog):
         # Install is blocked as "Updating" until the plan that shows the model is current (T-07-29)
         self._update_install_state()
         worker.result.connect(lambda outcome, w=worker: self._on_model_attached(w, outcome))
-        worker.failed.connect(lambda text, w=worker: self._on_model_failed(w, text))
+        # The session and file name are bound now: a failure that arrives after Change... or a new open
+        # belongs to a package that is gone and must not block the next one (T-07-36)
+        worker.failed.connect(
+            lambda text, w=worker, s=session, n=path.name: self._on_model_failed(w, text, s, n)
+        )
         worker.start()
 
     def _end_model_worker(self, worker: TaskWorker):
@@ -1736,26 +1740,37 @@ class ImportDialog(QDialog):
                 # An unusable source blocks Install until the user removes it (G-07-5)
                 self._model_rejection = RejectedModel(outcome.package.source.name, errors[0])
                 self._show_rejection()
+            elif self._model_rejection is not None:
+                # An INFO duplicate attaches nothing: it goes to the log and the held rejection stays (G-07-5)
+                self._show_rejection()
             elif outcome.issues:
                 self._set_model_note(outcome.issues[0].text, tone="muted")
             else:
                 self._set_model_note("", tone="hidden")
             self._update_install_state()
             return
-        self._show_rejection()  # drops "Reading..."; 07-13 decides whether a usable attach clears a rejection
+        # A usable attach clears a held rejection: the note, Remove and the Error reason go (G-07-5)
+        self._model_rejection = None
+        self._show_rejection()
         self._model_packages.append(outcome.package)
         added = [m for m in outcome.candidate.models if m not in self._candidate.models]
         self._candidate = outcome.candidate
         self._refresh_model_row(select=added[0].filename if added else None)
         self._request_rebuild()
 
-    def _on_model_failed(self, worker: TaskWorker, text: str):
+    def _on_model_failed(self, worker: TaskWorker, text: str, session: int, source: str):
         self._end_model_worker(worker)
         if self._closing:
             return
         issue = Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")
         self.issues_logged.emit([issue])
-        self._set_model_note(issue.text, tone="error")
+        if session != self._session or self._candidate is None:
+            # Change... or a new open came first: the failure is only logged and never blocks the next package
+            self._update_install_state()
+            return
+        # A read that failed is held like any other rejected source, so Install stays blocked (G-07-5)
+        self._model_rejection = RejectedModel(source, issue)
+        self._show_rejection()
         self._update_install_state()
 
     # -- conflicts: one row per conflict, choices kept by key (PREV-05, D-12, D-14a) ----------------

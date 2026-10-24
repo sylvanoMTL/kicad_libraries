@@ -360,7 +360,9 @@ def attach_models(candidate: ImportCandidate, model_package: Package) -> tuple[I
 
     Rules:
     - each model must pass the magic check locate uses (ISO-10303-21; or #VRML), so a non-model renamed
-      .stp is never attached; a failing file is reported as a WARNING and the good ones still attach;
+      .stp is never attached; a source with any file that fails the check is rejected whole and nothing
+      from it is attached, with ERROR intake.no_model_in_source when no file passed and ERROR
+      intake.unusable_model_in_source when some did (a duplicate counts as passing);
     - a model whose SHA-256 is already on the candidate, or was accepted earlier in this call, is skipped
       with INFO intake.model_already_present;
     - a filename that clashes (casefolded) with one already on the candidate is renamed <stem>_<n><ext>;
@@ -375,6 +377,7 @@ def attach_models(candidate: ImportCandidate, model_package: Package) -> tuple[I
         return None, list(model_package.issues)
     source = model_package.source.name
     problems: list[Issue] = []
+    bad: list[str] = []
     accepted: list[ModelItem] = []
     for pf in model_package.files:
         if pf.kind != "model":
@@ -384,6 +387,20 @@ def attach_models(candidate: ImportCandidate, model_package: Package) -> tuple[I
             accepted.append(ModelItem(PurePosixPath(pf.member).name, pf))
         else:
             problems.append(problem)
+            bad.append(PurePosixPath(pf.member).name)
+
+    if problems:
+        # One failing file rejects the whole source: nothing from a source of unclear content is linked (G-07-5)
+        if not accepted:
+            error = Issue(Severity.ERROR, "intake.no_model_in_source", f"{source} holds no usable 3D model")
+        else:
+            names = bad[0] + (f" and {len(bad) - 1} more" if len(bad) > 1 else "")
+            error = Issue(
+                Severity.ERROR,
+                "intake.unusable_model_in_source",
+                f"{source} holds a file that is not a usable 3D model ({names}), so nothing from it was attached",
+            )
+        return None, [*problems, error]
 
     seen = {m.file.sha256: m.filename for m in candidate.models}
     already: list[Issue] = []
@@ -402,12 +419,8 @@ def attach_models(candidate: ImportCandidate, model_package: Package) -> tuple[I
         seen[item.file.sha256] = item.filename
         new.append(item)
     if not new:
-        if problems or not already:
-            return None, [
-                *problems,
-                *already,
-                Issue(Severity.ERROR, "intake.no_model_in_source", f"{source} holds no usable 3D model"),
-            ]
+        if not already:
+            return None, [Issue(Severity.ERROR, "intake.no_model_in_source", f"{source} holds no usable 3D model")]
         return None, already
 
     taken = {m.filename.casefold() for m in candidate.models}
@@ -421,6 +434,6 @@ def attach_models(candidate: ImportCandidate, model_package: Package) -> tuple[I
         for item in renamed
     ]
     notes = [i for i in model_package.issues if i.severity is not Severity.ERROR]
-    added = list(dict.fromkeys([*notes, *problems, *already, *attached]))
+    added = list(dict.fromkeys([*notes, *already, *attached]))
     issues = tuple(dict.fromkeys(i for i in (*candidate.issues, *added) if i.code != "intake.no_model"))
     return replace(candidate, models=(*candidate.models, *renamed), issues=issues), added

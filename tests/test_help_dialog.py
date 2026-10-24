@@ -107,6 +107,15 @@ def test_help_import_page_describes_add_model():
     assert import_dialog.ADD_MODEL_TEXT in items
 
 
+def test_help_import_page_describes_rejected_model():
+    page = _page_text("importing")
+    items = page[page.index("Items"):page.index("Target library")]
+    assert import_dialog.REMOVE_MODEL_TEXT in items
+    assert "red" in items
+    assert "Install Part stays blocked" in items
+    assert import_dialog.ADD_MODEL_TEXT in items
+
+
 def test_help_import_page_failure_and_tables_claims():
     page = _page_text("importing").lower()
     for claim in (
