@@ -3783,6 +3783,43 @@ def test_add_model_keeps_edits(qtbot, make_item_dialog, recorded, tmp_path, monk
     assert last.model == "other.stp"
 
 
+def test_add_model_rejection_blocks_install(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    """G-07-5 tracer: an unusable bare model file is a red error that blocks Install until Remove."""
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    assert dialog._install_btn.isEnabled()
+    candidate, gen = dialog._candidate, dialog._gen
+    text = "dummy_CAD_FILE.step holds no usable 3D model"
+
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "dummy_CAD_FILE.step", b""))
+    assert dialog._candidate is candidate and dialog._model_packages == []
+    assert dialog._gen == gen
+    note = dialog._model_note
+    assert note.isVisible() and note.textFormat() == Qt.TextFormat.PlainText
+    assert ERROR.lower() in note.styleSheet().lower()
+    assert note.text() == text
+    links = strip_links(dialog)
+    assert f"Error: {text}" in links
+    assert not dialog._install_btn.isEnabled()
+    rejection = dialog._model_rejection
+    assert rejection is not None and rejection.source == "dummy_CAD_FILE.step"
+    assert rejection.issue.code == "intake.no_model_in_source"
+    remove = dialog._remove_model_btn
+    assert remove.isVisible() and remove.isEnabled()
+    assert remove.text() == import_dialog_module.REMOVE_MODEL_TEXT
+    assert dialog._add_model_btn.isEnabled()
+    dialog._strip.linkActivated.emit(links[f"Error: {text}"])
+    assert dialog.focusWidget() is remove
+
+    remove.click()
+    assert note.isHidden() and remove.isHidden()
+    assert not any(reason.startswith("Error:") for reason in strip_links(dialog))
+    assert dialog._model_rejection is None
+    # Moving the focus off the editable library combo re-activates it, which rebuilds the plan once
+    wait_current(qtbot, dialog)
+    assert dialog._install_btn.isEnabled()
+    assert dialog._strip.text().startswith("✓ Ready to install")
+
+
 def test_add_model_refusal_shows_note(qtbot, make_item_dialog, tmp_path, monkeypatch):
     from zipfixtures import make_zip
 
@@ -3810,10 +3847,14 @@ def test_add_model_refusal_shows_note(qtbot, make_item_dialog, tmp_path, monkeyp
         note = dialog._model_note
         assert note.isVisible()
         assert note.textFormat() == Qt.TextFormat.PlainText
-        assert AMBER.lower() in note.styleSheet().lower()
+        assert ERROR.lower() in note.styleSheet().lower()
         errors = [i for i in logged[-1] if i.severity is Severity.ERROR]
         assert errors and "intake.no_model_in_source" in {i.code for i in errors}
         assert note.text() == errors[0].text
+        # G-07-5: the rejection blocks Install and is listed in the strip
+        assert strip_links(dialog).get(f"Error: {note.text()}", "").startswith("reason:")
+        assert not dialog._install_btn.isEnabled()
+        assert dialog._model_rejection is not None
         return note.text()
 
     # a zip with no model at all: refused at intake
@@ -3846,6 +3887,9 @@ def test_add_model_note_is_plain_text(qtbot, make_item_dialog, tmp_path, monkeyp
     assert note.isVisible() and note.textFormat() == Qt.TextFormat.PlainText
     assert note.text() == hostile
     assert note.wordWrap()
+    # the strip shows the same text escaped, never as markup (T-05-27, T-07-34)
+    assert "&lt;b&gt;x&lt;/b&gt;" in dialog._strip.text()
+    assert "<b>x</b>" not in dialog._strip.text()
 
 
 def test_add_model_duplicate_is_noted(qtbot, make_item_dialog, tmp_path, monkeypatch):
@@ -4077,7 +4121,7 @@ def test_add_model_worker_failure_logged(qtbot, make_item_dialog, tmp_path, monk
     assert logged[-1][0].severity is Severity.ERROR
     note = dialog._model_note
     assert note.isVisible() and "disk on fire" in note.text()
-    assert AMBER.lower() in note.styleSheet().lower()
+    assert ERROR.lower() in note.styleSheet().lower()
     assert dialog._add_model_btn.isEnabled()
     assert dialog._candidate is candidate
     assert dialog._install_btn.isEnabled()

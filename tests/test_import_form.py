@@ -426,6 +426,26 @@ def test_blocking_reasons_order():
     assert blocking_reasons(status(), None) == []
 
 
+def test_blocking_reasons_model_error():
+    """A rejected 3D model source is a blocking reason on the model row, after the plan errors (G-07-5)."""
+    plan = fake_plan(issues=(Issue(ERR, "install.no_symbol", "x"),))
+    text = "m.step holds no usable 3D model"
+    reasons = blocking_reasons(status(model_error=text, value_text=""), plan)
+    assert pairs(reasons) == [
+        ("Error: x", "plan"),
+        (f"Error: {text}", "model"),
+        ("Value is empty", "value"),
+    ]
+    reasons = blocking_reasons(status(model_error=text, build_failed=True), plan)
+    assert pairs(reasons) == [
+        ("Error: Preview could not be built - see the log", "plan"),
+        (f"Error: {text}", "model"),
+    ]
+    assert blocking_reasons(status(model_error=text, updating=True), plan) == [Reason("Updating preview...", "plan")]
+    for blank in ("", "  "):
+        assert blocking_reasons(status(model_error=blank), fake_plan()) == []
+
+
 def test_blocking_reasons_updating_alone():
     plan = fake_plan(issues=(Issue(ERR, "install.no_symbol", "x"),))
     reasons = blocking_reasons(status(updating=True, value_text="", library=""), plan)
