@@ -31,7 +31,7 @@ expected: Reload the SnapEDA CAD zip (or click Change... and reopen it), then cl
 result: pass
 
 ### 5. Refused model sources
-expected: Click "Add 3D model..." and pick a zip holding only a .txt, then a text file renamed to .stp. Each shows an amber plain-text note under the model row (and a log line) and nothing else changes: the row, the preview and your edits stay as they were.
+expected: Click Add 3D model... and pick a zip holding only a .txt, then an empty or renamed text file saved as .stp/.step, then a zip holding one good .stp and one renamed non-STEP file. Each shows a red plain-text error note under the model row (and a log line). Nothing from that source is attached, even the good file of the mixed zip. Install Part is blocked with an 'Error: ...' reason that jumps to the model row, and a Remove button under the note clears it, after which Install is back to what the preview says. Add 3D model... still lets you pick another file, and your edits and the preview stay as they were. Use a part that is not already in the live Custom/, or settle its conflicts, so a conflict does not block Install for another reason.
 result: issue
 reported: "The warning is 'dummy_CAD_FILE.step holds no usable 3D model' This should be an error, the user should not be able to progress but have an option to remove the 3D package, or add a new package (e.g. if the zip was conteninng an unusable 3D CAD file)"
 reported_followup: "This is an error not a warning, so red color is needed. I note install part is grayed out"
