@@ -65,6 +65,14 @@ created: "2026-10-23"
 | T-07-30 | Tampering / Spoofing | `_model_note` rendering untrusted names | low | mitigate | `Qt.TextFormat.PlainText`; test_add_model_note_is_plain_text | closed |
 | T-07-31 | Information Disclosure (licence) | real SnapEDA model zip `194150990-659-usb4145-03-0170-c.zip` | high | mitigate | `downloaded_examples/*` ignore rule; test_vendor_zips_stay_local asserts check-ignore for it and that `git ls-files downloaded_examples` lists only the UL sample; no commit of 07-07..07-09 touches `downloaded_examples/` | closed |
 | T-07-32 | Information Disclosure (licence) | synthetic SnapEDA model fixture | medium | mitigate | test_fixture_originality[snapeda_model] hashes every real model-zip member against the synthetic members and rejects the real part name in both cases; members < 4096 bytes | closed |
+| T-07-33 | Tampering | install while a model source was rejected (`_form_status`, `blocking_reasons`) (G-07-5) | medium | mitigate | rejection held as `RejectedModel`, routed into `FormStatus.model_error`, a blocking `Error:` Reason until Remove or a usable attach; test_add_model_rejection_blocks_install, test_blocking_reasons_model_error | closed |
+| T-07-34 | Spoofing / Tampering | red note, strip reason, Remove tooltip | low | mitigate | note stays `Qt.TextFormat.PlainText`, strip escapes every reason (T-05-27), Remove tooltip is static text; test_add_model_note_is_plain_text | closed |
+| T-07-35 | Tampering | partly bad model zip (`attach_models`) | medium | mitigate | a source with any file failing the magic check is rejected whole (`intake.unusable_model_in_source` / `intake.no_model_in_source`), texts name member files only; tests in test_model_attach.py | closed |
+| T-07-36 | Denial of Service | stale model failure or rejection across Change... / open | low | mitigate | `_on_model_failed` checks the bound session; `_clear_items` resets the rejection; test_add_model_stale_failure_does_not_block, test_add_model_rejection_reset_by_change | closed |
+| T-07-37 | Denial of Service | staging folder of a rejected zip | low | mitigate | rejected package closed at once, dialog keeps only the name and Issue; test_add_model_refusal_shows_note asserts the staging folder is gone | closed |
+| T-07-38 | Tampering | `PreviewTree` column layout hiding text past the edge (G-07-7) | low | mitigate | Item clamped so Detail keeps `MIN_COLUMN_WIDTH` (120 px), Detail stretches and elides with the full text in the cell tooltip; test_preview_columns_fit_at_900_and_1400, test_item_clamped_when_tree_narrows | closed |
+| T-07-39 | Spoofing / Tampering | rich-text strip tooltip (G-07-8) | low | mitigate | every reason and the hint `html.escape`d, only fixed p/br/i tags added, strip still accepts only `reason:<digits>` hrefs; test_strip_tooltip_single_reason_decodes_entities | closed |
+| T-07-40 | Tampering | install after a failed model read (`_on_model_failed`) | medium | mitigate | a current-session read failure is held as a `RejectedModel` and routed into `model_error`; test_add_model_worker_failure_logged | closed |
 | T-07-SC | Tampering | npm/pip/cargo installs | high | accept | no package is installed by any Phase 7 plan (RESEARCH Package Legitimacy Audit: nothing to audit) | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -81,6 +89,7 @@ created: "2026-10-23"
 | AR-07-02 | T-07-26 | Each model source gets its own budget and temp staging folder outside the repo, removed on Change... or close; every source is an explicit user pick and bare files are never staged | plan-time threat model (07-07 PLAN.md) | 2026-10-24 |
 | AR-07-03 | T-07-20 (residual) | The model zip is lstat'ed (link or reparse point refused) and then opened by path with no handle-identity re-check, unlike the bare-file branch. Acceptable because `_stage_zip` fully checks every member of whatever file is actually read, and the path is the user's own pick | plan-time threat model (07-07 PLAN.md) | 2026-10-24 |
 | AR-07-04 | T-07-SC (07-07..07-09) | Gap closure added no third-party package (stdlib and PySide6 only) | plan-time threat model (07-07..07-09 PLAN.md) | 2026-10-24 |
+| AR-07-05 | T-07-SC (07-10..07-13) | Gap closure added no third-party package (stdlib and PySide6 only) | plan-time threat model (07-10..07-13 PLAN.md) | 2026-10-24 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -91,6 +100,7 @@ created: "2026-10-23"
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-23 | 20 | 20 | 0 | secure-phase (L1 short-circuit: register authored at plan time, every named mitigation test present and green in the main checkout with both real zips and kicad-cli present) |
+| 2026-10-24 | 41 | 41 | 0 | secure-phase after gap closure 07-10..07-13 (L1 short-circuit: T-07-33..T-07-40 registered at plan time, medium/low only, every mitigation grep-found and its named tests green in the main checkout) |
 
 ---
 
@@ -101,7 +111,7 @@ created: "2026-10-23"
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-10-23
+**Approval:** verified 2026-10-23; re-verified 2026-10-24 after gap closure 07-10..07-13
 
 ## Security Audit 2026-10-23
 
@@ -109,4 +119,12 @@ created: "2026-10-23"
 |---|---|
 | Threats found | 33 |
 | Closed | 33 |
+| Open | 0 |
+
+## Security Audit 2026-10-24
+
+| Metric | Count |
+|---|---|
+| Threats found | 41 |
+| Closed | 41 |
 | Open | 0 |
