@@ -4123,7 +4123,9 @@ def test_add_model_worker_failure_logged(qtbot, make_item_dialog, tmp_path, monk
     assert note.isVisible() and "disk on fire" in note.text()
     assert ERROR.lower() in note.styleSheet().lower()
     # G-07-5: a failed read is held as a rejected source and blocks Install like any other
-    assert "Error: Import step failed: disk on fire" in strip_links(dialog)
+    # the worker reports "RuntimeError: disk on fire"; the reason carries the logged Issue text unchanged
+    assert f"Error: {logged[-1][0].text}" in strip_links(dialog)
+    assert logged[-1][0].text == "Import step failed: RuntimeError: disk on fire"
     assert not dialog._install_btn.isEnabled()
     remove = dialog._remove_model_btn
     assert remove.isVisible() and remove.isEnabled()
