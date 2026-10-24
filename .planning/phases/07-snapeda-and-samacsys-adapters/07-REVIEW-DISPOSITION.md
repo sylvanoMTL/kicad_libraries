@@ -6,23 +6,23 @@ findings:
   - id: WR-01
     severity: warning
     disposition: open
-    title: "A model result that arrives for an older package leaves Install stuck on \"Updating preview...\""
+    title: "End-to-end dialog tests assert against the live `Custom/` checkout and now fail"
   - id: WR-02
     severity: warning
     disposition: open
-    title: "A failed model read for an older package writes its error onto the current package's model row"
+    title: "Untrusted download text still reaches rich-text-autodetecting tooltips"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "`RejectedModel.source` is stored but never read by production code"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "`sectionResized` is connected before the state it reads exists, and `setWordWrap(True)` is a no-op"
   - id: WR-03
     severity: warning
     disposition: open
     title: "Two dialog tests fail whenever the live `Custom/` checkout already holds the UL sample part (carry-over of first-review WR-01)"
-  - id: IN-01
-    severity: info
-    disposition: open
-    title: "`help_dialog` now imports the whole import dialog module for one string constant"
-  - id: IN-02
-    severity: info
-    disposition: open
-    title: "`open_model_source` puts the full path into its `intake.not_found` text, unlike the \"file names only\" rule `attach_models` states"
   - id: WR-04
     severity: warning
     disposition: open
@@ -37,7 +37,7 @@ findings:
     title: "`_kicad_base` takes the first \"kicad\" path segment, so an outer folder named `KiCad` skews the summary and the +1 score"
 open: 8
 total: 8
-recorded: 2026-10-24T08:38:49.971Z
+recorded: 2026-10-24T12:36:41.522Z
 ---
 
 # Phase 07: Code Review Disposition
@@ -46,9 +46,9 @@ recorded: 2026-10-24T08:38:49.971Z
 |---------|----------|-------------|--------|
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
+| WR-03 | warning | open | - (not in the current review) |
 | WR-04 | warning | open | - (not in the current review) |
 | IN-03 | info | open | - (not in the current review) |
 | IN-04 | info | open | - (not in the current review) |
