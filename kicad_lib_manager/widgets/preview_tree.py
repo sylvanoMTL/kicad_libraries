@@ -42,6 +42,7 @@ class PreviewTree(QTreeWidget):
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.itemDoubleClicked.connect(self._on_double_clicked)
+        header.sectionResized.connect(self._on_section_resized)
         self._sections: tuple[PreviewSection, ...] = ()
         self._item_width_set = False
 
@@ -58,6 +59,18 @@ class PreviewTree(QTreeWidget):
         self.setColumnWidth(0, round(self.viewport().width() * ITEM_SHARE))
         self._item_width_set = True
 
+    def _clamp_item_width(self) -> None:
+        # Detail keeps MIN_COLUMN_WIDTH: a narrower tree or a drag past that point shrinks Item instead
+        if not self._item_width_set:
+            return
+        limit = self.viewport().width() - MIN_COLUMN_WIDTH
+        if self.columnWidth(0) > limit:
+            self.setColumnWidth(0, max(limit, MIN_COLUMN_WIDTH))
+
+    def _on_section_resized(self, logical: int, _old: int, _new: int) -> None:
+        if logical == 0:
+            self._clamp_item_width()
+
     def showEvent(self, event) -> None:
         super().showEvent(event)
         self._apply_initial_width()
@@ -65,6 +78,7 @@ class PreviewTree(QTreeWidget):
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
         self._apply_initial_width()
+        self._clamp_item_width()
 
     # -- rendering ---------------------------------------------------------------------------
 
