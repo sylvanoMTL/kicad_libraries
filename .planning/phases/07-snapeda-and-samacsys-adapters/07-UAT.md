@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: complete
 phase: 07-snapeda-and-samacsys-adapters
 source: [07-VERIFICATION.md]
 started: 2026-10-23T13:05:00Z
-updated: 2026-10-23T22:00:00Z
+updated: 2026-10-24T09:57:21.618Z
 ---
 
 ## Current Test
@@ -22,11 +22,44 @@ result: issue
 reported: "there was not 3d model, what if I get a 3d model in a separate file? (in SnapEDA this is what you get, not in a full zip file) ... actually Snap EDA you downlad separately and it is either a cad file or a zip file containing the cad file"
 severity: major
 
+### 3. Add 3D model from the SnapEDA model zip (re-test of G-07-2)
+expected: Run .\env\Scripts\python.exe kicad_lib_manager.py, open the Import dialog and load downloaded_examples/USB4145-03-0170-C_REVA2.zip. Before attaching, type something into Value or MPN. An "Add 3D model..." button sits under the 3D model row; its picker offers *.step *.stp *.wrl *.zip. Pick downloaded_examples/194150990-659-usb4145-03-0170-c.zip. Install shows as busy only while the model is read. Afterwards the row shows usb4145-03-0170-c.stp, the "no 3D model found" warning is gone, the Files section lists Custom/3DModels/USB4145-03-0170-C.stp, and the values you typed are unchanged.
+result: pass
+
+### 4. Add a bare .stp as the 3D model
+expected: Reload the SnapEDA CAD zip (or click Change... and reopen it), then click "Add 3D model..." and pick the bare .stp extracted from the model zip. Same outcome as test 3: row shows the .stp, no-model warning gone, Files section lists Custom/3DModels/USB4145-03-0170-C.stp, typed edits kept.
+result: pass
+
+### 5. Refused model sources
+expected: Click "Add 3D model..." and pick a zip holding only a .txt, then a text file renamed to .stp. Each shows an amber plain-text note under the model row (and a log line) and nothing else changes: the row, the preview and your edits stay as they were.
+result: issue
+reported: "The warning is 'dummy_CAD_FILE.step holds no usable 3D model' This should be an error, the user should not be able to progress but have an option to remove the 3D package, or add a new package (e.g. if the zip was conteninng an unusable 3D CAD file)"
+reported_followup: "This is an error not a warning, so red color is needed. I note install part is grayed out"
+severity: major
+
+### 6. Preview and install with the attached model
+expected: With the model from test 3 or 4 attached, read the preview. The footprint's model path reads ${CUSTOM_3DMODEL_DIR}/USB4145-03-0170-C.stp. Either cancel at the preview, or install into a scratch copy of Custom/ (not the live one, which already holds an uncommitted UAT part) and confirm the installed footprint links ${CUSTOM_3DMODEL_DIR}/USB4145-03-0170-C.stp.
+result: pass
+
+### 7. Preview table columns resize with the dialog
+expected: In the Import dialog preview, the table's columns can be resized by dragging the header dividers, and resizing the Import part window keeps the columns readable instead of squashing them.
+result: issue
+reported: "The table in preview: the columns cannot resize, and get shricked if expanding, shrinking the Import part window edges"
+severity: major
+source: observed during test 3
+
+### 8. Status-strip reason links explain what they do
+expected: A blocking reason in the status strip (e.g. "Choose Overwrite, Rename or Skip for ...") shows a tooltip saying that clicking it jumps to the control that fixes it.
+result: issue
+reported: "There is no tooltip on that message, what if I clickon it?"
+severity: minor
+source: observed during test 3
+
 ## Summary
 
-total: 2
-passed: 1
-issues: 1
+total: 8
+passed: 4
+issues: 4
 pending: 0
 skipped: 0
 blocked: 0
@@ -34,8 +67,10 @@ blocked: 0
 ## Gaps
 
 - gap_id: G-07-2
+  resolved_by: 07-08-PLAN.md
+  resolved_at: 2026-10-24
   truth: "A separately downloaded SnapEDA 3D model (bare .step/.stp, or a zip containing it) can be imported together with the SnapEDA CAD zip and gets linked as ${CUSTOM_3DMODEL_DIR}/<file>"
-  status: failed
+  status: resolved
   reason: "User reported: SnapEDA 3D models are a separate download, either a bare CAD file or a zip containing it; the CAD zip has no model"
   severity: major
   test: 2
@@ -63,3 +98,31 @@ blocked: 0
     - bare .stp next to the .kicad_sym/.kicad_mod + Browse folder -> detected SnapEDA, model found (works)
     - model .zip in the same folder -> ignored ("Not imported ... USB4145-03-0170-C_3D.zip", intake.no_model)
     - Browse zip accepts a single *.zip only, so the CAD zip and the model download cannot be combined
+
+- gap_id: G-07-7
+  truth: "Preview table columns in the Import dialog can be resized by the user and stay readable when the dialog is resized"
+  status: failed
+  reason: "User reported: The table in preview: the columns cannot resize, and get shricked if expanding, shrinking the Import part window edges"
+  severity: major
+  test: 7
+  artifacts: []
+  missing: []
+
+- gap_id: G-07-8
+  truth: "Clickable reason links in the status strip carry a tooltip saying they jump to the control that fixes the reason"
+  status: failed
+  reason: "User reported: There is no tooltip on that message, what if I clickon it?"
+  severity: minor
+  test: 8
+  artifacts: []
+  missing: []
+
+- gap_id: G-07-5
+  truth: "An unusable 3D model source (e.g. a .step/.stp that fails the content check, or a zip whose only CAD file is unusable) is reported as an ERROR (red, not amber) that blocks Install, and the model row offers both removing the bad 3D package and adding a different one"
+  status: failed
+  reason: "User reported: The warning is 'dummy_CAD_FILE.step holds no usable 3D model' This should be an error, the user should not be able to progress but have an option to remove the 3D package, or add a new package (e.g. if the zip was conteninng an unusable 3D CAD file)"
+  severity: major
+  test: 5
+  artifacts: []
+  missing: []
+  notes: "Current design (07-08): a refused source is never attached, the candidate stays unchanged and only an amber note + log line appear; Install is not blocked. User wants this changed to a blocking error with remove / replace actions on the model row. Design change against 07-08 must-have 'Refused/empty source leaves candidate and row unchanged'. Observed during test 5: Install was greyed out after the refusal; the part was already installed into live Custom/ during test 3, so this may be 'Nothing to install' rather than a block from the refusal, or the WR-01 stale 'Updating preview...' state. Diagnosis must establish which, since the user wants the refusal itself to block."
