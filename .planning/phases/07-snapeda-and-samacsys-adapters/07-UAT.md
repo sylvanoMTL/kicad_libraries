@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: complete
 phase: 07-snapeda-and-samacsys-adapters
 source: [07-VERIFICATION.md]
 started: 2026-10-23T13:05:00Z
-updated: 2026-10-24T09:57:21.618Z
+updated: 2026-10-24T17:35:08.281Z
 ---
 
 ## Current Test
@@ -55,10 +55,25 @@ reported: "There is no tooltip on that message, what if I clickon it?"
 severity: minor
 source: observed during test 3
 
+### 9. Unusable 3D model source blocks Install (re-test of G-07-5)
+expected: Load the SnapEDA CAD zip (part not already in live Custom/, or conflicts settled). Add 3D model... with (a) a zip holding only a .txt, (b) an empty/renamed text file saved as .stp/.step, (c) a zip with one good .stp and one renamed non-STEP file. Each gives a red plain-text error note under the model row and a log line; nothing from the source is attached (not even the good file of the mixed zip); Install Part is disabled with an 'Error: ...' strip reason whose click focuses Remove; Remove clears the note and Install returns to what the preview says; Add 3D model... still works; typed edits and preview untouched.
+result: pass
+source: re-test of G-07-5 (07-10, 07-13)
+
+### 10. Preview columns resize on the real display (re-test of G-07-7)
+expected: Open Import with downloaded_examples/USB4145-03-0170-C_REVA2.zip. The Item | Detail divider can be dragged. Narrowing and widening the Import part window keeps both columns readable; long Field changes rows are cut off with an ellipsis inside Detail (full text in the tooltip) instead of running past the right edge. Typing in Value rebuilds the preview and the dragged width is kept.
+result: pass
+source: re-test of G-07-7 (07-11)
+
+### 11. Status-strip tooltip hint and colours (re-test of G-07-8)
+expected: Make a blocking reason show (e.g. empty the Value field). Hovering the reason in the status strip shows a tooltip in normal tooltip colours (not the strip's amber), listing the reasons and ending with "Click a reason to jump to the control that fixes it. A reason about the whole plan jumps to the preview." Characters such as & or ' show as themselves, not &amp; / &#x27;. Clicking the reason focuses the control that fixes it.
+result: pass
+source: re-test of G-07-8 (07-12)
+
 ## Summary
 
-total: 8
-passed: 4
+total: 11
+passed: 7
 issues: 4
 pending: 0
 skipped: 0
@@ -100,8 +115,10 @@ blocked: 0
     - Browse zip accepts a single *.zip only, so the CAD zip and the model download cannot be combined
 
 - gap_id: G-07-7
+  resolved_by: 07-11-PLAN.md
+  resolved_at: 2026-10-24
   truth: "Preview table columns in the Import dialog can be resized by the user and stay readable when the dialog is resized"
-  status: failed
+  status: resolved
   reason: "User reported: The table in preview: the columns cannot resize, and get shricked if expanding, shrinking the Import part window edges"
   severity: major
   test: 7
@@ -123,8 +140,10 @@ blocked: 0
   debug_session: ".planning/debug/preview-table-columns-not-resizable.md"
 
 - gap_id: G-07-8
+  resolved_by: 07-12-PLAN.md
+  resolved_at: 2026-10-24
   truth: "Clickable reason links in the status strip carry a tooltip saying they jump to the control that fixes the reason"
-  status: failed
+  status: resolved
   reason: "User reported: There is no tooltip on that message, what if I clickon it?"
   severity: minor
   test: 8
@@ -143,8 +162,10 @@ blocked: 0
   debug_session: ".planning/debug/reason-link-no-tooltip.md"
 
 - gap_id: G-07-5
+  resolved_by: 07-13-PLAN.md
+  resolved_at: 2026-10-24
   truth: "An unusable 3D model source (e.g. a .step/.stp that fails the content check, or a zip whose only CAD file is unusable) is reported as an ERROR (red, not amber) that blocks Install, and the model row offers both removing the bad 3D package and adding a different one"
-  status: failed
+  status: resolved
   reason: "User reported: The warning is 'dummy_CAD_FILE.step holds no usable 3D model' This should be an error, the user should not be able to progress but have an option to remove the 3D package, or add a new package (e.g. if the zip was conteninng an unusable 3D CAD file)"
   severity: major
   test: 5
