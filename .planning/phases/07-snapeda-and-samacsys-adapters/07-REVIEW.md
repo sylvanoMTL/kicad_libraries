@@ -2,108 +2,100 @@
 phase: 07-snapeda-and-samacsys-adapters
 reviewed: 2026-10-24T00:00:00Z
 depth: standard
-files_reviewed: 11
+files_reviewed: 10
 files_reviewed_list:
   - kicad_lib_manager/importer/adapters/base.py
-  - kicad_lib_manager/importer/package.py
+  - kicad_lib_manager/importer/form.py
   - kicad_lib_manager/widgets/help_dialog.py
   - kicad_lib_manager/widgets/import_dialog.py
+  - kicad_lib_manager/widgets/preview_tree.py
   - tests/test_help_dialog.py
   - tests/test_import_dialog.py
+  - tests/test_import_form.py
   - tests/test_model_attach.py
-  - tests/test_model_source.py
-  - tests/test_real_vendor_samples.py
-  - tests/test_vendorfixtures.py
-  - tests/vendorfixtures.py
+  - tests/test_preview_tree.py
 findings:
   critical: 0
-  warning: 3
+  warning: 2
   info: 2
-  total: 5
+  total: 4
 status: issues_found
 ---
 
-# Phase 7: Code Review Report (incremental, gap closure 07-07..07-09)
+# Phase 07: Code Review Report (gap closure 07-10..07-13)
 
 **Reviewed:** 2026-10-24
-**Depth:** standard
-**Files Reviewed:** 11
+**Depth:** standard (incremental: `git diff b405591 HEAD`, with surrounding code read for context)
+**Files Reviewed:** 10
 **Status:** issues_found
 
 ## Summary
 
-This is an incremental review of the changes since diff_base `10b62efa` (gap-closure plans 07-07..07-09, G-07-2): `open_model_source`, `attach_models`, the dialog's "Add 3D model..." flow, the help page text and the real-sample tests. The earlier report covered plans 07-01..07-06; its disposition lives in `07-REVIEW-DISPOSITION.md`, and this file replaces that report.
+Scope was the changes for G-07-5 (a rejected 3D model source blocks Install), G-07-7 (PreviewTree column widths) and G-07-8 (strip tooltip and its stylesheet scoping).
 
-The new core is sound. `open_model_source` does an lstat no-follow check, then an fstat identity check on the opened handle, and counts the real bytes read. `attach_models` is non-mutating and dedupes by SHA-256. It renames clashes in sequence so a renamed name cannot collide with a later one. The applier still re-verifies each source's SHA-256 before it writes (`applier.py:297-303`), so a bare model that is read in place and changes after the preview is refused. Package lifetimes are handled with care in the normal paths (Change, close, install).
+The logic is sound. I traced these paths and found no defect:
 
-One real defect remains in the dialog's stale-result handling, which I reproduced (WR-01). The test suite also still fails 2 tests in this checkout because of the live-Custom coupling already open as WR-01 of the first review.
+- **`attach_models` reject-whole path:** it returns `[*problems, error]`, so the summary ERROR is the only ERROR and `errors[0]` in the dialog is the right text. A duplicate counts as passing, and the all-bad case keeps the old `intake.no_model_in_source` wording.
+- **`_model_rejection` lifecycle:** it is cleared in `_clear_items` (reached only from `_reset_edit_state` and `_populate_items`) and on a usable attach. It is held on a duplicate-only attach. The stale-session path leaves a held rejection alone.
+- **`_on_model_failed`:** the session and file name are bound at spawn time, so a late failure from a replaced package is only logged.
+- **Untrusted text:** the note label is `PlainText`. The strip reasons are `html.escape`d. The Remove tooltip is static.
+- **`PreviewTree` clamp:** it cannot recurse unboundedly, because the second `setColumnWidth` is a no-op once the width is at or below the limit. `render()` never touches widths. I ran an offscreen check that confirmed rows stay single-line and the Detail text clips and elides.
 
-Run: `tests/test_model_attach.py`, `test_model_source.py`, `test_help_dialog.py`, `test_import_dialog.py`, `test_real_vendor_samples.py` and `test_vendorfixtures.py` give 218 passed, 1 skipped (no symlink privilege) and 2 failed (WR-03).
+I ran the five changed test modules with `QT_QPA_PLATFORM=offscreen`. 235 passed and 2 failed. The failures are covered in WR-01.
 
 ## Warnings
 
-### WR-01: A model result that arrives for an older package leaves Install stuck on "Updating preview..."
+### WR-01: End-to-end dialog tests assert against the live `Custom/` checkout and now fail
 
-**File:** `kicad_lib_manager/widgets/import_dialog.py:1656-1667` (with `_updating()` at `:2113-2119` and `_end_model_worker` at `:1585-1588`)
-**Issue:** `_model_worker is not None` now counts as "updating", so Install is blocked while a model is being read. In `_on_model_attached` the stale branch only calls `_update_install_state()` when `outcome.session == self._session`. `_end_model_worker` only re-syncs the Add button, not the strip or Install.
+**File:** `tests/test_import_dialog.py:108` and `tests/test_import_dialog.py:370`
+**Issue:**
+- `test_tracer_ul_import_end_to_end` and `test_preview_sections_follow_plan_ops` fail.
+- Both expect `+ Custom/3DModels/CSD85301Q2.stp`, but the plan now yields `= Custom/3DModels/CSD85301Q2.stp`.
+- The cause is the `custom_copy` fixture (`tests/conftest.py:79`). It copies the real `Custom/{Symbols,Footprints,3DModels}`, and that submodule now already contains `CSD85301Q2.stp` (the part was imported for real).
+- The expected rows therefore depend on mutable personal data. The same coupling will break these tests whenever the owner imports another part into `Custom`.
+- This is test reliability, not a regression from 07-10..07-13. The gap-closure tests that build their own packages are unaffected. These two tests do cover the Install path that the new rejection logic gates, though, so they should be green before sign-off.
 
-Sequence:
-1. Open package A, click Add 3D model..., and let the read be slow.
-2. Click Change... and open package B.
-3. B's plan is built while A's model worker is still running. `_model_worker` is non-None, so Install stays blocked as "Updating".
-4. A's worker finishes. The result is stale because the session differs, so it is closed and dropped, and nothing refreshes the install state.
+**Fix:**
+- Make the fixture hermetic: seed `tmp_path/repo/Custom` from a committed fixture library under `tests/` rather than `REPO_ROOT / "Custom"`.
+- Or have the tracer tests delete `CSD85301Q2.stp` and its `.kicad_mod` and symbol from the copy before asserting `+`.
 
-I reproduced this with the dialog test harness, using `gated_model_source`, Change..., `open_path(UL_ZIP)`, then releasing the gate. After the worker was gone, the strip still read "Updating preview..." and `_install_btn` was disabled. It recovers only when the user edits a field and triggers another rebuild. `test_add_model_result_after_change_is_dropped` stops at the Start page and never opens a second package, so it does not cover this.
+### WR-02: Untrusted download text still reaches rich-text-autodetecting tooltips
 
-**Fix:** Refresh the install state on every exit of the handler once the worker is cleared. Do it in `_end_model_worker` so it also covers `_on_model_failed`.
+**File:** `kicad_lib_manager/widgets/preview_tree.py:~121-122` (`_row_item`), and `kicad_lib_manager/widgets/import_dialog.py:1503` (`combo.setToolTip(combo.currentText())`)
+**Issue:**
+- The new code documents the invariant that "a file name from the download must never reach a tooltip, which auto-detects rich text (T-07-34)".
+- `PreviewTree._row_item` does `item.setToolTip(0, row.text)` and `item.setToolTip(1, row.detail)`. The model combo does `setToolTip(combo.currentText())`.
+- Detail text carries vendor-supplied field values (descriptions, datasheet strings, MPN). Row text carries file names.
+- A value such as `<b>x</b>` or an unmatched `<` sequence is rendered as markup in the tooltip instead of shown literally. This is the same class of problem G-07-8 fixed for the strip.
+- Pre-existing and low impact: Qt tooltips do not fetch remote resources. It is still inconsistent with the stated mitigation, and `&amp;`-style text will show decoded or garbled.
+
+**Fix:** Route all vendor-derived tooltip text through one helper that escapes it and forces rich text, as `_render_strip` does:
 ```python
-def _end_model_worker(self, worker):
-    if self._model_worker is worker:
-        self._model_worker = None
-    self._sync_add_model_button()
-    if not self._closing:
-        self._update_install_state()
+def plain_tooltip(text: str) -> str:
+    return "<p>" + html.escape(text) + "</p>" if text else ""
 ```
-Alternatively, drop the `if outcome.session == self._session` guard around `_update_install_state()` in the stale branch. Add a test: add a model, Change..., open a package, release the gate, and assert Install becomes enabled.
-
-### WR-02: A failed model read for an older package writes its error onto the current package's model row
-
-**File:** `kicad_lib_manager/widgets/import_dialog.py:1634-1641`
-**Issue:** `_on_model_failed` has no session or staleness check, unlike `_on_model_attached`. If the worker of package A raises after the user has moved on (Change... and then a new open), the amber "Import step failed" note is placed on `self._model_note` of package B. The failure is also emitted to the log as if it belonged to the open part. The `ModelOutcome` carries `session`, but the failure path has no equivalent. The session is only available in the closure of `_start_model_attach`.
-**Fix:** Capture `session = self._session` in `_start_model_attach` and pass it to the failure lambda. In the handler, log the issue but skip `_set_model_note` when `session != self._session`. Call `_update_install_state()` in both cases (see WR-01).
-```python
-worker.failed.connect(lambda text, w=worker, s=session: self._on_model_failed(w, text, s))
-...
-def _on_model_failed(self, worker, text, session):
-    self._end_model_worker(worker)
-    if self._closing:
-        return
-    issue = Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")
-    self.issues_logged.emit([issue])
-    if session == self._session:
-        self._set_model_note(issue.text, tone="amber")
-    self._update_install_state()
-```
-
-### WR-03: Two dialog tests fail whenever the live `Custom/` checkout already holds the UL sample part (carry-over of first-review WR-01)
-
-**File:** `tests/test_import_dialog.py:99-110` (`test_tracer_ul_import_end_to_end`) and `:357` (`test_preview_sections_follow_plan_ops`); fixture at `tests/conftest.py:79-89`
-**Issue:** `custom_copy` copies the owner's real `Custom/Symbols|Footprints|3DModels`. `Custom/3DModels/CSD85301Q2.stp` is already committed there (submodule commit `eecac22`). The plan therefore shows `= Custom/3DModels/CSD85301Q2.stp` where the tests expect `+ ...`, and both tests fail. They are in a file this gap closure edited, so the suite is not green. The first review's WR-01 reported 21 such failures; the gap-closure tests themselves use synthetic layouts (`item_layout`, `write_custom_layout`) and avoid this, but the older tests still depend on the owner's data.
-**Fix:** Build `custom_copy` from `write_custom_layout(..., CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)` as the new tests do. Alternatively, have it remove the UL sample's model and footprint from the copy. Do not read the live submodule.
+Then use `item.setToolTip(0, plain_tooltip(row.text))` and the same in the other places.
 
 ## Info
 
-### IN-01: `help_dialog` now imports the whole import dialog module for one string constant
+### IN-01: `RejectedModel.source` is stored but never read by production code
 
-**File:** `kicad_lib_manager/widgets/help_dialog.py:7`
-**Issue:** `from .import_dialog import ADD_MODEL_TEXT` makes the help widget load `import_dialog` and the entire importer core when it is imported. This breaks the "widgets depend only on models and table_generator" layering in the project notes. It also risks a cycle if the import dialog ever links to a help page. The only reason is to keep the button text and the help text in sync.
-**Fix:** Move `ADD_MODEL_TEXT` to a small leaf module, for example `widgets/theme.py` or a new `widgets/texts.py`, and import it from both widgets. `tests/test_help_dialog.py` can keep asserting against the constant.
+**File:** `kicad_lib_manager/widgets/import_dialog.py:252-259`, `1746`, `1777`
+**Issue:**
+- `RejectedModel.source` is populated at both construction sites (the second one is why `_on_model_failed` gained a `source` parameter and a `n=path.name` default-arg capture).
+- Only `tests/test_import_dialog.py` reads it. Production uses only `.issue`.
+- This is dead plumbing, unless a later plan (07-13) uses it, so confirm that before it ships.
 
-### IN-02: `open_model_source` puts the full path into its `intake.not_found` text, unlike the "file names only" rule `attach_models` states
+**Fix:** Either drop the field and the extra parameter, or use it, for example in the Remove button's accessible description.
 
-**File:** `kicad_lib_manager/importer/package.py:140-143` (rule stated at `adapters/base.py:41-43`)
-**Issue:** The `attach_models` docstring promises that Issue texts use file names only, never a folder. The not-found Issue from `open_model_source` is `f"Could not open {path}: ..."`. It carries the full picked path into the model note under the row and into the log panel, while the sibling `unreadable_source` and `link_refused` branches use `path.name`. `open_package` has the same wording, so this is a consistency point and not a new leak. The file comes from a file dialog, so the not-found branch is only reachable through a race.
-**Fix:** Use `path.name` here, or state in the docstring that the not-found text is the one exception.
+### IN-02: `sectionResized` is connected before the state it reads exists, and `setWordWrap(True)` is a no-op
+
+**File:** `kicad_lib_manager/widgets/preview_tree.py:44-47`, `37`
+**Issue:**
+- `header.sectionResized.connect(self._on_section_resized)` runs before `self._item_width_set` is assigned. `_clamp_item_width` reads that attribute. No signal fires in between today, but any future header change inserted before line 47 would raise `AttributeError`.
+- Separately, the class docstring says Detail "fills the rest of the tree and elides", but `setWordWrap(True)` is still set. I confirmed offscreen that rows stay single-line, so the call has no effect and is misleading.
+
+**Fix:** Assign `self._sections` and `self._item_width_set` before connecting the signal. Drop `setWordWrap(True)`, or comment why it stays.
 
 ---
 
