@@ -4122,6 +4122,148 @@ def test_add_model_worker_failure_logged(qtbot, make_item_dialog, tmp_path, monk
     note = dialog._model_note
     assert note.isVisible() and "disk on fire" in note.text()
     assert ERROR.lower() in note.styleSheet().lower()
+    # G-07-5: a failed read is held as a rejected source and blocks Install like any other
+    assert "Error: Import step failed: disk on fire" in strip_links(dialog)
+    assert not dialog._install_btn.isEnabled()
+    remove = dialog._remove_model_btn
+    assert remove.isVisible() and remove.isEnabled()
     assert dialog._add_model_btn.isEnabled()
     assert dialog._candidate is candidate
+
+    remove.click()
+    wait_current(qtbot, dialog)
+    assert dialog._model_rejection is None
     assert dialog._install_btn.isEnabled()
+
+
+def test_add_model_partly_bad_zip_rejected(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from zipfixtures import STEP_BYTES, make_zip
+
+    opened: list = []
+
+    def open_recording(path, repo_root, progress=None):
+        package = import_dialog_module.open_model_source(path, repo_root, progress)
+        opened.append((package, package.staging_dir))
+        return package
+
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=open_recording)
+    candidate = dialog._candidate
+    (tmp_path / "dl").mkdir()
+    source = make_zip(tmp_path / "dl" / "two.zip", [("good.stp", STEP_BYTES), ("bad.step", b"MZ not a model")])
+    attach_model(qtbot, dialog, monkeypatch, source)
+    assert dialog._candidate is candidate
+    assert dialog._model_label.full_text() == "DLV0006A.stp" and dialog._model_combo is None
+    assert dialog._model_packages == []
+    note = dialog._model_note
+    assert note.isVisible() and "bad.step" in note.text()
+    assert ERROR.lower() in note.styleSheet().lower()
+    assert any(reason.startswith("Error:") and "bad.step" in reason for reason in strip_links(dialog))
+    assert not dialog._install_btn.isEnabled()
+    package, staging = opened[-1]
+    assert staging is not None and not staging.exists() and package.staging_dir is None
+
+
+def test_add_model_success_clears_rejection(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "dummy.step", b""))
+    assert dialog._model_rejection is not None and not dialog._install_btn.isEnabled()
+
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl2", "other.stp"))
+    assert dialog._model_rejection is None
+    assert dialog._model_note.isHidden() and dialog._remove_model_btn.isHidden()
+    assert dialog._model_combo is not None and dialog._model_combo.currentText() == "other.stp"
+    assert not any(reason.startswith("Error:") for reason in strip_links(dialog))
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+
+def test_add_model_duplicate_keeps_rejection(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = make_item_dialog(multi_zip(tmp_path, symbols=("S1",), footprints=("F1",), models=()), show=True)
+    wait_current(qtbot, dialog)
+    same = bare_model(tmp_path / "dl", "same.stp")
+    attach_model(qtbot, dialog, monkeypatch, same)
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl2", "dummy.step", b""))
+    rejection = dialog._model_rejection
+    assert rejection is not None
+    logged: list = []
+    dialog.issues_logged.connect(logged.append)
+
+    attach_model(qtbot, dialog, monkeypatch, same)
+    assert any(i.code == "intake.model_already_present" and i.severity is Severity.INFO for i in logged[-1])
+    assert dialog._model_rejection is rejection
+    note = dialog._model_note
+    assert note.isVisible() and note.text() == rejection.issue.text
+    assert ERROR.lower() in note.styleSheet().lower()
+    assert dialog._remove_model_btn.isVisible()
+    assert f"Error: {rejection.issue.text}" in strip_links(dialog)
+
+
+def test_add_model_rejection_reset_by_change(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "dummy.step", b""))
+    assert dialog._model_rejection is not None
+
+    dialog._change_btn.click()
+    assert dialog._model_rejection is None
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    assert dialog._remove_model_btn.isHidden()
+    assert not any(reason.startswith("Error:") for reason in strip_links(dialog))
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+
+def test_add_model_stale_failure_does_not_block(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    started = threading.Event()
+
+    def failing_after_gate(path, repo_root, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        raise RuntimeError("late failure")
+
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=failing_after_gate)
+    logged: list = []
+    dialog.issues_logged.connect(logged.append)
+    pick_model(monkeypatch, tmp_path / "anything.stp")
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    dialog._change_btn.click()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    wait_current(qtbot, dialog)
+    assert [i.code for i in logged[-1]] == ["import.step_failed"]  # logged, nothing more
+    assert dialog._model_rejection is None
+    assert dialog._model_note.isHidden() and dialog._remove_model_btn.isHidden()
+    assert not any(reason.startswith("Error:") for reason in strip_links(dialog))
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+
+def test_add_model_remove_disabled_while_reading(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    from kicad_lib_manager.importer.form import UPDATING_REASON
+
+    started = threading.Event()
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=gated_model_source(gates, started))
+    pick_model(monkeypatch, bare_model(tmp_path / "dl", "dummy.step", b""))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_rejection is not None, timeout=30000)
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+
+    started.clear()
+    pick_model(monkeypatch, model_zip(tmp_path / "dl2"))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    assert dialog._remove_model_btn.isVisible()
+    assert not dialog._remove_model_btn.isEnabled() and not dialog._add_model_btn.isEnabled()
+    assert dialog._strip.text() == UPDATING_REASON
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    wait_current(qtbot, dialog)
+    assert dialog._model_rejection is None
+    assert dialog._remove_model_btn.isHidden()
+    assert dialog._add_model_btn.isEnabled()
