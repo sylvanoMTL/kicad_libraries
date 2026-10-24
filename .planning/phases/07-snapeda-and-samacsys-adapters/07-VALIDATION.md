@@ -61,6 +61,11 @@ Filled in by the planner/executor per task. Requirement → test map from RESEAR
 | FMT2-02 (G-07-2) | Real SnapEDA model zip opens (one .stp, 2443718 bytes) and installs with the real CAD zip as `USB4145-03-0170-C.stp` (skips by file name if absent); model zip git-ignored; originality guard covers the synthetic model download | integration | `pytest tests/test_real_vendor_samples.py tests/test_vendorfixtures.py -q` | ✅ | ✅ green |
 | Contract | `plan.py`, `planner.py`, `applier.py`, `commit_plan.py`, `preview.py`, `candidate.py` unchanged by the gap closure; `_lstat` patched on the module, never on `os` | scripted | `git diff --quiet c2b75c8 -- <six modules>`; `grep "^_lstat = os.lstat" kicad_lib_manager/importer/package.py` | n/a | ✅ green |
 | Docs | FMT2-02 in v1 traced to Phase 7; PROJECT Out of Scope reversed; ROADMAP Phase 7 criterion 4; 07-CONTEXT amended | scripted | 07-09 Task 2 `python -I -c ...` docs check | n/a | ✅ green |
+| FMT2-02 (G-07-5) | `FormStatus.model_error` adds a blocking `Error: <text>` Reason targeting the model row, right after the build/plan error block | unit | `pytest tests/test_import_form.py -k model_error -q` | ✅ | ✅ green |
+| FMT2-02 (G-07-5) | `attach_models` rejects a source whole when any model file is unusable (`intake.no_model_in_source` / `intake.unusable_model_in_source`), nothing attached, bad file beside a duplicate is still a rejection | unit | `pytest tests/test_model_attach.py -q` | ✅ | ✅ green |
+| FMT2-02 (G-07-5) | Dialog: refused bare file, partly bad zip and worker read failure are held as `RejectedModel`, red `theme.ERROR` note, Install blocked, Remove clears only the rejection, usable attach clears it, INFO duplicate and stale failure never block, Change resets; help page names `REMOVE_MODEL_TEXT` | integration (Qt) | `pytest tests/test_import_dialog.py tests/test_help_dialog.py -k "add_model or rejection or model_error or help" -q` | ✅ | ✅ green |
+| UI (G-07-7) | Preview Item column Interactive with one-time 55% width, Detail stretches and elides, Item clamped so Detail keeps 120 px, drag survives `render()` and rebuild, fits at 900 and 1400 px | unit + integration (Qt) | `pytest tests/test_preview_tree.py tests/test_import_dialog.py -k "column or item or drag" -q` | ✅ | ✅ green |
+| UI (G-07-8) | Blocked strip tooltip is forced rich text: escaped reasons + `STRIP_LINK_HINT`, single reason decodes entities, strip style scoped to `QLabel#installStrip` | integration (Qt) | `pytest tests/test_import_dialog.py -k strip -q` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -85,6 +90,9 @@ Framework install: none (pytest, pytest-qt and kicad-cli already present).
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
 | Both real downloads import through the GUI with the right vendor label, a readable "Field changes" preview and the expected names | INTK-03, INTK-04 | The real zips are local only (D-01/D-02), and preview readability needs a human | Open each real zip from `downloaded_examples/` in the Import dialog. Confirm the vendor shows as `SnapEDA` / `SamacSys`, and the "Field changes" section lists the dropped and cleaned fields. Confirm SnapEDA suggests `Connector_USB_GCT` and warns that no 3D model was found. Then (G-07-2) click "Add 3D model...", pick `downloaded_examples/194150990-659-usb4145-03-0170-c.zip`, and confirm the model row shows `usb4145-03-0170-c.stp`, the preview's Files section lists `Custom/3DModels/USB4145-03-0170-C.stp`, and the warning is gone. Confirm SamacSys suggests `PowerSupply_SubCategory_RECOM`, the model links as `${CUSTOM_3DMODEL_DIR}/RS3-1212S_H3.stp`, and the log shows one "Not imported: other-CAD folders ..." line. Install into a scratch copy of `Custom/`, or cancel at the preview. If committing, check that the trailer reads `Import-Vendor: SnapEDA` / `SamacSys`. |
+| Unusable model source blocks Install and Remove recovers (UAT test 5) | FMT2-02 (G-07-5) | Real file picker and the live dialog | Click "Add 3D model..." and pick an empty or renamed .step, then a .txt-only zip, then a zip with one good and one bad model. Each time expect a red note, Install Part disabled with an `Error:` reason, and Remove restoring the previous state. |
+| Preview columns resize and stay readable on the real display (UAT test 7) | UI (G-07-7) | Offscreen tests do not cover real font metrics or DPI | Open a SnapEDA part with Field changes rows, drag the Item/Detail divider, resize the window, and confirm Detail elides instead of being clipped and the drag survives a rebuild. |
+| Strip tooltip readable with normal colours (UAT test 8) | UI (G-07-8) | Tooltip colours depend on the live style | Hover a blocked strip reason. Confirm the tooltip uses normal colours (not amber on amber), lists the reasons and the click hint, and that clicking a reason focuses the control that fixes it. |
 
 ---
 
@@ -97,7 +105,7 @@ Framework install: none (pytest, pytest-qt and kicad-cli already present).
 - [x] Feedback latency < 120s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** validated 2026-10-23 (validate-phase audit after execution: 13/13 rows green in the main checkout with both real zips and kicad-cli present, no skips; full suite 1891 passed, failures identical to the 21-id baseline). Re-validated 2026-10-24 after gap closure 07-07..07-09 (G-07-2): 19/19 rows green in the main checkout with both real SnapEDA zips present; full suite 1946 passed, failures identical to the 21-id baseline.
+**Approval:** validated 2026-10-23 (validate-phase audit after execution: 13/13 rows green in the main checkout with both real zips and kicad-cli present, no skips; full suite 1891 passed, failures identical to the 21-id baseline). Re-validated 2026-10-24 after gap closure 07-07..07-09 (G-07-2): 19/19 rows green in the main checkout with both real SnapEDA zips present; full suite 1946 passed, failures identical to the 21-id baseline. Re-validated 2026-10-24 after gap closure 07-10..07-13 (G-07-5, G-07-7, G-07-8): 24/24 rows green in the main checkout (61 targeted gap tests passed); full suite 1966 passed, failures identical to the 21-id baseline; 3 display checks added to Manual-Only (UAT tests 5, 7, 8).
 
 ## Validation Audit 2026-10-23
 
@@ -115,3 +123,13 @@ Framework install: none (pytest, pytest-qt and kicad-cli already present).
 | Resolved | 0 |
 | Escalated | 0 |
 | Rows added (G-07-2) | 6 |
+
+## Validation Audit 2026-10-24
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |
+| Rows added (G-07-5/7/8) | 5 |
+| Manual-only added | 3 |
