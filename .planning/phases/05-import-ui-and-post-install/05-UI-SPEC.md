@@ -350,7 +350,7 @@ A horizontal row, 8px spacing, 28px high controls: left, the **blocking-reason s
 
 Blocking-reason strip:
 
-- A rich-text `QLabel` (`setWordWrap(True)`, max 3 lines then elided, full list in the tooltip). When blocked, `AMBER_TINT` background, 8px padding, leading `⚠ Install is blocked:`, then the reasons separated by ` · `, each a link in `LINK` underlined. `linkActivated` focuses and scrolls to the matching control (field, library combo, footprint list, or conflict row) and flashes nothing.
+- A rich-text `QLabel` (`setWordWrap(True)`, max 3 lines then elided, a tooltip that lists every reason and ends with the hint `Click a reason to jump to the control that fixes it. A reason about the whole plan jumps to the preview.` The tooltip is always rich text, so a single reason's escaped characters decode, and it uses the normal tooltip colours, because the strip's stylesheet is scoped to `QLabel#installStrip`). When blocked, `AMBER_TINT` background, 8px padding, leading `⚠ Install is blocked:`, then the reasons separated by ` · `, each a link in `LINK` underlined. `linkActivated` focuses and scrolls to the matching control (field, library combo, footprint list, or conflict row) and flashes nothing. (amended 2026-10-24, UAT gap G-07-8, plan 07-12)
 - When not blocked and the plan has changes: `✓ Ready to install: {n} new, {m} modified, {k} unchanged files` in `SUCCESS`.
 - When the plan `is_noop`: `Nothing to install: this part is already in {Lib}.` in `MUTED`, Install disabled (**default**).
 - While rebuilding: the single reason `Updating preview...` replaces all others (the others could be stale).
@@ -514,7 +514,7 @@ Surfaces and confirmed kinds: E1 entry points (nav) · E2 drag and drop (interac
 | long-text | E10 Content view | 🧪 backstop | `{ statement: "A diff over 5000 lines or 512 KiB ends with the 'Diff truncated: showing the first {n} of {total} lines.' line", verification: backstop }` (pytest-qt test with a synthetic large `.kicad_sym`). |
 | loading | E11 Blocking strip and Install Part | ✅ covered | While a rebuild is pending, the single reason `Updating preview...` replaces all others and Install Part is disabled. |
 | error | E11 Blocking strip and Install Part | ✅ covered | Plan ERROR issues appear as reasons prefixed with `Error:`. Each reason is a link that focuses its control. |
-| overflow | E11 Blocking strip and Install Part | ✅ covered | The strip wraps to at most 3 lines, then elides; the tooltip carries the full reason list. |
+| overflow | E11 Blocking strip and Install Part | ✅ covered | The strip wraps to at most 3 lines, then elides; the tooltip carries the full reason list and the click hint, in the normal tooltip colours (amended 2026-10-24, G-07-8). |
 | long-text | E11 Blocking strip and Install Part | ✅ covered | A long reason (for example a long conflict name) wraps within the 3-line cap. The ready line keeps a fixed shape (`{n} new, {m} modified, {k} unchanged files`). |
 | loading | E12 Install progress and failure | ✅ covered | A determinate bar with step text is shown and the button reads `Installing...` while disabled. Close and Esc are ignored until the worker finishes, and a stalled callback leaves the bar at its last value. |
 | error | E12 Install progress and failure | ✅ covered | A rolled-back install returns to the Edit page with the red banner and the rollback reasons, rebuilds the plan, and allows a retry. A failed restore uses the `{backup_dir}` variant of the copy. |
