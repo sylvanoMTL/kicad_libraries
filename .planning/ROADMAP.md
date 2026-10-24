@@ -254,7 +254,7 @@ Plans:
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
   4. The user can add a separately downloaded SnapEDA 3D model (a bare `.step` / `.stp` / `.wrl`, or a zip holding one) to the SnapEDA CAD package in the import dialog. It installs as `Custom/3DModels/<MPN>.<ext>` linked as `${CUSTOM_3DMODEL_DIR}/<file>`, every intake safety check applies to it, and nothing is written before the preview (gap G-07-2).
 
-**Plans**: 12/13 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2; 07-10 to 07-13 for UAT gaps G-07-5, G-07-7, G-07-8)
+**Plans**: 13/13 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2; 07-10 to 07-13 for UAT gaps G-07-5, G-07-7, G-07-8)
 
 Plans:
 **Wave 1**
@@ -292,7 +292,7 @@ Plans:
 - [x] 07-11-PLAN.md — Preview columns: Interactive Item with a one-time 55% width, stretched eliding Detail, 120 px minimum and narrow-tree clamp, widths kept across rebuilds; 05-UI-SPEC :315/:511 amended (G-07-7, gap wave 3)
 
 **Gap wave 4** *(blocked on gap wave 3 completion)*
-- [ ] 07-12-PLAN.md — Status-strip tooltip lists the reasons plus a click hint, forced rich text, strip stylesheet scoped to QLabel#installStrip so the tooltip keeps normal colours; 05-UI-SPEC :353/:517 amended (G-07-8, gap wave 4)
+- [x] 07-12-PLAN.md — Status-strip tooltip lists the reasons plus a click hint, forced rich text, strip stylesheet scoped to QLabel#installStrip so the tooltip keeps normal colours; 05-UI-SPEC :353/:517 amended (G-07-8, gap wave 4)
 
 **Research flag**: Unblocked (2026-10-23): both real downloads are in `downloaded_examples/` (local only, licence-restricted). The SnapEDA CAD zip ships no 3D model, and the model is a separate download attached per criterion 4; SamacSys ships legacy files alongside v6 files.
 
@@ -309,7 +309,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
 | 6. Git Commit Step | 8/8 | Complete    | 2026-10-23 |
-| 7. SnapEDA and SamacSys Adapters | 12/13 | In Progress | - |
+| 7. SnapEDA and SamacSys Adapters | 13/13 | In Progress | - |
 
 ## Backlog
 
