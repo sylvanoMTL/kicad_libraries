@@ -3,10 +3,10 @@ gsd_state_version: "1.0"
 current_phase: 07
 status: completed
 stopped_at: Phase 07 complete — all phases complete
-last_updated: "2026-10-24T17:35:53.725Z"
+last_updated: "2026-10-24T17:46:27.016Z"
 last_activity: 2026-10-24
 last_activity_desc: Phase 07 complete
-state_head: 48f4c1b25d663f35b348970387fc1204e31b1ebf
+state_head: dd92bee1fdce2bcd9e64af68fff322035f070a8d
 progress:
   total_phases: 7
   completed_phases: 7
@@ -131,6 +131,7 @@ None yet.
 | 261022-gnn | Guard KiCad path-variable sync: confirm before changing kicad_common.json, refuse from a git worktree or another checkout | 2026-10-22 | 3b52ca1 | [261022-gnn-guard-kicad-path-variable-sync-against-s](./quick/261022-gnn-guard-kicad-path-variable-sync-against-s/) |
 | 261023-ptg | Fix Abracon ATXK-H14 TCXO: mirrored footprint pad order, wrong datasheet and fields; delete unused ATX-14 footprint | 2026-10-23 | Custom@53816f9 | [261023-ptg-fix-abracon-atxk-h14-tcxo-mirrored-footp](./quick/261023-ptg-fix-abracon-atxk-h14-tcxo-mirrored-footp/) |
 | 261023-qf7 | Rotate ATXK-H14 footprint to IPC-7351 portrait orientation (pin 1 top-left) and add pin-1 silkscreen and fab markers | 2026-10-23 | Custom@7156bf0 | [261023-qf7-rotate-atxk-h14-footprint-to-ipc-7351-po](./quick/261023-qf7-rotate-atxk-h14-footprint-to-ipc-7351-po/) |
+| 4 | Label the Import preview ki_fp_filters row "Footprint Filter" | 2026-10-24 | dd92bee | — |
 
 ## Deferred Items
 
