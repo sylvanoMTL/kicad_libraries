@@ -78,8 +78,8 @@ def kind_label(kind: str) -> str:
 class Reason:
     """One reason Install is off, and the control that fixes it.
 
-    target is "plan" (no control), "library", "footprint_name", "value", "mpn", "footprints",
-    "conflict:{key}" or "rename:{key}".
+    target is "plan" (no control), "library", "footprint_name", "value", "mpn", "footprints", "model"
+    (the 3D model row), "conflict:{key}" or "rename:{key}".
     """
 
     text: str
@@ -98,6 +98,7 @@ class FormStatus:
     several_footprints: bool
     footprints_checked: int
     resolutions: Mapping[str, Resolution]
+    model_error: str = ""  # the ERROR text of a rejected 3D model source; empty when none is held
 
 
 def _blank_renames(status: FormStatus, plan: InstallPlan | None) -> list[Conflict]:
@@ -134,7 +135,7 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
     """Every reason Install is off, in the UI-SPEC order, without repeating one a form reason already gives.
 
     Order: Updating (alone, the others could be stale); the build failure or the plan's ERROR Issues;
-    the library name; Value and MPN; the footprint selection; unresolved conflicts in plan order;
+    a rejected 3D model source; the library name; Value and MPN; the footprint selection; unresolved conflicts in plan order;
     empty rename names. A plan ERROR is dropped when the form reason beside it says the same thing
     (placeholder library, empty library name, empty Value or MPN, no footprint checked, empty rename).
     """
@@ -170,6 +171,8 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
         for issue in plan.issues:
             if issue.severity is Severity.ERROR and not explained(issue):
                 reasons.append(Reason(f"Error: {issue.text}", _issue_target(issue)))
+    if status.model_error.strip():
+        reasons.append(Reason(f"Error: {status.model_error}", "model"))
     if not library:
         reasons.append(Reason("Library name is empty", "library"))
     elif placeholders:

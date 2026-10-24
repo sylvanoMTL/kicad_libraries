@@ -73,6 +73,7 @@ _CHECKLIST_ROWS = 6  # footprint rows shown before the list scrolls
 _LINKED_SUFFIX = "  (linked)"
 _NO_MODEL = "No model"
 ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
+REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
 _BLANK_FIELD_HINT = "Empty - the field will be written blank"
 _NO_FOOTPRINT_FIELD = "(none)"
 _TOKEN_HINT = "Amber parts are guesses or placeholders. Pick an existing library or type a real name."
@@ -244,6 +245,17 @@ class ModelOutcome:
     session: int
 
 
+@dataclass(frozen=True)
+class RejectedModel:
+    """An unusable 3D model source the dialog holds so that it blocks Install (G-07-5).
+
+    Only the source's file name and its first ERROR are kept; the rejected package itself is already closed.
+    """
+
+    source: str
+    issue: Issue
+
+
 class ImportDialog(QDialog):
     """Window-modal import dialog. Emits installed(InstallResult, InstallPlan) after a successful install."""
 
@@ -308,6 +320,9 @@ class ImportDialog(QDialog):
         self._add_model_btn: QPushButton | None = None
         self._model_slot: QVBoxLayout | None = None
         self._model_note: QLabel | None = None
+        # G-07-5: an unusable model source blocks Install until Remove (or, in 07-13, a usable attach)
+        self._model_rejection: RejectedModel | None = None
+        self._remove_model_btn: QPushButton | None = None
         self._extends_note: QLabel | None = None
         self._linked_fp: str | None = None  # vendor name of the linked footprint
         self._defaults = FieldDefaults()
@@ -1271,9 +1286,12 @@ class ImportDialog(QDialog):
         self._symbol_label = self._fp_label = self._model_label = None
         self._fp_list = self._make_linked_btn = None
         self._add_model_btn = self._model_slot = self._model_note = None
+        self._remove_model_btn = None
+        self._model_rejection = None
         # The checklist and its frame are deleted with their row
         self._field_frames.pop("footprints", None)
         self._reason_targets.pop("footprints", None)
+        self._reason_targets.pop("model", None)
         self._extends_note = None
         self._linked_fp = None
         while self._items_form.rowCount():
@@ -1419,10 +1437,23 @@ class ImportDialog(QDialog):
         note.hide()
         lay.addWidget(note)
         self._model_note = note
+        # Clears a rejected source (G-07-5); shown only while one is held. The tooltip is static text:
+        # a file name from the download must never reach a tooltip, which auto-detects rich text (T-07-34)
+        remove = QPushButton(REMOVE_MODEL_TEXT)
+        remove.setAutoDefault(False)
+        remove.setDefault(False)
+        remove.setAccessibleName("Remove the rejected 3D model file")
+        remove.setToolTip("Clear the rejected file. Nothing from it was attached.")
+        remove.setEnabled(not self._model_busy())
+        remove.clicked.connect(self._on_remove_model)
+        remove.hide()
+        lay.addWidget(remove, alignment=Qt.AlignmentFlag.AlignLeft)
+        self._remove_model_btn = remove
+        self._reason_targets["model"] = remove
         return host
 
     def _set_model_note(self, text: str, *, tone: str):
-        """Show text under the 3D model row in the muted or amber tone, or hide the note (tone "hidden")."""
+        """Show text under the 3D model row in the muted or red error tone, or hide the note (tone "hidden")."""
         note = self._model_note
         if note is None:
             return
@@ -1430,9 +1461,20 @@ class ImportDialog(QDialog):
             note.hide()
             note.setText("")
             return
-        note.setStyleSheet(f"color: {AMBER if tone == 'amber' else MUTED};")
+        note.setStyleSheet(f"color: {ERROR if tone == 'error' else MUTED};")
         note.setText(text)
         note.show()
+
+    def _show_rejection(self):
+        """Show the held rejected source as the red note with Remove; with none held, hide both."""
+        rejection = self._model_rejection
+        if rejection is None:
+            self._set_model_note("", tone="hidden")
+        else:
+            self._set_model_note(rejection.issue.text, tone="error")
+        button = self._remove_model_btn
+        if button is not None:
+            button.setVisible(rejection is not None)
 
     def _refresh_model_row(self, select: str | None = None):
         """Rebuild only the label or combo of the 3D model row after an attach.
@@ -1466,7 +1508,12 @@ class ImportDialog(QDialog):
         """Items come after the page's widgets in creation order, so chain the whole left pane by hand."""
         chain: list[QWidget] = [self._change_btn]
         for widget in (
-            self._symbol_combo, self._fp_list, self._make_linked_btn, self._model_combo, self._add_model_btn
+            self._symbol_combo,
+            self._fp_list,
+            self._make_linked_btn,
+            self._model_combo,
+            self._add_model_btn,
+            self._remove_model_btn,
         ):
             if widget is not None:
                 chain.append(widget)
@@ -1647,6 +1694,20 @@ class ImportDialog(QDialog):
         button = self._add_model_btn
         if button is not None:
             button.setEnabled(not self._model_busy())
+        remove = self._remove_model_btn
+        if remove is not None:
+            remove.setEnabled(not self._model_busy())
+
+    def _on_remove_model(self):
+        """Clear the rejected source. It never detaches a model that was attached successfully (G-07-5)."""
+        if self._model_busy():
+            return
+        self._model_rejection = None
+        self._show_rejection()
+        self._update_install_state()
+        # The focus must not stay on the button that just hid itself
+        if self._add_model_btn is not None:
+            self._add_model_btn.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _on_model_attached(self, worker: TaskWorker, outcome: ModelOutcome):
         if self._closing:
@@ -1663,7 +1724,7 @@ class ImportDialog(QDialog):
             # Change..., a new open or an install came first: the package is released and never attached (T-07-28)
             outcome.package.close()
             if outcome.session == self._session:
-                self._set_model_note("", tone="hidden")
+                self._show_rejection()  # drops "Reading..."; a held rejection stays shown
                 self._update_install_state()
             return
         self.issues_logged.emit(list(outcome.issues))
@@ -1672,14 +1733,16 @@ class ImportDialog(QDialog):
             outcome.package.close()
             errors = [i for i in outcome.issues if i.severity is Severity.ERROR]
             if errors:
-                self._set_model_note(errors[0].text, tone="amber")
+                # An unusable source blocks Install until the user removes it (G-07-5)
+                self._model_rejection = RejectedModel(outcome.package.source.name, errors[0])
+                self._show_rejection()
             elif outcome.issues:
                 self._set_model_note(outcome.issues[0].text, tone="muted")
             else:
                 self._set_model_note("", tone="hidden")
             self._update_install_state()
             return
-        self._set_model_note("", tone="hidden")
+        self._show_rejection()  # drops "Reading..."; 07-13 decides whether a usable attach clears a rejection
         self._model_packages.append(outcome.package)
         added = [m for m in outcome.candidate.models if m not in self._candidate.models]
         self._candidate = outcome.candidate
@@ -1692,7 +1755,7 @@ class ImportDialog(QDialog):
             return
         issue = Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")
         self.issues_logged.emit([issue])
-        self._set_model_note(issue.text, tone="amber")
+        self._set_model_note(issue.text, tone="error")
         self._update_install_state()
 
     # -- conflicts: one row per conflict, choices kept by key (PREV-05, D-12, D-14a) ----------------
@@ -2158,6 +2221,7 @@ class ImportDialog(QDialog):
             several_footprints=several,
             footprints_checked=len(self._checked_footprints()) if several else 0,
             resolutions=dict(self._resolutions),
+            model_error=self._model_rejection.issue.text if self._model_rejection is not None else "",
         )
 
     def _set_strip(self, text: str, *, rich: bool = False, style: str = "", tooltip: str = ""):
