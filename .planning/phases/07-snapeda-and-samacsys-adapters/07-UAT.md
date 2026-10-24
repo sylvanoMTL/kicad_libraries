@@ -1,5 +1,5 @@
 ---
-status: complete
+status: diagnosed
 phase: 07-snapeda-and-samacsys-adapters
 source: [07-VERIFICATION.md]
 started: 2026-10-23T13:05:00Z
@@ -105,8 +105,22 @@ blocked: 0
   reason: "User reported: The table in preview: the columns cannot resize, and get shricked if expanding, shrinking the Import part window edges"
   severity: major
   test: 7
-  artifacts: []
-  missing: []
+  root_cause: "PreviewTree (kicad_lib_manager/widgets/preview_tree.py:26-35) sets section 0 (Item) to Stretch and section 1 (Detail) to ResizeToContents with stretchLastSection False and the horizontal scrollbar always off, per 05-UI-SPEC.md:315. Neither section is Interactive, so the user cannot drag the divider. Detail is pinned to its widest single-line content; since Phase 07 the Field changes drop rows (importer/preview.py:255-283) make that ~734 px, wider than the 479-634 px viewport, so Item keeps a stale width or squashes to ~80 px and the overflow is clipped. Rebuilds do not reset widths."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/preview_tree.py"
+      issue: "lines 26-35: Stretch + ResizeToContents header modes, no Interactive section, horizontal scrollbar off"
+    - path: "kicad_lib_manager/importer/preview.py"
+      issue: "255-283 Field changes detail text up to ~104 chars; 232-243 Path-rewrite detail text is unbounded"
+    - path: ".planning/phases/05-import-ui-and-post-install/05-UI-SPEC.md"
+      issue: "lines 315 and 511 lock the current column contract; must be amended"
+    - path: "tests/test_preview_tree.py"
+      issue: "no test covers column resize modes or widths"
+  missing:
+    - "Make Item Interactive, give it an initial width once (e.g. ~55% of the viewport on first show/first plan, never inside render() or the build-finished handler), setStretchLastSection(True) so Detail fills the rest and elides when narrow (tooltip already holds the full text)"
+    - "Optionally cap Path-rewrite detail length like _shown"
+    - "Regression tests: simulated divider drag moves the section; dragged width survives render() and _request_rebuild(); at 900 px and 1400 px dialog widths both columns stay above a readable minimum and fit the viewport"
+    - "Amend 05-UI-SPEC.md:315 and :511"
+  debug_session: ".planning/debug/preview-table-columns-not-resizable.md"
 
 - gap_id: G-07-8
   truth: "Clickable reason links in the status strip carry a tooltip saying they jump to the control that fixes the reason"
@@ -114,8 +128,19 @@ blocked: 0
   reason: "User reported: There is no tooltip on that message, what if I clickon it?"
   severity: minor
   test: 8
-  artifacts: []
-  missing: []
+  root_cause: "The strip tooltip only repeats the reason list (05-UI-SPEC.md:353/517 and 05-09-PLAN.md:42 asked only for the overflow list), so with one reason it is the same text the user already reads and never says the reason is a link; linkHovered has no receivers. It is also hard to see: _set_strip applies a selector-less stylesheet (background-color: AMBER_TINT) that Qt also applies to the tooltip, so it draws amber on amber. Side defect: a single-reason tooltip is HTML-escaped but shown as plain text, so & and ' appear as &amp; / &#x27;."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "596-612 strip built without hint; 2163-2169 _set_strip selector-less stylesheet; 2210-2230 _render_strip tooltip = '<br>'.join(escaped reasons) only"
+    - path: ".planning/phases/05-import-ui-and-post-install/05-UI-SPEC.md"
+      issue: "lines 353 and 517 tooltip copy covers only the overflow reason list"
+  missing:
+    - "One strip-wide tooltip (user decision 2026-10-24): reason list plus a hint line such as 'Click a reason to go to the control that fixes it' (wording also covering 'plan' targets that focus the preview)"
+    - "Force rich text for the tooltip (e.g. wrap in <p>) so a single escaped reason renders correctly"
+    - "Give the strip an objectName and scope its stylesheet (QLabel#installStrip {...}) so the tooltip uses normal tooltip colours"
+    - "Tests: hint text present, single-reason escaping renders correctly, tooltip background not the strip amber"
+    - "Update 05-UI-SPEC.md copy"
+  debug_session: ".planning/debug/reason-link-no-tooltip.md"
 
 - gap_id: G-07-5
   truth: "An unusable 3D model source (e.g. a .step/.stp that fails the content check, or a zip whose only CAD file is unusable) is reported as an ERROR (red, not amber) that blocks Install, and the model row offers both removing the bad 3D package and adding a different one"
@@ -123,6 +148,33 @@ blocked: 0
   reason: "User reported: The warning is 'dummy_CAD_FILE.step holds no usable 3D model' This should be an error, the user should not be able to progress but have an option to remove the 3D package, or add a new package (e.g. if the zip was conteninng an unusable 3D CAD file)"
   severity: major
   test: 5
-  artifacts: []
-  missing: []
+  root_cause: "Design gap, not a regression: 07-08 specified that a refused model source is closed and forgotten, so it never reaches the candidate, FormStatus or blocking_reasons and cannot block Install. The core already returns Severity.ERROR intake.no_model_in_source (adapters/base.py:405-410, package.py:344-348) but the dialog hard-codes tone='amber' in _on_model_attached (import_dialog.py:1675) and _on_model_failed (1695); _set_model_note (1424-1435) has no error tone. The greyed-out Install in the user's test 5 was an unrelated unresolved symbol conflict (part already installed in test 3, conflict choices reset by reopening the zip), not the refusal and not WR-01: with a conflict-free part the same refusal leaves Install enabled ('Ready to install')."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "_on_model_attached/_on_model_failed hard-code amber; _set_model_note lacks an error tone; no rejected-source state; _build_model_row has no Remove control; _form_status carries no model error; _clear_items/_discard_package must reset the new state"
+    - path: "kicad_lib_manager/importer/form.py"
+      issue: "FormStatus (89-100) has no model field; blocking_reasons (133-199) has no model reason; Reason.target docstring lacks 'model'"
+    - path: "kicad_lib_manager/importer/adapters/base.py"
+      issue: "attach_models attaches the good model of a partly bad zip and only logs WARNING intake.content_mismatch; per user decision a partly bad source must be rejected as a whole"
+    - path: "kicad_lib_manager/widgets/theme.py"
+      issue: "ERROR/ERROR_TINT exist but FIELD_FRAME_QSS is amber only"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "224-227 must describe the blocking error and Remove"
+    - path: ".planning/phases/07-snapeda-and-samacsys-adapters/07-08-PLAN.md"
+      issue: "must-have line 27 and notes 111-125 hold the superseded decision"
+  missing:
+    - "Rejected-model-source state on ImportDialog (source name + first ERROR issue), set when attach returns no candidate with an ERROR, when the model worker fails (read failure), and when a source holds any unusable model file (partly bad zip rejected as a whole: nothing from it is attached)"
+    - "FormStatus gains a defaulted model_error field filled in _form_status; blocking_reasons appends Reason('Error: <text>', 'model') after plan errors, so Install is blocked"
+    - "Model note rendered in theme.ERROR (red), PlainText kept (T-07-30)"
+    - "Remove button under the model note that clears the rejected source and calls _update_install_state(); Add 3D model... stays enabled as 'add another'; a successful attach clears the rejected source; Change.../new open/close reset it"
+    - "_reason_targets['model'] registered so the strip link focuses the model row"
+    - "Remove scope is rejected sources only (user decision 2026-10-24); detaching a successfully attached model is out of scope"
+    - "INFO duplicates (intake.model_already_present, muted note) stay non-blocking"
+    - "Update tests: test_add_model_refusal_shows_note, test_add_model_worker_failure_logged, test_add_model_note_is_plain_text (Install-disabled check), test_import_form.py status() helper + blocking_reasons cases, test_model_attach.py partly-bad-zip case; help dialog text"
+    - "Reword 07-08 must-have and the UAT test 5 script for the new behaviour"
+  decisions:
+    - "Read failures block too (user, 2026-10-24)"
+    - "Partly bad zip blocks too, rejected as a whole (user, 2026-10-24)"
+    - "Remove clears rejected sources only (user, 2026-10-24)"
+  debug_session: ".planning/debug/unusable-model-source-not-blocking.md"
   notes: "Current design (07-08): a refused source is never attached, the candidate stays unchanged and only an amber note + log line appear; Install is not blocked. User wants this changed to a blocking error with remove / replace actions on the model row. Design change against 07-08 must-have 'Refused/empty source leaves candidate and row unchanged'. Observed during test 5: Install was greyed out after the refusal; the part was already installed into live Custom/ during test 3, so this may be 'Nothing to install' rather than a block from the refusal, or the WR-01 stale 'Updating preview...' state. Diagnosis must establish which, since the user wants the refusal itself to block."
