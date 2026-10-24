@@ -254,7 +254,7 @@ Plans:
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
   4. The user can add a separately downloaded SnapEDA 3D model (a bare `.step` / `.stp` / `.wrl`, or a zip holding one) to the SnapEDA CAD package in the import dialog. It installs as `Custom/3DModels/<MPN>.<ext>` linked as `${CUSTOM_3DMODEL_DIR}/<file>`, every intake safety check applies to it, and nothing is written before the preview (gap G-07-2).
 
-**Plans**: 9/12 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2; 07-10 to 07-12 for UAT gaps G-07-5, G-07-7, G-07-8)
+**Plans**: 9/13 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2; 07-10 to 07-13 for UAT gaps G-07-5, G-07-7, G-07-8)
 
 Plans:
 **Wave 1**
@@ -283,13 +283,16 @@ Plans:
 
 **Gap closure** *(07-UAT.md gaps G-07-5, G-07-7, G-07-8, diagnosed 2026-10-24)*
 **Gap wave 1**
-- [ ] 07-10-PLAN.md — Unusable 3D model source is a red error that blocks Install: rejected-source state, FormStatus.model_error reason targeting Remove, read failures block, a partly bad zip is rejected whole, Remove clears rejections only; help page, 07-08 must-have and UAT test 5 reworded (G-07-5, gap wave 1)
+- [ ] 07-10-PLAN.md — Tracer: an unusable 3D model source is a red error that blocks Install: rejected-source state, FormStatus.model_error reason targeting Remove, Remove clears rejections only (G-07-5, gap wave 1)
 
 **Gap wave 2** *(blocked on gap wave 1 completion)*
-- [ ] 07-11-PLAN.md — Preview columns: Interactive Item with a one-time 55% width, stretched eliding Detail, 120 px minimum and narrow-tree clamp, widths kept across rebuilds; 05-UI-SPEC :315/:511 amended (G-07-7, gap wave 2)
+- [ ] 07-13-PLAN.md — Read failures block, a partly bad zip is rejected whole, a usable attach clears the rejection, duplicates and stale failures never block, Change.../open reset it; help page, 07-08 must-have and UAT test 5 reworded (G-07-5, gap wave 2)
 
 **Gap wave 3** *(blocked on gap wave 2 completion)*
-- [ ] 07-12-PLAN.md — Status-strip tooltip lists the reasons plus a click hint, forced rich text, strip stylesheet scoped to QLabel#installStrip so the tooltip keeps normal colours; 05-UI-SPEC :353/:517 amended (G-07-8, gap wave 3)
+- [ ] 07-11-PLAN.md — Preview columns: Interactive Item with a one-time 55% width, stretched eliding Detail, 120 px minimum and narrow-tree clamp, widths kept across rebuilds; 05-UI-SPEC :315/:511 amended (G-07-7, gap wave 3)
+
+**Gap wave 4** *(blocked on gap wave 3 completion)*
+- [ ] 07-12-PLAN.md — Status-strip tooltip lists the reasons plus a click hint, forced rich text, strip stylesheet scoped to QLabel#installStrip so the tooltip keeps normal colours; 05-UI-SPEC :353/:517 amended (G-07-8, gap wave 4)
 
 **Research flag**: Unblocked (2026-10-23): both real downloads are in `downloaded_examples/` (local only, licence-restricted). The SnapEDA CAD zip ships no 3D model, and the model is a separate download attached per criterion 4; SamacSys ships legacy files alongside v6 files.
 
