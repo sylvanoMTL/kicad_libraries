@@ -6,27 +6,27 @@ findings:
   - id: WR-01
     severity: warning
     disposition: open
-    title: "21 tests fail because they copy the live `Custom/` submodule, whose checkout already holds the UL sample part"
+    title: "A model result that arrives for an older package leaves Install stuck on \"Updating preview...\""
   - id: WR-02
     severity: warning
     disposition: open
-    title: "Vendor-controlled property values now reach Qt tooltips, which auto-detect rich text"
+    title: "A failed model read for an older package writes its error onto the current package's model row"
   - id: WR-03
     severity: warning
     disposition: open
-    title: "Marker members beyond `MAX_MARKERS` are dropped silently, in archive order rather than shallowest first"
+    title: "Two dialog tests fail whenever the live `Custom/` checkout already holds the UL sample part (carry-over of first-review WR-01)"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "`help_dialog` now imports the whole import dialog module for one string constant"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "`open_model_source` puts the full path into its `intake.not_found` text, unlike the \"file names only\" rule `attach_models` states"
   - id: WR-04
     severity: warning
     disposition: open
     title: "The SamacSys \"other-CAD folders\" summary reports a file count that is not the folders' file count"
-  - id: IN-01
-    severity: info
-    disposition: open
-    title: "Dead re-exports and an unused import in `adapters/base.py`"
-  - id: IN-02
-    severity: info
-    disposition: open
-    title: "Scoring weights are hard-coded twice in each adapter"
   - id: IN-03
     severity: info
     disposition: open
@@ -37,7 +37,7 @@ findings:
     title: "`_kicad_base` takes the first \"kicad\" path segment, so an outer folder named `KiCad` skews the summary and the +1 score"
 open: 8
 total: 8
-recorded: 2026-10-23T12:36:33.169Z
+recorded: 2026-10-24T08:38:49.971Z
 ---
 
 # Phase 07: Code Review Disposition
@@ -47,11 +47,11 @@ recorded: 2026-10-23T12:36:33.169Z
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
 | WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
-| IN-03 | info | open | - |
-| IN-04 | info | open | - |
+| WR-04 | warning | open | - (not in the current review) |
+| IN-03 | info | open | - (not in the current review) |
+| IN-04 | info | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
