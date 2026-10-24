@@ -13,9 +13,16 @@ _TONE_COLORS = {
 }
 _NEEDS_CHOICE = "Needs a choice"
 
+ITEM_SHARE = 0.55  # Item's share of the viewport, applied once when the tree is first shown at a real width
+MIN_COLUMN_WIDTH = 120  # px, the narrowest either column may be (header minimum section size and clamp margin)
+
 
 class PreviewTree(QTreeWidget):
-    """Sectioned tree of the plan preview: one Heading header per section, one child per row."""
+    """Sectioned tree of the plan preview: one Heading header per section, one child per row.
+
+    Item is user-resizable (drag the divider); Detail is the stretched last section: it fills the rest of the
+    tree and elides, the full text stays in its tooltip.
+    """
 
     row_activated = Signal(object)  # PreviewRow of a non-header row, on double click or Enter
 
@@ -24,9 +31,9 @@ class PreviewTree(QTreeWidget):
         self.setColumnCount(2)
         self.setHeaderLabels(["Item", "Detail"])
         header = self.header()
-        header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        header.setMinimumSectionSize(MIN_COLUMN_WIDTH)
         self.setAlternatingRowColors(True)
         self.setRootIsDecorated(True)
         self.setWordWrap(True)
@@ -36,10 +43,28 @@ class PreviewTree(QTreeWidget):
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.itemDoubleClicked.connect(self._on_double_clicked)
         self._sections: tuple[PreviewSection, ...] = ()
+        self._item_width_set = False
 
     @property
     def sections(self) -> tuple[PreviewSection, ...]:
         return self._sections
+
+    # -- column widths -----------------------------------------------------------------------------
+
+    def _apply_initial_width(self) -> None:
+        # Set once, so a width the user dragged is never reset; render() never touches column widths
+        if self._item_width_set or not self.isVisible() or self.viewport().width() < 2 * MIN_COLUMN_WIDTH:
+            return
+        self.setColumnWidth(0, round(self.viewport().width() * ITEM_SHARE))
+        self._item_width_set = True
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._apply_initial_width()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_initial_width()
 
     # -- rendering ---------------------------------------------------------------------------
 

@@ -4269,3 +4269,32 @@ def test_add_model_remove_disabled_while_reading(qtbot, make_item_dialog, gates,
     assert dialog._model_rejection is None
     assert dialog._remove_model_btn.isHidden()
     assert dialog._add_model_btn.isEnabled()
+
+
+# -- Preview columns (plan 07-11, G-07-7): Item is draggable, Detail fills the rest and elides ---------------
+
+
+def test_preview_columns_fit_at_900_and_1400(qtbot, make_item_dialog, tmp_path):
+    from PySide6.QtWidgets import QHeaderView
+    from vendorfixtures import SNAPEDA_SYMBOL, snapeda_zip
+
+    from kicad_lib_manager.widgets.preview_tree import MIN_COLUMN_WIDTH
+
+    dialog = make_item_dialog(snapeda_zip(tmp_path / "src" / f"{SNAPEDA_SYMBOL}.zip"), show=True)
+    wait_current(qtbot, dialog)
+    assert "Field changes" in [s.name for s in dialog._preview.sections]
+    tree = dialog._preview
+    assert tree.header().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    assert tree.header().stretchLastSection()
+
+    for width in (900, 1400):
+        dialog.resize(width, 720)
+        qtbot.waitUntil(lambda: dialog.width() == width)
+        qtbot.wait(50)
+        viewport = tree.viewport().width()
+        if width == 900:
+            # The UAT precondition: the Field changes Detail text is wider than the viewport
+            assert tree.sizeHintForColumn(1) > viewport
+        assert tree.columnWidth(0) >= MIN_COLUMN_WIDTH, (width, tree.columnWidth(0))
+        assert tree.columnWidth(1) >= MIN_COLUMN_WIDTH, (width, tree.columnWidth(1))
+        assert tree.columnWidth(0) + tree.columnWidth(1) <= viewport + 1, (width, viewport)
