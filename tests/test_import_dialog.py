@@ -4298,3 +4298,40 @@ def test_preview_columns_fit_at_900_and_1400(qtbot, make_item_dialog, tmp_path):
         assert tree.columnWidth(0) >= MIN_COLUMN_WIDTH, (width, tree.columnWidth(0))
         assert tree.columnWidth(1) >= MIN_COLUMN_WIDTH, (width, tree.columnWidth(1))
         assert tree.columnWidth(0) + tree.columnWidth(1) <= viewport + 1, (width, viewport)
+
+
+def drag_divider(header, dx):
+    """Press on the Item|Detail divider, move by dx and release, like a user drag."""
+    y = header.height() // 2
+    x = header.sectionViewportPosition(0) + header.sectionSize(0) - 1
+    viewport = header.viewport()
+    no_modifier = Qt.KeyboardModifier.NoModifier
+    QTest.mousePress(viewport, Qt.MouseButton.LeftButton, no_modifier, QPoint(x, y))
+    QTest.mouseMove(viewport, QPoint(x + dx, y))
+    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, no_modifier, QPoint(x + dx, y))
+
+
+def test_preview_column_drag_survives_rebuild(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    tree = dialog._preview
+    before = tree.columnWidth(0)
+    drag_divider(tree.header(), -60)
+    dragged = tree.columnWidth(0)
+    assert abs(dragged - (before - 60)) <= 2, (before, dragged)
+
+    gen = dialog._gen
+    dialog._request_rebuild()
+    wait_current(qtbot, dialog)
+    assert dialog._gen > gen
+    assert tree.columnWidth(0) == dragged
+
+    type_text(qtbot, dialog._field_edits["value"], "Changed value")
+    wait_current(qtbot, dialog)
+    assert tree.columnWidth(0) == dragged
+
+    detail = tree.columnWidth(1)
+    dialog.resize(1400, 720)
+    qtbot.waitUntil(lambda: dialog.width() == 1400)
+    qtbot.wait(50)
+    assert tree.columnWidth(0) == dragged
+    assert tree.columnWidth(1) > detail
