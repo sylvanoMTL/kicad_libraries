@@ -1,14 +1,14 @@
 """PreviewTree rendering (plan 05-06, D-07): colours, glyphs, Heading headers, stable rebuilds, copy, activation."""
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QColor, QGuiApplication, QKeySequence
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QAbstractItemView
+from PySide6.QtWidgets import QAbstractItemView, QHeaderView
 
 from kicad_lib_manager.importer.preview import PreviewRow, PreviewSection
 from kicad_lib_manager.widgets import theme
-from kicad_lib_manager.widgets.preview_tree import PreviewTree
+from kicad_lib_manager.widgets.preview_tree import ITEM_SHARE, MIN_COLUMN_WIDTH, PreviewTree
 
 
 def _file(text, detail, glyph, tone):
@@ -164,3 +164,90 @@ def test_row_activated_on_double_click_and_enter(tree):
 def test_tree_rows_are_not_editable(tree):
     tree.render(_sections())
     assert tree.editTriggers() == QAbstractItemView.EditTrigger.NoEditTriggers
+
+
+# -- Columns (plan 07-11, G-07-7): Item is draggable, Detail fills the rest ------------------------------
+
+
+def _wide(length=300):
+    return PreviewSection("Field changes", (
+        PreviewRow(text="Check_prices", detail="x" * length, kind="rewrite"),
+        PreviewRow(text="Value", detail="short", kind="rewrite"),
+    ))
+
+
+def drag_divider(header, dx):
+    """Press on the Item|Detail divider, move by dx and release, like a user drag."""
+    y = header.height() // 2
+    x = header.sectionViewportPosition(0) + header.sectionSize(0) - 1
+    viewport = header.viewport()
+    no_modifier = Qt.KeyboardModifier.NoModifier
+    QTest.mousePress(viewport, Qt.MouseButton.LeftButton, no_modifier, QPoint(x, y))
+    QTest.mouseMove(viewport, QPoint(x + dx, y))
+    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, no_modifier, QPoint(x + dx, y))
+
+
+def _shown(qtbot, tree, width, height=300):
+    tree.resize(width, height)
+    tree.show()
+    qtbot.waitExposed(tree)
+
+
+def test_columns_interactive_and_detail_stretches(tree):
+    header = tree.header()
+    assert header.sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Interactive
+    assert header.stretchLastSection()
+    assert header.minimumSectionSize() == MIN_COLUMN_WIDTH
+    assert tree.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+
+
+def test_initial_item_width_once(qtbot, tree):
+    _shown(qtbot, tree, 600)
+    tree.render((_wide(),))
+    viewport = tree.viewport().width()
+    assert abs(tree.columnWidth(0) - round(viewport * ITEM_SHARE)) <= 1
+    assert abs(tree.columnWidth(0) + tree.columnWidth(1) - viewport) <= 1
+
+    tree.header().resizeSection(0, 200)
+    tree.hide()
+    tree.show()
+    tree.render(_sections())
+    tree.resize(700, 300)
+    qtbot.waitUntil(lambda: tree.viewport().width() > viewport)
+    assert tree.columnWidth(0) == 200
+
+
+def test_divider_drag_moves_item_and_survives_render(qtbot, tree):
+    _shown(qtbot, tree, 600)
+    tree.render(_sections())
+    before = tree.columnWidth(0)
+    drag_divider(tree.header(), -80)
+    dragged = tree.columnWidth(0)
+    assert abs(dragged - (before - 80)) <= 2, (before, dragged)
+
+    tree.render(_sections())
+    assert tree.columnWidth(0) == dragged
+    tree.render(())
+    assert tree.columnWidth(0) == dragged
+
+
+def test_item_clamped_when_tree_narrows(qtbot, tree):
+    _shown(qtbot, tree, 700)
+    tree.render((_wide(),))
+    tree.header().resizeSection(0, 500)
+    assert tree.columnWidth(0) == 500
+    wide_viewport = tree.viewport().width()
+
+    tree.resize(400, 300)
+    qtbot.waitUntil(lambda: tree.viewport().width() < 500)
+    viewport = tree.viewport().width()
+    assert MIN_COLUMN_WIDTH <= tree.columnWidth(0) <= viewport - MIN_COLUMN_WIDTH
+    assert tree.columnWidth(1) >= MIN_COLUMN_WIDTH
+    assert tree.columnWidth(0) + tree.columnWidth(1) <= viewport + 1
+    clamped, detail = tree.columnWidth(0), tree.columnWidth(1)
+
+    tree.resize(700, 300)
+    qtbot.waitUntil(lambda: tree.viewport().width() >= wide_viewport)
+    assert tree.columnWidth(0) == clamped
+    assert tree.columnWidth(1) > detail

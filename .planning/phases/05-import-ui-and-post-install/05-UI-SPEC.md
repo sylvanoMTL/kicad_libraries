@@ -312,7 +312,7 @@ One `QFrame` row per `Conflict`, `SURFACE` background, 1px `BORDER`, plus a 4px 
 
 #### Preview (D-06, D-07, PREV-01, PREV-06, PREV-07)
 
-Right pane = a Heading label `Preview`, a 4px-high `QProgressBar` strip (hidden unless busy), and one `QTreeWidget` with two columns **Item** (stretch, elide in the middle) and **Detail** (resize to contents). `setAlternatingRowColors(True)`, `setWordWrap(True)`, no horizontal scrollbar, all item text selectable via copy (`Ctrl+C` copies the current row text).
+Right pane = a Heading label `Preview`, a 4px-high `QProgressBar` strip (hidden unless busy), and one `QTreeWidget` with two columns **Item** (interactive: the user drags the divider. Its width is set once, to 55% of the tree, the first time the tree is shown. A rebuild never resets it, and it shrinks only when the tree becomes narrower than Item + 120 px) and **Detail** (the stretched last section: it fills the rest of the tree and elides in the middle, with the full text in the tooltip). Both columns keep at least 120 px. `setAlternatingRowColors(True)`, `setWordWrap(True)`, no horizontal scrollbar, all item text selectable via copy (`Ctrl+C` copies the current row text). (amended 2026-10-24, UAT gap G-07-7, plan 07-11)
 
 Section header rows: Heading font, `SURFACE_HEADER` background, text `{Name} ({count})`. Empty sections are not shown except **Files**. Order is fixed:
 
@@ -508,7 +508,7 @@ Surfaces and confirmed kinds: E1 entry points (nav) · E2 drag and drop (interac
 | error | E9 Preview tree | ✅ covered | If a rebuild raises, the previous tree stays and `Updating...` hides. Install is blocked with the reason `Error: Preview could not be built - see the log`, and the log gets `Import step failed: {text}`. The next edit retries the build. |
 | populated | E9 Preview tree | ✅ covered | Sections appear in fixed order: Files, Renames, Path rewrites, Format, Conflicts, Issues. Every empty section is hidden except Files. |
 | partial | E9 Preview tree | ✅ covered | Path rewrites show `(none)` for an absent old value. The Format row states when kicad-cli is missing (`⚠`). |
-| overflow | E9 Preview tree | ✅ covered | The Item column elides in the middle with the full text as tooltip. There is no horizontal scrollbar, and expand state and scroll position are restored across rebuilds. |
+| overflow | E9 Preview tree | ✅ covered | Item and Detail elide in the middle with the full text as tooltip. The divider is draggable, Detail fills the rest, both columns keep at least 120 px and fit the tree, so nothing is clipped at 900 px or wider. There is no horizontal scrollbar, and expand state, scroll position and the column widths are kept across rebuilds (amended 2026-10-24, G-07-7). |
 | zero-one-many | E9 Preview tree | ✅ covered | Section headers read `{Name} ({count})`; a section with zero rows is hidden, except Files. |
 | overflow | E10 Content view | ✅ covered | `QPlainTextEdit` in `NoWrap` with both scrollbars. Diffs are capped at 5000 lines or 512 KiB. A file that cannot be read shows `Could not read {path}: {reason}.` as the body. |
 | long-text | E10 Content view | 🧪 backstop | `{ statement: "A diff over 5000 lines or 512 KiB ends with the 'Diff truncated: showing the first {n} of {total} lines.' line", verification: backstop }` (pytest-qt test with a synthetic large `.kicad_sym`). |

@@ -4269,3 +4269,69 @@ def test_add_model_remove_disabled_while_reading(qtbot, make_item_dialog, gates,
     assert dialog._model_rejection is None
     assert dialog._remove_model_btn.isHidden()
     assert dialog._add_model_btn.isEnabled()
+
+
+# -- Preview columns (plan 07-11, G-07-7): Item is draggable, Detail fills the rest and elides ---------------
+
+
+def test_preview_columns_fit_at_900_and_1400(qtbot, make_item_dialog, tmp_path):
+    from PySide6.QtWidgets import QHeaderView
+    from vendorfixtures import SNAPEDA_SYMBOL, snapeda_zip
+
+    from kicad_lib_manager.widgets.preview_tree import MIN_COLUMN_WIDTH
+
+    dialog = make_item_dialog(snapeda_zip(tmp_path / "src" / f"{SNAPEDA_SYMBOL}.zip"), show=True)
+    wait_current(qtbot, dialog)
+    assert "Field changes" in [s.name for s in dialog._preview.sections]
+    tree = dialog._preview
+    assert tree.header().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    assert tree.header().stretchLastSection()
+
+    for width in (900, 1400):
+        dialog.resize(width, 720)
+        qtbot.waitUntil(lambda: dialog.width() == width)
+        qtbot.wait(50)
+        viewport = tree.viewport().width()
+        if width == 900:
+            # The UAT precondition: the Field changes Detail text is wider than the viewport
+            assert tree.sizeHintForColumn(1) > viewport
+        assert tree.columnWidth(0) >= MIN_COLUMN_WIDTH, (width, tree.columnWidth(0))
+        assert tree.columnWidth(1) >= MIN_COLUMN_WIDTH, (width, tree.columnWidth(1))
+        assert tree.columnWidth(0) + tree.columnWidth(1) <= viewport + 1, (width, viewport)
+
+
+def drag_divider(header, dx):
+    """Press on the Item|Detail divider, move by dx and release, like a user drag."""
+    y = header.height() // 2
+    x = header.sectionViewportPosition(0) + header.sectionSize(0) - 1
+    viewport = header.viewport()
+    no_modifier = Qt.KeyboardModifier.NoModifier
+    QTest.mousePress(viewport, Qt.MouseButton.LeftButton, no_modifier, QPoint(x, y))
+    QTest.mouseMove(viewport, QPoint(x + dx, y))
+    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, no_modifier, QPoint(x + dx, y))
+
+
+def test_preview_column_drag_survives_rebuild(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    tree = dialog._preview
+    before = tree.columnWidth(0)
+    drag_divider(tree.header(), -60)
+    dragged = tree.columnWidth(0)
+    assert abs(dragged - (before - 60)) <= 2, (before, dragged)
+
+    gen = dialog._gen
+    dialog._request_rebuild()
+    wait_current(qtbot, dialog)
+    assert dialog._gen > gen
+    assert tree.columnWidth(0) == dragged
+
+    type_text(qtbot, dialog._field_edits["value"], "Changed value")
+    wait_current(qtbot, dialog)
+    assert tree.columnWidth(0) == dragged
+
+    detail = tree.columnWidth(1)
+    dialog.resize(1400, 720)
+    qtbot.waitUntil(lambda: dialog.width() == 1400)
+    qtbot.wait(50)
+    assert tree.columnWidth(0) == dragged
+    assert tree.columnWidth(1) > detail
