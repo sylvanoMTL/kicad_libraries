@@ -84,6 +84,10 @@ _FAILED_RESTORED = "Install failed. Every file was restored."
 _FAILED_NOT_RESTORED = "Install failed and some files could not be restored."
 _FAILED_PLAIN = "Install failed."
 _FAILED_RETRY = "Fix the problem and click Install Part again."
+# Last line of the blocked strip's tooltip; public so the tests and the UI spec use one string (G-07-8)
+STRIP_LINK_HINT = (
+    "Click a reason to jump to the control that fixes it. A reason about the whole plan jumps to the preview."
+)
 
 # Vendor names of the adapters (importer/adapters) as shown in the package header
 _VENDOR_LABELS = {"UltraLibrarian": "Ultra Librarian", "Loose": "Loose files", "Unknown": "Unknown vendor"}
@@ -611,6 +615,7 @@ class ImportDialog(QDialog):
         # The strip is rich text only while it lists blocking reasons (every string escaped, internal
         # reason: links only); a status line is plain text. 8 px padding, at most 3 lines (D-09).
         self._strip = QLabel()
+        self._strip.setObjectName("installStrip")
         self._strip.setTextFormat(Qt.TextFormat.PlainText)
         self._strip.setWordWrap(True)
         self._strip.setOpenExternalLinks(False)
@@ -2240,10 +2245,14 @@ class ImportDialog(QDialog):
         )
 
     def _set_strip(self, text: str, *, rich: bool = False, style: str = "", tooltip: str = ""):
-        """Set the strip's format first, then its text (a status line is plain, the reason list is rich)."""
+        """Set the strip's format first, then its text (a status line is plain, the reason list is rich).
+
+        The style is wrapped in a QLabel#installStrip rule: Qt styles a QToolTip with the stylesheet of the
+        widget it is shown for, so a selector-less declaration would tint the strip's tooltip too.
+        """
         strip = self._strip
         strip.setTextFormat(Qt.TextFormat.RichText if rich else Qt.TextFormat.PlainText)
-        strip.setStyleSheet(style)
+        strip.setStyleSheet(f"QLabel#installStrip {{ {style} }}" if style else "")
         strip.setText(text)
         strip.setToolTip(tooltip)
 
@@ -2298,7 +2307,12 @@ class ImportDialog(QDialog):
                 f'<a href="reason:{i}" style="color:{LINK}">{html.escape(reason.text)}</a>'
                 for i, reason in enumerate(reasons)
             )
-            tooltip = "<br>".join(html.escape(reason.text) for reason in reasons)
+            # The leading <p> makes the tooltip rich text for any reason count, so a single escaped reason
+            # decodes instead of showing &amp; literally. Every string is escaped; no link markup (T-07-39).
+            tooltip = (
+                "<p>" + "<br>".join(html.escape(reason.text) for reason in reasons)
+                + "</p><p><i>" + html.escape(STRIP_LINK_HINT) + "</i></p>"
+            )
             self._set_strip(
                 f"⚠ Install is blocked: {links}", rich=True, style=f"background-color: {AMBER_TINT};", tooltip=tooltip
             )

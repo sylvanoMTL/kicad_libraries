@@ -1773,6 +1773,68 @@ def test_strip_caps_three_lines_with_tooltip(qtbot, make_item_dialog):
     tooltip = strip.toolTip()
     for n in range(10):
         assert f"Reason number {n} " in tooltip
+    assert import_dialog_module.STRIP_LINK_HINT in tooltip
+
+
+def _tooltip_plain_text(tooltip: str) -> str:
+    from PySide6.QtGui import QTextDocument
+
+    document = QTextDocument()
+    document.setHtml(tooltip)
+    return document.toPlainText()
+
+
+def test_strip_tooltip_says_reasons_are_links(qtbot, make_item_dialog):
+    """G-07-8: a single reason's tooltip is rich text and ends with the click hint."""
+    from PySide6.QtGui import Qt as GuiQt
+
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["value"], "")
+    wait_current(qtbot, dialog)
+    assert list(strip_links(dialog)) == ["Value is empty"]
+    tooltip = dialog._strip.toolTip()
+    hint = import_dialog_module.STRIP_LINK_HINT
+    assert hint in tooltip
+    assert GuiQt.mightBeRichText(tooltip)
+    plain = _tooltip_plain_text(tooltip)
+    assert "Value is empty" in plain and hint in plain
+
+
+def test_strip_tooltip_single_reason_decodes_entities(qtbot, make_item_dialog):
+    """G-07-8 / T-07-39: one escaped reason shows as itself in the tooltip, and nothing is left unescaped."""
+    from PySide6.QtGui import Qt as GuiQt
+
+    odd = Issue(Severity.ERROR, "install.test_amp", "Tom & Jerry's <part>")
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(odd))
+    wait_current(qtbot, dialog)
+    assert list(strip_links(dialog)) == ["Error: Tom & Jerry's <part>"]
+    tooltip = dialog._strip.toolTip()
+    assert "&amp;" in tooltip and "&lt;part&gt;" in tooltip and "<part>" not in tooltip
+    assert GuiQt.mightBeRichText(tooltip)
+    plain = _tooltip_plain_text(tooltip)
+    assert "Error: Tom & Jerry's <part>" in plain
+    assert import_dialog_module.STRIP_LINK_HINT in plain
+
+
+def test_strip_tooltip_style_scoped_to_strip(qtbot, make_item_dialog):
+    """G-07-8: every strip stylesheet is one QLabel#installStrip rule, so it cannot tint the strip's tooltip.
+
+    Only the stylesheet text is checked; the tooltip colour itself is a manual check (UAT test 8).
+    """
+    scoped = r"QLabel#installStrip \{ [^{}]+ \}"
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["value"], "")
+    wait_current(qtbot, dialog)
+    strip = dialog._strip
+    assert strip.objectName() == "installStrip"
+    assert re.fullmatch(scoped, strip.styleSheet())
+    assert AMBER_TINT.lower() in strip.styleSheet().lower()
+
+    type_text(qtbot, dialog._field_edits["value"], "10k")
+    wait_current(qtbot, dialog)
+    assert strip.text().startswith("✓ Ready to install")
+    assert re.fullmatch(scoped, strip.styleSheet())
+    assert SUCCESS in strip.styleSheet()
 
 
 def test_ready_line_and_install_enabled(qtbot, make_item_dialog):
