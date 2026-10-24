@@ -220,7 +220,7 @@ def test_rows_order_is_fixed_and_repeatable(ul_package, ul_layout):
 def test_rewrites_match_planned_bytes(ul_package, ul_layout):
     plan, candidate, options = _ul_plan(ul_package, ul_layout)
     rewrites = {row.text: row.detail for row in _sections(plan, candidate, options)["Path rewrites"].rows}
-    assert list(rewrites) == ["Footprint", "Model", "ki_fp_filters"]
+    assert list(rewrites) == ["Footprint", "Model", "Footprint Filter"]
 
     sym_op = next(op for op in plan.ops if op.kind == "symbol_lib")
     fp_op = next(op for op in plan.ops if op.kind == "footprint")
@@ -231,13 +231,13 @@ def test_rewrites_match_planned_bytes(ul_package, ul_layout):
 
     assert rewrites["Footprint"].endswith(f" → {planned_footprint}")
     assert planned_footprint == f"{UL_LIBRARY}:DQK0006B"
-    assert rewrites["ki_fp_filters"].endswith(f" → {planned_filters}")
+    assert rewrites["Footprint Filter"].endswith(f" → {planned_filters}")
     assert rewrites["Model"] == f"(none) → {planned_model}"
     assert planned_model == "${CUSTOM_3DMODEL_DIR}/CSD85301Q2.stp"
     # The old values are the vendor's own
     vendor_meta = candidate.symbols[0].meta
     assert rewrites["Footprint"].startswith(f"{vendor_meta.footprint_field or '(none)'} → ")
-    assert rewrites["ki_fp_filters"].startswith(f"{vendor_meta.fp_filters or '(none)'} → ")
+    assert rewrites["Footprint Filter"].startswith(f"{vendor_meta.fp_filters or '(none)'} → ")
 
 
 def test_rewrites_without_model_have_no_model_row(layout, tmp_path):
@@ -245,7 +245,7 @@ def test_rewrites_without_model_have_no_model_row(layout, tmp_path):
         options = InstallOptions(library=LIBRARY)
         plan = build_plan(candidate, options, layout, ToolContext())
         rewrites = _sections(plan, candidate, options)["Path rewrites"]
-    assert _texts(rewrites) == ["Footprint", "ki_fp_filters"]
+    assert _texts(rewrites) == ["Footprint", "Footprint Filter"]
     assert rewrites.rows[0].detail == f"(none) → {LIBRARY}:FP"
 
 

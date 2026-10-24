@@ -240,7 +240,7 @@ def _rewrites_section(plan: InstallPlan, candidate: ImportCandidate, options: In
         old_model = linked.model_paths[0] if linked is not None and linked.model_paths else ""
         rows.append(row("Model", old_model, f"{MODEL_DIR_VAR}/{plan.model_file}"))
     if plan.linked_footprint is not None:
-        rows.append(row("ki_fp_filters", meta.fp_filters if meta else "", " ".join(plan.footprint_names)))
+        rows.append(row("Footprint Filter", meta.fp_filters if meta else "", " ".join(plan.footprint_names)))
     return PreviewSection("Path rewrites", tuple(rows))
 
 
