@@ -1,43 +1,42 @@
 ---
 gsd_state_version: "1.0"
 current_phase: 07
-current_phase_name: SnapEDA and SamacSys Adapters
-status: executing
-stopped_at: Phase 7 context gathered
-last_updated: "2026-10-24T11:27:52.070Z"
+status: completed
+stopped_at: Phase 07 complete — all phases complete
+last_updated: "2026-10-24T17:35:53.725Z"
 last_activity: 2026-10-24
-last_activity_desc: Phase 07 execution resumed (wave continue)
-state_head: 8d3a88281bfa51d01eb87451f4e8f86f7c99beb8
+last_activity_desc: Phase 07 complete
+state_head: 48f4c1b25d663f35b348970387fc1204e31b1ebf
 progress:
   total_phases: 7
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 70
-  completed_plans: 66
-  percent: 86
+  completed_plans: 70
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-23)
+See: .planning/PROJECT.md (updated 2026-10-24)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 07 — SnapEDA and SamacSys Adapters
+**Current focus:** Milestone complete — ready to archive (/gsd-complete-milestone)
 
 ## Current Position
 
-Phase: 07 (SnapEDA and SamacSys Adapters) — EXECUTING
-Plan: 1 of 6
-Status: Executing Phase 07
-Last activity: 2026-10-24 — Phase 07 execution resumed (wave continue)
+Phase: 07
+Plan: Not started
+Status: All phases complete
+Last activity: 2026-10-24 — Phase 07 complete
 
-Progress: [█████████░] 86%
+Progress: [██████████] 100%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 57
+- Total plans completed: 70
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -51,6 +50,7 @@ Progress: [█████████░] 86%
 | 04 | 13 | - | - |
 | 05 | 11 | - | - |
 | 06 | 8 | - | - |
+| 07 | 13 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -121,7 +121,7 @@ None yet.
 - [Phase 4]: KiCad 9 load of a mixed-version library verified by kicad-cli 9.0.9 and the owner's GUI UAT. KiCad 10 (format 20251024) and case-sensitive-volume rollback are deferred re-tests (ROADMAP backlog 999.1, 999.2).
 - [Phase 6, review]: Open, non-blocking: WR-01..WR-05, IN-01..IN-03 in 06-REVIEW-DISPOSITION.md. The UI audit (06-UI-REVIEW.md, 17/24) ranks WR-05 (stale probe after a refusal), WR-01 (timeout reported as nothing committed without checking HEAD) and WR-03 (POSIX quoting in the Windows "finish by hand" command) as the top fixes.
 - [Phase 6, environment]: The CSD85301Q2 UAT install is still uncommitted in `Custom/` (`3DModels/CSD85301Q2.stp`, `IC_PowerManagementMosfet_TI.*`). While it is there, 3 tests that read the real `Custom/` tree fail (`test_build_from_real_ul_plan`, `test_tracer_ul_import_end_to_end`, `test_preview_sections_follow_plan_ops`); they should use an isolated fixture.
-- [Phase 7]: Blocked until real SnapEDA and SamacSys/CSE downloads are added to `downloaded_examples/`. Check redistribution terms before committing fixtures.
+- [Phase 7]: Complete. Real SnapEDA/SamacSys zips stay local (only `ul_CSD85301Q2.zip` is tracked); real-sample tests skip when they are absent, synthetic fixtures cover CI. A separately downloaded 3D model is a second intake source; an unusable model source blocks Install as an ERROR and a partly bad zip is rejected as a whole (G-07-5). UAT 11 tests: 7 pass, 4 issues all closed by 07-08, 07-10..07-13 and re-tested live.
 - [Phase 5, environment]: 7 real-kicad-cli tests fail on the phase base too, because the installed KiCad 10 CLI writes symbol format 20251024 where the tests expect 20241209: `test_install_plan.py` (3), `test_kicad_cli.py::test_real_cli_upgrades_ul_symbol_deterministically`, `test_install_e2e.py` (3). Not a phase 5 regression; owner to decide whether the tests follow the installed CLI version.
 
 ### Quick Tasks Completed
@@ -142,6 +142,6 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-23T08:19:42.945Z
-Stopped at: Phase 7 context gathered
-Resume file: .planning/phases/07-snapeda-and-samacsys-adapters/07-CONTEXT.md
+Last session: 2026-10-24T17:40:00Z
+Stopped at: Phase 07 complete — all phases complete
+Resume file: None

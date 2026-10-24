@@ -18,7 +18,7 @@ Decimal phases appear between their surrounding integers in numeric order.
 - [x] **Phase 4: Plan and Install Core** - Headless, transactional install of a part into `Custom/` with linking, rollback and verification (completed 2026-10-20)
 - [x] **Phase 5: Import UI and Post-Install** - Import dialog with an editable preview, per-item conflict resolution, rescan and table refresh (completed 2026-10-22)
 - [x] **Phase 6: Git Commit Step** - Confirmed commit of exactly the imported files in `Custom/` plus the parent ref bump, never pushing (completed 2026-10-23)
-- [ ] **Phase 7: SnapEDA and SamacSys Adapters** - Remaining vendor formats, gated on real downloads in `downloaded_examples/`
+- [x] **Phase 7: SnapEDA and SamacSys Adapters** - Remaining vendor formats, gated on real downloads in `downloaded_examples/` (completed 2026-10-24)
 
 ## Phase Details
 
@@ -254,7 +254,7 @@ Plans:
   3. Each vendor's sample installs into a copy of `Custom/` with the same `<Lib>:<FP>` link and `${CUSTOM_3DMODEL_DIR}` model path as the UL sample. This is covered by pytest fixtures, trimmed or synthetic where redistribution terms forbid committing the original.
   4. The user can add a separately downloaded SnapEDA 3D model (a bare `.step` / `.stp` / `.wrl`, or a zip holding one) to the SnapEDA CAD package in the import dialog. It installs as `Custom/3DModels/<MPN>.<ext>` linked as `${CUSTOM_3DMODEL_DIR}/<file>`, every intake safety check applies to it, and nothing is written before the preview (gap G-07-2).
 
-**Plans**: 13/13 plans executed (07-07 to 07-09 are gap closure for UAT gap G-07-2; 07-10 to 07-13 for UAT gaps G-07-5, G-07-7, G-07-8)
+**Plans**: 13/13 plans complete (07-07 to 07-09 are gap closure for UAT gap G-07-2; 07-10 to 07-13 for UAT gaps G-07-5, G-07-7, G-07-8)
 
 Plans:
 **Wave 1**
@@ -309,7 +309,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7
 | 4. Plan and Install Core | 13/13 | Complete    | 2026-10-20 |
 | 5. Import UI and Post-Install | 11/11 | Complete    | 2026-10-22 |
 | 6. Git Commit Step | 8/8 | Complete    | 2026-10-23 |
-| 7. SnapEDA and SamacSys Adapters | 13/13 | In Progress | - |
+| 7. SnapEDA and SamacSys Adapters | 13/13 | Complete    | 2026-10-24 |
 
 ## Backlog
 

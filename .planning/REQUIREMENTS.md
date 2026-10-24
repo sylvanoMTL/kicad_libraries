@@ -31,13 +31,13 @@ Requirements for the initial release. Each one maps to a roadmap phase.
 
 - [x] **INTK-01**: User can open a vendor package as a `.zip` file or a folder of loose `.kicad_sym` / `.kicad_mod` / `.step` / `.stp` files
 - [x] **INTK-02**: An Ultra Librarian zip is recognised, and its symbol, footprint and 3D model are found wherever they sit, including a STEP at the zip root whose name differs from the footprint (e.g. `ul_CSD85301Q2.zip`)
-- [ ] **INTK-03**: A SnapEDA zip is recognised and its symbol, footprint and any 3D model are found, verified against a real SnapEDA download in `downloaded_examples/`
-- [ ] **INTK-04**: A SamacSys / Component Search Engine zip is recognised and its KiCad symbol, footprint and 3D model are found, verified against a real CSE download in `downloaded_examples/`
+- [x] **INTK-03**: A SnapEDA zip is recognised and its symbol, footprint and any 3D model are found, verified against a real SnapEDA download in `downloaded_examples/`
+- [x] **INTK-04**: A SamacSys / Component Search Engine zip is recognised and its KiCad symbol, footprint and 3D model are found, verified against a real CSE download in `downloaded_examples/`
 - [x] **INTK-05**: Packages containing only legacy KiCad 5 files (`.lib`, `.dcm`, `.mod`) are rejected with a clear "re-download as KiCad v6+" message
 - [x] **INTK-06**: Zips are read safely: no extraction into the repo, path traversal, absolute names and symlinks are rejected, and size and count limits stop zip bombs
 - [x] **INTK-07**: When a package holds several symbols, footprints or models, the user picks which ones to import
 - [x] **INTK-08**: A package with no 3D model can still be installed, and the preview and log warn that no model was found
-- [ ] **FMT2-02**: A separately downloaded 3D model (a bare `.step` / `.stp` / `.wrl`, or a `.zip` holding one, which is how SnapEDA ships it) can be added in the import dialog to the part being imported. It is checked like a package, copied to `Custom/3DModels/` as `<MPN>.<ext>` and linked as `${CUSTOM_3DMODEL_DIR}/<file>`
+- [x] **FMT2-02**: A separately downloaded 3D model (a bare `.step` / `.stp` / `.wrl`, or a `.zip` holding one, which is how SnapEDA ships it) can be added in the import dialog to the part being imported. It is checked like a package, copied to `Custom/3DModels/` as `<MPN>.<ext>` and linked as `${CUSTOM_3DMODEL_DIR}/<file>`
 
 ### Target Library
 
@@ -146,13 +146,13 @@ Which phases cover which requirements. Updated during roadmap creation.
 | HARD-09 | Phase 2 | Complete |
 | INTK-01 | Phase 3 | Complete |
 | INTK-02 | Phase 3 | Complete |
-| INTK-03 | Phase 7 | Pending |
-| INTK-04 | Phase 7 | Pending |
+| INTK-03 | Phase 7 | Complete |
+| INTK-04 | Phase 7 | Complete |
 | INTK-05 | Phase 3 | Complete |
 | INTK-06 | Phase 3 | Complete |
 | INTK-07 | Phase 5 | Complete |
 | INTK-08 | Phase 4 | Complete |
-| FMT2-02 | Phase 7 | Pending |
+| FMT2-02 | Phase 7 | Complete |
 | LIB-01 | Phase 3 | Complete |
 | LIB-02 | Phase 4 | Complete |
 | LIB-03 | Phase 3 | Complete |

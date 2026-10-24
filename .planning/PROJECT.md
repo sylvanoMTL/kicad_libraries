@@ -56,15 +56,14 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ Per-conflict Overwrite / Rename / Skip with no bulk control and nothing pre-selected; Install blocked until every conflict is decided (PREV-05) — Phase 5
 - ✓ After install: Result view, rescan with the library checked and current, add-only `sym-lib-table` / `fp-lib-table` entries for a new library, a Generate hint for an existing unlisted one, and a "reopen KiCad's editors" notice when KiCad is running (POST-01, POST-02, POST-05) — Phase 5
 - ✓ Commit step in the Result view: shows the Custom branch, the parent repo and branch, the exact installed files and an editable message with Import-Vendor / Import-Package / Import-Date trailers; on click commits only those files in `Custom` (`commit --only`, bystander changes untouched), then only the `Custom` gitlink in the parent; detached HEAD on `main`'s history offers a plain `switch main`, otherwise refuses; never pushes, reports "Not pushed — N commits ahead" (GIT-01..GIT-05) — Phase 6
+- ✓ SnapEDA and SamacSys/CSE zips open and auto-detect through the same flow as Ultra Librarian, with the vendor label, a readable Field changes section, and an `Import-Vendor:` commit trailer; a SnapEDA zip with no model installs with the "no 3D model found" warning, SamacSys other-CAD folders are skipped with one log line; real samples install and load in kicad-cli (Phase 7)
+- ✓ A separately downloaded 3D model (bare STEP/STP/WRL, or a zip holding one) is added with "Add 3D model..." in the import dialog under the same intake safety checks, and installs as `Custom/3DModels/<MPN>.<ext>` linked as `${CUSTOM_3DMODEL_DIR}/<file>` (FMT2-02, G-07-2) — Phase 7
+- ✓ An unusable model source (no model, failed content check, partly bad zip, read failure) is a red blocking error on the model row with Remove / Add 3D model... recovery; preview columns are user-resizable and elide; status-strip reasons carry a click hint (G-07-5, G-07-7, G-07-8) — Phase 7
 
 ### Active
 
-**Importer — input**
-- [ ] Open and auto-detect SnapEDA and SamacSys/CSE zips (Ultra Librarian and loose files done in Phases 3-5; Phase 7, gated on real downloads)
-- [ ] Attach a separately downloaded 3D model (bare STEP/STP/WRL, or a zip holding one, as SnapEDA ships it) in the import dialog (Phase 7 gap G-07-2, FMT2-02)
-
 **Quality**
-- [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code (harness and parser tests done in Phase 1, hardened-table/config/scan tests in Phase 2, importer intake/install/UI tests in Phases 3-5; SnapEDA/SamacSys fixtures still to come)
+- [ ] Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code (harness and parser tests done in Phase 1, hardened-table/config/scan tests in Phase 2, importer intake/install/UI tests in Phases 3-5, SnapEDA/SamacSys synthetic fixtures and real-sample tests that skip when the local downloads are absent in Phase 7)
 - [ ] Phase 5 review warnings, open and non-blocking: WR-01 misleading "already listed" text, WR-02 table write to the process cwd when Destination is empty, WR-03 one-off build can overlap Install, WR-05 GUI thread waits up to 60 s on kicad-cli, WR-06 stale `kicad_common.json` content after the confirm dialog (05-REVIEW-DISPOSITION.md)
 - [ ] Help dialog styling outside the theme tokens (hard-coded colours, px font sizes) per 05-UI-REVIEW.md
 - [ ] Phase 6 review findings, open and non-blocking (06-REVIEW-DISPOSITION.md): WR-01 a commit timeout is reported as "nothing committed" without checking HEAD, WR-02 parent-message preview differs from the committed text when `gitlink_old` is None, WR-03 the "finish it by hand" command uses POSIX quoting on Windows, WR-04 files identical to HEAD raise a spurious "missing" error, WR-05 a refusal leaves the panel on a stale probe; IN-01..IN-03
@@ -102,13 +101,14 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | Decision | Rationale | Outcome |
 |----------|-----------|---------|
 | Importer lives inside the existing Library Manager app | Reuses scanner, log panel, settings and table generation; one tool for the repo | ✓ Good — Phase 5 UAT passed |
-| Support UL, SnapEDA, SamacSys/CSE and loose files in v1 | Owner uses all of them; zip layouts differ | — Pending |
+| Support UL, SnapEDA, SamacSys/CSE and loose files in v1 | Owner uses all of them; zip layouts differ | ✓ Good — Phase 7 UAT passed on the real SnapEDA and SamacSys zips |
 | Preview before every write; per-conflict overwrite/rename/skip | Avoid silent damage to curated libraries | ✓ Good — Phase 5 UAT passed |
 | Library name suggested from `<Type>_<SubCategory>_<Manufacturer>`, editable | Keeps the convention without blocking edge cases | ✓ Good — Phase 5 UAT passed |
 | Footprint keeps vendor name by default, editable | Package codes are often the right name; user can override | ✓ Good — Phase 5 UAT passed |
 | Footprint link set automatically; other fields editable in preview | Footprint link is the most error-prone manual step | ✓ Good — Phase 5 UAT passed |
-| No 3D model → install without it and warn | Keep the flow simple; models can be added later | — Pending |
-| A separately downloaded 3D model is added in the import dialog as a second intake source with the same safety checks; the plan contract is unchanged | SnapEDA ships the model as a separate download (bare file or zip); the Phase 7 UAT (G-07-2) reversed the earlier Out of Scope choice | — Pending |
+| No 3D model → install without it and warn | Keep the flow simple; models can be added later | ✓ Good — SnapEDA no-model warning verified (Phase 7 UAT) |
+| A separately downloaded 3D model is added in the import dialog as a second intake source with the same safety checks; the plan contract is unchanged | SnapEDA ships the model as a separate download (bare file or zip); the Phase 7 UAT (G-07-2) reversed the earlier Out of Scope choice | ✓ Good — Phase 7 UAT tests 3, 4, 6 passed |
+| An unusable 3D model source blocks Install as an ERROR; a partly bad zip is rejected as a whole; Remove clears only rejected sources | A silently ignored bad model looked like success (G-07-5, owner decisions 2026-10-24) | ✓ Good — Phase 7 UAT re-test passed |
 | One package per import | Simpler review; batch not needed | ✓ Good — Phase 5 UAT passed |
 | Commit in `Custom` + bump parent ref after confirmation; never push | Matches the CLAUDE.md git workflow; pushing stays a deliberate act | ✓ Good — Phase 6 UAT passed on the real repo; remote unchanged |
 | Fix all High/Medium-High concerns from the codebase map | Importer builds on table/scan/write code that has known data-loss risks | ✓ Good — HARD-01..09 verified and UAT passed (Phase 2) |
@@ -147,4 +147,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-23 after Phase 7 UAT (G-07-2)*
+*Last updated: 2026-10-24 after Phase 7*

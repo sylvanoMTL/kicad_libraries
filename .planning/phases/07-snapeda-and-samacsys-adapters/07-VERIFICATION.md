@@ -1,7 +1,7 @@
 ---
 phase: 07-snapeda-and-samacsys-adapters
 verified: 2026-10-24T14:00:00Z
-status: human_needed
+status: passed
 score: 7/8 must-haves verified (4/4 roadmap success criteria; gap truths G-07-2, G-07-5, G-07-7 verified; G-07-8 click hint verified, tooltip colour behavior-unverified)
 covered_files:
   - .gitignore
