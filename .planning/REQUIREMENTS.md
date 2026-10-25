@@ -11,9 +11,9 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### Tests
 
-- [ ] **TEST-01**: The test suite passes whatever parts the owner's `Custom/` holds. Tests that need a target library build an isolated synthetic `Custom/` instead of copying the live one.
+- [x] **TEST-01**: The test suite passes whatever parts the owner's `Custom/` holds. Tests that need a target library build an isolated synthetic `Custom/` instead of copying the live one.
 - [ ] **TEST-02**: The real kicad-cli tests expect KiCad 10 output (symbol format 20251024), and skip with a stated reason when kicad-cli 10 is absent.
-- [ ] **TEST-03**: Developer runs `pytest` on the workstation and gets 0 failures, with only documented skips.
+- [x] **TEST-03**: Developer runs `pytest` on the workstation and gets 0 failures, with only documented skips.
 
 ### Atomic Rule
 
@@ -84,7 +84,7 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### Re-tests
 
-- [ ] **VER-01**: The D-01 "install as-is with warning" case is re-tested on KiCad 10 (backlog 999.1).
+- [x] **VER-01**: The D-01 "install as-is with warning" case is re-tested on KiCad 10 (backlog 999.1).
 - [ ] **VER-02**: Case-twin rollback and overwrite are re-tested on a case-sensitive folder (backlog 999.2).
 
 ### v1.0 Review Fixes
@@ -141,9 +141,9 @@ Which phases cover which requirements. Filled in during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| TEST-01 | Phase 8 | Pending |
+| TEST-01 | Phase 8 | Complete |
 | TEST-02 | Phase 8 | Pending |
-| TEST-03 | Phase 8 | Pending |
+| TEST-03 | Phase 8 | Complete |
 | ATOM-01 | Phase 9 | Pending |
 | ATOM-02 | Phase 9 | Pending |
 | ATOM-03 | Phase 9 | Pending |
@@ -165,7 +165,7 @@ Which phases cover which requirements. Filled in during roadmap creation.
 | MIG-04 | Phase 13 | Pending |
 | MIG-05 | Phase 13 | Pending |
 | GIT-06 | Phase 11 | Pending |
-| VER-01 | Phase 8 | Pending |
+| VER-01 | Phase 8 | Complete |
 | VER-02 | Phase 12 | Pending |
 | REV-01 | Phase 12 | Pending |
 | REV-02 | Phase 12 | Pending |
