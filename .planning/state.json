@@ -1,48 +1,12 @@
 {
   "contract": "1.0.0",
   "flavor": "core",
-  "milestone": null,
-  "phases": [
-    {
-      "number": "1",
-      "name": "Foundation",
-      "status": "complete"
-    },
-    {
-      "number": "2",
-      "name": "Hardening Existing Code",
-      "status": "complete"
-    },
-    {
-      "number": "3",
-      "name": "Package Intake and Naming",
-      "status": "complete"
-    },
-    {
-      "number": "4",
-      "name": "Plan and Install Core",
-      "status": "complete"
-    },
-    {
-      "number": "5",
-      "name": "Import UI and Post-Install",
-      "status": "complete"
-    },
-    {
-      "number": "6",
-      "name": "Git Commit Step",
-      "status": "complete"
-    },
-    {
-      "number": "7",
-      "name": "SnapEDA and SamacSys Adapters",
-      "status": "complete"
-    }
-  ],
+  "milestone": "v2.0",
+  "phases": [],
   "next": {
-    "command": "/gsd-progress",
-    "label": "Show progress",
-    "reason": "Unsure of state — showing progress"
+    "command": "/gsd-discuss-phase",
+    "label": "Discuss the first phase",
+    "reason": "Project initialized — plan your first phase"
   },
-  "updated_at": "2026-10-25T07:31:07.492Z"
+  "updated_at": "2026-10-25T13:32:47.130Z"
 }

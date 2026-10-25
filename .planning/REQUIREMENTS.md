@@ -141,12 +141,52 @@ Which phases cover which requirements. Filled in during roadmap creation.
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
+| TEST-01 | Phase 8 | Pending |
+| TEST-02 | Phase 8 | Pending |
+| TEST-03 | Phase 8 | Pending |
+| ATOM-01 | Phase 9 | Pending |
+| ATOM-02 | Phase 9 | Pending |
+| ATOM-03 | Phase 9 | Pending |
+| LIB-04 | Phase 10 | Pending |
+| LIB-05 | Phase 10 | Pending |
+| LIB-06 | Phase 10 | Pending |
+| LIB-07 | Phase 10 | Pending |
+| SCAN-01 | Phase 9 | Pending |
+| SCAN-02 | Phase 9 | Pending |
+| SCAN-03 | Phase 9 | Pending |
+| FLD-01 | Phase 10 | Pending |
+| FLD-02 | Phase 9 | Pending |
+| FLD-03 | Phase 10 | Pending |
+| TBL-01 | Phase 13 | Pending |
+| TBL-02 | Phase 13 | Pending |
+| MIG-01 | Phase 13 | Pending |
+| MIG-02 | Phase 13 | Pending |
+| MIG-03 | Phase 13 | Pending |
+| MIG-04 | Phase 13 | Pending |
+| MIG-05 | Phase 13 | Pending |
+| GIT-06 | Phase 11 | Pending |
+| VER-01 | Phase 8 | Pending |
+| VER-02 | Phase 12 | Pending |
+| REV-01 | Phase 12 | Pending |
+| REV-02 | Phase 12 | Pending |
+| REV-03 | Phase 12 | Pending |
+| REV-04 | Phase 12 | Pending |
+| REV-05 | Phase 12 | Pending |
+| REV-06 | Phase 11 | Pending |
+| REV-07 | Phase 11 | Pending |
+| REV-08 | Phase 11 | Pending |
+| REV-09 | Phase 11 | Pending |
+| REV-10 | Phase 11 | Pending |
+| REV-11 | Phase 11 | Pending |
+| UI-01 | Phase 12 | Pending |
+| UI-02 | Phase 11 | Pending |
+| DOC-01 | Phase 13 | Pending |
 
 **Coverage:**
 - v2.0 requirements: 40 total
-- Mapped to phases: 0
-- Unmapped: 40 ⚠️
+- Mapped to phases: 40
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-10-25*
-*Last updated: 2026-10-25 at milestone v2.0 start*
+*Last updated: 2026-10-25 after v2.0 roadmap creation (Phases 8-13)*
