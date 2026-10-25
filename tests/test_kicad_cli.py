@@ -1,7 +1,8 @@
 """kicad_cli: locating and running kicad-cli with a scripted fake runner (plan 04-03).
 
 The default suite never starts a process. Tests marked ``kicad_cli`` use the real binary
-and skip when it is absent.
+through the ``kicad_cli_path`` fixture: they need kicad-cli 10 and skip with the gate's
+stated reason (tests/clifixtures.py) on any other version, or none.
 """
 
 import subprocess
@@ -10,10 +11,10 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from clifixtures import KICAD_SYMBOL_FORMAT
 from fakecli import FakeCli
 from zipfixtures import REPO_ROOT, UL_FOOTPRINT_MEMBER, UL_SYMBOL_MEMBER, UL_ZIP
 
-from kicad_lib_manager import library_scanner
 from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.kicad_cli import (
     DEFAULT_TIMEOUT,
@@ -563,15 +564,7 @@ def test_gate_removes_its_temp_folder(monkeypatch):
     assert not any(p.exists() for p in made)
 
 
-# -- real kicad-cli (marked, skipped when the binary is absent) -----------------
-
-
-@pytest.fixture(scope="module")
-def real_exe():
-    exe = locate_kicad_cli(kicad_fp_dir=library_scanner.find_kicad_footprint_dir())
-    if exe is None:
-        pytest.skip("kicad-cli not found")
-    return exe
+# -- real kicad-cli 10 (marked, skipped with the gate's reason otherwise) --------
 
 
 def _ul_member(member: str) -> bytes:
@@ -580,22 +573,22 @@ def _ul_member(member: str) -> bytes:
 
 
 @pytest.mark.kicad_cli
-def test_real_cli_upgrades_ul_symbol_deterministically(real_exe):
+def test_real_cli_upgrades_ul_symbol_deterministically(kicad_cli_path):
     text = _ul_member(UL_SYMBOL_MEMBER).decode("utf-8")
-    first = upgrade_symbol_text(real_exe, text, name="CSD85301Q2")
+    first = upgrade_symbol_text(kicad_cli_path, text, name="CSD85301Q2")
     assert isinstance(first, SymbolUpgrade), first
-    assert first.version == 20241209
+    assert first.version == KICAD_SYMBOL_FORMAT
     assert first.changed is True
-    assert "(version 20241209)" in first.text
+    assert f"(version {KICAD_SYMBOL_FORMAT})" in first.text
     clear_cache()
-    second = upgrade_symbol_text(real_exe, text, name="CSD85301Q2")
+    second = upgrade_symbol_text(kicad_cli_path, text, name="CSD85301Q2")
     assert second == first
 
 
 @pytest.mark.kicad_cli
-def test_real_cli_gate_accepts_ul_symbol_and_footprint(real_exe):
+def test_real_cli_gate_accepts_ul_symbol_and_footprint(kicad_cli_path):
     issues = load_gate(
-        real_exe,
+        kicad_cli_path,
         library="IC_Test_TI",
         symbol_lib=_ul_member(UL_SYMBOL_MEMBER),
         footprints=[("DQK0006B", _ul_member(UL_FOOTPRINT_MEMBER))],
@@ -604,12 +597,12 @@ def test_real_cli_gate_accepts_ul_symbol_and_footprint(real_exe):
 
 
 @pytest.mark.kicad_cli
-def test_real_cli_gate_rejects_sub_symbols_left_with_the_old_name(real_exe):
+def test_real_cli_gate_rejects_sub_symbols_left_with_the_old_name(kicad_cli_path):
     text = _ul_member(UL_SYMBOL_MEMBER).decode("utf-8")
     assert '(symbol "CSD85301Q2_1_1"' in text
     half = text.replace('(symbol "CSD85301Q2"', '(symbol "RENAMED_PART"', 1)
     issues = load_gate(
-        real_exe, library="IC_Test_TI", symbol_lib=half.encode("utf-8"), footprints=()
+        kicad_cli_path, library="IC_Test_TI", symbol_lib=half.encode("utf-8"), footprints=()
     )
     assert [i.code for i in issues] == ["install.cli_gate_failed"]
     assert "Unable to load library" in issues[0].text
