@@ -91,12 +91,10 @@ Open, carried into the next milestone (none block it):
 
 ### Quick Tasks Completed
 
+v1.0 quick tasks are archived in `milestones/v1.0-quick/` (see its README.md).
+
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
-| 261022-gnn | Guard KiCad path-variable sync: confirm before changing kicad_common.json, refuse from a git worktree or another checkout | 2026-10-22 | 3b52ca1 | [261022-gnn-guard-kicad-path-variable-sync-against-s](./quick/261022-gnn-guard-kicad-path-variable-sync-against-s/) |
-| 261023-ptg | Fix Abracon ATXK-H14 TCXO: mirrored footprint pad order, wrong datasheet and fields; delete unused ATX-14 footprint | 2026-10-23 | Custom@53816f9 | [261023-ptg-fix-abracon-atxk-h14-tcxo-mirrored-footp](./quick/261023-ptg-fix-abracon-atxk-h14-tcxo-mirrored-footp/) |
-| 261023-qf7 | Rotate ATXK-H14 footprint to IPC-7351 portrait orientation (pin 1 top-left) and add pin-1 silkscreen and fab markers | 2026-10-23 | Custom@7156bf0 | [261023-qf7-rotate-atxk-h14-footprint-to-ipc-7351-po](./quick/261023-qf7-rotate-atxk-h14-footprint-to-ipc-7351-po/) |
-| 4 | Label the Import preview ki_fp_filters row "Footprint Filter" | 2026-10-24 | dd92bee | — |
 
 ## Deferred Items
 
