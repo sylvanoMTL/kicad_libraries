@@ -46,7 +46,7 @@ Phase 8 makes the suite green first, so every later phase starts from a baseline
   3. Running bare `pytest` from the repo root on the workstation reports 0 failures, and every skip carries a documented reason.
   4. On KiCad 10, installing into an existing `Custom/` library in the KiCad 9 format (20241209) installs the symbol as-is with the D-01 warning and leaves the library's format version unchanged, as the deferred Phase 4 UAT Test 2 (backlog 999.1) expected.
 
-**Plans:** 2/6 plans executed
+**Plans:** 5/6 plans executed
 
 Plans:
 **Wave 1**
@@ -56,9 +56,9 @@ Plans:
 - [x] 08-02-PLAN.md — Synthetic format-mirror Custom/ fixture and the live-Custom/ write-protect guard (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 08-03-PLAN.md — Dialog, preview, install-apply and ranking tests moved to the synthetic Custom/ (wave 3)
-- [ ] 08-04-PLAN.md — VER-01 as-is row on KiCad 10, KiCad 10 scenario rows, UAT hook retargeted in test_install_e2e (wave 3)
-- [ ] 08-05-PLAN.md — test_install_plan real-CLI tests on KiCad 10 and the shared gate, synthetic Custom/ (wave 3)
+- [x] 08-03-PLAN.md — Dialog, preview, install-apply and ranking tests moved to the synthetic Custom/ (wave 3)
+- [x] 08-04-PLAN.md — VER-01 as-is row on KiCad 10, KiCad 10 scenario rows, UAT hook retargeted in test_install_e2e (wave 3)
+- [x] 08-05-PLAN.md — test_install_plan real-CLI tests on KiCad 10 and the shared gate, synthetic Custom/ (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 08-06-PLAN.md — Live-copy fixture removed, WurthElektronik checkout and budget, tests/README.md, green full suite, D-10 records (wave 4)
@@ -145,7 +145,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 8. Test Isolation and KiCad 10 | v2.0 | 2/6 | In Progress | - |
+| 8. Test Isolation and KiCad 10 | v2.0 | 5/6 | In Progress | - |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 0/TBD | Not started | - |
 | 10. Importer on the Atomic Scheme | v2.0 | 0/TBD | Not started | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
