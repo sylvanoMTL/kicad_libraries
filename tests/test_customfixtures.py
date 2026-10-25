@@ -142,3 +142,155 @@ def test_every_synthetic_library_loads_in_kicad_cli(layout, kicad_cli_path):
             footprints=footprints,
         )
         assert issues == [], (lib.name, issues)
+
+
+# ── The session write-protect guard over the live Custom/ (TEST-03, D-13) ────────────────────
+
+
+def _tree(root):
+    (root / "Symbols").mkdir(parents=True)
+    (root / "Symbols" / "a.kicad_sym").write_bytes(b"one")
+    (root / "Footprints" / "A.pretty").mkdir(parents=True)
+    (root / "Footprints" / "A.pretty" / "x.kicad_mod").write_bytes(b"two")
+    (root / "3DModels").mkdir()
+    (root / "3DModels" / "m.step").write_bytes(b"three")
+    return root
+
+
+def test_digest_tree_maps_files_to_sha256_and_folders_to_dir(tmp_path):
+    from customfixtures import digest_tree
+
+    root = tmp_path / "t"
+    (root / "sub").mkdir(parents=True)
+    (root / "sub" / "f.bin").write_bytes(b"abc")
+
+    assert digest_tree(root) == {
+        "sub/": "dir",
+        "sub/f.bin": "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    }
+
+
+def test_snapshot_fixture_returns_digest_tree(snapshot, tmp_path):
+    from customfixtures import digest_tree
+
+    root = _tree(tmp_path / "t")
+
+    assert snapshot(root) == digest_tree(root)
+
+
+def test_digest_custom_is_none_without_a_symbols_folder(tmp_path):
+    from customfixtures import digest_custom
+
+    assert digest_custom(tmp_path / "missing") is None
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    assert digest_custom(empty) is None
+
+
+def test_digest_custom_keys_the_three_watched_folders(tmp_path):
+    from customfixtures import digest_custom
+
+    custom = _tree(tmp_path / "Custom")
+    (custom / "README.md").write_bytes(b"not watched")
+
+    digest = digest_custom(custom)
+
+    assert sorted(digest) == [
+        "3DModels/",
+        "3DModels/m.step",
+        "Footprints/",
+        "Footprints/A.pretty/",
+        "Footprints/A.pretty/x.kicad_mod",
+        "Symbols/",
+        "Symbols/a.kicad_sym",
+    ]
+
+
+def test_custom_changes_is_empty_for_equal_digests():
+    from customfixtures import custom_changes
+
+    assert custom_changes({"a": "1", "b/": "dir"}, {"b/": "dir", "a": "1"}) == []
+
+
+def test_custom_changes_reports_changed_added_removed_and_new_folder():
+    from customfixtures import custom_changes
+
+    before = {"Symbols/": "dir", "Symbols/keep": "1", "Symbols/edit": "1", "Symbols/gone": "1"}
+    after = {"Symbols/": "dir", "Symbols/keep": "1", "Symbols/edit": "2", "Symbols/new": "9", "Symbols/empty/": "dir"}
+
+    assert custom_changes(before, after) == ["Symbols/edit", "Symbols/empty/", "Symbols/gone", "Symbols/new"]
+
+
+def _run_guarded(tmp_path, *, touch: bool):
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    tests_dir = Path(__file__).resolve().parent
+    watched = tmp_path / "watched" / "Custom"
+    (watched / "Symbols").mkdir(parents=True)
+    (watched / "Symbols" / "a.kicad_sym").write_bytes(b"original")
+    run_dir = tmp_path / "run"
+    run_dir.mkdir()
+    (run_dir / "conftest.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "import pytest\n"
+        "from customfixtures import guard_custom\n"
+        "\n"
+        "@pytest.fixture(scope='session', autouse=True)\n"
+        "def _guard():\n"
+        "    yield from guard_custom(Path(os.environ['GUARD_CUSTOM_DIR']))\n",
+        encoding="utf-8",
+    )
+    body = (
+        "import os\n"
+        "from pathlib import Path\n"
+        "def test_touch():\n"
+        "    target = Path(os.environ['GUARD_CUSTOM_DIR']) / 'Symbols' / 'a.kicad_sym'\n"
+        "    with target.open('ab') as handle:\n"
+        "        handle.write(b'x')\n"
+        if touch
+        else "def test_touch():\n    assert True\n"
+    )
+    (run_dir / "test_touch.py").write_text(body, encoding="utf-8")
+    env = dict(os.environ)
+    env["GUARD_CUSTOM_DIR"] = str(watched)
+    env["PYTHONPATH"] = os.pathsep.join([str(tests_dir), str(tests_dir.parent)])
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", str(run_dir)],
+        cwd=run_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+
+
+def test_guard_failure_fails_the_run(tmp_path):
+    done = _run_guarded(tmp_path, touch=True)
+
+    assert done.returncode != 0, done.stdout
+    assert "changed the live Custom/ folder" in done.stdout
+    assert "Symbols/a.kicad_sym" in done.stdout
+
+
+def test_guard_quiet_run_passes(tmp_path):
+    done = _run_guarded(tmp_path, touch=False)
+
+    assert done.returncode == 0, done.stdout + done.stderr
+    assert "changed the live Custom/ folder" not in done.stdout
+
+
+def test_guard_does_nothing_when_custom_is_absent_or_empty(tmp_path):
+    from customfixtures import guard_custom
+
+    absent = tmp_path / "absent"
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    for custom in (absent, empty):
+        gen = guard_custom(custom)
+        next(gen)
+        with pytest.raises(StopIteration):
+            next(gen)
