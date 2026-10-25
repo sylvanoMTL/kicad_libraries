@@ -208,9 +208,9 @@ def test_build_uses_disk_spelling(tmp_path):
     assert on_disk.exists()
 
 
-def test_build_from_real_ul_plan(custom_copy, ul_package, tmp_path):
+def test_build_from_real_ul_plan(synthetic_custom, ul_package, tmp_path):
     package, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=LIB), custom_copy)
+    plan = build_plan(candidate, InstallOptions(library=LIB), synthetic_custom)
     result = apply_plan(plan, backup_root=tmp_path / "backups")
     assert result.ok
 

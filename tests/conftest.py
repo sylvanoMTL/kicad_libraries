@@ -90,6 +90,14 @@ def custom_copy(tmp_path):
 
 
 @pytest.fixture
+def synthetic_custom(tmp_path):
+    """A RepoLayout over an isolated Custom/ built in code (a format mirror of the real one, without the UL sample part); nothing is copied from the checkout."""
+    from customfixtures import write_synthetic_custom
+
+    return write_synthetic_custom(tmp_path / "repo")
+
+
+@pytest.fixture
 def ul_package():
     """Yield (package, candidate) for the Ultra Librarian sample; the package is closed afterwards."""
     from kicad_lib_manager.importer.detect import detect_candidate
