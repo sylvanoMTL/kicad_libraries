@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "UAT gap G-07-8: Clickable reason links in the status strip carry a tooltip saying they jump to the control that fixes the reason. User: 'There is no tooltip on that message, what if I clickon it?'"
 created: 2026-10-24T10:00:00Z
-updated: 2026-10-24T10:50:00Z
+updated: 2026-10-25T00:00:00Z
 goal: find_root_cause_only
 ---
 
@@ -93,3 +93,9 @@ verification: (n/a)
 files_changed: []
 secondary_finding: "A single-reason tooltip is html.escape()d but contains no tag, so Qt.mightBeRichText is False. It renders as plain text and shows entities literally (&amp;, &#x27;, &lt;). With 2+ reasons the '<br>' makes it rich and the entities decode. Any rewrite of the tooltip should force rich text (e.g. wrap in <p>...</p>)."
 fix_direction: "Recommended: strip-wide hint. In _render_strip append a hint line to the existing reason list (keeps the E11/overflow contract and test_strip_caps_three_lines_with_tooltip), force rich text, and scope the strip stylesheet with an object name (e.g. setObjectName('installStrip'); 'QLabel#installStrip { background-color: ... }') so the QToolTip ('qtooltip_label') keeps the normal tooltip look. Optional: a per-link hint via linkHovered(href) -> remembered href plus an eventFilter on QEvent.ToolTip that shows a target-specific hint (conflict -> Overwrite/Rename/Skip buttons, rename -> name field, plan -> preview) and falls back to the full list. QLabel has no public anchorAt, the widget-level ToolTip event would otherwise override a linkHovered-shown tip, and this means more state and tests for little gain on a strip of at most 3 lines. Update 05-UI-SPEC E11 copy accordingly."
+
+## Resolution
+
+resolved: 2026-10-25 at v1.0 milestone close
+fixed_by: G-07-8, plan 07-12 (tooltip lists reasons plus click hint, normal tooltip colours)
+verified_by: 07-VERIFICATION.md (status: passed) and 07-UAT.md (issue resolved by gap closure)

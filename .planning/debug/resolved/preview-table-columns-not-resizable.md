@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "UAT gap G-07-7: The table in preview: the columns cannot resize, and get shricked if expanding, shrinking the Import part window edges"
 created: 2026-10-24T10:00:00Z
-updated: 2026-10-24T10:45:00Z
+updated: 2026-10-25T00:00:00Z
 goal: find_root_cause_only
 ---
 
@@ -123,3 +123,9 @@ root_cause: "PreviewTree (kicad_lib_manager/widgets/preview_tree.py:26-29,35), t
 fix: (not applied - goal find_root_cause_only)
 verification: (diagnosis only) reproduced headless on native Windows metrics and offscreen; drag counterfactual with Interactive modes moves the divider and survives render() and _request_rebuild()
 files_changed: []
+
+## Resolution
+
+resolved: 2026-10-25 at v1.0 milestone close
+fixed_by: G-07-7, plan 07-11 (Interactive Item column, stretched eliding Detail)
+verified_by: 07-VERIFICATION.md (status: passed) and 07-UAT.md (issue resolved by gap closure)

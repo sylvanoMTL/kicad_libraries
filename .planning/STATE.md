@@ -1,37 +1,35 @@
 ---
 gsd_state_version: "1.0"
-current_phase: 07
-status: completed
-stopped_at: Phase 07 complete — all phases complete
-last_updated: "2026-10-24T17:46:27.016Z"
-last_activity: 2026-10-24
-last_activity_desc: Phase 07 complete
-state_head: dd92bee1fdce2bcd9e64af68fff322035f070a8d
+status: Awaiting next milestone
+stopped_at: v1.0 milestone archived
+last_updated: "2026-10-25T07:31:07.418Z"
+last_activity: 2026-10-25
+last_activity_desc: Milestone v1.0 completed and archived
+state_head: 527a8cef0775b9d27bc58df8843a1eb80737d2f3
 progress:
   total_phases: 7
   completed_phases: 7
   total_plans: 70
   completed_plans: 70
   percent: 100
+current_phase: 07
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-24)
+See: .planning/PROJECT.md (updated 2026-10-25)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Milestone complete — ready to archive (/gsd-complete-milestone)
+**Current focus:** Planning next milestone (v1.0 Part Importer shipped 2026-10-25)
 
 ## Current Position
 
-Phase: 07
-Plan: Not started
-Status: All phases complete
-Last activity: 2026-10-24 — Phase 07 complete
-
-Progress: [██████████] 100%
+Phase: Milestone v1.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-10-25 — Milestone v1.0 completed and archived
 
 ## Performance Metrics
 
@@ -73,40 +71,9 @@ Progress: [██████████] 100%
 
 ### Decisions
 
-Decisions are logged in PROJECT.md Key Decisions table.
-Recent decisions affecting current work:
+The full decision log is in the PROJECT.md Key Decisions table. The v1.0 per-phase decisions are archived with `milestones/v1.0-phases/` and summarised in `milestones/v1.0-ROADMAP.md`.
 
-- [Init]: Zero new runtime dependencies. Use an in-repo span-splicing S-expression tokenizer (kiutils and sexpdata rejected as lossy) and `subprocess` + `git` CLI (no GitPython/pygit2).
-- [Requirements]: The importer writes `Manufacturer` and `MPN` properties. Existing `MF` / `MP` / `MANUFACTURER` fields are left alone (migration is v2).
-- [Requirements]: 3D model saved as `<MPN>.<original ext>`. A file with the same SHA-256 is reused silently; different content is a per-item conflict.
-- [Requirements]: `kicad-cli` normalises only the incoming part, when available. The target library's version header is never changed.
-- [Phase 1]: `atomic_write_bytes` pre-checks read-only targets, retries `os.replace` on PermissionError for about 1 s, and reports `fs.locked` / `fs.write_failed` as Issues instead of raising.
-- [Phase 1]: `tests/` is in the scanner's `SKIP_DIRS`, so fixture libraries never reach Select All + Generate.
-- [Requirements]: Detached `Custom` HEAD: switch to `main` is offered only if HEAD is on `main`'s history, otherwise the commit is refused. Legacy `${KIPRJMOD}` model paths are fixed in one explicit cleanup commit (HARD-09).
-- [Phase 02]: Managed table entries are identified by URI tail after `${KICAD_LIB_GITHUB}/`, not by nickname. Issues are routed by `Severity`, not message substrings.
-- [Phase 02]: Scan busy guard = disabled controls + refusing `_start_scan`. Phase 5's post-import rescan must go through `_start_scan`.
-- [Phase 02]: 02-07: owner approved Custom cleanup commit 485d530 (five D-16 footprints to ${CUSTOM_3DMODEL_DIR}); parent gitlink bumped; nothing pushed - owner must push Custom main before removing the worktree
-- [Phase 03]: Untrusted KiCad text is bounded by an 8 MiB raw-byte cap, a 1,000,000-node ceiling and a linear windowed string scan (`sexpr._string_end`); an over-cap file is skipped with a WARNING, never a whole-package refusal.
-- [Phase 03]: Intake never extracts into the repo: zips are staged member-by-member outside it, folders are read in place.
-- [Phase 04]: 04-01: Manufacturer/MPN follow D-12 (keep exact, rename vendor alias in place, else clone a hidden property); several chosen footprints link the first and list all in ki_fp_filters
-- [Phase 04]: 04-01: Unsupported install cases refuse with dedicated codes (library_not_found, version_unsupported, rename_unsupported, extends_unsupported) that later plans remove one by one
-- [Phase 04]: 04-06: kicad-cli output is used only when its version equals the target header; otherwise vendor text is merged with install.version_mismatch
-- [Phase 04]: 04-06: library names must be non-empty, equal their sanitize_name form and not be a case twin (install.invalid_library, install.library_case_clash); a half pair is completed with install.pair_completed
-- [Phase 04]: 04-07: install backup folders prune on (date, time, sequence) so a -2 suffixed folder ranks newer than the plain one
-- [Phase 04]: 04-07: rollback unlinks a file written under another spelling only when both spellings are listed (case-sensitive FS); a single listed name is never unlinked
-- [Phase 04]: 04-07: apply_plan keeps soft verify WARNINGs in InstallResult.issues and emits install.cli_not_found once
-- [Phase 04]: 04-08: new symbol properties follow the block's own format; Manufacturer is unit-wide, mpn/value/datasheet/description overrides apply to the chosen symbol only
-- [Phase 04]: 04-08: a vendor model path is stale unless it starts with a path variable other than KIPRJMOD; extends unit text is ordered parent first before kicad-cli runs
-- [Phase 04]: 04-09: symbol conflicts are judged against the block rendered with the surviving footprint names; a kept first footprint drops the incoming model; a skipped chosen symbol sets plan.linked_footprint to None
-- [Phase 04]: 04-10: test_uat_scratch_install is gated by KICAD_IMPORT_UAT_DIR and not marked kicad_cli, so -m kicad_cli shows 7 passed, 0 skipped
-- [Phase 04]: 04-10: INST-06 and ROADMAP criterion 3 amended for D-02 (only the incoming symbol is normalised; footprints are copied as-is)
-- [Phase 04]: 04-11..04-13 (gap closure): install is exception-safe (rollback, then install.unexpected or re-raise); freshness is re-checked after the kicad-cli gate and before every write; blank InstallOptions text means not set (explicit clear deferred to the Phase 5 preview)
-- [Phase 05]: Emptied preview fields are explicit clears (Datasheet written empty, cleared Manufacturer skips inference, cleared MPN refused); KiCad loads an empty Datasheet (UAT)
-- [Phase 05]: Post-install table write is add-only (one entry per table for a new library); an existing unlisted library gets a Generate hint
-- [Phase 05]: The import flow never runs git; `ImportDialog.result` / `result_plan` and `ImportResultView.commit_slot` are the hand-off for Phase 6
-- [Phase 06]: Git runs through one allow-listed `run_git` (no remote subcommand, `--literal-pathspecs`, `GIT_*` env stripped, paths on stdin, message via `-F`); `commit --only` commits exactly the installed files and then only the `Custom` gitlink; owner hooks always run (D-06); the app never pushes.
-- [Phase 06]: Detached `Custom` HEAD on `main`'s history offers a plain `switch main`; a stale local main (origin/main contains HEAD, main does not) is refused. Every git write follows a click; only the read-only probe runs after install.
-- [Quick 261022-gnn]: KiCad path variables are never written silently: `sync_kicad_path_vars` writes only after `confirm(changes)` returns True (no callback = no write); a git worktree (`.git` is a file) or a checkout other than a non-empty configured `KICAD_LIB_GITHUB` (normalised compare) is refused with a WARNING and never prompts. Later phases must not add a silent caller.
+- [v1.0 close]: KiCad 10 is the reference version and KiCad 9 is no longer a target (owner, 2026-10-25).
 
 ### Pending Todos
 
@@ -114,15 +81,13 @@ None yet.
 
 ### Blockers/Concerns
 
-- [Phase 2]: `Custom` `main` is 1 commit ahead of `origin/main` (485d530, HARD-09 cleanup). Owner must push it before removing this worktree.
-- [Phase 4, review]: Still open, non-blocking: WR-04 (`build_plan` ~531 lines), IN-01/02/03/05. See 04-REVIEW-DISPOSITION.md. (WR-06, IN-04, WR-02 and the Phase 2 UI-review items were closed in Phase 5.)
-- [Phase 5, review]: Open, non-blocking: WR-01..WR-06 in 05-REVIEW-DISPOSITION.md. WR-04 was closed in Phase 6 (captured plan, `open_path` busy guard); WR-05 (GUI thread waits up to 60 s on kicad-cli) is still open.
-- [Phase 5, UI review]: 05-UI-REVIEW.md 17/24; help dialog hard-codes colours and px font sizes outside `theme.py`; `conflict_row.py` has `#FFFFFF` literals.
-- [Phase 4]: KiCad 9 load of a mixed-version library verified by kicad-cli 9.0.9 and the owner's GUI UAT. KiCad 10 (format 20251024) and case-sensitive-volume rollback are deferred re-tests (ROADMAP backlog 999.1, 999.2).
-- [Phase 6, review]: Open, non-blocking: WR-01..WR-05, IN-01..IN-03 in 06-REVIEW-DISPOSITION.md. The UI audit (06-UI-REVIEW.md, 17/24) ranks WR-05 (stale probe after a refusal), WR-01 (timeout reported as nothing committed without checking HEAD) and WR-03 (POSIX quoting in the Windows "finish by hand" command) as the top fixes.
-- [Phase 6, environment]: The CSD85301Q2 UAT install is still uncommitted in `Custom/` (`3DModels/CSD85301Q2.stp`, `IC_PowerManagementMosfet_TI.*`). While it is there, 3 tests that read the real `Custom/` tree fail (`test_build_from_real_ul_plan`, `test_tracer_ul_import_end_to_end`, `test_preview_sections_follow_plan_ops`); they should use an isolated fixture.
-- [Phase 7]: Complete. Real SnapEDA/SamacSys zips stay local (only `ul_CSD85301Q2.zip` is tracked); real-sample tests skip when they are absent, synthetic fixtures cover CI. A separately downloaded 3D model is a second intake source; an unusable model source blocks Install as an ERROR and a partly bad zip is rejected as a whole (G-07-5). UAT 11 tests: 7 pass, 4 issues all closed by 07-08, 07-10..07-13 and re-tested live.
-- [Phase 5, environment]: 7 real-kicad-cli tests fail on the phase base too, because the installed KiCad 10 CLI writes symbol format 20251024 where the tests expect 20241209: `test_install_plan.py` (3), `test_kicad_cli.py::test_real_cli_upgrades_ul_symbol_deterministically`, `test_install_e2e.py` (3). Not a phase 5 regression; owner to decide whether the tests follow the installed CLI version.
+Open, carried into the next milestone (none block it):
+
+- [Tests]: 14 tests copy the live `Custom/` tree and assume the UL sample part is absent. They fail since `Custom` commit `eecac22` (2026-10-23) added CSD85301Q2 (`test_commit_plan`, `test_install_apply`, `test_install_e2e`, `test_install_plan`). They need an isolated fixture.
+- [Tests]: 7 real kicad-cli tests expect KiCad 9 output (20241209), but the installed KiCad 10 CLI writes 20251024 (`test_kicad_cli`, `test_install_plan` x3, `test_install_e2e` x3). Retarget them at KiCad 10.
+- [Backlog]: 999.1 (re-test D-01 on KiCad 10, which is now installed) and 999.2 (case-twin rollback on a case-sensitive folder).
+- [Review]: Phase 4 WR-04, IN-01/02/03/05; Phase 5 WR-01..WR-06 (WR-04 closed, WR-05 GUI thread waits up to 60 s on kicad-cli); Phase 6 WR-01..WR-05, IN-01..IN-03. See the REVIEW-DISPOSITION files under `milestones/v1.0-phases/`.
+- [UI review]: Help dialog hard-codes colours and px font sizes outside `theme.py`, and `conflict_row.py` has `#FFFFFF` literals (05-UI-REVIEW 17/24). The Commit panel primary-button and outcome-tint items are in 06-UI-REVIEW (17/24).
 
 ### Quick Tasks Completed
 
@@ -143,6 +108,10 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-24T17:40:00Z
-Stopped at: Phase 07 complete — all phases complete
+Last session: 2026-10-25
+Stopped at: v1.0 milestone archived
 Resume file: None
+
+## Operator Next Steps
+
+- Start the next milestone with /gsd-new-milestone

@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "UAT gap G-07-5 (Phase 07, test 5): an unusable 3D model source shows an amber warning 'dummy_CAD_FILE.step holds no usable 3D model'; user wants a red ERROR that blocks Install, with remove / add-another actions on the model row. Install was observed greyed out."
 created: 2026-10-24T11:00:00Z
-updated: 2026-10-24T11:50:00Z
+updated: 2026-10-25T00:00:00Z
 goal: find_root_cause_only
 ---
 
@@ -114,3 +114,9 @@ root_cause: |
 fix: (not applied - goal find_root_cause_only)
 verification: Diagnosis verified by headless probe (scratchpad probe_g075/probe_plan.py) and a temporary dialog probe test (deleted); baseline related tests 63 passed / 1 skipped.
 files_changed: []
+
+## Resolution
+
+resolved: 2026-10-25 at v1.0 milestone close
+fixed_by: G-07-5, plans 07-10, 07-13 (red blocking error for an unusable model source, Remove/add-another)
+verified_by: 07-VERIFICATION.md (status: passed) and 07-UAT.md (issue resolved by gap closure)

@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "there was not 3d model, what if I get a 3d model in a separate file? (in SnapEDA this is what you get, not in a full zip file) ... actually Snap EDA you downlad separately and it is either a cad file or a zip file containing the cad file"
 created: 2026-10-23T21:27:54Z
-updated: 2026-10-23T22:00:00Z
+updated: 2026-10-25T00:00:00Z
 ---
 
 ## Current Focus
@@ -90,3 +90,9 @@ verification: |
   Feasibility probe (case G): CAD zip Package plus the model PackageFile from a second open_package(model zip), candidate = dataclasses.replace(models=(ModelItem,)), then build_plan (unblocked, model_file USB4145-03-0170-C.stp, footprint (model "${CUSTOM_3DMODEL_DIR}/USB4145-03-0170-C.stp")) and apply_plan (ok, file copied to 3DModels). InstallPlan, FileOp, applier and commit_plan need no change.
 oracle_type:
 files_changed: []
+
+## Resolution
+
+resolved: 2026-10-25 at v1.0 milestone close
+fixed_by: G-07-2, plans 07-07, 07-08, 07-09 (separate 3D model attach via Add 3D model...)
+verified_by: 07-VERIFICATION.md (status: passed) and 07-UAT.md (issue resolved by gap closure)
