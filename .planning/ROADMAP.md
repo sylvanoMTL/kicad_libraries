@@ -46,11 +46,11 @@ Phase 8 makes the suite green first, so every later phase starts from a baseline
   3. Running bare `pytest` from the repo root on the workstation reports 0 failures, and every skip carries a documented reason.
   4. On KiCad 10, installing into an existing `Custom/` library in the KiCad 9 format (20241209) installs the symbol as-is with the D-01 warning and leaves the library's format version unchanged, as the deferred Phase 4 UAT Test 2 (backlog 999.1) expected.
 
-**Plans:** 6 plans
+**Plans:** 1/6 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 08-01-PLAN.md — KiCad 10 gate for real kicad-cli tests, 20251024 builder style, test_kicad_cli retargeted (wave 1)
+- [x] 08-01-PLAN.md — KiCad 10 gate for real kicad-cli tests, 20251024 builder style, test_kicad_cli retargeted (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 08-02-PLAN.md — Synthetic format-mirror Custom/ fixture and the live-Custom/ write-protect guard (wave 2)
@@ -145,7 +145,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 8. Test Isolation and KiCad 10 | v2.0 | 0/6 | Planned | - |
+| 8. Test Isolation and KiCad 10 | v2.0 | 1/6 | In Progress | - |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 0/TBD | Not started | - |
 | 10. Importer on the Atomic Scheme | v2.0 | 0/TBD | Not started | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
