@@ -141,14 +141,14 @@ def test_rows_reimport_shows_unchanged(ul_package, ul_layout, tmp_path):
     assert file_counts(plan, candidate, options) == FileCounts(new=0, modified=0, unchanged=3)
 
 
-def test_rows_reimport_into_the_real_custom_library(ul_package, custom_copy, tmp_path):
-    # The same round trip against a copy of the real Custom/ library (skipped without the submodule)
-    first, candidate, options = _ul_plan(ul_package, custom_copy)
+def test_rows_reimport_into_the_real_custom_library(ul_package, synthetic_custom, tmp_path):
+    # The same round trip against the synthetic Custom/ built by customfixtures (format mirror of the real library)
+    first, candidate, options = _ul_plan(ul_package, synthetic_custom)
     assert not first.blocked, first.issues
     files = _sections(first, candidate, options)["Files"]
     assert [r.text[0] for r in files.rows] == ["+", "+", "~"]
     assert apply_plan(first, backup_root=tmp_path / "backups").ok
-    plan = build_plan(candidate, options, custom_copy, ToolContext())
+    plan = build_plan(candidate, options, synthetic_custom, ToolContext())
     assert plan.is_noop
     again = _sections(plan, candidate, options)["Files"]
     assert [r.text[0] for r in again.rows] == ["=", "=", "="]
