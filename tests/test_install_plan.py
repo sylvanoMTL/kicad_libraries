@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from clifixtures import KICAD_GENERATOR_VERSION, KICAD_SYMBOL_FORMAT
 from fakecli import FakeCli
 from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
 from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib, unpack_sample, write_custom_layout
@@ -34,7 +35,6 @@ from kicad_lib_manager.kicad_files import (
     symbol_insert_edit,
     unit_library_text,
 )
-from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.sexpr import apply_edits, unquote
 
@@ -91,17 +91,17 @@ def _members(symbols=("PART",), footprints=("FP",), models=()):
 # -- Phase 3 D-04: placeholder library names are refused ------------------------
 
 
-def test_placeholder_library_blocked_and_nothing_written(custom_copy, ul_package, snapshot):
+def test_placeholder_library_blocked_and_nothing_written(synthetic_custom, ul_package, snapshot):
     _, candidate = ul_package
-    before = snapshot(custom_copy.custom_dir)
-    plan = build_plan(candidate, InstallOptions(library="IC_SubCategory_TI"), custom_copy)
+    before = snapshot(synthetic_custom.custom_dir)
+    plan = build_plan(candidate, InstallOptions(library="IC_SubCategory_TI"), synthetic_custom)
     assert plan.blocked
     assert not plan.ops
     assert "install.placeholder_library" in _codes(plan)
     assert "SubCategory" in _error(plan, "install.placeholder_library").text
     result = apply_plan(plan)
     assert not result.ok
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(synthetic_custom.custom_dir) == before
 
 
 def test_placeholder_check_runs_before_the_target_is_read(layout, tmp_path):
@@ -208,39 +208,39 @@ def test_several_footprints_first_is_linked_and_all_are_filters(layout, tmp_path
 # -- WR-04: staged files must still be what intake saw ---------------------------
 
 
-def test_source_gone_after_package_close(custom_copy, ul_package):
+def test_source_gone_after_package_close(synthetic_custom, ul_package):
     package, candidate = ul_package
     package.close()
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), custom_copy)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
     assert plan.blocked and not plan.ops
     assert "install.source_gone" in _codes(plan)
 
 
-def test_source_changed_in_folder_package(custom_copy, tmp_path):
+def test_source_changed_in_folder_package(synthetic_custom, tmp_path):
     folder = unpack_sample(tmp_path / "folder", kicad_only=True)
     with open_package(folder, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
         assert candidate is not None
         edited = candidate.symbols[0].file.path
         edited.write_bytes(edited.read_bytes() + b"\n")
-        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), custom_copy)
+        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
     assert plan.blocked and not plan.ops
     assert "install.source_changed" in _codes(plan)
 
 
-def test_model_changed_after_plan_is_refused_by_apply(custom_copy, tmp_path, snapshot):
+def test_model_changed_after_plan_is_refused_by_apply(synthetic_custom, tmp_path, snapshot):
     folder = unpack_sample(tmp_path / "folder", kicad_only=True)
-    before = snapshot(custom_copy.custom_dir)
+    before = snapshot(synthetic_custom.custom_dir)
     with open_package(folder, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
-        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), custom_copy)
+        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
         assert not plan.blocked, plan.issues
         model = candidate.models[0].file.path
         model.write_bytes(model.read_bytes() + b" ")
         result = apply_plan(plan, backup_root=tmp_path / "bk")
     assert not result.ok
     assert "install.source_changed" in [i.code for i in result.issues]
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(synthetic_custom.custom_dir) == before
 
 
 # -- WR-05: package and candidate Issues reach the plan -------------------------
@@ -293,13 +293,13 @@ def test_blank_options_mean_not_set():
 
 
 @pytest.mark.parametrize("blank", ["", "  "], ids=["empty", "spaces"])
-def test_blank_option_keeps_ul_vendor_values(custom_copy, ul_package, blank):
+def test_blank_option_keeps_ul_vendor_values(synthetic_custom, ul_package, blank):
     _, candidate = ul_package
-    unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY), custom_copy)
+    unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
     blanked = build_plan(
         candidate,
         InstallOptions(library=UL_LIBRARY, **dict.fromkeys(_TEXT_FIELDS, blank)),
-        custom_copy,
+        synthetic_custom,
     )
     assert not blanked.blocked, blanked.issues
     assert blanked.ops == unset.ops
@@ -360,9 +360,9 @@ def test_existing_library_unaffected_by_symbols_check(layout, tmp_path):
 # -- Consistency of the installed names -----------------------------------------
 
 
-def test_footprint_consistency_default_names(custom_copy, ul_package):
+def test_footprint_consistency_default_names(synthetic_custom, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), custom_copy)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
     assert not plan.blocked, plan.issues
     fp_op = next(op for op in plan.ops if op.kind == "footprint")
     sym_op = next(op for op in plan.ops if op.kind == "symbol_lib")
@@ -628,22 +628,15 @@ def test_version_extends_parent_missing(tmp_path):
     assert fake.calls == []
 
 
-def _real_tools():
-    tools = planner.detect_tools(find_kicad_footprint_dir())
-    if tools.kicad_cli is None:
-        pytest.skip("kicad-cli not found")
-    return tools
-
-
 @pytest.mark.kicad_cli
-def test_version_real_cli_into_20241209(tmp_path, ul_package):
-    tools = _real_tools()
-    layout = _target_layout(tmp_path, V9, ("EXISTING_A",))
+def test_version_real_cli_into_20251024(tmp_path, ul_package, real_tools):
+    tools = real_tools
+    layout = _target_layout(tmp_path, KICAD_SYMBOL_FORMAT, ("EXISTING_A",))
     original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
     _, candidate = ul_package
     plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, tools)
     assert not plan.blocked, plan.issues
-    assert plan.normalised and plan.target_version == V9
+    assert plan.normalised and plan.target_version == KICAD_SYMBOL_FORMAT
     sym_op = _op(plan, "symbol_lib")
     block = _block(sym_op.data, "CSD85301Q2")
     assert "(hide yes)" in block and "(id " not in block
@@ -729,22 +722,20 @@ def test_library_new_pair_without_cli(tmp_path):
     assert [i.severity for i in plan.issues if i.code == "install.cli_not_found"] == [Severity.INFO]
 
 
-def test_library_pair_completed_pretty_missing(custom_copy, ul_package, tmp_path, snapshot):
-    # IC_IMU_TDK has a symbol library and no footprint library today
-    assert not (custom_copy.footprints_dir / "IC_IMU_TDK.pretty").exists()
-    real_before = snapshot(REPO_ROOT / "Custom" / "Footprints")
+def test_library_pair_completed_pretty_missing(synthetic_custom, ul_package, tmp_path):
+    # The synthetic IC_IMU_TDK has a symbol library and, by construction, no footprint library
+    assert not (synthetic_custom.footprints_dir / "IC_IMU_TDK.pretty").exists()
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library="IC_IMU_TDK"), custom_copy, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library="IC_IMU_TDK"), synthetic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, True)
-    assert [op.path for op in plan.ops if op.kind == "mkdir"] == [custom_copy.footprints_dir / "IC_IMU_TDK.pretty"]
+    assert [op.path for op in plan.ops if op.kind == "mkdir"] == [synthetic_custom.footprints_dir / "IC_IMU_TDK.pretty"]
     assert _op(plan, "symbol_lib").base_sha256 is not None
     assert [i.severity for i in plan.issues if i.code == "install.pair_completed"] == [Severity.WARNING]
     assert "IC_IMU_TDK.pretty" in _error_or_warning(plan, "install.pair_completed").text
     result = apply_plan(plan, backup_root=tmp_path / "bk")
     assert result.ok, result.issues
-    assert (custom_copy.footprints_dir / "IC_IMU_TDK.pretty" / "DQK0006B.kicad_mod").is_file()
-    assert snapshot(REPO_ROOT / "Custom" / "Footprints") == real_before
+    assert (synthetic_custom.footprints_dir / "IC_IMU_TDK.pretty" / "DQK0006B.kicad_mod").is_file()
 
 
 def _error_or_warning(plan, code):
@@ -812,17 +803,17 @@ def test_library_existing_header_unchanged(tmp_path, version):
 
 
 @pytest.mark.kicad_cli
-def test_library_real_cli_new_header(tmp_path, ul_package):
-    tools = _real_tools()
+def test_library_real_cli_new_header(tmp_path, ul_package, real_tools):
+    tools = real_tools
     layout = _pair_layout(tmp_path)
     _, candidate = ul_package
     plan = build_plan(candidate, InstallOptions(library=NEW_LIBRARY), layout, tools)
     assert not plan.blocked, plan.issues
     sym_op = _op(plan, "symbol_lib")
     header = _header(sym_op.data)
-    assert "(version 20241209)" in header
+    assert f"(version {KICAD_SYMBOL_FORMAT})" in header
     assert '(generator "kicad_symbol_editor")' in header
-    assert '(generator_version "9.0")' in header
+    assert f'(generator_version "{KICAD_GENERATOR_VERSION}")' in header
     footprints = [(op.path.stem, op.data) for op in plan.ops if op.kind == "footprint"]
     assert kicad_cli.load_gate(tools.kicad_cli, library=NEW_LIBRARY, symbol_lib=sym_op.data, footprints=footprints) == []
 
@@ -1008,10 +999,10 @@ def test_rename_value_override_beats_the_token_rewrite(tmp_path):
     assert _value_of(plan, "Value", "PART_X") == "Mine"
 
 
-def test_footprint_consistency_after_override(custom_copy, ul_package):
+def test_footprint_consistency_after_override(synthetic_custom, ul_package):
     _, candidate = ul_package
     options = InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "DQK0006B_TI"})
-    plan = build_plan(candidate, options, custom_copy)
+    plan = build_plan(candidate, options, synthetic_custom)
     assert not plan.blocked, plan.issues
     assert plan.footprint_names == ("DQK0006B_TI",) and plan.linked_footprint == "DQK0006B_TI"
     assert Rename("footprint", "DQK0006B", "DQK0006B_TI") in plan.renames
@@ -1024,24 +1015,24 @@ def test_footprint_consistency_after_override(custom_copy, ul_package):
     assert _value_of(plan, "ki_fp_filters", "CSD85301Q2") == "DQK0006B_TI"
 
 
-def test_footprint_consistency_override_is_sanitised(custom_copy, ul_package):
+def test_footprint_consistency_override_is_sanitised(synthetic_custom, ul_package):
     _, candidate = ul_package
     options = InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "DQK 0006/B"})
-    plan = build_plan(candidate, options, custom_copy)
+    plan = build_plan(candidate, options, synthetic_custom)
     assert not plan.blocked, plan.issues
     assert plan.footprint_names == ("DQK_0006_B",)
     assert [i.severity for i in plan.issues if i.code == "naming.changed"] == [Severity.INFO]
     assert Rename("footprint", "DQK0006B", "DQK_0006_B") in plan.renames
 
 
-def test_footprint_consistency_unusable_override_refused(custom_copy, ul_package, snapshot):
+def test_footprint_consistency_unusable_override_refused(synthetic_custom, ul_package, snapshot):
     _, candidate = ul_package
-    before = snapshot(custom_copy.custom_dir)
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "///"}), custom_copy)
+    before = snapshot(synthetic_custom.custom_dir)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "///"}), synthetic_custom)
     assert plan.blocked and not plan.ops
     assert _codes(plan) == ["install.invalid_name"]
     assert apply_plan(plan).ok is False
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(synthetic_custom.custom_dir) == before
 
 
 def test_fields_value_injection_quoted(tmp_path):
@@ -1182,9 +1173,9 @@ def test_no_model_package(layout, tmp_path):
     assert "install.model_declined" not in [i.code for i in plan.issues]
 
 
-def test_no_model_declined(custom_copy, ul_package):
+def test_no_model_declined(synthetic_custom, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, no_model=True), custom_copy)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, no_model=True), synthetic_custom)
     assert not plan.blocked, plan.issues
     assert plan.model_file is None
     assert not [op for op in plan.ops if op.kind == "model"]
@@ -1237,9 +1228,9 @@ def test_model_embedded_files_warn(layout, tmp_path):
 
 @pytest.mark.kicad_cli
 @pytest.mark.parametrize("new_library", [False, True], ids=["existing", "new"])
-def test_unit_real_cli_loads_in_kicad(tmp_path, new_library):
-    tools = _real_tools()
-    layout = _target_layout(tmp_path, V9, ("EXISTING_A",))
+def test_unit_real_cli_loads_in_kicad(tmp_path, new_library, real_tools):
+    tools = real_tools
+    layout = _target_layout(tmp_path, KICAD_SYMBOL_FORMAT, ("EXISTING_A",))
     library = NEW_LIBRARY if new_library else LIBRARY
     original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
     options = InstallOptions(library=library, symbol=CHILD)
@@ -1298,13 +1289,13 @@ def _install(tmp_path, layout, tools=ToolContext(), symbol=None, options=None, *
     return plan
 
 
-def test_noop_second_plan_after_apply(custom_copy, ul_package, tmp_path):
+def test_noop_second_plan_after_apply(synthetic_custom, ul_package, tmp_path):
     _, candidate = ul_package
     options = InstallOptions(library=UL_LIBRARY)
-    first = build_plan(candidate, options, custom_copy)
+    first = build_plan(candidate, options, synthetic_custom)
     assert not first.blocked and first.ops, first.issues
     _apply(first, tmp_path)
-    second = build_plan(candidate, options, custom_copy)
+    second = build_plan(candidate, options, synthetic_custom)
     assert second.ops == () and second.conflicts == ()
     assert not second.blocked, second.issues
     assert second.is_noop
@@ -1314,9 +1305,9 @@ def test_noop_second_plan_after_apply(custom_copy, ul_package, tmp_path):
 
 
 @pytest.mark.kicad_cli
-def test_noop_second_plan_after_normalised_apply(tmp_path, ul_package):
-    tools = _real_tools()
-    layout = _target_layout(tmp_path, V9, ("EXISTING_A",))
+def test_noop_second_plan_after_normalised_apply(tmp_path, ul_package, real_tools):
+    tools = real_tools
+    layout = _target_layout(tmp_path, KICAD_SYMBOL_FORMAT, ("EXISTING_A",))
     _, candidate = ul_package
     options = InstallOptions(library=LIBRARY)
     first = build_plan(candidate, options, layout, tools)
