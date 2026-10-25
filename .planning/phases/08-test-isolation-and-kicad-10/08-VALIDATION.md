@@ -74,7 +74,7 @@ Filled in by the planner/executor once task IDs exist. Requirement-level map fro
 | 08-05 T2 | TEST-01 | `env/Scripts/python.exe -m pytest tests/test_install_plan.py -q` | ⬜ pending |
 | 08-06 T1 (tracer) | TEST-01 | scratch copy without `Custom/` running the migrated files; `env/Scripts/python.exe -m pytest -m "not wurth" -q` | ⬜ pending |
 | 08-06 T2 | TEST-03 (D-11, D-12) | `env/Scripts/python.exe -m pytest -m wurth -q --durations=10`; README keyword check | ⬜ pending |
-| 08-06 T3 | TEST-03, VER-01 (D-10) | `env/Scripts/python.exe -m pytest` (0 failed, 3 documented skips) | ⬜ pending |
+| 08-06 T3 | TEST-03, VER-01 (D-08, D-10) | `env/Scripts/python.exe -m pytest` (0 failed, 3 documented skips); `08-UAT.md` written with test 1 (automated) pass and test 2 (Symbol Editor) pending; records grep | ⬜ pending |
 
 ---
 
@@ -92,7 +92,7 @@ Filled in by the planner/executor once task IDs exist. Requirement-level map fro
 
 | Behavior | Requirement | Why Manual | Test Instructions |
 |----------|-------------|------------|-------------------|
-| Owner opens the installed 20241209 scratch library in KiCad 10's Symbol Editor and places CSD85301Q2 | VER-01 | Needs the KiCad 10 GUI | Set `KICAD_IMPORT_UAT_DIR` to a scratch folder, run `env/Scripts/python.exe -m pytest tests/test_install_e2e.py::test_uat_scratch_install`, open the library in KiCad 10 and place the part |
+| Owner opens the installed 20241209 scratch library in KiCad 10's Symbol Editor and places CSD85301Q2 | VER-01 | Needs the KiCad 10 GUI | Set `KICAD_IMPORT_UAT_DIR` to a scratch folder, run `env/Scripts/python.exe -m pytest tests/test_install_e2e.py::test_uat_scratch_install`, open the library in KiCad 10 and place the part; the owner's result is recorded as test 2 of `08-UAT.md` (written pending by 08-06 Task 3, answered in `/gsd-verify-work 8`) |
 | WurthElektronik submodule checked out in this worktree | TEST-03 | One-off workstation setup | `git submodule update --init WurthElektronik/KiCad-Library` |
 
 ---
