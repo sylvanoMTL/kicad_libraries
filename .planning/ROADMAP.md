@@ -44,7 +44,15 @@ Phase 8 makes the suite green first, so every later phase starts from a baseline
   2. The real kicad-cli tests expect KiCad 10 output (symbol format 20251024) and pass with the installed kicad-cli 10. Where kicad-cli 10 is absent, they skip with a stated reason instead of failing.
   3. Running bare `pytest` from the repo root on the workstation reports 0 failures, and every skip carries a documented reason.
   4. On KiCad 10, installing into an existing `Custom/` library in the KiCad 9 format (20241209) installs the symbol as-is with the D-01 warning and leaves the library's format version unchanged, as the deferred Phase 4 UAT Test 2 (backlog 999.1) expected.
-**Plans**: TBD
+**Plans:** 6 plans
+
+Plans:
+- [ ] 08-01-PLAN.md — KiCad 10 gate for real kicad-cli tests, 20251024 builder style, test_kicad_cli retargeted (wave 1)
+- [ ] 08-02-PLAN.md — Synthetic format-mirror Custom/ fixture and the live-Custom/ write-protect guard (wave 2)
+- [ ] 08-03-PLAN.md — Dialog, preview, install-apply and ranking tests moved to the synthetic Custom/ (wave 3)
+- [ ] 08-04-PLAN.md — VER-01 as-is row on KiCad 10, KiCad 10 scenario rows, UAT hook retargeted in test_install_e2e (wave 3)
+- [ ] 08-05-PLAN.md — test_install_plan real-CLI tests on KiCad 10 and the shared gate, synthetic Custom/ (wave 3)
+- [ ] 08-06-PLAN.md — Live-copy fixture removed, WurthElektronik checkout and budget, tests/README.md, green full suite, D-10 records (wave 4)
 
 ### Phase 9: Atomic Rule Check and Scan Detection
 **Goal**: Every part in an `Atomic_` library is held to the atomic rule on every scan, so a broken or hand-made part is flagged, explained and, where it is safe, fixed in one click
@@ -118,7 +126,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
-| 8. Test Isolation and KiCad 10 | v2.0 | 0/TBD | Not started | - |
+| 8. Test Isolation and KiCad 10 | v2.0 | 0/6 | Planned | - |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 0/TBD | Not started | - |
 | 10. Importer on the Atomic Scheme | v2.0 | 0/TBD | Not started | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |

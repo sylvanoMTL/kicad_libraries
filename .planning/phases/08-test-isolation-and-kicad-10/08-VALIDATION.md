@@ -55,6 +55,27 @@ Filled in by the planner/executor once task IDs exist. Requirement-level map fro
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
+### Per-task map (from the plans)
+
+| Task | Requirement | Automated command (repo root) | Status |
+|------|-------------|-------------------------------|--------|
+| 08-01 T1 (tracer) | TEST-02 | `env/Scripts/python.exe -m pytest tests/test_kicad_cli.py -m kicad_cli -q` (3 passed) | ⬜ pending |
+| 08-01 T2 | TEST-02 | `env/Scripts/python.exe -m pytest tests/test_clifixtures.py tests/test_manifests.py -q` | ⬜ pending |
+| 08-01 T3 | TEST-01 (D-03) | `env/Scripts/python.exe -m pytest tests/test_installfixtures.py -k 20251024 -m kicad_cli -q` (1 passed) | ⬜ pending |
+| 08-02 T1 (tracer) | TEST-01 | `env/Scripts/python.exe -m pytest tests/test_commit_plan.py -q` | ⬜ pending |
+| 08-02 T2 | TEST-01 | `env/Scripts/python.exe -m pytest tests/test_customfixtures.py -q` | ⬜ pending |
+| 08-02 T3 | TEST-03 (D-13) | `env/Scripts/python.exe -m pytest tests/test_customfixtures.py -k guard -q` (2 passed) | ⬜ pending |
+| 08-03 T1 (tracer) | TEST-01 | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py tests/test_import_preview.py -q` | ⬜ pending |
+| 08-03 T2 | TEST-01 | `env/Scripts/python.exe -m pytest tests/test_install_apply.py tests/test_naming_suggest.py -q` | ⬜ pending |
+| 08-04 T1 (tracer) | VER-01 | `env/Scripts/python.exe -m pytest "tests/test_install_e2e.py::test_cli_version_scenarios[target_20241209_as_is_with_warning]" -q` | ⬜ pending |
+| 08-04 T2 | TEST-02 | `env/Scripts/python.exe -m pytest tests/test_install_e2e.py -m kicad_cli -q` (8 passed) | ⬜ pending |
+| 08-04 T3 | VER-01 (D-09) | `env/Scripts/python.exe -m pytest tests/test_install_e2e.py -q -rs` + human-check (KiCad 10 Symbol Editor) | ⬜ pending |
+| 08-05 T1 (tracer) | TEST-02 | `env/Scripts/python.exe -m pytest tests/test_install_plan.py -m kicad_cli -q` (5 passed) | ⬜ pending |
+| 08-05 T2 | TEST-01 | `env/Scripts/python.exe -m pytest tests/test_install_plan.py -q` | ⬜ pending |
+| 08-06 T1 (tracer) | TEST-01 | scratch copy without `Custom/` running the migrated files; `env/Scripts/python.exe -m pytest -m "not wurth" -q` | ⬜ pending |
+| 08-06 T2 | TEST-03 (D-11, D-12) | `env/Scripts/python.exe -m pytest -m wurth -q --durations=10`; README keyword check | ⬜ pending |
+| 08-06 T3 | TEST-03, VER-01 (D-10) | `env/Scripts/python.exe -m pytest` (0 failed, 3 documented skips) | ⬜ pending |
+
 ---
 
 ## Wave 0 Requirements
