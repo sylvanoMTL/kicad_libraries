@@ -60,11 +60,11 @@ def core_with(**changes) -> ImportCore:
 
 
 @pytest.fixture
-def make_dialog(qtbot, custom_copy, tmp_path, gates):
+def make_dialog(qtbot, synthetic_custom, tmp_path, gates):
     def make(core: ImportCore | None = None, open_now: bool = True, show: bool = False) -> ImportDialog:
         dialog = ImportDialog(
-            custom_copy.repo_root,
-            custom_copy,
+            synthetic_custom.repo_root,
+            synthetic_custom,
             core=core or core_with(),
             backup_root=tmp_path / "backups",
         )
@@ -96,7 +96,7 @@ def files_rows(dialog: ImportDialog) -> tuple[str, list[str]]:
     return top.text(0), [top.child(i).text(0) for i in range(top.childCount())]
 
 
-def test_tracer_ul_import_end_to_end(qtbot, make_dialog, custom_copy):
+def test_tracer_ul_import_end_to_end(qtbot, make_dialog, synthetic_custom):
     dialog = make_dialog()
     assert not dialog._install_btn.isEnabled()
     wait_plan(qtbot, dialog)
@@ -123,21 +123,21 @@ def test_tracer_ul_import_end_to_end(qtbot, make_dialog, custom_copy):
     files = dialog._result_view._files_list
     listed = [files.item(i).text() for i in range(files.count())]
     assert "Custom/3DModels/CSD85301Q2.stp" in listed
-    pretty = custom_copy.footprints_dir / f"{LIB}.pretty"
+    pretty = synthetic_custom.footprints_dir / f"{LIB}.pretty"
     assert (pretty / "DQK0006B.kicad_mod").is_file()
-    assert (custom_copy.models_dir / "CSD85301Q2.stp").is_file()
+    assert (synthetic_custom.models_dir / "CSD85301Q2.stp").is_file()
 
 
-def test_tracer_nothing_written_before_install(qtbot, make_dialog, custom_copy, snapshot):
-    before = snapshot(custom_copy.repo_root)
+def test_tracer_nothing_written_before_install(qtbot, make_dialog, synthetic_custom, snapshot):
+    before = snapshot(synthetic_custom.repo_root)
     dialog = make_dialog()
     wait_plan(qtbot, dialog)
-    assert snapshot(custom_copy.repo_root) == before
+    assert snapshot(synthetic_custom.repo_root) == before
     for name in ("A_x_TI", "B_x_TI"):
         set_library(dialog, name)
         qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
         assert dialog._plan.library == name
-    assert snapshot(custom_copy.repo_root) == before
+    assert snapshot(synthetic_custom.repo_root) == before
 
 
 def test_supersede_discards_stale_result(qtbot, make_dialog, gates):
@@ -354,7 +354,7 @@ def test_refused_package_stays_on_start_and_logs(qtbot, make_dialog, tmp_path):
     assert dialog._plan is None
 
 
-def test_preview_sections_follow_plan_ops(ul_package, custom_copy):
+def test_preview_sections_follow_plan_ops(ul_package, synthetic_custom):
     from kicad_lib_manager.importer.plan import InstallOptions
 
     package, candidate = ul_package
@@ -364,7 +364,7 @@ def test_preview_sections_follow_plan_ops(ul_package, custom_copy):
         footprints=tuple(f.name for f in candidate.footprints),
         model=candidate.models[0].filename,
     )
-    plan = real_build_plan(candidate, options, custom_copy)
+    plan = real_build_plan(candidate, options, synthetic_custom)
     files = preview_sections(plan, candidate, options)[0]  # plan 05-06 added the other sections after Files
     assert files.title == "Files (3)"
     assert [r.text for r in files.rows] == [
@@ -378,7 +378,7 @@ def test_preview_sections_follow_plan_ops(ul_package, custom_copy):
     counts = file_counts(plan, candidate, options)
     assert (counts.new, counts.modified, counts.unchanged) == (2, 1, 0)
 
-    fresh = real_build_plan(candidate, replace(options, library="A_x_TI"), custom_copy)
+    fresh = real_build_plan(candidate, replace(options, library="A_x_TI"), synthetic_custom)
     fresh_files = preview_sections(fresh, candidate, options)[0]
     assert fresh_files.rows[0].text == "+ Custom/Footprints/A_x_TI.pretty/"
     assert file_counts(fresh, candidate, options).new == 3
