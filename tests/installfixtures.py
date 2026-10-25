@@ -5,12 +5,18 @@ pytest does not collect it. Test modules import it with ``from installfixtures
 import ...``, like ``zipfixtures``. The rule: builders return bytes, write nothing,
 take no paths, and import only the standard library and ``zipfixtures._quote``.
 
-Two house styles are reproduced from the real Custom/ headers:
+Three house styles are reproduced from the real Custom/ headers:
 
 * 20211014 (KiCad 6): optional leading blank line, a one-line header, two-space
   indent, ``(id N)`` on every property and a bare ``hide`` atom inside ``(effects``.
 * 20231120 / 20241209 (KiCad 8 / 9): one header child per tab-indented line, no ids,
   ``(hide yes)`` inside ``(effects`` and a Description property.
+* 20251024 (KiCad 10): the 8 / 9 layout plus ``(in_pos_files yes)`` and
+  ``(duplicate_pin_numbers_are_jumpers no)`` after ``on_board``; every property carries
+  ``(show_name no)`` and ``(do_not_autoplace no)`` after ``(at ...)``, with ``(hide yes)`` at
+  property level (before ``(effects``) instead of inside it; a pin name is the empty string
+  rather than ``"~"``; each symbol ends with ``(embedded_fonts no)``. Checked as a fixed
+  point of ``kicad-cli sym upgrade --force`` on kicad-cli 10.0.7 (line endings normalised).
 """
 
 import re
@@ -18,7 +24,9 @@ import re
 from zipfixtures import _quote
 
 V6_VERSION = 20211014
+V10_VERSION = 20251024
 _MODERN_GENERATOR_VERSIONS = {20231120: "8.0", 20241209: "9.0"}
+_V10_GENERATOR_VERSION = "10.0"
 _EFFECTS = "(effects (font (size 1.27 1.27))"
 
 
@@ -114,6 +122,52 @@ def _modern_symbol(name: str) -> tuple:
     )
 
 
+# -- KiCad 10 style (tab indent, property-level hide, embedded_fonts) -----------
+
+
+def _v10_property(name: str, value: str, *, hide: bool) -> tuple:
+    return (
+        "property", _quote(name), _quote(value),
+        ("at", "0 0 0"),
+        ("show_name", "no"),
+        ("do_not_autoplace", "no"),
+        *((("hide", "yes"),) if hide else ()),
+        _modern_effects(hide=False),
+    )
+
+
+def _v10_pin(number: str, *, x: str, angle: str) -> tuple:
+    return (
+        "pin", "passive", "line",
+        ("at", f"{x} 0 {angle}"),
+        ("length", "2.54"),
+        ("name", _quote(""), _modern_effects(hide=False)),
+        ("number", _quote(number), _modern_effects(hide=False)),
+    )
+
+
+def _v10_symbol(name: str) -> tuple:
+    return (
+        "symbol", _quote(name),
+        ("exclude_from_sim", "no"),
+        ("in_bom", "yes"),
+        ("on_board", "yes"),
+        ("in_pos_files", "yes"),
+        ("duplicate_pin_numbers_are_jumpers", "no"),
+        _v10_property("Reference", "U", hide=False),
+        _v10_property("Value", name, hide=False),
+        _v10_property("Footprint", "", hide=True),
+        _v10_property("Datasheet", "", hide=True),
+        _v10_property("Description", "", hide=True),
+        (
+            "symbol", _quote(f"{name}_1_1"),
+            _v10_pin("1", x="-5.08", angle="0"),
+            _v10_pin("2", x="5.08", angle="180"),
+        ),
+        ("embedded_fonts", "no"),
+    )
+
+
 # -- target library builder ----------------------------------------------------
 
 
@@ -127,7 +181,8 @@ def target_lib(
 
     Every symbol has Reference "U", Value = its name, empty Footprint and Datasheet, and one
     sub-symbol <name>_1_1 with pins "1" and "2". eol defaults to CRLF for 20211014 and LF
-    for the tab-indented versions; any other version raises ValueError.
+    for the tab-indented versions (20231120, 20241209, 20251024); any other version raises
+    ValueError.
     """
     if version == V6_VERSION:
         newline = "\r\n" if eol is None else eol
@@ -155,6 +210,16 @@ def target_lib(
             ("generator", _quote("kicad_symbol_editor")),
             ("generator_version", _quote(_MODERN_GENERATOR_VERSIONS[version])),
             *(_modern_symbol(name) for name in names),
+        )
+        return (newline.join(_tree(library)) + newline).encode("utf-8")
+    if version == V10_VERSION:
+        newline = "\n" if eol is None else eol
+        library = (
+            "kicad_symbol_lib",
+            ("version", str(version)),
+            ("generator", _quote("kicad_symbol_editor")),
+            ("generator_version", _quote(_V10_GENERATOR_VERSION)),
+            *(_v10_symbol(name) for name in names),
         )
         return (newline.join(_tree(library)) + newline).encode("utf-8")
     raise ValueError(f"no target library style for format version {version}")

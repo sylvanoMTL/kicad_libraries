@@ -192,7 +192,7 @@ def test_target_lib_20251024_carries_the_kicad_10_symbol_children():
     assert text.count('(name ""') == 4  # KiCad 10 writes an empty pin name where 8 and 9 write "~"
     assert '"~"' not in text
     for sym in find_symbols(_load(data).root):
-        children = [child.head for child in sym.node.children]
+        children = [child.head for child in sym.node.children if child.head is not None]
         assert children[:5] == [
             "exclude_from_sim",
             "in_bom",
