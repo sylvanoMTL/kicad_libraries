@@ -1,8 +1,7 @@
-"""The Ultra Librarian sample installed into a tmp_path copy of Custom/: ROADMAP Phase 4 success criteria 1-5 end to end.
+"""The Ultra Librarian sample installed into an isolated Custom/: ROADMAP Phase 4 success criteria 1-5 end to end.
 
-Every install targets the ``custom_copy`` fixture (a tmp_path copy of the real Custom/ libraries) or a
-tmp_path folder; the module-scoped ``_real_custom_untouched`` fixture proves the checkout's own Custom/
-is never written (D-22).
+Every install targets the ``synthetic_custom`` fixture (an isolated Custom/ built in code) or a tmp_path
+folder; the session guard in conftest proves the checkout's own Custom/ is never written (D-22, D-13).
 """
 
 import hashlib
@@ -12,6 +11,8 @@ import zipfile
 from pathlib import Path
 
 import pytest
+from clifixtures import KICAD_SYMBOL_FORMAT
+from customfixtures import POWER_MOSFET
 from installfixtures import vendor_footprint
 from zipfixtures import UL_FOOTPRINT_MEMBER, UL_MODEL_MEMBER, UL_SYMBOL_MEMBER, make_zip, unpack_sample
 
@@ -58,14 +59,13 @@ def _value_text(footprint_node):
     return None
 
 
-def test_ul_symbol_added_others_identical(custom_copy, ul_package, tmp_path, snapshot):
+def test_ul_symbol_added_others_identical(synthetic_custom, ul_package, tmp_path):
     package, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     sym_path = layout.symbols_dir / f"{LIBRARY}.kicad_sym"
     original = sym_path.read_bytes()
     original_loaded = load(sym_path)
     previous_end = find_symbols(original_loaded.root)[-1].node.end
-    real_before = snapshot(REPO_ROOT / "Custom" / "Symbols") | snapshot(REPO_ROOT / "Custom" / "Footprints")
 
     plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout)
     assert not plan.blocked, plan.issues
@@ -111,10 +111,6 @@ def test_ul_symbol_added_others_identical(custom_copy, ul_package, tmp_path, sna
     assert result.backup_dir.parent == tmp_path / "bk" / "installs"
     assert (result.backup_dir / f"{LIBRARY}.kicad_sym_backup_1").read_bytes() == original
 
-    # The checkout's own Custom/ was never written
-    real_after = snapshot(REPO_ROOT / "Custom" / "Symbols") | snapshot(REPO_ROOT / "Custom" / "Footprints")
-    assert real_after == real_before
-
 
 # -- ROADMAP Phase 4 success criteria 1-5 and idempotency (plan 04-10, Task 1) ----------------------------
 
@@ -130,18 +126,6 @@ def _tree_digest(root: Path) -> dict[str, str]:
         rel = path.relative_to(root).as_posix()
         found[rel + "/" if path.is_dir() else rel] = "dir" if path.is_dir() else hashlib.sha256(path.read_bytes()).hexdigest()
     return found
-
-
-@pytest.fixture(scope="module", autouse=True)
-def _real_custom_untouched():
-    """Phase 4 never writes the checkout's own Custom/ (D-22): snapshot it before the module and compare after."""
-    real = REPO_ROOT / "Custom"
-    if not (real / "Symbols").is_dir():
-        yield
-        return
-    before = _tree_digest(real)
-    yield
-    assert _tree_digest(real) == before, "a test wrote to the real Custom/ folder"
 
 
 def _codes(issues) -> list[str]:
@@ -165,9 +149,9 @@ def _zip_member(name: str) -> bytes:
         return zf.read(name)
 
 
-def test_sc1_ul_footprint_model_and_fields(custom_copy, ul_package, tmp_path):
+def test_sc1_ul_footprint_model_and_fields(synthetic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     plan, result = _install(candidate, layout, tmp_path)
     assert result.ok, result.issues
     assert not result.new_library
@@ -194,9 +178,9 @@ def test_sc1_ul_footprint_model_and_fields(custom_copy, ul_package, tmp_path):
     assert plan.linked_footprint == "DQK0006B" and plan.model_file == f"{SYMBOL}.stp"
 
 
-def test_sc2_rename_follows_sub_symbols(custom_copy, ul_package, tmp_path):
+def test_sc2_rename_follows_sub_symbols(synthetic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     _install(candidate, layout, tmp_path)
     sym_path = layout.symbols_dir / f"{LIBRARY}.kicad_sym"
     first = load(sym_path)
@@ -222,11 +206,11 @@ def test_sc2_rename_follows_sub_symbols(custom_copy, ul_package, tmp_path):
     assert written.source.text[: renamed.node.start].rstrip().endswith(first_block)
 
 
-def test_sc2_no_model_package(custom_copy, tmp_path):
+def test_sc2_no_model_package(synthetic_custom, tmp_path):
     folder = unpack_sample(tmp_path / "pkg", kicad_only=True)
     for step in list(folder.rglob("*.stp")) + list(folder.rglob("*.step")):
         step.unlink()
-    layout = custom_copy
+    layout = synthetic_custom
     before = _tree_digest(layout.models_dir)
     with open_package(folder, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
@@ -245,7 +229,7 @@ def test_sc2_no_model_package(custom_copy, tmp_path):
     assert find_models(footprint_name(footprint.root).node) == []
 
 
-def test_package_issue_reaches_install_result_from_a_folder(custom_copy, tmp_path):
+def test_package_issue_reaches_install_result_from_a_folder(synthetic_custom, tmp_path):
     # WR-03: a package-level WARNING survives open_package -> detect_candidate -> build_plan -> apply_plan
     folder = unpack_sample(tmp_path / "ul")
     deep = folder
@@ -258,26 +242,26 @@ def test_package_issue_reaches_install_result_from_a_folder(custom_copy, tmp_pat
         assert len(own) == 1 and own[0].severity is Severity.WARNING
         candidate, _ = detect_candidate(package)
         assert candidate is not None
-        plan, result = _install(candidate, custom_copy, tmp_path)
+        plan, result = _install(candidate, synthetic_custom, tmp_path)
     assert result.ok, result.issues
     for issues in (plan.issues, result.issues):
         found = [i for i in issues if i.code == "intake.depth_limit"]
         assert found == own
 
 
-def test_package_issue_reaches_install_result_from_a_zip(custom_copy, ul_package, tmp_path):
+def test_package_issue_reaches_install_result_from_a_zip(synthetic_custom, ul_package, tmp_path):
     package, candidate = ul_package
     own = [i for i in package.issues if i.code == "intake.ignored_members"]
     assert len(own) == 1 and own[0].severity is Severity.INFO
-    plan, result = _install(candidate, custom_copy, tmp_path)
+    plan, result = _install(candidate, synthetic_custom, tmp_path)
     assert result.ok, result.issues
     assert [i for i in plan.issues if i.code == "intake.ignored_members"] == own
     assert [i for i in result.issues if i.code == "intake.ignored_members"] == own
 
 
-def test_sc3_new_library_pair(custom_copy, ul_package, tmp_path):
+def test_sc3_new_library_pair(synthetic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     plan, result = _install(candidate, layout, tmp_path, library=NEW_LIBRARY)
     assert result.ok, result.issues
     assert result.new_library is True and plan.new_symbol_lib and plan.new_footprint_lib
@@ -297,9 +281,9 @@ def test_sc3_new_library_pair(custom_copy, ul_package, tmp_path):
         ("IC_Magnetometer_Memsic", True, False),
     ],
 )
-def test_sc3_existing_headers_unchanged(custom_copy, ul_package, tmp_path, library, version_mismatch, pair_completed):
+def test_sc3_existing_headers_unchanged(synthetic_custom, ul_package, tmp_path, library, version_mismatch, pair_completed):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     sym_path = layout.symbols_dir / f"{library}.kicad_sym"
     original = sym_path.read_bytes()
 
@@ -318,9 +302,9 @@ def test_sc3_existing_headers_unchanged(custom_copy, ul_package, tmp_path, libra
 
 
 @pytest.mark.parametrize("fail_on", [1, 2, 3])
-def test_sc4_fail_on_each_write(custom_copy, ul_package, tmp_path, snapshot, monkeypatch, fail_on):
+def test_sc4_fail_on_each_write(synthetic_custom, ul_package, tmp_path, snapshot, monkeypatch, fail_on):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, NO_CLI)
     assert not plan.blocked, plan.issues
     writes = [op for op in plan.ops if op.kind != "mkdir"]
@@ -347,9 +331,9 @@ def test_sc4_fail_on_each_write(custom_copy, ul_package, tmp_path, snapshot, mon
     assert not list(layout.custom_dir.rglob("*.tmp"))
 
 
-def test_sc4_model_same_sha_reused(custom_copy, ul_package, tmp_path):
+def test_sc4_model_same_sha_reused(synthetic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     _install(candidate, layout, tmp_path)
     model = layout.models_dir / f"{SYMBOL}.stp"
     before = model.stat().st_mtime_ns
@@ -363,9 +347,9 @@ def test_sc4_model_same_sha_reused(custom_copy, ul_package, tmp_path):
     assert [m.path for m in find_models(footprint_name(footprint.root).node)] == [f"{MODEL_DIR_VAR}/{SYMBOL}.stp"]
 
 
-def test_sc4_model_different_sha_conflict(custom_copy, ul_package, tmp_path):
+def test_sc4_model_different_sha_conflict(synthetic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     model = layout.models_dir / f"{SYMBOL}.stp"
     other = b"ISO-10303-21;\nsome other body\nEND-ISO-10303-21;\n"
     model.write_bytes(other)
@@ -379,9 +363,9 @@ def test_sc4_model_different_sha_conflict(custom_copy, ul_package, tmp_path):
     assert not (layout.footprints_dir / f"{LIBRARY}.pretty" / "DQK0006B.kicad_mod").exists()
 
 
-def test_sc5_name_elsewhere_and_verify(custom_copy, ul_package, tmp_path):
+def test_sc5_name_elsewhere_and_verify(synthetic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     _install(candidate, layout, tmp_path)
     plan, result = _install(candidate, layout, tmp_path, library=NEW_LIBRARY)
 
@@ -395,7 +379,7 @@ def test_sc5_name_elsewhere_and_verify(custom_copy, ul_package, tmp_path):
     assert "verify.name_elsewhere" in _codes(again)
 
 
-def test_sc5_pin_pad_mismatch(custom_copy, tmp_path):
+def test_sc5_pin_pad_mismatch(synthetic_custom, tmp_path):
     (tmp_path / "src").mkdir()
     zip_path = make_zip(
         tmp_path / "src" / "pkg.zip",
@@ -404,7 +388,7 @@ def test_sc5_pin_pad_mismatch(custom_copy, tmp_path):
             ("DQK0006B.kicad_mod", vendor_footprint("DQK0006B", pads=tuple(str(n) for n in range(1, 10)))),
         ],
     )
-    layout = custom_copy
+    layout = synthetic_custom
     with open_package(zip_path, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
         assert candidate is not None
@@ -415,9 +399,9 @@ def test_sc5_pin_pad_mismatch(custom_copy, tmp_path):
     assert "9" in mismatch[0].text and SYMBOL in mismatch[0].text
 
 
-def test_second_install_is_noop(custom_copy, ul_package, tmp_path, snapshot):
+def test_second_install_is_noop(synthetic_custom, ul_package, tmp_path, snapshot):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     _install(candidate, layout, tmp_path)
     custom_after_first = snapshot(layout.custom_dir)
     backups_after_first = snapshot(tmp_path / "bk")
@@ -434,9 +418,9 @@ def test_second_install_is_noop(custom_copy, ul_package, tmp_path, snapshot):
     assert snapshot(tmp_path / "bk") == backups_after_first
 
 
-def test_second_install_new_library_is_noop(custom_copy, ul_package, tmp_path, snapshot):
+def test_second_install_new_library_is_noop(synthetic_custom, ul_package, tmp_path, snapshot):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     _install(candidate, layout, tmp_path, library=NEW_LIBRARY)
     custom_after_first = snapshot(layout.custom_dir)
 
@@ -454,14 +438,6 @@ def test_second_install_new_library_is_noop(custom_copy, ul_package, tmp_path, s
 # -- real kicad-cli: load check, the CONTEXT version scenarios, UAT scratch install (plan 04-10, Task 2) ----------
 
 
-@pytest.fixture
-def real_tools(kicad_cli_path):
-    """The tools the app would detect on this machine; kicad-cli is present because kicad_cli_path did not skip."""
-    tools = detect_tools(find_kicad_footprint_dir())
-    assert tools.kicad_cli == kicad_cli_path
-    return tools
-
-
 def _written_gate_issues(exe, layout, library, footprint_names=("DQK0006B",)):
     """Run the real load check on the library and footprints now on disk."""
     pretty = layout.footprints_dir / f"{library}.pretty"
@@ -471,12 +447,12 @@ def _written_gate_issues(exe, layout, library, footprint_names=("DQK0006B",)):
 
 
 @pytest.mark.kicad_cli
-def test_cli_load_check_after_install(custom_copy, ul_package, tmp_path, real_tools, kicad_cli_path):
+def test_cli_load_check_after_install(synthetic_custom, ul_package, tmp_path, real_tools, kicad_cli_path):
     _, candidate = ul_package
-    plan, result = _install(candidate, custom_copy, tmp_path, tools=real_tools)
+    plan, result = _install(candidate, synthetic_custom, tmp_path, tools=real_tools)
     assert result.ok, result.issues
     assert "install.cli_not_found" not in _codes(result.issues)
-    issues = _written_gate_issues(kicad_cli_path, custom_copy, LIBRARY)
+    issues = _written_gate_issues(kicad_cli_path, synthetic_custom, LIBRARY)
     assert [i for i in issues if i.severity is Severity.ERROR] == [], issues
 
 
@@ -537,7 +513,31 @@ def _scenario_incoming_newer(candidate, layout, tmp_path, tools):
     return None
 
 
+def _scenario_target_20241209_as_is(candidate, layout, tmp_path, tools):
+    """VER-01 (backlog 999.1): a 20241209 target on KiCad 10 takes the D-01 as-is-with-warning row."""
+    sym_path = layout.symbols_dir / f"{POWER_MOSFET}.kicad_sym"
+    original = sym_path.read_bytes()
+    plan, result = _install(candidate, layout, tmp_path, library=POWER_MOSFET, tools=tools)
+    assert plan.normalised is False and plan.target_version == 20241209
+
+    mismatch = [i for i in plan.issues if i.code == "install.version_mismatch"]
+    assert len(mismatch) == 1, plan.issues
+    assert mismatch[0].severity is Severity.WARNING
+    for number in ("20211014", "20241209", str(KICAD_SYMBOL_FORMAT)):
+        assert number in mismatch[0].text, mismatch[0].text
+
+    written = sym_path.read_bytes()
+    # Header slice only: the whole file grows by the new block (Pitfall 8)
+    assert _header(written) == _header(original)
+    assert b"(version 20241209)" in _header(written)
+    # The vendor text is spliced unchanged, not run through kicad-cli (which would drop the ids)
+    assert b"(id " in written[written.index(f'(symbol "{SYMBOL}"'.encode()) :]
+    assert _written_gate_issues(tools.kicad_cli, layout, POWER_MOSFET) == []
+    return result, POWER_MOSFET
+
+
 _SCENARIOS = {
+    "target_20241209_as_is_with_warning": _scenario_target_20241209_as_is,
     "same_version_target": _scenario_same_version,
     "older_incoming_is_normalised": _scenario_newer_target,
     "target_in_another_format_warns": _scenario_target_not_cli_format,
@@ -548,21 +548,21 @@ _SCENARIOS = {
 
 @pytest.mark.kicad_cli
 @pytest.mark.parametrize("scenario", list(_SCENARIOS))
-def test_cli_version_scenarios(scenario, custom_copy, ul_package, tmp_path, real_tools, kicad_cli_path):
+def test_cli_version_scenarios(scenario, synthetic_custom, ul_package, tmp_path, real_tools, kicad_cli_path):
     _, candidate = ul_package
-    outcome = _SCENARIOS[scenario](candidate, custom_copy, tmp_path, real_tools)
+    outcome = _SCENARIOS[scenario](candidate, synthetic_custom, tmp_path, real_tools)
     if outcome is None:  # a refused plan writes nothing, so there is nothing to load
         return
     result, library = outcome
     assert result.ok, result.issues
-    issues = _written_gate_issues(kicad_cli_path, custom_copy, library)
+    issues = _written_gate_issues(kicad_cli_path, synthetic_custom, library)
     assert [i for i in issues if i.severity is Severity.ERROR] == [], issues
 
 
 @pytest.mark.kicad_cli
-def test_cli_second_install_is_noop(custom_copy, ul_package, tmp_path, real_tools, snapshot):
+def test_cli_second_install_is_noop(synthetic_custom, ul_package, tmp_path, real_tools, snapshot):
     _, candidate = ul_package
-    layout = custom_copy
+    layout = synthetic_custom
     library = "IC_Magnetometer_Memsic"
     plan, result = _install(candidate, layout, tmp_path, library=library, tools=real_tools)
     assert result.ok and plan.normalised, result.issues
