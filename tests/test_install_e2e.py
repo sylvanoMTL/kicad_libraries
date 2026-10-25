@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from clifixtures import KICAD_GENERATOR_VERSION, KICAD_SYMBOL_FORMAT
-from customfixtures import POWER_MOSFET, WIRELESS
+from customfixtures import POWER_MOSFET, WIRELESS, write_synthetic_custom
 from installfixtures import vendor_footprint, vendor_symbol_lib
 from zipfixtures import UL_FOOTPRINT_MEMBER, UL_MODEL_MEMBER, UL_SYMBOL_MEMBER, make_zip, unpack_sample
 
@@ -20,10 +20,9 @@ from kicad_lib_manager import fsutil
 from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.detect import detect_candidate
-from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import MAX_FOLDER_DEPTH, open_package
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, InstallOptions, Resolution, ToolContext
-from kicad_lib_manager.importer.planner import build_plan, detect_tools
+from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.importer.verify import verify_install
 from kicad_lib_manager.kicad_files import (
     find_models,
@@ -33,7 +32,6 @@ from kicad_lib_manager.kicad_files import (
     footprint_name,
     load,
 )
-from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.sexpr import unquote
 
@@ -580,29 +578,33 @@ def test_cli_second_install_is_noop(synthetic_custom, ul_package, tmp_path, real
 
 
 @pytest.mark.skipif(not os.environ.get("KICAD_IMPORT_UAT_DIR"), reason="set KICAD_IMPORT_UAT_DIR to build the manual UAT scratch install")
-def test_uat_scratch_install(ul_package):
-    """Build the owner's KiCad 9 UAT scratch install (D-22) outside the repository; the real Custom/ is only read."""
+def test_uat_scratch_install(ul_package, real_tools):
+    """Build the owner's KiCad 10 VER-01 scratch install (D-09) outside the repository from the synthetic Custom/; the checkout's Custom/ is never read or written."""
     uat = Path(os.environ["KICAD_IMPORT_UAT_DIR"]).resolve()
     repo = REPO_ROOT.resolve()
-    # T-04-28: a folder inside (or containing) the checkout could land the scratch copy on the real Custom/
+    # T-04-28: a folder inside (or containing) the checkout could land the scratch tree on the real Custom/
     assert uat != repo and repo not in uat.parents and uat not in repo.parents, f"{uat} must lie outside the repository {repo}"
     scratch = uat / "Custom"
     assert not scratch.is_symlink(), f"{scratch} is a link"
     uat.mkdir(parents=True, exist_ok=True)
     if scratch.exists():
         shutil.rmtree(scratch)
-    for name in ("Symbols", "Footprints", "3DModels"):
-        shutil.copytree(repo / "Custom" / name, scratch / name)
 
-    layout = RepoLayout.for_repo(uat)
+    layout = write_synthetic_custom(uat)
     assert layout.custom_dir.resolve().is_relative_to(uat)
-    tools = detect_tools(find_kicad_footprint_dir())
+    sym_path = layout.symbols_dir / f"{POWER_MOSFET}.kicad_sym"
+    assert b"CSD85301Q2" not in sym_path.read_bytes()
+    original_header = _header(sym_path.read_bytes())
     _, candidate = ul_package
-    plan, result = _install(candidate, layout, uat, tools=tools)
+    plan, result = _install(candidate, layout, uat, library=POWER_MOSFET, tools=real_tools)
     assert result.ok, result.issues
+    mismatch = [i for i in result.issues if i.code == "install.version_mismatch"]
+    assert len(mismatch) == 1 and mismatch[0].severity is Severity.WARNING, result.issues
+    written_header = _header(sym_path.read_bytes())
+    assert b"(version 20241209)" in written_header and written_header == original_header
 
-    print(f"\nUAT scratch library:   {layout.symbols_dir / (LIBRARY + '.kicad_sym')}")
-    print(f"UAT scratch footprint: {layout.footprints_dir / (LIBRARY + '.pretty') / 'DQK0006B.kicad_mod'}")
+    print(f"\nUAT scratch library:   {sym_path}")
+    print(f"UAT scratch footprint: {layout.footprints_dir / (POWER_MOSFET + '.pretty') / 'DQK0006B.kicad_mod'}")
     print(f"UAT scratch model:     {layout.models_dir / (SYMBOL + '.stp')}")
-    print(f"UAT scratch pretty:    {layout.footprints_dir / (LIBRARY + '.pretty')}")
+    print(f"UAT scratch pretty:    {layout.footprints_dir / (POWER_MOSFET + '.pretty')}")
     print(f"UAT scratch 3D folder: {layout.models_dir}")
