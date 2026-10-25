@@ -11,9 +11,9 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from clifixtures import KICAD_SYMBOL_FORMAT
-from customfixtures import POWER_MOSFET
-from installfixtures import vendor_footprint
+from clifixtures import KICAD_GENERATOR_VERSION, KICAD_SYMBOL_FORMAT
+from customfixtures import POWER_MOSFET, WIRELESS
+from installfixtures import vendor_footprint, vendor_symbol_lib
 from zipfixtures import UL_FOOTPRINT_MEMBER, UL_MODEL_MEMBER, UL_SYMBOL_MEMBER, make_zip, unpack_sample
 
 from kicad_lib_manager import fsutil
@@ -464,12 +464,12 @@ def _scenario_same_version(candidate, layout, tmp_path, tools):
 
 
 def _scenario_newer_target(candidate, layout, tmp_path, tools):
-    plan, result = _install(candidate, layout, tmp_path, library="IC_Magnetometer_Memsic", tools=tools)
-    assert plan.normalised is True and plan.target_version == 20241209
+    plan, result = _install(candidate, layout, tmp_path, library=WIRELESS, tools=tools)
+    assert plan.normalised is True and plan.target_version == KICAD_SYMBOL_FORMAT
     assert not [c for c in _codes(plan.issues) if c.startswith("install.version")]
-    block = layout.symbols_dir.joinpath("IC_Magnetometer_Memsic.kicad_sym").read_text(encoding="utf-8")
+    block = layout.symbols_dir.joinpath(f"{WIRELESS}.kicad_sym").read_text(encoding="utf-8")
     assert "(id " not in block[block.index(f'(symbol "{SYMBOL}"') :]
-    return result, "IC_Magnetometer_Memsic"
+    return result, WIRELESS
 
 
 def _scenario_target_not_cli_format(candidate, layout, tmp_path, tools):
@@ -485,13 +485,14 @@ def _scenario_new_library(candidate, layout, tmp_path, tools):
     plan, result = _install(candidate, layout, tmp_path, library=NEW_LIBRARY, tools=tools)
     text = (layout.symbols_dir / f"{NEW_LIBRARY}.kicad_sym").read_text(encoding="utf-8")
     header = text[: text.index("(symbol ")]
-    assert "(version 20241209)" in header and '(generator_version "9.0")' in header
+    assert f"(version {KICAD_SYMBOL_FORMAT})" in header
+    assert f'(generator_version "{KICAD_GENERATOR_VERSION}")' in header
     return result, NEW_LIBRARY
 
 
 def _scenario_incoming_newer(candidate, layout, tmp_path, tools):
-    """The real 20241209 Magnetometer library as the incoming file into the 20211014 Battery Charger library."""
-    incoming = (layout.symbols_dir / "IC_Magnetometer_Memsic.kicad_sym").read_bytes()
+    """A synthetic 20241209 vendor symbol as the incoming file into the 20211014 Battery Charger library."""
+    incoming = vendor_symbol_lib("MMC5983MA", version=20241209)
     src = tmp_path / "src"
     src.mkdir()
     zip_path = make_zip(
@@ -563,7 +564,7 @@ def test_cli_version_scenarios(scenario, synthetic_custom, ul_package, tmp_path,
 def test_cli_second_install_is_noop(synthetic_custom, ul_package, tmp_path, real_tools, snapshot):
     _, candidate = ul_package
     layout = synthetic_custom
-    library = "IC_Magnetometer_Memsic"
+    library = WIRELESS
     plan, result = _install(candidate, layout, tmp_path, library=library, tools=real_tools)
     assert result.ok and plan.normalised, result.issues
     after_first = snapshot(layout.custom_dir)
