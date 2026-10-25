@@ -11,7 +11,7 @@ Run these from the repository root with the project's virtual environment.
 - Only the tests that run the real kicad-cli 10 binary: `.\env\Scripts\python.exe -m pytest -m kicad_cli`
 - Only the WurthElektronik corpus: `.\env\Scripts\python.exe -m pytest -m wurth`
 
-The full suite takes about 15 minutes on the workstation. The quick run takes about 8 minutes.
+The full suite takes about 18 minutes on the workstation. The quick run takes about 8 minutes.
 Bare `pytest` already prints the reason for every skip (`-ra` is set in `pyproject.toml`).
 
 ## The rule: never touch the live Custom/

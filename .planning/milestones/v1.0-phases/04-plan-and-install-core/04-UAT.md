@@ -20,6 +20,7 @@ result: pass
 expected: Every 20241209 Custom/ library takes the as-is-with-warning row of the D-01 version table.
 result: skipped
 reason: "Deferred follow-up: I do not have kicad 10 yet"
+retest: "2026-10-25: re-tested on KiCad 10 in Phase 8 (VER-01). Automated half passed: tests/test_install_e2e.py::test_cli_version_scenarios[target_20241209_as_is_with_warning] on kicad-cli 10.0.7. Manual Symbol Editor half: test 2 of .planning/phases/08-test-isolation-and-kicad-10/08-UAT.md, which records the owner's result"
 
 ### 3. Case-sensitive-volume rollback and overwrite branches (case twin written under another spelling)
 expected: Rollback restores the original spelling and removes the twin.
@@ -46,6 +47,7 @@ blocked: 0
 - test: 2
   idea: "I do not have kicad 10 yet (re-test the D-01 as-is-with-warning row on KiCad 10, symbol format 20251024)"
   deferred_at: 2026-10-20
+  retested_in: "Phase 8 (VER-01); outcome recorded in 08-UAT.md"
 - test: 3
   idea: "pass i cannot test it (re-test case-twin rollback and overwrite on a case-sensitive folder; owner chose to defer)"
   deferred_at: 2026-10-20
