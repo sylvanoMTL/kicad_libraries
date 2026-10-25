@@ -4,6 +4,8 @@ import re
 
 import pytest
 
+import clifixtures
+from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.kicad_files import (
     LoadedFile,
     file_version,
@@ -14,13 +16,14 @@ from kicad_lib_manager.kicad_files import (
     parse_bytes,
 )
 from kicad_lib_manager.sexpr import Node, unquote
-from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
+from installfixtures import V10_VERSION, extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
 
 V6 = 20211014
 V8 = 20231120
 V9 = 20241209
-ALL_VERSIONS = (V6, V8, V9)
-MODERN = ((V8, "8.0"), (V9, "9.0"))
+V10 = 20251024
+ALL_VERSIONS = (V6, V8, V9, V10)
+MODERN = ((V8, "8.0"), (V9, "9.0"), (V10, "10.0"))
 
 
 def _load(data: bytes) -> LoadedFile:
@@ -175,6 +178,46 @@ def test_target_lib_modern_eol_override_gives_crlf():
 def test_target_lib_rejects_an_unknown_version():
     with pytest.raises(ValueError):
         target_lib(20220914)
+
+
+def test_target_lib_20251024_carries_the_kicad_10_symbol_children():
+    data = target_lib(V10, names=("A", "B"))
+    text = data.decode("utf-8")
+    assert text.endswith("\t)\n)\n")
+    assert text.count("(in_pos_files yes)") == 2
+    assert text.count("(duplicate_pin_numbers_are_jumpers no)") == 2
+    assert text.count("(show_name no)") == text.count("(property ") == 10
+    assert text.count("(do_not_autoplace no)") == 10
+    assert text.count("(hide yes)") == 6  # Footprint, Datasheet and Description of each symbol
+    assert text.count('(name ""') == 4  # KiCad 10 writes an empty pin name where 8 and 9 write "~"
+    assert '"~"' not in text
+    for sym in find_symbols(_load(data).root):
+        children = [child.head for child in sym.node.children]
+        assert children[:5] == [
+            "exclude_from_sim",
+            "in_bom",
+            "on_board",
+            "in_pos_files",
+            "duplicate_pin_numbers_are_jumpers",
+        ]
+        assert children[-1] == "embedded_fonts"
+        assert _property_names(sym.node) == ["Reference", "Value", "Footprint", "Datasheet", "Description"]
+
+
+def test_kicad_constants_agree():
+    assert clifixtures.KICAD_SYMBOL_FORMAT == V10_VERSION == V10
+    assert clifixtures.KICAD_GENERATOR_VERSION == "10.0"
+
+
+@pytest.mark.kicad_cli
+def test_target_lib_20251024_is_what_kicad_10_writes(tmp_path, kicad_cli_path):
+    src = tmp_path / "in.kicad_sym"
+    out = tmp_path / "out.kicad_sym"
+    src.write_bytes(target_lib(V10, ("EXISTING_A", "EXISTING_B")))
+    result = kicad_cli.run_cli(kicad_cli_path, ["sym", "upgrade", "--force", "-o", str(out), str(src)])
+    assert isinstance(result, kicad_cli.CliRun), result
+    assert result.returncode == 0, result.stderr or result.stdout
+    assert out.read_bytes().replace(b"\r\n", b"\n") == src.read_bytes().replace(b"\r\n", b"\n")
 
 
 # -- vendor_symbol_lib ---------------------------------------------------------
@@ -349,6 +392,7 @@ def test_every_builder_returns_bytes_and_writes_nothing(tmp_path, monkeypatch):
         target_lib(V6),
         target_lib(V8),
         target_lib(V9),
+        target_lib(V10),
         vendor_symbol_lib(),
         extends_pair(),
         vendor_footprint(),
