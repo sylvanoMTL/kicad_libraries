@@ -1,6 +1,5 @@
 import os
 import re
-import shutil
 from pathlib import Path
 
 import pytest
@@ -72,20 +71,6 @@ def assert_tiles():
         )
 
     return check
-
-
-@pytest.fixture
-def custom_copy(tmp_path):
-    """A RepoLayout over a tmp_path copy of the real Custom/ libraries; the checkout is never written."""
-    source = REPO_ROOT / "Custom"
-    if not (source / "Symbols").is_dir():
-        pytest.skip("Custom submodule not checked out (git submodule update --init Custom)")
-    from kicad_lib_manager.importer.layout import RepoLayout
-
-    repo = tmp_path / "repo"
-    for name in ("Symbols", "Footprints", "3DModels"):
-        shutil.copytree(source / name, repo / "Custom" / name)
-    return RepoLayout.for_repo(repo)
 
 
 @pytest.fixture
