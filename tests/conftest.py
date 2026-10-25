@@ -105,14 +105,24 @@ def ul_package():
 
 @pytest.fixture
 def kicad_cli_path() -> Path:
-    """The kicad-cli of the installed KiCad (located as the app does); skips when there is none."""
-    from kicad_lib_manager.importer import kicad_cli
+    """The kicad-cli 10 of the installed KiCad (located as the app does); skips with the gate's reason otherwise."""
+    from clifixtures import located_kicad_cli
+
+    exe, reason = located_kicad_cli()
+    if exe is None:
+        pytest.skip(reason)
+    return exe
+
+
+@pytest.fixture
+def real_tools(kicad_cli_path):
+    """The tools the app would detect on this machine; kicad-cli is present because kicad_cli_path did not skip."""
+    from kicad_lib_manager.importer.planner import detect_tools
     from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 
-    exe = kicad_cli.locate_kicad_cli(kicad_fp_dir=find_kicad_footprint_dir())
-    if exe is None:
-        pytest.skip("kicad-cli not found")
-    return exe
+    tools = detect_tools(find_kicad_footprint_dir())
+    assert tools.kicad_cli == kicad_cli_path
+    return tools
 
 
 @pytest.fixture
