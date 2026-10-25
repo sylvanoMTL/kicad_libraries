@@ -1,6 +1,6 @@
 """apply_plan as a transaction: preconditions, the kicad-cli load gate, backups, rollback and the fault matrix (Phase 4, plan 07).
 
-Plans come from build_plan over the custom_copy / ul_package fixtures (a tmp_path copy of Custom/),
+Plans come from build_plan over the synthetic_custom / ul_package fixtures (an isolated Custom/ built in code),
 or are built by hand over a synthetic Custom/ tree. Nothing here writes the real Custom/ folder or
 the owner's app-data backup folder: every install gets backup_root under tmp_path.
 """
@@ -49,9 +49,9 @@ def _with_cli(plan: InstallPlan, fake: FakeCli) -> InstallPlan:
     return dataclasses.replace(plan, tools=ToolContext(kicad_cli=EXE, cli_runner=fake))
 
 
-def _ul_plan(custom_copy, ul_package) -> InstallPlan:
+def _ul_plan(synthetic_custom, ul_package) -> InstallPlan:
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), custom_copy)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
     assert not plan.blocked, plan.issues
     return plan
 
@@ -111,21 +111,21 @@ def hand_layout(tmp_path) -> RepoLayout:
 # -- D-03 load gate at apply time ---------------------------------------------------------
 
 
-def test_gate_rejects_before_any_write(custom_copy, ul_package, tmp_path, snapshot):
-    plan = _with_cli(_ul_plan(custom_copy, ul_package), FakeCli({"sym upgrade": "reject"}))
-    before = snapshot(custom_copy.custom_dir)
+def test_gate_rejects_before_any_write(synthetic_custom, ul_package, tmp_path, snapshot):
+    plan = _with_cli(_ul_plan(synthetic_custom, ul_package), FakeCli({"sym upgrade": "reject"}))
+    before = snapshot(synthetic_custom.custom_dir)
 
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
     assert not result.ok
     assert "install.cli_gate_failed" in _codes(_errors(result.issues))
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(synthetic_custom.custom_dir) == before
     assert not (tmp_path / "bk").exists()
     assert result.backup_dir is None
 
 
-def test_gate_runs_on_planned_bytes(custom_copy, ul_package, tmp_path):
-    plan = _ul_plan(custom_copy, ul_package)
+def test_gate_runs_on_planned_bytes(synthetic_custom, ul_package, tmp_path):
+    plan = _ul_plan(synthetic_custom, ul_package)
     fake = FakeCli()
     result = apply_plan(_with_cli(plan, fake), backup_root=tmp_path / "bk")
 
@@ -193,17 +193,17 @@ def test_gate_not_run_for_a_model_only_plan(hand_layout):
 # -- stale plan (T-04-18) -----------------------------------------------------------------
 
 
-def test_stale_plan_target_changed(custom_copy, ul_package, tmp_path, snapshot):
-    plan = _ul_plan(custom_copy, ul_package)
+def test_stale_plan_target_changed(synthetic_custom, ul_package, tmp_path, snapshot):
+    plan = _ul_plan(synthetic_custom, ul_package)
     plan.symbol_lib_path.write_bytes(plan.symbol_lib_path.read_bytes() + b"\n")
-    before = snapshot(custom_copy.custom_dir)
+    before = snapshot(synthetic_custom.custom_dir)
 
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
     assert not result.ok
     stale = [i for i in _errors(result.issues) if i.code == "install.stale_plan"]
     assert stale and plan.symbol_lib_path.name in stale[0].text and "rebuild" in stale[0].text
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(synthetic_custom.custom_dir) == before
     assert not (tmp_path / "bk").exists()
 
 
@@ -278,8 +278,8 @@ def test_stale_plan_target_edited_during_gate(hand_layout, tmp_path):
     assert result.touched == ()
 
 
-def test_stale_plan_ul_target_edited_during_gate(custom_copy, ul_package, tmp_path):
-    plan = _ul_plan(custom_copy, ul_package)
+def test_stale_plan_ul_target_edited_during_gate(synthetic_custom, ul_package, tmp_path):
+    plan = _ul_plan(synthetic_custom, ul_package)
     edited = plan.symbol_lib_path.read_bytes() + b"\n# edited in KiCad\n"
     state, hook = _first_call_hook(lambda: plan.symbol_lib_path.write_bytes(edited))
     fake = FakeCli(on_call=hook)
@@ -291,7 +291,7 @@ def test_stale_plan_ul_target_edited_during_gate(custom_copy, ul_package, tmp_pa
     assert not result.ok
     assert _codes(_errors(result.issues)) == ["install.stale_plan"]
     assert plan.symbol_lib_path.read_bytes() == edited
-    assert not (custom_copy.models_dir / "CSD85301Q2.stp").exists()
+    assert not (synthetic_custom.models_dir / "CSD85301Q2.stp").exists()
     assert not (plan.pretty_path / "DQK0006B.kicad_mod").exists()
 
 
@@ -361,13 +361,13 @@ def test_stale_plan_created_path_appears_between_writes(hand_layout):
 # -- the staged source (WR-04) -----------------------------------------------------------
 
 
-def test_source_changed_at_apply(custom_copy, ul_package, tmp_path, snapshot):
+def test_source_changed_at_apply(synthetic_custom, ul_package, tmp_path, snapshot):
     _, candidate = ul_package
-    plan = _ul_plan(custom_copy, ul_package)
+    plan = _ul_plan(synthetic_custom, ul_package)
     model = candidate.models[0].file.path
     original = model.read_bytes()
     model.write_bytes(original + b" ")
-    before = snapshot(custom_copy.custom_dir)
+    before = snapshot(synthetic_custom.custom_dir)
     try:
         result = apply_plan(plan, backup_root=tmp_path / "bk")
     finally:
@@ -375,17 +375,17 @@ def test_source_changed_at_apply(custom_copy, ul_package, tmp_path, snapshot):
 
     assert not result.ok
     assert "install.source_changed" in _codes(_errors(result.issues))
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(synthetic_custom.custom_dir) == before
     assert not (tmp_path / "bk").exists()
 
 
-def test_source_gone_at_apply(custom_copy, ul_package, tmp_path, snapshot):
+def test_source_gone_at_apply(synthetic_custom, ul_package, tmp_path, snapshot):
     _, candidate = ul_package
-    plan = _ul_plan(custom_copy, ul_package)
+    plan = _ul_plan(synthetic_custom, ul_package)
     model = candidate.models[0].file.path
     original = model.read_bytes()
     model.unlink()
-    before = snapshot(custom_copy.custom_dir)
+    before = snapshot(synthetic_custom.custom_dir)
     try:
         result = apply_plan(plan, backup_root=tmp_path / "bk")
     finally:
@@ -393,7 +393,7 @@ def test_source_gone_at_apply(custom_copy, ul_package, tmp_path, snapshot):
 
     assert not result.ok
     assert "install.source_gone" in _codes(_errors(result.issues))
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(synthetic_custom.custom_dir) == before
 
 
 # -- containment (T-04-19) ---------------------------------------------------------------
@@ -840,7 +840,7 @@ MATRIX_WRITES = 3
 
 def _shape_plan(shape: str, request, tmp_path) -> tuple[InstallPlan, RepoLayout]:
     if shape == "existing":
-        layout = request.getfixturevalue("custom_copy")
+        layout = request.getfixturevalue("synthetic_custom")
         plan = _ul_plan(layout, request.getfixturevalue("ul_package"))
     else:
         write_custom_layout(tmp_path, [], [])
@@ -902,9 +902,9 @@ def test_rollback_fail_with_locked_target(shape, request, tmp_path, snapshot, mo
     assert not list(layout.custom_dir.rglob("*.tmp"))
 
 
-def test_rollback_backup_failure(custom_copy, ul_package, tmp_path, snapshot, monkeypatch):
-    plan = _ul_plan(custom_copy, ul_package)
-    before = snapshot(custom_copy.custom_dir)
+def test_rollback_backup_failure(synthetic_custom, ul_package, tmp_path, snapshot, monkeypatch):
+    plan = _ul_plan(synthetic_custom, ul_package)
+    before = snapshot(synthetic_custom.custom_dir)
     failure = Issue(Severity.ERROR, "fs.backup_failed", "Could not back up the library: disk full")
     monkeypatch.setattr(fsutil, "backup_file", lambda path, backup_dir, **kwargs: failure)
     state = _flaky_writes(monkeypatch, fail_on=99)
@@ -914,18 +914,18 @@ def test_rollback_backup_failure(custom_copy, ul_package, tmp_path, snapshot, mo
     assert not result.ok
     assert _errors(result.issues) == [failure]
     assert state["calls"] == 0
-    assert snapshot(custom_copy.custom_dir) == before
+    assert snapshot(synthetic_custom.custom_dir) == before
 
 
-def test_success_touched_order(custom_copy, ul_package, tmp_path):
-    plan = _ul_plan(custom_copy, ul_package)
+def test_success_touched_order(synthetic_custom, ul_package, tmp_path):
+    plan = _ul_plan(synthetic_custom, ul_package)
     pretty = plan.pretty_path
 
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
     assert result.ok, result.issues
     assert result.touched == (
-        custom_copy.models_dir / "CSD85301Q2.stp",
+        synthetic_custom.models_dir / "CSD85301Q2.stp",
         pretty / "DQK0006B.kicad_mod",
         plan.symbol_lib_path,
     )

@@ -453,9 +453,7 @@ def test_part_info_type_limits_vocab():
     assert (by_category.type, by_category.subcategory.token) == (TokenChoice("PowerSupply", "part_info", True), "Converter")
 
 
-def test_suggest_live_custom():
-    if not (REPO_ROOT / "Custom" / "Symbols").is_dir():
-        pytest.skip("Custom submodule not checked out (git submodule update --init Custom)")
-    suggestion = _suggest(_ul_meta(), list_existing_libraries(RepoLayout.for_repo(REPO_ROOT)))
+def test_suggest_synthetic_custom(synthetic_custom):
+    suggestion = _suggest(_ul_meta(), list_existing_libraries(synthetic_custom))
     assert suggestion.name == "IC_SubCategory_TI"
     assert suggestion.alternatives[0].name == "IC_Battery_Charger_TI"
