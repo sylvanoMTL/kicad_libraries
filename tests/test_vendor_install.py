@@ -39,7 +39,7 @@ from kicad_lib_manager.importer.fieldrules import GENERIC_RULES
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, FieldChange, InstallOptions, ToolContext
-from kicad_lib_manager.importer.planner import build_plan, detect_tools
+from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.importer.preview import preview_sections
 from kicad_lib_manager.importer.suggest import suggest_library
 from kicad_lib_manager.kicad_files import (
@@ -52,7 +52,6 @@ from kicad_lib_manager.kicad_files import (
     parse_bytes,
     remove_property_edit,
 )
-from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.sexpr import apply_edits
 
@@ -469,14 +468,6 @@ def test_vendor_suggestion_snapeda(tmp_path):
     with _open_case(CASES["snapeda"], tmp_path) as (_, candidate):
         suggestion = suggest_library(candidate.symbols[0].meta, existing)
     assert suggestion.name == LIBRARY
-
-
-@pytest.fixture
-def real_tools(kicad_cli_path):
-    """The tools the app would detect on this machine; kicad-cli is present because kicad_cli_path did not skip."""
-    tools = detect_tools(find_kicad_footprint_dir())
-    assert tools.kicad_cli == kicad_cli_path
-    return tools
 
 
 def _load_issues(exe, layout, case):

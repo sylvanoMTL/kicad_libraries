@@ -24,10 +24,9 @@ from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_model_source, open_package
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, InstallOptions, ToolContext
-from kicad_lib_manager.importer.planner import build_plan, detect_tools
+from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.importer.suggest import suggest_library
 from kicad_lib_manager.kicad_files import find_models, find_symbol, footprint_name, list_properties, load
-from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 from kicad_lib_manager.models import Issue, Severity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -291,14 +290,6 @@ def test_real_samacsys_installs(staging_root, tmp_path):
     for gone in ("Mouser Price/Stock", "Arrow Price/Stock", "Height", "Arrow Part Number"):
         assert gone not in values, gone
     assert not _errors(issues)
-
-
-@pytest.fixture
-def real_tools(kicad_cli_path):
-    """The tools the app would detect on this machine; kicad-cli is present because kicad_cli_path did not skip."""
-    tools = detect_tools(find_kicad_footprint_dir())
-    assert tools.kicad_cli == kicad_cli_path
-    return tools
 
 
 @pytest.mark.kicad_cli

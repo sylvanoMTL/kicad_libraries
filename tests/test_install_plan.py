@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from clifixtures import KICAD_GENERATOR_VERSION, KICAD_SYMBOL_FORMAT
 from fakecli import FakeCli
 from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
 from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib, unpack_sample, write_custom_layout
@@ -34,7 +35,6 @@ from kicad_lib_manager.kicad_files import (
     symbol_insert_edit,
     unit_library_text,
 )
-from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.sexpr import apply_edits, unquote
 
@@ -628,22 +628,15 @@ def test_version_extends_parent_missing(tmp_path):
     assert fake.calls == []
 
 
-def _real_tools():
-    tools = planner.detect_tools(find_kicad_footprint_dir())
-    if tools.kicad_cli is None:
-        pytest.skip("kicad-cli not found")
-    return tools
-
-
 @pytest.mark.kicad_cli
-def test_version_real_cli_into_20241209(tmp_path, ul_package):
-    tools = _real_tools()
-    layout = _target_layout(tmp_path, V9, ("EXISTING_A",))
+def test_version_real_cli_into_20251024(tmp_path, ul_package, real_tools):
+    tools = real_tools
+    layout = _target_layout(tmp_path, KICAD_SYMBOL_FORMAT, ("EXISTING_A",))
     original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
     _, candidate = ul_package
     plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, tools)
     assert not plan.blocked, plan.issues
-    assert plan.normalised and plan.target_version == V9
+    assert plan.normalised and plan.target_version == KICAD_SYMBOL_FORMAT
     sym_op = _op(plan, "symbol_lib")
     block = _block(sym_op.data, "CSD85301Q2")
     assert "(hide yes)" in block and "(id " not in block
@@ -812,17 +805,17 @@ def test_library_existing_header_unchanged(tmp_path, version):
 
 
 @pytest.mark.kicad_cli
-def test_library_real_cli_new_header(tmp_path, ul_package):
-    tools = _real_tools()
+def test_library_real_cli_new_header(tmp_path, ul_package, real_tools):
+    tools = real_tools
     layout = _pair_layout(tmp_path)
     _, candidate = ul_package
     plan = build_plan(candidate, InstallOptions(library=NEW_LIBRARY), layout, tools)
     assert not plan.blocked, plan.issues
     sym_op = _op(plan, "symbol_lib")
     header = _header(sym_op.data)
-    assert "(version 20241209)" in header
+    assert f"(version {KICAD_SYMBOL_FORMAT})" in header
     assert '(generator "kicad_symbol_editor")' in header
-    assert '(generator_version "9.0")' in header
+    assert f'(generator_version "{KICAD_GENERATOR_VERSION}")' in header
     footprints = [(op.path.stem, op.data) for op in plan.ops if op.kind == "footprint"]
     assert kicad_cli.load_gate(tools.kicad_cli, library=NEW_LIBRARY, symbol_lib=sym_op.data, footprints=footprints) == []
 
@@ -1237,9 +1230,9 @@ def test_model_embedded_files_warn(layout, tmp_path):
 
 @pytest.mark.kicad_cli
 @pytest.mark.parametrize("new_library", [False, True], ids=["existing", "new"])
-def test_unit_real_cli_loads_in_kicad(tmp_path, new_library):
-    tools = _real_tools()
-    layout = _target_layout(tmp_path, V9, ("EXISTING_A",))
+def test_unit_real_cli_loads_in_kicad(tmp_path, new_library, real_tools):
+    tools = real_tools
+    layout = _target_layout(tmp_path, KICAD_SYMBOL_FORMAT, ("EXISTING_A",))
     library = NEW_LIBRARY if new_library else LIBRARY
     original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
     options = InstallOptions(library=library, symbol=CHILD)
@@ -1314,9 +1307,9 @@ def test_noop_second_plan_after_apply(custom_copy, ul_package, tmp_path):
 
 
 @pytest.mark.kicad_cli
-def test_noop_second_plan_after_normalised_apply(tmp_path, ul_package):
-    tools = _real_tools()
-    layout = _target_layout(tmp_path, V9, ("EXISTING_A",))
+def test_noop_second_plan_after_normalised_apply(tmp_path, ul_package, real_tools):
+    tools = real_tools
+    layout = _target_layout(tmp_path, KICAD_SYMBOL_FORMAT, ("EXISTING_A",))
     _, candidate = ul_package
     options = InstallOptions(library=LIBRARY)
     first = build_plan(candidate, options, layout, tools)
