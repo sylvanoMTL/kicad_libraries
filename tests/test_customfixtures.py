@@ -283,7 +283,7 @@ def test_guard_quiet_run_passes(tmp_path):
     assert "changed the live Custom/ folder" not in done.stdout
 
 
-def test_guard_does_nothing_when_custom_is_absent_or_empty(tmp_path):
+def test_watching_an_absent_or_empty_custom_is_a_no_op(tmp_path):
     from customfixtures import guard_custom
 
     absent = tmp_path / "absent"

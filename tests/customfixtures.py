@@ -8,8 +8,12 @@ builders. The owner's real parts (the Ultra Librarian sample among them) are the
 by construction, whatever the live Custom/ holds on the day.
 """
 
+import hashlib
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+
+import pytest
 
 from installfixtures import target_lib, vendor_footprint
 from kicad_lib_manager.importer.layout import RepoLayout
@@ -88,3 +92,62 @@ def write_synthetic_custom(root: Path) -> RepoLayout:
         for model_name in lib.models:
             (models_dir / model_name).write_bytes(STEP_BYTES)
     return RepoLayout.for_repo(root)
+
+
+# ── Write-protect guard over the live Custom/ (D-13) ─────────────────────────────────────────
+
+WATCHED_FOLDERS = ("Symbols", "Footprints", "3DModels")
+_SHOWN_CHANGES = 10
+
+
+def digest_tree(root: Path) -> dict[str, str]:
+    """Map a folder to {relative path: sha256} for files and {relative path/: "dir"} for folders."""
+    found: dict[str, str] = {}
+    for path in sorted(root.rglob("*")):
+        rel = path.relative_to(root).as_posix()
+        if path.is_dir():
+            found[rel + "/"] = "dir"
+        else:
+            found[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return found
+
+
+def digest_custom(custom_dir: Path) -> dict[str, str] | None:
+    """Digest Symbols, Footprints and 3DModels under custom_dir; None when there is no Symbols folder.
+
+    None covers a Custom submodule that is not checked out (the folder is absent or empty).
+    """
+    if not (custom_dir / "Symbols").is_dir():
+        return None
+    found: dict[str, str] = {}
+    for name in WATCHED_FOLDERS:
+        folder = custom_dir / name
+        if folder.is_dir():
+            found[f"{name}/"] = "dir"
+            for key, value in digest_tree(folder).items():
+                found[f"{name}/{key}"] = value
+    return found
+
+
+def custom_changes(before: dict[str, str], after: dict[str, str]) -> list[str]:
+    """Return, sorted, every key that was added, removed or changed between two digests."""
+    return sorted(key for key in before.keys() | after.keys() if before.get(key) != after.get(key))
+
+
+def guard_custom(custom_dir: Path) -> Iterator[None]:
+    """Digest custom_dir, yield, then fail the run when the digest moved (use with yield from).
+
+    Does nothing when there was no Custom/ to watch at the start. An absent tree afterwards
+    counts as empty, so deleting the whole tree is reported too.
+    """
+    before = digest_custom(custom_dir)
+    yield
+    if before is None:
+        return
+    changed = custom_changes(before, digest_custom(custom_dir) or {})
+    if not changed:
+        return
+    message = "the test run changed the live Custom/ folder: " + ", ".join(changed[:_SHOWN_CHANGES])
+    if len(changed) > _SHOWN_CHANGES:
+        message += f" and {len(changed) - _SHOWN_CHANGES} more"
+    pytest.fail(message, pytrace=False)

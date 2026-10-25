@@ -1,4 +1,3 @@
-import hashlib
 import os
 import re
 import shutil
@@ -136,15 +135,17 @@ def real_tools(kicad_cli_path):
 @pytest.fixture
 def snapshot():
     """Return a function mapping a folder to {relative path: sha256} for files and {relative path/: "dir"} for folders."""
+    from customfixtures import digest_tree
 
-    def take(root: Path) -> dict[str, str]:
-        found: dict[str, str] = {}
-        for path in sorted(root.rglob("*")):
-            rel = path.relative_to(root).as_posix()
-            if path.is_dir():
-                found[rel + "/"] = "dir"
-            else:
-                found[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
-        return found
+    return digest_tree
 
-    return take
+
+@pytest.fixture(scope="session", autouse=True)
+def _live_custom_untouched():
+    """The suite must never write the live Custom/: a change to it fails the run, naming the paths.
+
+    When the Custom submodule is not checked out, the guard does nothing.
+    """
+    from customfixtures import guard_custom
+
+    yield from guard_custom(REPO_ROOT / "Custom")
