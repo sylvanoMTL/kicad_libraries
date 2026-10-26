@@ -1,9 +1,9 @@
 ---
-status: complete
+status: diagnosed
 phase: 09-atomic-rule-check-and-scan-detection
 source: [09-VERIFICATION.md]
 started: 2026-10-26T15:30:00Z
-updated: 2026-10-26T15:45:34.455Z
+updated: 2026-10-26T16:15:00Z
 ---
 
 ## Current Test
@@ -60,8 +60,23 @@ blocked: 0
   reason: "User reported: the tree reads as library > errors with no component level; wants Library > Component (status, N rules) > one row per problem/warning, collapsible at the component level"
   severity: major
   test: 1
-  artifacts: []
-  missing: []
+  root_cause: "LibraryTableWidget._make_symbol_row builds each symbol as a leaf row (name + 'N rules' in Status); violations and findings exist only in the row tooltip, so there is no visible problem level under the component and the synthetic UAT parts (named after their problem, e.g. DS-EMPTY) read as error rows rather than components. Design gap, not a regression."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/library_table.py"
+      issue: "_make_symbol_row (line ~234) adds no child rows for entry.violations / entry.findings; problems only reach the tooltip via _rich_tip"
+    - path: "kicad_lib_manager/widgets/library_table.py"
+      issue: "_on_sym_item_double_clicked (line ~339) only accepts a SymbolEntry row; a problem row under it must open the check dialog focused on its parent symbol"
+    - path: "tests/test_library_table_atomic.py"
+      issue: "asserts the current leaf-row shape; needs updating for the three-level tree"
+    - path: "tests/test_atomic_uat.py"
+      issue: "_edit_first_datasheet (line ~130) asserts every first symbol has a Datasheet field; crashes on the live Custom/ (FFC2A32-06-T has none), so the owner's UAT scratch build fails"
+  missing:
+    - "Add one inert, non-checkable child row per violation (amber, warning icon) and per finding (plain/note styling) under each symbol row, using the same plain-language text as today's tooltip"
+    - "Symbol rows collapsible; collapsed by default so the library shows its component list with the 'Changed · N rules' count; libraries with problems still auto-expand to the component level"
+    - "Double-clicking a problem row opens Check Atomic Parts focused on its parent symbol"
+    - "Keep selection logic ignoring symbol and problem rows (check state only on library and group rows)"
+    - "UAT helper: edit a field the symbol has (Description, falling back to adding Datasheet) instead of asserting Datasheet exists"
+  debug_session: ""
 
 ## Deferred Follow-Ups
 
