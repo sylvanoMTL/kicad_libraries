@@ -42,7 +42,8 @@ ALLOWED: dict[str, set[str]] = {
     "importer.candidate": {"models", "importer.package", "importer.naming", "importer.fieldrules"},
     "importer.naming": {"models"},
     "importer.layout": {"models", "importer.candidate"},
-    "importer.suggest": {"models", "importer.candidate", "importer.naming"},
+    # manufacturers is the canonical manufacturer table (plan 09-01)
+    "importer.suggest": {"models", "manufacturers", "importer.candidate", "importer.naming"},
     "importer.adapters.base": {
         "models",
         "fsutil",

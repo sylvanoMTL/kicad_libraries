@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
+from ..manufacturers import CORPORATE_WORDS, token_map
 from ..models import Issue, Severity
 from .candidate import ExistingLibrary, PartMeta
 from .naming import case_clash, sanitize_name
@@ -101,32 +102,10 @@ HOST_TOKENS = {
 
 _SLD_LABELS = {"co", "com", "org", "net", "ac", "gov", "edu"}
 
-# Manufacturer names as they appear in Custom/ symbols, folded (casefold, letters and digits only)
-MANUFACTURER_ALIASES = {
-    "texasinstruments": "TI",
-    "ti": "TI",
-    "analogdevices": "ADI",
-    "adi": "ADI",
-    "maximintegrated": "ADI",
-    "maxim": "ADI",
-    "lineartechnology": "ADI",
-    "linear": "ADI",
-    "tdk": "TDK",
-    "invensense": "TDK",
-    "tdkinvensense": "TDK",
-    "murata": "Murata",
-    "muratamanufacturing": "Murata",
-    "gct": "GCT",
-    "globalconnectortechnology": "GCT",
-    "memsic": "Memsic",
-    "ublox": "uBlox",
-    "abracon": "Abracon",
-    "recom": "RECOM",
-    "recompower": "RECOM",
-}
-_CORPORATE_WORDS = frozenset(
-    {"inc", "ltd", "gmbh", "corp", "corporation", "co", "ag", "llc", "plc", "limited", "incorporated"}
-)
+# Folded manufacturer name (casefold, letters and digits only) to library token, derived from the
+# canonical manufacturer table so the two lists cannot drift (D-09)
+MANUFACTURER_ALIASES = token_map()
+_CORPORATE_WORDS = CORPORATE_WORDS
 # Distributor and library sites: registrable label (first label of the registered domain), any TLD
 AGGREGATOR_DOMAINS = frozenset(
     {
