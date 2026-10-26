@@ -323,3 +323,130 @@ def test_a_symbol_with_two_broken_rules_still_fails_once():
 
     assert entry.failing
     assert _rules(entry) == ["mpn", "manufacturer"]
+
+
+# -- derived symbols (ATOM-02, D-22) ----------------------------------------------------------
+
+
+def _family(parent, *children, child_first: bool = False) -> bytes:
+    parts = (*children, parent) if child_first else (parent, *children)
+    return atomic_lib(parts)
+
+
+def test_derived_child_takes_a_missing_manufacturer_from_its_parent():
+    parent = atomic_part("PARENT")
+    child = atomic_part("CHILD", drop=("Manufacturer",), extends="PARENT")
+
+    entry = _check(_family(parent, child), "CHILD")
+
+    assert entry.extends == "PARENT"
+    assert entry.violations == []
+
+
+def test_derived_child_without_its_own_mpn_fails_even_when_the_parent_has_one():
+    parent = atomic_part("PARENT")
+    child = atomic_part("CHILD", drop=("MPN",), extends="PARENT")
+
+    data = _family(parent, child)
+
+    assert _violation(_check(data, "CHILD"), "mpn").text == "no MPN of its own (the parent's MPN does not count)"
+    assert _rules(_check(data, "PARENT")) == []
+    assert _violation(_entry(atomic_part("BASE", drop=("MPN",))), "mpn").text == "no MPN"
+
+
+def test_derived_child_with_the_same_mpn_as_its_parent_still_needs_its_own_property():
+    parent = atomic_part("PARENT", replace={"MPN": "SHARED", "Value": "SHARED"})
+    child = atomic_part("CHILD", replace={"MPN": "SHARED", "Value": "SHARED"}, extends="PARENT")
+
+    assert _check(_family(parent, child), "CHILD").violations == []
+
+
+def test_derived_child_keeps_its_own_blank_datasheet_and_description():
+    parent = atomic_part("PARENT")
+    child = atomic_part("CHILD", replace={"Datasheet": "~", "Description": ""}, extends="PARENT")
+
+    entry = _check(_family(parent, child), "CHILD")
+
+    assert _violation(entry, "datasheet").text == "no datasheet"
+    assert _violation(entry, "description").text == "no description"
+
+
+def test_derived_children_report_an_inherited_manufacturer_and_fix_it_in_the_parent():
+    parent = atomic_part("PARENT", replace={"Manufacturer": "TI"})
+    kids = (
+        atomic_part("KID-A", drop=("Manufacturer",), extends="PARENT"),
+        atomic_part("KID-B", drop=("Manufacturer",), extends="PARENT"),
+    )
+    data = _family(parent, *kids)
+
+    for kid in kids:
+        violation = _violation(_check(data, kid.name), "manufacturer")
+        assert violation.text == 'Manufacturer "TI" is not written as "Texas Instruments" (inherited from "PARENT")'
+        assert len(violation.fixes) == 1
+        fix = violation.fixes[0]
+        assert fix.kind == "canonical_manufacturer" and fix.symbol == "PARENT"
+        assert fix.label.endswith(' (in parent "PARENT"; its other variants change too)')
+        assert fix.params == {"property": "Manufacturer", "value": "Texas Instruments"}
+
+
+def test_derived_child_inherits_a_missing_datasheet_and_its_fill_points_at_the_parent():
+    parent = atomic_part("PARENT", replace={"Datasheet": ""})
+    child = atomic_part("CHILD", drop=("Datasheet",), extends="PARENT")
+
+    violation = _violation(_check(_family(parent, child), "CHILD"), "datasheet")
+
+    assert violation.text == 'no datasheet (inherited from "PARENT")'
+    assert violation.fill.symbol == "PARENT"
+    assert violation.fill.label == 'Fill in the datasheet link (in parent "PARENT"; its other variants change too)'
+
+
+def test_derived_child_of_a_missing_parent_is_still_checked_and_says_so():
+    child = atomic_part("CHILD", drop=("Manufacturer", "Datasheet", "Description"), extends="NOT-THERE")
+
+    entry = _check(atomic_lib((child,)), "CHILD")
+
+    assert _violation(entry, "manufacturer").text == 'no manufacturer (its parent symbol "NOT-THERE" is missing)'
+    assert _violation(entry, "datasheet").text == 'no datasheet (its parent symbol "NOT-THERE" is missing)'
+    assert _violation(entry, "description").text == 'no description (its parent symbol "NOT-THERE" is missing)'
+    own = _check(atomic_lib((atomic_part("CHILD", replace={"Value": "x"}, extends="NOT-THERE"),)), "CHILD")
+    assert _violation(own, "value").text == 'Value "x" is not the MPN "CHILD"'
+
+
+def test_derived_child_written_before_its_parent_gets_the_same_results():
+    parent = atomic_part("PARENT", replace={"Manufacturer": "TI", "Description": ""})
+    child = atomic_part("CHILD", drop=("Manufacturer", "Description"), extends="PARENT")
+
+    after = _check(_family(parent, child), "CHILD")
+    before = _check(_family(parent, child, child_first=True), "CHILD")
+
+    assert after.violations == before.violations
+    assert _rules(after) == ["manufacturer", "description"]
+
+
+def test_derived_pair_from_the_vendor_builder_gives_the_same_results_in_either_order():
+    from installfixtures import extends_pair
+
+    first = _check(extends_pair(child_first=False), "CHILD_Y")
+    second = _check(extends_pair(child_first=True), "CHILD_Y")
+
+    assert first.violations == second.violations
+    assert _rules(first) == ["mpn", "manufacturer", "datasheet", "description"]
+
+
+def test_derived_grandchild_takes_an_absent_property_from_the_nearest_declaring_ancestor():
+    root = atomic_part("ROOT", replace={"Manufacturer": "TI"})
+    middle = atomic_part("MIDDLE", drop=("Manufacturer",), extends="ROOT")
+    leaf = atomic_part("LEAF", drop=("Manufacturer",), extends="MIDDLE")
+
+    violation = _violation(_check(atomic_lib((root, middle, leaf)), "LEAF"), "manufacturer")
+
+    assert violation.text.endswith('(inherited from "ROOT")')
+    assert violation.fixes[0].symbol == "ROOT"
+
+
+def test_a_symbol_that_extends_itself_does_not_loop():
+    loop = atomic_part("LOOP", drop=("Manufacturer",), extends="LOOP")
+
+    entry = _check(atomic_lib((loop,)), "LOOP")
+
+    assert _rules(entry) == ["manufacturer"]

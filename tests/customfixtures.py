@@ -216,6 +216,30 @@ ATOMIC_LIBRARIES = (
         ),
     ),
     AtomicLibrary("Atomic_Empty", ()),
+    # Variants: each derived symbol is judged on its own fields, a missing one is taken from the parent
+    AtomicLibrary(
+        "Atomic_Regulator",
+        (
+            atomic_part("TLV75533PDBVR", replace={"Manufacturer": "Texas Instruments"}),
+            atomic_part("TLV75518PDBVR", drop=("Manufacturer",), extends="TLV75533PDBVR"),
+            atomic_part(
+                "TLV75525PDBVR",
+                replace={"Manufacturer": "Texas Instruments"},
+                drop=("MPN",),
+                extends="TLV75533PDBVR",
+            ),
+            atomic_part(
+                "TLV75530PDBVR",
+                replace={"Manufacturer": "Texas Instruments", "Datasheet": "~"},
+                extends="TLV75533PDBVR",
+            ),
+        ),
+    ),
+    # KiCad refuses a missing parent, so this library stays out of the kicad-cli load test
+    AtomicLibrary(
+        "Atomic_Orphan",
+        (atomic_part("ORPHAN-1", drop=("Manufacturer",), extends="NOT-THERE"),),
+    ),
     # Never checked: none carries the exact Atomic_ prefix, whatever its Datasheet says
     AtomicLibrary("Connector_Legacy", (atomic_part("LEGACY-1", replace={"Datasheet": ""}),)),
     AtomicLibrary("atomic_Lower", (atomic_part("LOWER-1", replace={"Datasheet": ""}),)),
@@ -250,6 +274,11 @@ ATOMIC_EXPECTED: dict[tuple[str, str], frozenset[str]] = {
     ("Atomic_Connector", "FFC-0.5-20"): frozenset({"value"}),
     ("Atomic_Connector", "LEFTOVER-1"): frozenset(),
     ("Atomic_Connector", "MFR-HIROSE"): frozenset(),
+    ("Atomic_Regulator", "TLV75533PDBVR"): frozenset(),
+    ("Atomic_Regulator", "TLV75518PDBVR"): frozenset(),
+    ("Atomic_Regulator", "TLV75525PDBVR"): frozenset({"mpn"}),
+    ("Atomic_Regulator", "TLV75530PDBVR"): frozenset({"datasheet"}),
+    ("Atomic_Orphan", "ORPHAN-1"): frozenset({"manufacturer"}),
     ("Atomic_Elsewhere", "ELSEWHERE-1"): frozenset({"datasheet"}),
 }
 

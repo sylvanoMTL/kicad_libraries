@@ -8,6 +8,7 @@ import pytest
 from customfixtures import (
     ATOMIC_EXPECTED,
     ATOMIC_LIBRARIES,
+    atomic_lib,
     digest_tree,
     write_atomic_custom,
     write_synthetic_custom,
@@ -167,3 +168,67 @@ def test_an_unreadable_library_is_reported_and_the_others_are_still_checked(tmp_
     assert unreadable[0].text.startswith("Atomic_Broken: could not be checked: ")
     assert [e.name for e in _lib(result, "Atomic_Connector").symbols][0] == "USB4105-GF-A"
     assert _atomic_issues(result)[-1].text == _summary_text()
+
+
+# -- plain language, imports and real KiCad ------------------------------------------------------
+
+
+def test_no_message_names_an_internal_field(tmp_path):
+    result = _scan(tmp_path)
+    texts = [i.text for i in _atomic_issues(result)]
+    for lib in result.symbol_libs:
+        for entry in lib.symbols:
+            for violation in entry.violations:
+                texts.append(violation.text)
+                texts.extend(f.label for f in violation.fixes)
+                if violation.fill is not None:
+                    texts.append(violation.fill.label)
+            for finding in entry.findings:
+                texts.append(finding.text)
+                if finding.fix is not None:
+                    texts.append(finding.fix.label)
+
+    assert texts
+    assert not [t for t in texts if "ki_" in t.casefold()]
+
+
+def test_a_derived_symbol_is_judged_in_the_scan_on_its_own_fields(tmp_path):
+    result = _scan(tmp_path)
+    entries = {e.name: e for e in _lib(result, "Atomic_Regulator").symbols}
+
+    assert entries["TLV75518PDBVR"].extends == "TLV75533PDBVR"
+    assert entries["TLV75518PDBVR"].violations == []
+    assert [v.text for v in entries["TLV75525PDBVR"].violations] == [
+        "no MPN of its own (the parent's MPN does not count)"
+    ]
+    orphan = _lib(result, "Atomic_Orphan").symbols[0]
+    assert orphan.violations[0].text == 'no manufacturer (its parent symbol "NOT-THERE" is missing)'
+
+
+def test_the_check_never_imports_network_or_process_modules():
+    import ast
+
+    from kicad_lib_manager import atomic_check
+
+    with open(atomic_check.__file__, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and not node.level and node.module:
+            imported.add(node.module.split(".")[0])
+
+    assert not imported & {"urllib", "http", "socket", "webbrowser", "subprocess"}
+
+
+@pytest.mark.kicad_cli
+@pytest.mark.parametrize(
+    "library", [lib for lib in ATOMIC_LIBRARIES if lib.name != "Atomic_Orphan"], ids=lambda lib: lib.name
+)
+def test_kicad_cli_loads_every_fixture_library(kicad_cli_path, library):
+    from kicad_lib_manager.importer.kicad_cli import load_gate
+
+    issues = load_gate(kicad_cli_path, library=library.name, symbol_lib=atomic_lib(library.symbols), footprints=[])
+
+    assert issues == []
