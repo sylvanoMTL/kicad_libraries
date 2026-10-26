@@ -7,6 +7,7 @@ the live Custom/ (read only) for the owner to open in the app.
 """
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -16,6 +17,8 @@ from pathlib import Path
 import pytest
 from customfixtures import (
     ATOMIC_FOOTPRINTS,
+    atomic_lib,
+    atomic_part,
     digest_custom,
     digest_tree,
     write_atomic_files,
@@ -277,3 +280,67 @@ def test_uat_atomic_scratch():
     print("  3. One real Atomic_ part and one part of a library without the prefix show Changed, the footprint NEW-UAT shows New.")
     print("  4. Ctrl+Shift+A (or double-click an amber part): apply one fix of each kind, check the preview and the rescan.")
     print("  5. With KiCad open, preview again: the KiCad-running warning is shown.")
+
+
+# ── the helper edits a property the first symbol has, or adds a Datasheet ──
+
+def _first_symbol(path: Path):
+    loaded = kicad_files.load(path)
+    assert not isinstance(loaded, Issue), loaded
+    return loaded, kicad_files.find_symbols(loaded.root)
+
+
+def _property_names(symbol) -> list[str]:
+    return [c.children[1].value for c in symbol.node.children if c.head == "property"]
+
+
+def _write_lib(tmp_path: Path, symbols, *, eol: str = "\n") -> Path:
+    path = tmp_path / "Lib.kicad_sym"
+    path.write_bytes(atomic_lib(symbols, eol=eol))
+    return path
+
+
+def test_edit_first_symbol_edits_description_when_there_is_no_datasheet(tmp_path):
+    path = _write_lib(tmp_path, (atomic_part("NO-DS", drop=("Datasheet",)), atomic_part("SECOND")))
+    original = path.read_text(encoding="utf-8")
+
+    _edit_first_symbol(path)
+
+    expected = original.replace('"Test part NO-DS"', f'"{EDITED_DESCRIPTION}"', 1)
+    assert path.read_text(encoding="utf-8") == expected
+    _, symbols = _first_symbol(path)
+    assert kicad_files.find_property(symbols[0].node, "Description").value == EDITED_DESCRIPTION
+    assert kicad_files.find_property(symbols[0].node, "Datasheet") is None
+    assert "Test part SECOND" in path.read_text(encoding="utf-8")
+
+
+def test_edit_first_symbol_edits_datasheet_when_there_is_no_description(tmp_path):
+    path = _write_lib(tmp_path, (atomic_part("NO-DESC", drop=("Description",)),))
+    _, before = _first_symbol(path)
+    names_before = _property_names(before[0])
+
+    _edit_first_symbol(path)
+
+    _, symbols = _first_symbol(path)
+    assert kicad_files.find_property(symbols[0].node, "Datasheet").value == EDITED_DATASHEET
+    assert _property_names(symbols[0]) == names_before
+
+
+def test_edit_first_symbol_adds_a_datasheet_when_it_has_neither(tmp_path):
+    path = _write_lib(tmp_path, (atomic_part("BARE", drop=("Datasheet", "Description")),))
+
+    _edit_first_symbol(path)
+
+    _, symbols = _first_symbol(path)
+    assert kicad_files.find_property(symbols[0].node, "Datasheet").value == EDITED_DATASHEET
+
+
+def test_edit_first_symbol_keeps_crlf_line_endings_when_it_adds_a_datasheet(tmp_path):
+    path = _write_lib(tmp_path, (atomic_part("BARE", drop=("Datasheet", "Description")),), eol="\r\n")
+
+    _edit_first_symbol(path)
+
+    data = path.read_bytes()
+    assert b"\r\n" in data and not re.search(rb"(?<!\r)\n", data)
+    _, symbols = _first_symbol(path)
+    assert kicad_files.find_property(symbols[0].node, "Datasheet").value == EDITED_DATASHEET
