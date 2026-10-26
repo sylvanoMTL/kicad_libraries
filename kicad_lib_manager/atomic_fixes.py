@@ -9,6 +9,7 @@ never overwritten. Nothing here commits and nothing outside Custom/ is ever writ
 import difflib
 import hashlib
 import os
+import re
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime
@@ -16,14 +17,22 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from . import fsutil, kicad_files
 from . import kicad_process
-from .atomic_check import FILL_KINDS, SAFE_FIX_KINDS, datasheet_problem, effective_mpn
+from .atomic_check import CUSTOM_MODEL_PREFIX, FILL_KINDS, SAFE_FIX_KINDS, datasheet_problem, effective_mpn
 from .importer import fieldrules
-from .importer.package import MAX_KICAD_TEXT_BYTES, MAX_KICAD_TEXT_NODES
+from .importer import package as _intake
+from .importer.package import MAX_KICAD_TEXT_BYTES, MAX_KICAD_TEXT_NODES, open_model_source
 from .models import FixSpec, Issue, Severity
 from .sexpr import Edit, SexprError, apply_edits, parse
 
 _CUSTOM = "Custom"
+_FOOTPRINT_DIR = "Custom/Footprints"
+_MODEL_DIR = "Custom/3DModels"
 _MIB = 1024 * 1024
+_ONE_MODEL = "pick a file or a zip holding exactly one 3D model"
+_MODEL_SUFFIXES = (".step", ".stp", ".wrl")
+_UNSAFE_NAME_RE = re.compile(r'[\x00-\x1f<>:"/\\|?*]')
+_RESERVED_NAMES = frozenset({"con", "prn", "aux", "nul", *(f"com{n}" for n in range(1, 10)), *(f"lpt{n}" for n in range(1, 10))})
+_HASH_CHUNK = 65536
 _GROUP_NAMES = {"mpn": fieldrules.MPN_FIELDS, "manufacturer": fieldrules.MANUFACTURER_FIELDS}
 
 
@@ -115,6 +124,14 @@ def _read_capped(path: Path, rel_path: str) -> bytes | Issue:
     except OSError as e:
         return _err("atomic.file_unreadable", f"Not changed: {rel_path} could not be read ({e.strerror or e})")
     return too_large if len(data) > limit else data
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        while chunk := handle.read(_HASH_CHUNK):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 class _Notes:
@@ -348,6 +365,157 @@ def _symbol_file(group: _Group, issues: list[Issue]) -> FileChange | None:
     return None if new_text is None else _file_change(group, data, loaded, new_text)
 
 
+def _custom_model_names(model_dir: Path) -> frozenset[str]:
+    """Exact relative names of every file under Custom/3DModels, as the disk spells them."""
+    try:
+        return frozenset(p.relative_to(model_dir).as_posix() for p in model_dir.rglob("*") if p.is_file())
+    except OSError:
+        return frozenset()
+
+
+def _model_name_problem(name: str) -> str | None:
+    stem, dot, _ = name.rpartition(".")
+    if not name or name in (".", "..") or _UNSAFE_NAME_RE.search(name) or name != name.strip() or name.endswith("."):
+        return f'"{name}" is not a usable file name'
+    if not name.casefold().endswith(_MODEL_SUFFIXES) or not dot or stem.casefold() in _RESERVED_NAMES:
+        return f'"{name}" is not a usable 3D model file name'
+    return None
+
+
+def _open_model(spec: FixSpec, repo_root: Path, issues: list[Issue]) -> tuple[str, bytes] | None:
+    """Open the picked model through the importer's intake checks and return (file name, bytes), or None with ERRORs."""
+    source = spec.params.get("source", "")
+    if not source.strip():
+        issues.append(_err("atomic.fix_incomplete", f'Not changed: "{spec.label}" needs a 3D model file first'))
+        return None
+    package = open_model_source(Path(source), repo_root)
+    try:
+        if package.refused:
+            issues.extend(i for i in package.issues if i.severity is Severity.ERROR)
+            return None
+        issues.extend(i for i in package.issues if i.severity is not Severity.ERROR)
+        if len(package.files) != 1 or package.files[0].kind != "model":
+            issues.append(_err("atomic.fix_incomplete", f"Not changed: {Path(source).name}: {_ONE_MODEL}"))
+            return None
+        entry = package.files[0]
+        name = PurePosixPath(entry.member.replace("\\", "/")).name
+        problem = _model_name_problem(name)
+        if problem is not None:
+            issues.append(_err("atomic.model_name_invalid", f"Not changed: {problem}; rename the file and choose it again"))
+            return None
+        # The size cap is read from the module at call time, like the intake does
+        limit = _intake.MAX_MEMBER_BYTES
+        try:
+            with open(entry.path, "rb") as handle:
+                data = handle.read(limit + 1)
+        except OSError as e:
+            issues.append(_err("atomic.file_unreadable", f"Not changed: {name} could not be read ({e.strerror or e})"))
+            return None
+        if len(data) > limit or hashlib.sha256(data).hexdigest() != entry.sha256:
+            issues.append(_err("atomic.model_changed", f"Not changed: {name} changed while it was read; choose it again"))
+            return None
+        return name, data
+    finally:
+        package.close()
+
+
+def _model_target(model_dir: Path, name: str, data: bytes) -> tuple[str, bool] | Issue:
+    """Return (the name to link, True when it must be copied), or an ERROR when another file holds the name.
+
+    A file of that name (casefolded) with the same SHA-256 is reused under its on-disk spelling.
+    """
+    try:
+        listed = os.listdir(model_dir)
+    except OSError:
+        listed = []
+    twins = sorted((n for n in listed if n.casefold() == name.casefold()), key=lambda n: (n != name, n))
+    if not twins:
+        return name, True
+    digest = hashlib.sha256(data).hexdigest()
+    for twin in twins:
+        try:
+            same = (model_dir / twin).is_file() and _file_sha256(model_dir / twin) == digest
+        except OSError:
+            same = False
+        if same:
+            return twin, False
+    return _err(
+        "atomic.model_name_taken",
+        f'A different 3D model named "{name}" is already in Custom/3DModels; rename the file and choose it again',
+    )
+
+
+def _footprint_file(
+    group: _Group, repo_root: Path, models: dict[str, FileChange], issues: list[Issue]
+) -> list[FileChange]:
+    """Resolve the attach_model fixes of one footprint file; returns the model copies first, then the footprint edit."""
+    notes = _Notes(issues)
+    read = _load(group, issues)
+    if read is None:
+        return []
+    data, loaded = read
+    text = loaded.source.text
+    named = kicad_files.footprint_name(loaded.root)
+    if named is None:
+        issues.append(_err("atomic.fix_unknown", f"Not changed: {group.rel_path} has no footprint in it"))
+        return []
+    model_dir = repo_root / _MODEL_DIR
+    listed = _custom_model_names(model_dir)
+    edits: list[Edit] = []
+    pending: list[FileChange] = []
+    for spec in group.specs:
+        picked = _open_model(spec, repo_root, issues)
+        if picked is None:
+            continue
+        name, bytes_ = picked
+        target = _model_target(model_dir, name, bytes_)
+        if isinstance(target, Issue):
+            issues.append(target)
+            continue
+        link_name, copy = target
+        refs = kicad_files.find_models(named.node)
+        broken = next(
+            (r for r in refs if not (r.path.startswith(CUSTOM_MODEL_PREFIX) and r.path[len(CUSTOM_MODEL_PREFIX):] in listed)),
+            None,
+        )
+        if refs and broken is None:
+            notes.skip(spec, "the footprint's 3D model already resolves")
+            continue
+        link = CUSTOM_MODEL_PREFIX + link_name
+        edits.append(
+            kicad_files.retarget_model(broken, link) if broken is not None
+            else kicad_files.model_insert_edit(text, named.node, link, loaded.source.eol)
+        )
+        if copy:
+            pending.append(FileChange(
+                model_dir / link_name, f"{_MODEL_DIR}/{link_name}", None, None, bytes_, None, False, [spec],
+            ))
+    if not edits and not pending:
+        return []
+    new_text = _splice(text, edits, group.rel_path, issues) if edits else text
+    if new_text is None:
+        return []
+    out: list[FileChange] = []
+    for change in pending:
+        key = change.rel_path.casefold()
+        seen = models.get(key)
+        if seen is None:
+            models[key] = change
+            out.append(change)
+        elif seen.new_bytes != change.new_bytes:
+            issues.append(_err(
+                "atomic.model_name_taken",
+                f'A different 3D model named "{change.path.name}" is already chosen for another footprint; rename the file and choose it again',
+            ))
+            return []
+        else:
+            seen.specs.extend(change.specs)
+    footprint = _file_change(group, data, loaded, new_text)
+    if footprint is not None:
+        out.append(footprint)
+    return out
+
+
 def _sorted_specs(specs: list[FixSpec]) -> list[FixSpec]:
     return sorted(specs, key=lambda s: (s.symbol, s.kind, tuple(sorted(s.params.items()))))
 
@@ -372,19 +540,34 @@ def build_preview(
         if spec.kind not in SAFE_FIX_KINDS and spec.kind not in FILL_KINDS:
             issues.append(_err("atomic.fix_unknown", f'Not changed: "{spec.label}" is not a fix this tool can make'))
             continue
-        path = _inside(repo_root, spec.rel_path, _CUSTOM)
-        if path is None or path.suffix != ".kicad_sym":
-            issues.append(_outside(spec.rel_path))
-            continue
-        group = groups.setdefault(os.path.normcase(str(path)), _Group(path, spec.rel_path))
+        if spec.kind == "attach_model":
+            footprint = spec.params.get("footprint", "")
+            path = _inside(repo_root, footprint, _FOOTPRINT_DIR)
+            if path is None or _inside(repo_root, spec.rel_path, _FOOTPRINT_DIR) != path or path.suffix != ".kicad_mod":
+                issues.append(_outside(footprint or spec.rel_path))
+                continue
+            rel_path = footprint
+        else:
+            path = _inside(repo_root, spec.rel_path, _CUSTOM)
+            if path is None or path.suffix != ".kicad_sym":
+                issues.append(_outside(spec.rel_path))
+                continue
+            rel_path = spec.rel_path
+        group = groups.setdefault(os.path.normcase(str(path)), _Group(path, rel_path))
         group.specs.append(spec)
-    changes: list[FileChange] = []
+    models: dict[str, FileChange] = {}
+    copies: list[FileChange] = []
+    edited: list[FileChange] = []
     for group in sorted(groups.values(), key=lambda g: g.rel_path):
         group.specs = _sorted_specs(group.specs)
-        change = _symbol_file(group, issues)
-        if change is not None:
-            changes.append(change)
-    return FixPreview(repo_root, changes, issues, (running or kicad_process.kicad_running)())
+        if group.path.suffix == ".kicad_mod":
+            for change in _footprint_file(group, repo_root, models, issues):
+                (copies if change.new_bytes is not None else edited).append(change)
+        else:
+            change = _symbol_file(group, issues)
+            if change is not None:
+                edited.append(change)
+    return FixPreview(repo_root, copies + edited, issues, (running or kicad_process.kicad_running)())
 
 
 def preview_text(change: FileChange) -> str:
