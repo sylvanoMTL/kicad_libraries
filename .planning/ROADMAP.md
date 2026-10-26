@@ -75,7 +75,27 @@ Plans:
   4. The check dialog lists every violation. It offers one-click fixes only for Value := MPN, `MF`/`MP` → `Manufacturer`/`MPN`, canonical manufacturer spelling and removing price and stock leftovers. Each fix is previewed, written with a backup, and gone on the next scan. A missing Datasheet, Description or 3D model can be filled in the dialog, or it stays a reported error.
   5. A Manufacturer written as an alias is reported with its canonical name from the one manufacturer table (a name plus its aliases), and the fix writes that canonical name.
 
-**Plans**: TBD
+**Plans:** 8 plans
+
+Plans:
+**Wave 1**
+- [ ] 09-01-PLAN.md — Canonical manufacturer table as a Qt-free leaf, suggest.MANUFACTURER_ALIASES derived from it (wave 1)
+- [ ] 09-02-PLAN.md — Scan result contract in models.py and library-tree marks, New/Changed highlights, auto-expand, double-click signal (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 09-03-PLAN.md — Atomic check on every scan: MPN, Manufacturer, Value, Datasheet, Description, derived symbols, safe-fix specs, log lines (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 09-04-PLAN.md — Footprint and 3D model rules through an injected resolver context, official KiCad footprints included (wave 3)
+- [ ] 09-05-PLAN.md — Changed-since-last-Custom-commit detection by token stream, symbols and footprints (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 09-06-PLAN.md — Qt-free fix engine: preview, stale check, backup, atomic write, rollback, 3D model intake (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 09-07-PLAN.md — Check Atomic Parts dialog (Ctrl+Shift+A, double-click), fill-ins, preview and apply, rescan (wave 5)
+- [ ] 09-08-PLAN.md — D-25 UAT scratch repo builder, tests/README.md skip row, end-of-phase checklist (wave 5)
+
 **UI hint**: yes
 
 ### Phase 10: Importer on the Atomic Scheme
