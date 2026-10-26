@@ -2,26 +2,56 @@
 
 import pytest
 
-from customfixtures import ATOMIC_EXPECTED, ATOMIC_LIBRARIES, atomic_lib, atomic_part
+from customfixtures import (
+    ATOMIC_EXPECTED,
+    ATOMIC_FOOTPRINTS,
+    ATOMIC_LIBRARIES,
+    atomic_lib,
+    atomic_part,
+    write_atomic_custom,
+    write_atomic_files,
+    write_fake_kicad,
+)
 from kicad_lib_manager import kicad_files
 from kicad_lib_manager.atomic_check import (
     ATOMIC_RULES,
     FILL_KINDS,
     SAFE_FIX_KINDS,
+    AtomicContext,
+    FootprintTarget,
     check_symbol,
     datasheet_problem,
     effective_mpn,
+    repo_context,
 )
-from kicad_lib_manager.models import FixSpec, SymbolEntry
+from kicad_lib_manager.library_scanner import find_footprint_libs
+from kicad_lib_manager.models import FixSpec, FootprintLibrary, SymbolEntry
 
 REL = "Custom/Symbols/Atomic_T.kicad_sym"
 NOT_A_LINK = "Datasheet is not a link or file path"
 
 
-def _check(lib_bytes: bytes, name: str, *, rel_path: str = REL, fixable: bool = True) -> SymbolEntry:
+def _anywhere_ctx() -> AtomicContext:
+    """A context in which every non-blank Library:Footprint resolves and every model is fine.
+
+    The field rules below are not about footprints; the footprint and model tests use repo_context.
+    """
+
+    def resolve(text: str) -> FootprintTarget:
+        if not text.strip():
+            return FootprintTarget(text, "", "", None, None, "no footprint")
+        library, _, footprint = text.partition(":")
+        return FootprintTarget(text, library, footprint, None, None, None)
+
+    return AtomicContext(resolve, lambda target: [])
+
+
+def _check(
+    lib_bytes: bytes, name: str, *, rel_path: str = REL, fixable: bool = True, ctx: AtomicContext | None = None
+) -> SymbolEntry:
     loaded = kicad_files.parse_bytes(lib_bytes, "Atomic_T.kicad_sym")
     assert isinstance(loaded, kicad_files.LoadedFile), loaded
-    return check_symbol(loaded.root, name, rel_path=rel_path, fixable=fixable)
+    return check_symbol(loaded.root, name, rel_path=rel_path, fixable=fixable, ctx=ctx or _anywhere_ctx())
 
 
 def _entry(part, **kwargs) -> SymbolEntry:
@@ -310,11 +340,19 @@ def test_every_offered_fix_and_fill_kind_is_a_known_kind():
             assert finding.fix is None or finding.fix.kind in SAFE_FIX_KINDS
 
 
-def test_the_inventory_symbols_produce_exactly_their_expected_rule_sets():
+def _inventory_ctx(tmp_path) -> AtomicContext:
+    """A context over the whole written inventory and the fake KiCad install."""
+    root = tmp_path / "repo"
+    write_atomic_custom(root)
+    return repo_context(root, find_footprint_libs(root), write_fake_kicad(tmp_path)[0])
+
+
+def test_the_inventory_symbols_produce_exactly_their_expected_rule_sets(tmp_path):
     library = next(lib for lib in ATOMIC_LIBRARIES if lib.name == "Atomic_Connector")
     data = atomic_lib(library.symbols)
+    ctx = _inventory_ctx(tmp_path)
     for symbol in library.symbols:
-        entry = _check(data, symbol.name)
+        entry = _check(data, symbol.name, ctx=ctx)
         assert frozenset(_rules(entry)) == ATOMIC_EXPECTED[("Atomic_Connector", symbol.name)], symbol.name
 
 
@@ -430,7 +468,8 @@ def test_derived_pair_from_the_vendor_builder_gives_the_same_results_in_either_o
     second = _check(extends_pair(child_first=True), "CHILD_Y")
 
     assert first.violations == second.violations
-    assert _rules(first) == ["mpn", "manufacturer", "datasheet", "description"]
+    # the vendor child declares an empty Footprint of its own, so that rule fails too
+    assert _rules(first) == ["mpn", "manufacturer", "footprint", "datasheet", "description"]
 
 
 def test_derived_grandchild_takes_an_absent_property_from_the_nearest_declaring_ancestor():
@@ -450,3 +489,144 @@ def test_a_symbol_that_extends_itself_does_not_loop():
     entry = _check(atomic_lib((loop,)), "LOOP")
 
     assert _rules(entry) == ["manufacturer"]
+
+
+# -- footprint rule (D-20) ------------------------------------------------------
+
+FP_LIB = FootprintLibrary(ATOMIC_FOOTPRINTS, f"Custom/Footprints/{ATOMIC_FOOTPRINTS}.pretty", "Custom")
+
+
+def _repo(tmp_path, *, kicad: bool = True):
+    """Write the Atomic_Footprints library and optionally the fake KiCad install; return (repo root, KiCad footprints dir)."""
+    root = tmp_path / "repo"
+    write_atomic_files(root / "Custom")
+    kicad_dir = write_fake_kicad(tmp_path)[0] if kicad else None
+    return root, kicad_dir
+
+
+def _fp_ctx(tmp_path, *, kicad: bool = True, libs: tuple[FootprintLibrary, ...] = (FP_LIB,)) -> AtomicContext:
+    root, kicad_dir = _repo(tmp_path, kicad=kicad)
+    return repo_context(root, list(libs), kicad_dir)
+
+
+def _fp_entry(tmp_path, text: str, **kwargs) -> SymbolEntry:
+    part = atomic_part("P1", replace={"Footprint": text})
+    return _check(atomic_lib((part,)), "P1", ctx=_fp_ctx(tmp_path, **kwargs))
+
+
+def test_footprint_in_a_repo_library_resolves_to_its_file_and_repo_path(tmp_path):
+    target = _fp_ctx(tmp_path).resolve_footprint(f"{ATOMIC_FOOTPRINTS}:GENERIC-2PIN")
+
+    assert target.problem is None
+    assert (target.library, target.footprint) == (ATOMIC_FOOTPRINTS, "GENERIC-2PIN")
+    assert target.rel_path == f"Custom/Footprints/{ATOMIC_FOOTPRINTS}.pretty/GENERIC-2PIN.kicad_mod"
+    assert target.path is not None and target.path.is_file()
+
+
+def test_footprint_in_a_kicad_library_resolves_with_no_repo_path(tmp_path):
+    target = _fp_ctx(tmp_path).resolve_footprint("Package_TO_SOT_SMD:SOT-23-5")
+
+    assert target.problem is None
+    assert target.rel_path is None
+    assert target.path is not None and target.path.name == "SOT-23-5.kicad_mod"
+
+
+@pytest.mark.parametrize("text", ["", "   ", "~"])
+def test_footprint_blank_field_says_no_footprint(tmp_path, text):
+    violation = _violation(_fp_entry(tmp_path, text), "footprint")
+
+    assert violation.text == "no footprint"
+    assert violation.fixes == ()
+    assert violation.fill is None
+
+
+@pytest.mark.parametrize("text", ["GENERIC-2PIN", ":GENERIC-2PIN", f"{ATOMIC_FOOTPRINTS}:"])
+def test_footprint_without_a_library_or_a_name_says_what_is_expected(tmp_path, text):
+    violation = _violation(_fp_entry(tmp_path, text), "footprint")
+
+    assert violation.text == f'Footprint "{text}" does not name a library (expected Library:Footprint)'
+
+
+def test_footprint_library_that_does_not_exist_is_not_found(tmp_path):
+    violation = _violation(_fp_entry(tmp_path, "Nope_Library:GENERIC-2PIN"), "footprint")
+
+    assert violation.text == 'footprint library "Nope_Library" was not found'
+
+
+def test_footprint_library_name_is_case_sensitive_for_the_library_too(tmp_path):
+    violation = _violation(_fp_entry(tmp_path, "atomic_footprints:GENERIC-2PIN"), "footprint")
+
+    assert violation.text == 'footprint library "atomic_footprints" was not found'
+
+
+def test_footprint_missing_from_its_library_is_named(tmp_path):
+    violation = _violation(_fp_entry(tmp_path, f"{ATOMIC_FOOTPRINTS}:NOT-THERE"), "footprint")
+
+    assert violation.text == f'footprint "NOT-THERE" is not in library "{ATOMIC_FOOTPRINTS}"'
+
+
+def test_footprint_wrong_case_fails_even_on_a_case_insensitive_disk(tmp_path):
+    violation = _violation(_fp_entry(tmp_path, f"{ATOMIC_FOOTPRINTS}:generic-2pin"), "footprint")
+
+    assert violation.text == f'footprint "generic-2pin" is not in library "{ATOMIC_FOOTPRINTS}"'
+
+
+def test_footprint_library_defined_twice_in_the_repo_is_ambiguous(tmp_path):
+    twin = FootprintLibrary(ATOMIC_FOOTPRINTS, f"Other/Footprints/{ATOMIC_FOOTPRINTS}.pretty", "Other")
+
+    entry = _fp_entry(tmp_path, f"{ATOMIC_FOOTPRINTS}:GENERIC-2PIN", libs=(FP_LIB, twin))
+
+    assert _violation(entry, "footprint").text == f'footprint library "{ATOMIC_FOOTPRINTS}" is defined more than once'
+
+
+def test_footprint_library_sharing_a_nickname_with_a_kicad_library_is_ambiguous(tmp_path):
+    clash = FootprintLibrary("Package_TO_SOT_SMD", "Custom/Footprints/Package_TO_SOT_SMD.pretty", "Custom")
+
+    entry = _fp_entry(tmp_path, "Package_TO_SOT_SMD:SOT-23-5", libs=(FP_LIB, clash))
+
+    assert _violation(entry, "footprint").text == 'footprint library "Package_TO_SOT_SMD" is defined more than once'
+
+
+@pytest.mark.parametrize("kicad_dir", ["none", "missing"])
+def test_footprint_kicad_library_is_not_found_when_the_kicad_folder_is_unknown(tmp_path, kicad_dir):
+    root, _ = _repo(tmp_path, kicad=False)
+    given = None if kicad_dir == "none" else tmp_path / "no_kicad"
+
+    target = repo_context(root, [FP_LIB], given).resolve_footprint("Package_TO_SOT_SMD:SOT-23-5")
+
+    assert target.problem == 'footprint library "Package_TO_SOT_SMD" was not found'
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"{ATOMIC_FOOTPRINTS}:../{ATOMIC_FOOTPRINTS}.pretty/GENERIC-2PIN",
+        f"{ATOMIC_FOOTPRINTS}:..\\x",
+        "..:x",
+        f"{ATOMIC_FOOTPRINTS}:.",
+    ],
+)
+def test_footprint_text_with_dots_and_separators_never_resolves_to_a_path(tmp_path, text):
+    target = _fp_ctx(tmp_path).resolve_footprint(text)
+
+    assert target.problem is not None
+    assert target.path is None
+
+
+def test_footprint_a_derived_symbol_without_its_own_takes_it_from_the_parent_and_says_so(tmp_path):
+    parent = atomic_part("PARENT", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:NOT-THERE"})
+    child = atomic_part("CHILD", drop=("Footprint",), extends="PARENT")
+
+    entry = _check(atomic_lib((parent, child)), "CHILD", ctx=_fp_ctx(tmp_path))
+
+    assert _violation(entry, "footprint").text == (
+        f'footprint "NOT-THERE" is not in library "{ATOMIC_FOOTPRINTS}" (inherited from "PARENT")'
+    )
+
+
+def test_footprint_rule_comes_between_manufacturer_and_value_in_the_reporting_order(tmp_path):
+    part = atomic_part("P1", drop=("Manufacturer",), replace={"Footprint": "", "Value": "x"})
+
+    entry = _check(atomic_lib((part,)), "P1", ctx=_fp_ctx(tmp_path))
+
+    assert _rules(entry) == ["manufacturer", "footprint", "value"]

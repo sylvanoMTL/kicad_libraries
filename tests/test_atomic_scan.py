@@ -11,6 +11,7 @@ from customfixtures import (
     atomic_lib,
     digest_tree,
     write_atomic_custom,
+    write_fake_kicad,
     write_synthetic_custom,
 )
 from kicad_lib_manager.library_scanner import scan_all
@@ -25,10 +26,11 @@ def _root(tmp_path):
 
 
 def _scan(tmp_path):
-    """Write the atomic inventory and scan it, with a KiCad folder that does not exist."""
+    """Write the atomic inventory and scan it, with the fake KiCad folders."""
     root = _root(tmp_path)
     write_atomic_custom(root)
-    return scan_all(root, kicad_fp_dir=tmp_path / "no_kicad")
+    footprints, _ = write_fake_kicad(tmp_path)
+    return scan_all(root, kicad_fp_dir=footprints)
 
 
 def _atomic_issues(result):
@@ -156,7 +158,7 @@ def test_an_unreadable_library_is_reported_and_the_others_are_still_checked(tmp_
     write_atomic_custom(root)
     (root / "Custom" / "Symbols" / "Atomic_Broken.kicad_sym").write_bytes(b"(kicad_symbol_lib \xff\xfe broken")
 
-    result = scan_all(root, kicad_fp_dir=tmp_path / "no_kicad")
+    result = scan_all(root, kicad_fp_dir=write_fake_kicad(tmp_path)[0])
 
     broken = _lib(result, "Atomic_Broken")
     assert broken.atomic is True

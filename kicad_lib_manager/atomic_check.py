@@ -5,7 +5,9 @@ library half-changed. Every reason is plain language (MPN, Manufacturer, Value, 
 never a raw KiCad field name. A Datasheet value is judged as a string and is never fetched or opened.
 """
 
+import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -322,6 +324,94 @@ def _mpn_absent(units: list[_Unit]) -> str:
     return "no MPN"
 
 
+@dataclass(frozen=True)
+class FootprintTarget:
+    """What a symbol's Footprint field points at: the footprint file, or the plain reason it does not resolve.
+
+    rel_path is the repo-relative posix path of a footprint in the repo and None for a KiCad footprint.
+    """
+
+    text: str
+    library: str
+    footprint: str
+    path: Path | None
+    rel_path: str | None
+    problem: str | None
+
+
+@dataclass(frozen=True)
+class AtomicContext:
+    """What the check needs from the outside: where footprints and their 3D models live.
+
+    repo_context builds one for the repo; a later phase passes its own for an incoming part.
+    """
+
+    resolve_footprint: Callable[[str], FootprintTarget]
+    model_problems: Callable[[FootprintTarget], list[str]]
+
+
+def _listing(cache: dict[Path, frozenset[str]], folder: Path) -> frozenset[str]:
+    """The exact names in a folder, as the disk spells them; an unlistable folder is empty. Cached per scan."""
+    names = cache.get(folder)
+    if names is None:
+        try:
+            names = frozenset(os.listdir(folder))
+        except OSError:
+            names = frozenset()
+        cache[folder] = names
+    return names
+
+
+def repo_context(repo_root: Path, fp_libs: list[FootprintLibrary], kicad_fp_dir: Path | None) -> AtomicContext:
+    """Build the context for the repo: its footprint libraries (any source) and KiCad's installed footprints.
+
+    Names are matched against exact directory listings before any path is built, so a wrong-case
+    name fails on Windows too and untrusted text never forms a path.
+    """
+    listings: dict[Path, frozenset[str]] = {}
+    repo_libs: dict[str, list[FootprintLibrary]] = {}
+    for lib in fp_libs:
+        repo_libs.setdefault(lib.nickname, []).append(lib)
+
+    def failed(text: str, library: str, footprint: str, problem: str) -> FootprintTarget:
+        return FootprintTarget(text, library, footprint, None, None, problem)
+
+    def resolve_footprint(text: str) -> FootprintTarget:
+        if _blank(text):
+            return failed(text, "", "", "no footprint")
+        library, colon, footprint = text.partition(":")
+        if not colon or not library or not footprint:
+            return failed(text, "", "", f'Footprint "{text}" does not name a library (expected Library:Footprint)')
+        # Each candidate is (folder of the library, repo-relative path of that folder or None for KiCad)
+        candidates: list[tuple[Path, str | None]] = [(repo_root / lib.rel_path, lib.rel_path) for lib in repo_libs.get(library, [])]
+        if kicad_fp_dir is not None and f"{library}.pretty" in _listing(listings, kicad_fp_dir):
+            candidates.append((kicad_fp_dir / f"{library}.pretty", None))
+        if not candidates:
+            return failed(text, library, footprint, f'footprint library "{library}" was not found')
+        if len(candidates) > 1:
+            return failed(text, library, footprint, f'footprint library "{library}" is defined more than once')
+        folder, folder_rel = candidates[0]
+        file_name = f"{footprint}.kicad_mod"
+        if file_name not in _listing(listings, folder):
+            return failed(text, library, footprint, f'footprint "{footprint}" is not in library "{library}"')
+        rel = f"{folder_rel}/{file_name}" if folder_rel is not None else None
+        return FootprintTarget(text, library, footprint, folder / file_name, rel, None)
+
+    def model_problems(target: FootprintTarget) -> list[str]:
+        return []
+
+    return AtomicContext(resolve_footprint, model_problems)
+
+
+def _footprint_violation(owner: _Owner, ctx: AtomicContext) -> tuple[Violation | None, FootprintTarget | None]:
+    """Judge the Footprint field read from its owner; the target is returned only when it resolved."""
+    prop = _find_property(owner.properties, "Footprint")
+    target = ctx.resolve_footprint(prop.value if prop is not None else "")
+    if target.problem is None:
+        return None, target
+    return Violation("footprint", target.problem + owner.suffix), None
+
+
 def _check_ref(
     root: Node,
     ref: kicad_files.SymbolRef,
@@ -329,6 +419,7 @@ def _check_ref(
     *,
     rel_path: str,
     fixable: bool,
+    ctx: AtomicContext,
 ) -> SymbolEntry:
     name = ref.name
     entry = SymbolEntry(name, extends=kicad_files.extends_name(ref.node))
@@ -343,9 +434,11 @@ def _check_ref(
         suffix=manufacturer_owner.suffix, label_suffix=manufacturer_owner.label_suffix,
     )
     version = kicad_files.file_version(root)
+    footprint, _ = _footprint_violation(_owner(units, missing, ("Footprint",)), ctx)
     found = [
         mpn,
         manufacturer,
+        footprint,
         _value_violation(ref.node, properties, name, rel_path, fixable),
         _datasheet_violation(_owner(units, missing, ("Datasheet",)), rel_path, fixable),
         _description_violation(_owner(units, missing, fieldrules.DESCRIPTION_FIELDS), version, rel_path, fixable),
@@ -365,7 +458,7 @@ def _symbol_index(root: Node) -> dict[str, kicad_files.SymbolRef]:
     return index
 
 
-def check_symbol(root: Node, name: str, *, rel_path: str, fixable: bool) -> SymbolEntry:
+def check_symbol(root: Node, name: str, *, rel_path: str, fixable: bool, ctx: AtomicContext) -> SymbolEntry:
     """Check one symbol of a parsed .kicad_sym and return its entry with one violation per broken rule.
 
     A derived symbol is judged on its own fields: its MPN and Value must be its own, while an absent
@@ -374,7 +467,7 @@ def check_symbol(root: Node, name: str, *, rel_path: str, fixable: bool) -> Symb
     ref = kicad_files.find_symbol(root, name)
     if ref is None:
         return SymbolEntry(name)
-    return _check_ref(root, ref, _symbol_index(root), rel_path=rel_path, fixable=fixable)
+    return _check_ref(root, ref, _symbol_index(root), rel_path=rel_path, fixable=fixable, ctx=ctx)
 
 
 def _read_library(path: Path) -> tuple[Node | None, str | None]:
@@ -419,6 +512,7 @@ def check_libraries(
     """
     issues: list[Issue] = []
     seen = failing = total = problems = 0
+    ctx = repo_context(repo_root, fp_libs, kicad_fp_dir)
     for lib in sym_libs:
         if not is_atomic(lib.nickname):
             continue
@@ -434,7 +528,7 @@ def check_libraries(
         fixable = lib.source == "Custom"
         index = _symbol_index(root)
         for ref in kicad_files.find_symbols(root):
-            entry = _check_ref(root, ref, index, rel_path=lib.rel_path, fixable=fixable)
+            entry = _check_ref(root, ref, index, rel_path=lib.rel_path, fixable=fixable, ctx=ctx)
             lib.symbols.append(entry)
             total += 1
             if entry.failing:
