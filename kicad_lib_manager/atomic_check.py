@@ -8,10 +8,10 @@ never a raw KiCad field name. A Datasheet value is judged as a string and is nev
 import re
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
-from . import kicad_files
+from . import kicad_files, manufacturers
 from .importer import fieldrules
 from .importer.package import MAX_KICAD_TEXT_BYTES, MAX_KICAD_TEXT_NODES
-from .models import FixSpec, FootprintLibrary, Issue, Severity, SymbolEntry, SymbolLibrary, Violation
+from .models import FixSpec, Finding, FootprintLibrary, Issue, Severity, SymbolEntry, SymbolLibrary, Violation
 from .sexpr import Node
 
 ATOMIC_PREFIX = "Atomic_"
@@ -56,9 +56,169 @@ def _find_property(properties: list[kicad_files.PropertyRef], name: str) -> kica
     return next((p for p in properties if p.name == name), None)
 
 
+def _filled(properties: list[kicad_files.PropertyRef], names: tuple[str, ...]) -> list[kicad_files.PropertyRef]:
+    """The group's properties that hold a real value, in file order."""
+    return [p for p in properties if p.name in names and not _blank(p.value)]
+
+
+def _agreed_mpn(filled: list[kicad_files.PropertyRef]) -> kicad_files.PropertyRef | None:
+    """The property to read the MPN from when every filled field holds the same value, else None."""
+    if not filled or len({p.value.strip() for p in filled}) != 1:
+        return None
+    return next((p for p in filled if p.name == fieldrules.MPN_FIELDS[0]), filled[0])
+
+
 def effective_mpn(symbol_node: Node) -> str | None:
-    """Return the symbol's own MPN, or None when absent or disagreeing (stub, filled in with the MPN rule)."""
-    return None
+    """Return the symbol's own MPN, or None when it has none or its MPN fields disagree.
+
+    Only the symbol's own properties count: a derived symbol never takes its parent's MPN (ATOM-02).
+    """
+    chosen = _agreed_mpn(_filled(kicad_files.list_properties(symbol_node), fieldrules.MPN_FIELDS))
+    return chosen.value if chosen is not None else None
+
+
+def _quoted(names: list[str]) -> str:
+    return " and ".join(f'"{n}"' for n in names) if len(names) <= 2 else (
+        ", ".join(f'"{n}"' for n in names[:-1]) + f' and "{names[-1]}"'
+    )
+
+
+def _group_violation(
+    kind: str,
+    properties: list[kicad_files.PropertyRef],
+    symbol: str,
+    rel_path: str,
+    fixable: bool,
+    *,
+    absent: str,
+    suffix: str = "",
+    label_suffix: str = "",
+) -> tuple[Violation | None, Finding | None]:
+    """Judge the MPN or the Manufacturer group of one symbol: absent, aliased, duplicated, disagreeing or mis-spelled.
+
+    kind is "mpn" or "manufacturer"; absent is the full reason when no field holds a value. suffix is
+    appended to every other reason and label_suffix to every fix label (they name an inherited owner).
+    """
+    is_mpn = kind == "mpn"
+    names = fieldrules.MPN_FIELDS if is_mpn else fieldrules.MANUFACTURER_FIELDS
+    label = "MPN" if is_mpn else "Manufacturer"
+    canonical = names[0]
+    members = [p for p in properties if p.name in names]
+    filled = _filled(properties, names)
+    if not filled:
+        return Violation(kind, absent), None
+
+    def match(prop: kicad_files.PropertyRef):
+        return None if is_mpn else manufacturers.lookup(prop.value)
+
+    def spelled(prop: kicad_files.PropertyRef) -> str:
+        found = match(prop)
+        return found.entry.name if found is not None else prop.value.strip()
+
+    def make(text: str, fixes: list[FixSpec], *, choices: tuple[str, ...] = (), fill: FixSpec | None = None):
+        if not fixable:
+            return Violation(kind, text + suffix)
+        return Violation(kind, text + suffix, tuple(fixes), fill, choices)
+
+    def merge_label(group: list[kicad_files.PropertyRef], value: str) -> str:
+        return f'Merge {_quoted([p.name for p in group])} into "{canonical}" = "{value}"' + label_suffix
+
+    if len(filled) == 1:
+        prop = filled[0]
+        found = match(prop)
+        reasons: list[str] = []
+        alias = prop.name != canonical
+        if alias:
+            reasons.append(f'{label} is stored as "{prop.name}", not as "{canonical}"')
+        bad_spelling = found is not None and not found.exact
+        if bad_spelling:
+            quoted = f'"{prop.value}" is not written as "{found.entry.name}"'
+            reasons.append(quoted if alias else f'{label} {quoted}')
+        if not reasons:
+            unknown = None
+            if not is_mpn and found is None:
+                unknown = Finding("unknown_manufacturer", f'manufacturer "{prop.value.strip()}" is not in the manufacturer table')
+            return None, unknown
+        fixes: list[FixSpec] = []
+        blank_canonical = next((p for p in members if p.name == canonical), None)
+        if alias and blank_canonical is not None:
+            # Renaming would create a second field with the canonical name, so the two are merged
+            value = spelled(prop)
+            fixes.append(FixSpec(
+                "merge_alias", rel_path, symbol, merge_label([prop, blank_canonical], value),
+                {"group": kind, "keep": canonical, "value": value},
+            ))
+        else:
+            if alias:
+                fixes.append(FixSpec(
+                    "rename_alias", rel_path, symbol, f'Rename "{prop.name}" to "{canonical}"' + label_suffix,
+                    {"property": prop.name, "new_name": canonical},
+                ))
+            if bad_spelling:
+                fixes.append(FixSpec(
+                    "canonical_manufacturer", rel_path, symbol,
+                    f'Manufacturer "{prop.value}" → "{found.entry.name}"' + label_suffix,
+                    {"property": prop.name, "value": found.entry.name},
+                ))
+        return make("; ".join(reasons), fixes), None
+
+    keep = next((p for p in members if p.name == canonical), filled[0])
+    if is_mpn:
+        agree = len({p.value.strip() for p in filled}) == 1
+    else:
+        entries = {found.entry.name for found in (match(p) for p in filled) if found is not None}
+        unmatched = [p for p in filled if match(p) is None]
+        agree = (len(entries) == 1 and not unmatched) or (
+            not entries and len({manufacturers.fold(p.value) for p in filled}) == 1
+        )
+    if agree:
+        value = spelled(keep if keep in filled else filled[0])
+        fix = FixSpec(
+            "merge_alias", rel_path, symbol, merge_label(filled, value), {"group": kind, "keep": keep.name, "value": value}
+        )
+        return make(f'{label} is stored in several fields ({_quoted_list([p.name for p in filled])})', [fix]), None
+    shown = ", ".join(f'"{p.value.strip()}" in "{p.name}"' for p in filled)
+    choices = tuple(dict.fromkeys(spelled(p) for p in filled))
+    fill = FixSpec(
+        "merge_alias", rel_path, symbol, f"Keep one {label if is_mpn else label.lower()} value" + label_suffix,
+        {"group": kind, "keep": keep.name, "value": ""},
+    )
+    return make(f"{label} fields disagree ({shown})", [], choices=choices, fill=fill), None
+
+
+def _quoted_list(names: list[str]) -> str:
+    return ", ".join(f'"{n}"' for n in names)
+
+
+def _value_violation(
+    node: Node, properties: list[kicad_files.PropertyRef], symbol: str, rel_path: str, fixable: bool
+) -> Violation | None:
+    mpn = effective_mpn(node)
+    if mpn is None:
+        return None
+    prop = _find_property(properties, "Value")
+    if prop is not None and prop.value == mpn:
+        return None
+    if prop is None:
+        return Violation("value", f'no Value (it should be the MPN "{mpn}")')
+    fixes = ()
+    if fixable:
+        fixes = (FixSpec(
+            "value_to_mpn", rel_path, symbol, f'Value "{prop.value}" → "{mpn}"', {"property": "Value", "value": mpn}
+        ),)
+    return Violation("value", f'Value "{prop.value}" is not the MPN "{mpn}"', fixes)
+
+
+def _leftover_findings(properties: list[kicad_files.PropertyRef], symbol: str, rel_path: str, fixable: bool) -> list[Finding]:
+    found = []
+    for prop in properties:
+        if not fieldrules.is_volatile(prop.name) or fieldrules.is_protected(prop.name):
+            continue
+        fix = None
+        if fixable:
+            fix = FixSpec("remove_leftover", rel_path, symbol, f'Remove "{prop.name}"', {"property": prop.name})
+        found.append(Finding("leftover", f'leftover price/stock data "{prop.name}"', fix))
+    return found
 
 
 def _datasheet_violation(
@@ -99,11 +259,19 @@ def check_symbol(root: Node, name: str, *, rel_path: str, fixable: bool) -> Symb
         return entry
     entry.extends = kicad_files.extends_name(ref.node)
     properties = kicad_files.list_properties(ref.node)
+    mpn, _ = _group_violation("mpn", properties, name, rel_path, fixable, absent="no MPN")
+    manufacturer, unknown = _group_violation("manufacturer", properties, name, rel_path, fixable, absent="no manufacturer")
     found = [
+        mpn,
+        manufacturer,
+        _value_violation(ref.node, properties, name, rel_path, fixable),
         _datasheet_violation(properties, name, rel_path, fixable),
         _description_violation(root, ref.node, properties, name, rel_path, fixable),
     ]
     entry.violations = sorted((v for v in found if v is not None), key=lambda v: ATOMIC_RULES.index(v.rule))
+    if unknown is not None:
+        entry.findings.append(unknown)
+    entry.findings.extend(_leftover_findings(properties, name, rel_path, fixable))
     return entry
 
 
