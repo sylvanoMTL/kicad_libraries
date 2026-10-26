@@ -282,3 +282,108 @@ def test_no_internal_field_names_in_tree_text_or_tooltips(qtbot):
     )
     w = _widget(qtbot, scan)
     assert "ki_" not in _all_tip_text(w)
+
+
+# ── Task 3: selection safety and the symbol_activated signal ──
+
+FP_REF = "Custom/Footprints/Atomic_Test.pretty"
+
+
+def _selection_scan():
+    sym = SymbolLibrary(
+        "Atomic_Test", ATOMIC, "Custom", atomic=True,
+        footprint_refs=[FootprintRef("Atomic_Test", "A", True)], symbols=_symbols())
+    fp = FootprintLibrary("Atomic_Test", FP_REF, "Custom")
+    return ScanResult(symbol_libs=[sym], footprint_libs=[fp])
+
+
+def _checks(scan):
+    return [lib.selected for lib in (*scan.symbol_libs, *scan.footprint_libs)]
+
+
+def test_child_row_has_no_check_state_and_is_not_checkable(qtbot):
+    w = _widget(qtbot, _selection_scan())
+    for row in _children(_lib_item(w)):
+        assert row.data(0, Qt.ItemDataRole.CheckStateRole) is None
+        assert not (row.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+
+
+def test_selection_is_unchanged_when_a_child_row_changes(qtbot):
+    scan = _selection_scan()
+    w = _widget(qtbot, scan)
+    fp_item = w._fp_items[FP_REF]
+    # A footprint the user ticked by hand; no selected symbol asks for it
+    fp_item.setCheckState(0, Qt.CheckState.Checked)
+    before = (_checks(scan), fp_item.checkState(0))
+    assert before[0] == [False, True]
+
+    row = _children(_lib_item(w))[1]
+    # A symbol named like its source used to reach the source-wide footprint recalculation
+    row.setText(0, "Custom")
+    row.setText(3, "something else")
+    row.setIcon(3, w.style().standardIcon(w.style().StandardPixmap.SP_MessageBoxWarning))
+    row.setData(0, Qt.ItemDataRole.UserRole, row.data(0, Qt.ItemDataRole.UserRole))
+
+    assert (_checks(scan), fp_item.checkState(0)) == before
+
+
+def test_selection_of_a_library_with_child_rows_still_syncs_footprints(qtbot):
+    scan = _selection_scan()
+    w = _widget(qtbot, scan)
+    _lib_item(w).setCheckState(0, Qt.CheckState.Checked)
+    assert _checks(scan) == [True, True]
+    assert w._fp_items[FP_REF].checkState(0) == Qt.CheckState.Checked
+    _lib_item(w).setCheckState(0, Qt.CheckState.Unchecked)
+    assert _checks(scan) == [False, False]
+
+
+def test_select_all_and_deselect_all_act_on_library_rows_only(qtbot):
+    scan = _selection_scan()
+    w = _widget(qtbot, scan)
+    w.select_all()
+    assert _checks(scan) == [True, True]
+    for row in _children(_lib_item(w)):
+        assert row.data(0, Qt.ItemDataRole.CheckStateRole) is None
+    w.deselect_all()
+    assert _checks(scan) == [False, False]
+    for row in _children(_lib_item(w)):
+        assert row.data(0, Qt.ItemDataRole.CheckStateRole) is None
+
+
+def _activate(w, item):
+    w._sym_tree.itemDoubleClicked.emit(item, 0)
+
+
+def test_double_click_on_a_row_with_rule_problems_emits_symbol_activated(qtbot):
+    w = _widget(qtbot, _selection_scan())
+    _, two, _ = _children(_lib_item(w))
+    with qtbot.waitSignal(w.symbol_activated, timeout=1000) as blocker:
+        _activate(w, two)
+    assert blocker.args == [ATOMIC, "TWO_BAD"]
+
+
+def test_double_click_on_a_row_with_only_findings_emits_symbol_activated(qtbot):
+    entry = SymbolEntry("S1", findings=[Finding("leftover", "Leftover price data is present")])
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Atomic_Test", ATOMIC, "Custom", atomic=True, symbols=[entry])])
+    w = _widget(qtbot, scan)
+    (row,) = _children(_lib_item(w))
+    with qtbot.waitSignal(w.symbol_activated, timeout=1000) as blocker:
+        _activate(w, row)
+    assert blocker.args == [ATOMIC, "S1"]
+
+
+def test_double_click_on_ok_changed_only_library_and_footprint_rows_emits_nothing(qtbot):
+    scan = _selection_scan()
+    scan.symbol_libs[0].symbols.append(SymbolEntry("CHANGED_ONLY", status=STATUS_CHANGED))
+    scan.footprint_libs[0].changed.append(ChangedFootprint("A", STATUS_NEW))
+    w = _widget(qtbot, scan)
+    ok, _, _, changed_only = _children(_lib_item(w))
+    fp_row = w._fp_items[FP_REF].child(0)
+    with qtbot.assertNotEmitted(w.symbol_activated):
+        _activate(w, ok)
+        _activate(w, changed_only)
+        _activate(w, _lib_item(w))
+        _activate(w, w._sym_tree.topLevelItem(0))
+        w._fp_tree.itemDoubleClicked.emit(fp_row, 0)
+        w._fp_tree.itemDoubleClicked.emit(w._fp_items[FP_REF], 0)
