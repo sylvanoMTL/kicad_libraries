@@ -6,7 +6,19 @@ findings:
   - id: WR-01
     severity: warning
     disposition: open
-    title: "\"Preview & apply\" button text loses the ampersand and registers Alt+Space"
+    title: "Double-clicking a part both opens the check dialog and toggles the part's expansion"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "Expansion state is lost on every rescan"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "Libraries that only have notes stay collapsed, so their note rows are hidden"
+  - id: IN-03
+    severity: info
+    disposition: open
+    title: "UAT helper copies the property-insert sequence from a private function"
   - id: WR-02
     severity: warning
     disposition: open
@@ -19,18 +31,6 @@ findings:
     severity: warning
     disposition: open
     title: "A refused group leaves its model copies registered, so a later footprint links a file that is never copied"
-  - id: IN-01
-    severity: info
-    disposition: open
-    title: "`check_symbol` and parts of `FootprintTarget` are used only by tests"
-  - id: IN-02
-    severity: info
-    disposition: open
-    title: "The Custom model listing and the model prefix are defined three times"
-  - id: IN-03
-    severity: info
-    disposition: open
-    title: "Foundation modules import size caps from the importer package"
   - id: IN-04
     severity: info
     disposition: open
@@ -53,7 +53,7 @@ findings:
     title: "Backslash separators are judged inconsistently for model paths"
 open: 12
 total: 12
-recorded: 2026-10-26T14:38:40.379Z
+recorded: 2026-10-26T16:56:26.346Z
 ---
 
 # Phase 09: Code Review Disposition
@@ -61,17 +61,17 @@ recorded: 2026-10-26T14:38:40.379Z
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
 | WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
-| IN-04 | info | open | - |
-| IN-05 | info | open | - |
-| IN-06 | info | open | - |
-| IN-07 | info | open | - |
-| IN-08 | info | open | - |
+| WR-02 | warning | open | - (not in the current review) |
+| WR-03 | warning | open | - (not in the current review) |
+| WR-04 | warning | open | - (not in the current review) |
+| IN-04 | info | open | - (not in the current review) |
+| IN-05 | info | open | - (not in the current review) |
+| IN-06 | info | open | - (not in the current review) |
+| IN-07 | info | open | - (not in the current review) |
+| IN-08 | info | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
