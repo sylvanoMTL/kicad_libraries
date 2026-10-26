@@ -18,7 +18,8 @@ from PySide6.QtWidgets import QMessageBox
 from kicad_lib_manager import library_scanner, main_window, settings
 from kicad_lib_manager.widgets.log_panel import COLORS
 from kicad_lib_manager.models import (
-    FootprintLibrary, FootprintRef, Issue, ScanResult, Severity, SymbolLibrary,
+    FootprintLibrary, FootprintRef, Issue, ScanResult, Severity, SymbolEntry, SymbolLibrary,
+    Violation,
 )
 
 
@@ -765,3 +766,37 @@ def test_startup_finish_raising_consumes_startup_flag(make_window, qtbot, monkey
         patch.setattr(w, "_select_linked_footprints", lambda r: calls.append("linked"))
         _rescan_and_wait(w, qtbot)
     assert calls == []
+
+
+# ── Check Atomic Parts (SCAN-03) ──────────────────────────────────────────
+
+ATOMIC_REL = "Custom/Symbols/Atomic_Connector.kicad_sym"
+
+
+def _atomic_scan():
+    """A scan whose Atomic_ library holds one failing symbol and one that passes."""
+    failing = SymbolEntry("FFC-0.5-20", violations=[Violation("value", "Value is not the part number")])
+    library = SymbolLibrary(
+        "Atomic_Connector", ATOMIC_REL, "Custom", atomic=True,
+        symbols=[failing, SymbolEntry("USB4105-GF-A")],
+    )
+    return ScanResult(symbol_libs=[library])
+
+
+def test_atomic_action_opens_dialog_and_apply_rescans(make_window, qtbot):
+    w = make_window([_atomic_scan()])
+    assert w._atomic_dialog is None
+
+    w._act_check_atomic.trigger()
+
+    dialog = w._atomic_dialog
+    assert dialog is not None
+    assert w._act_check_atomic.shortcut().toString() == "Ctrl+Shift+A"
+    calls_before = len(make_window.calls)
+
+    dialog.applied.emit([Issue(Severity.SUCCESS, "atomic.fixed", "Fixed Custom/Symbols/X.kicad_sym")])
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert "Fixed Custom/Symbols/X.kicad_sym" in _log_text(w)
+    assert len(make_window.calls) == calls_before + 1
+    dialog.reject()

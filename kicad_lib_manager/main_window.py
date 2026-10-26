@@ -22,6 +22,7 @@ from .settings import (
 )
 from .widgets.library_table import LibraryTableWidget
 from .widgets.log_panel import LogPanel
+from .widgets.atomic_check_dialog import AtomicCheckDialog
 from .widgets.backup_dialog import BackupDialog
 from .widgets.help_dialog import HelpDialog
 from .widgets.import_dialog import ImportCore, ImportDialog
@@ -33,6 +34,7 @@ REPO_ROOT = Path(__file__).parent.parent.resolve()
 # Test seams (monkeypatched like REPO_ROOT): None means the real import core and backup folder
 IMPORT_CORE: ImportCore | None = None
 IMPORT_BACKUP_ROOT: Path | None = None
+ATOMIC_BACKUP_ROOT: Path | None = None
 
 
 def _selected_count(result: ScanResult) -> int:
@@ -96,6 +98,7 @@ class MainWindow(QMainWindow):
         self._kicad_fp_dir: Path | None = None
         self._progress: QProgressDialog | None = None
         self._import_dialog: ImportDialog | None = None
+        self._atomic_dialog: AtomicCheckDialog | None = None
         self._pending_post_install: _PostInstall | None = None
         self.setAcceptDrops(True)
         self._build_menu()
@@ -141,6 +144,17 @@ class MainWindow(QMainWindow):
         self._act_rescan.setStatusTip("Rescan the repository for symbol and footprint libraries")
         self._act_rescan.triggered.connect(self._on_rescan)
         file_menu.addAction(self._act_rescan)
+
+        self._act_check_atomic = QAction("Check &Atomic Parts...", self)
+        self._act_check_atomic.setShortcut(QKeySequence("Ctrl+Shift+A"))
+        self._act_check_atomic.setToolTip(
+            "List the atomic rule problems found by the last scan and fix the safe ones"
+        )
+        self._act_check_atomic.setStatusTip(
+            "List the atomic rule problems found by the last scan and fix the safe ones"
+        )
+        self._act_check_atomic.triggered.connect(lambda: self._open_atomic_check())
+        file_menu.addAction(self._act_check_atomic)
 
         self._act_set_kicad_path = QAction("Set KiCad &Footprint Path...", self)
         self._act_set_kicad_path.setShortcut(QKeySequence("Ctrl+K"))
@@ -754,6 +768,41 @@ class MainWindow(QMainWindow):
 
     def _on_import_dialog_finished(self, _result: int):
         dialog, self._import_dialog = self._import_dialog, None
+        if dialog is not None:
+            dialog.deleteLater()
+
+    def _open_atomic_check(self, focus: tuple[str, str] | None = None):
+        """Open Check Atomic Parts on the last scan; it never scans or checks on the GUI thread (D-12)."""
+        if self._worker is not None:
+            self._log.log("A scan is already running; request ignored.", "info")
+            return
+        if self._atomic_dialog is not None:
+            self._atomic_dialog.raise_()
+            self._atomic_dialog.activateWindow()
+            return
+        if self._scan_result is None:
+            self._log.log("No scan result yet; rescan first.", "info")
+            return
+        dialog = AtomicCheckDialog(
+            self._scan_result,
+            REPO_ROOT,
+            focus=focus,
+            backup_root=ATOMIC_BACKUP_ROOT,
+            parent=self,
+        )
+        dialog.applied.connect(self._on_atomic_fixes_applied)
+        dialog.issues_logged.connect(self._log_issues)
+        dialog.finished.connect(self._on_atomic_dialog_finished)
+        self._atomic_dialog = dialog
+        dialog.open()
+
+    def _on_atomic_fixes_applied(self, issues: list[Issue]):
+        """Fixes were written: log them, then rescan so the fixed problems are gone."""
+        self._log_issues(issues)
+        self._start_scan()
+
+    def _on_atomic_dialog_finished(self, _result: int):
+        dialog, self._atomic_dialog = self._atomic_dialog, None
         if dialog is not None:
             dialog.deleteLater()
 
