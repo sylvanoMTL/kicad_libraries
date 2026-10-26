@@ -2,6 +2,7 @@ import pytest
 from PySide6.QtCore import Qt
 
 from kicad_lib_manager.models import (
+    STATUS_CHANGED, STATUS_NEW, ChangedFootprint, Finding, FootprintLibrary, FootprintRef,
     ScanResult, SymbolEntry, SymbolLibrary, Violation,
 )
 from kicad_lib_manager.widgets import theme
@@ -111,3 +112,173 @@ def test_collision_keeps_precedence_over_the_failing_count(qtbot):
     item = _lib_item(w)
     assert item.text(3) == "Collision"
     assert "2 of 3 symbols fail the atomic check" in item.toolTip(3)
+
+
+# ── Task 2: New and Changed highlights, combined status, auto-expand ──
+
+SYM_CUSTOM = "Custom/Symbols/Plain.kicad_sym"
+FP_CUSTOM = "Custom/Footprints/Plain.pretty"
+
+
+def _widget(qtbot, scan):
+    w = LibraryTableWidget()
+    qtbot.addWidget(w)
+    w.populate(scan)
+    return w
+
+
+def test_changed_symbol_is_accent_with_changed_status_and_tooltip(qtbot):
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Plain", SYM_CUSTOM, "Custom", symbols=[SymbolEntry("S1", status=STATUS_CHANGED)])])
+    w = _widget(qtbot, scan)
+    (row,) = _children(_lib_item(w, SYM_CUSTOM))
+    assert row.text(3) == "Changed"
+    assert all(_colour(row, c) == theme.ACCENT.lower() for c in range(row.columnCount()))
+    assert "Changed since the last Custom commit" in row.toolTip(0)
+    assert "Changed since the last Custom commit" in row.toolTip(3)
+
+
+def test_new_symbol_is_accent_with_new_status_and_tooltip(qtbot):
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Plain", SYM_CUSTOM, "Custom", symbols=[SymbolEntry("S1", status=STATUS_NEW)])])
+    w = _widget(qtbot, scan)
+    (row,) = _children(_lib_item(w, SYM_CUSTOM))
+    assert row.text(3) == "New"
+    assert _colour(row) == theme.ACCENT.lower()
+    assert "New since the last Custom commit" in row.toolTip(3)
+
+
+def test_failing_and_changed_symbol_is_one_amber_row_with_both_facts(qtbot):
+    entry = SymbolEntry("S1", status=STATUS_CHANGED, violations=[V_FOOTPRINT, V_DESCRIPTION])
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Atomic_Test", ATOMIC, "Custom", atomic=True, symbols=[entry])])
+    w = _widget(qtbot, scan)
+    rows = _children(_lib_item(w))
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.text(3) == "Changed \u00b7 2 rules"
+    assert not row.icon(3).isNull()
+    assert _colour(row) == theme.AMBER.lower()
+    tip = row.toolTip(0)
+    assert V_FOOTPRINT.text in tip and V_DESCRIPTION.text in tip
+    assert "Changed since the last Custom commit" in tip
+
+
+def test_non_atomic_library_shows_only_its_changed_entries(qtbot):
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Plain", SYM_CUSTOM, "Custom", footprint_refs=[FootprintRef("Plain", "A", True)],
+        symbols=[SymbolEntry("S1", status=STATUS_NEW)])])
+    w = _widget(qtbot, scan)
+    item = _lib_item(w, SYM_CUSTOM)
+    assert [r.text(0) for r in _children(item)] == ["S1"]
+    assert item.text(3) == "OK"
+
+
+def test_changed_footprints_get_child_rows_in_order(qtbot):
+    scan = ScanResult(footprint_libs=[FootprintLibrary(
+        "Plain", FP_CUSTOM, "Custom",
+        changed=[ChangedFootprint("A", STATUS_NEW), ChangedFootprint("B", STATUS_CHANGED)])])
+    w = _widget(qtbot, scan)
+    item = w._fp_items[FP_CUSTOM]
+    rows = _children(item)
+    assert [(r.text(0), r.text(2)) for r in rows] == [("A", "New"), ("B", "Changed")]
+    for row in rows:
+        assert not (row.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+        assert row.data(0, Qt.ItemDataRole.CheckStateRole) is None
+        assert all(_colour(row, c) == theme.ACCENT.lower() for c in range(row.columnCount()))
+    assert item.text(2) == "OK"
+
+
+def test_only_libraries_with_something_to_show_are_expanded(qtbot):
+    scan = ScanResult(
+        symbol_libs=[
+            SymbolLibrary("Atomic_Bad", "Custom/Symbols/Atomic_Bad.kicad_sym", "Custom",
+                          atomic=True, symbols=[SymbolEntry("S", violations=[V_KEYWORDS])]),
+            SymbolLibrary("Atomic_Clean", "Custom/Symbols/Atomic_Clean.kicad_sym", "Custom",
+                          atomic=True, symbols=[SymbolEntry("S")]),
+            SymbolLibrary("Plain", SYM_CUSTOM, "Custom", symbols=[SymbolEntry("S", status=STATUS_NEW)]),
+        ],
+        footprint_libs=[
+            FootprintLibrary("Plain", FP_CUSTOM, "Custom", changed=[ChangedFootprint("A", STATUS_NEW)]),
+            FootprintLibrary("Quiet", "Custom/Footprints/Quiet.pretty", "Custom"),
+        ],
+    )
+    w = _widget(qtbot, scan)
+    sym = w._sym_items
+    assert sym["Custom/Symbols/Atomic_Bad.kicad_sym"].isExpanded()
+    assert not sym["Custom/Symbols/Atomic_Clean.kicad_sym"].isExpanded()
+    assert sym[SYM_CUSTOM].isExpanded()
+    assert w._fp_items[FP_CUSTOM].isExpanded()
+    assert not w._fp_items["Custom/Footprints/Quiet.pretty"].isExpanded()
+    assert w._sym_tree.topLevelItem(0).isExpanded()
+    assert w._fp_tree.topLevelItem(0).isExpanded()
+
+
+def test_expand_all_and_collapse_all_reach_child_rows(qtbot):
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Atomic_Clean", ATOMIC, "Custom", atomic=True, symbols=[SymbolEntry("S")])])
+    w = _widget(qtbot, scan)
+    item = _lib_item(w)
+    assert not item.isExpanded()
+    w._sym_tree.expandAll()
+    assert item.isExpanded()
+    w._sym_tree.collapseAll()
+    assert not item.isExpanded()
+
+
+def test_atomic_library_without_symbols_says_no_symbols(qtbot):
+    scan = ScanResult(symbol_libs=[SymbolLibrary("Atomic_Test", ATOMIC, "Custom", atomic=True)])
+    w = _widget(qtbot, scan)
+    item = _lib_item(w)
+    assert item.text(3) == "No symbols"
+    assert item.childCount() == 0
+
+
+def test_library_that_could_not_be_checked_says_so_with_the_reason(qtbot):
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Atomic_Test", ATOMIC, "Custom", atomic=True,
+        check_problem="the library file could not be read")])
+    w = _widget(qtbot, scan)
+    item = _lib_item(w)
+    assert item.text(3) == "Could not check"
+    assert not item.icon(3).isNull()
+    assert _colour(item) == theme.AMBER.lower()
+    assert "the library file could not be read" in item.toolTip(3)
+    assert item.childCount() == 0
+
+
+def test_finding_only_entry_is_ok_and_shows_the_finding(qtbot):
+    entry = SymbolEntry("S1", findings=[Finding("leftover", "Leftover price data is present")])
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Atomic_Test", ATOMIC, "Custom", atomic=True, symbols=[entry])])
+    w = _widget(qtbot, scan)
+    (row,) = _children(_lib_item(w))
+    assert row.text(3) == "OK"
+    assert "Leftover price data is present" in row.toolTip(0)
+    assert _lib_item(w).isExpanded() is False
+
+
+def test_scan_text_in_tooltips_is_escaped(qtbot):
+    evil = Violation("r", "Bad <b>x</b> value")
+    entry = SymbolEntry("<b>x</b>", violations=[evil], findings=[Finding("k", "<i>note</i>")])
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Atomic_Test", ATOMIC, "Custom", atomic=True, symbols=[entry])])
+    w = _widget(qtbot, scan)
+    (row,) = _children(_lib_item(w))
+    tip = row.toolTip(0)
+    assert "&lt;b&gt;x&lt;/b&gt;" in tip
+    assert "&lt;i&gt;note&lt;/i&gt;" in tip
+    assert "<b>" not in tip and "<i>" not in tip
+
+
+def test_no_internal_field_names_in_tree_text_or_tooltips(qtbot):
+    scan = ScanResult(
+        symbol_libs=[SymbolLibrary(
+            "Atomic_Test", ATOMIC, "Custom", atomic=True,
+            symbols=[SymbolEntry("A", status=STATUS_CHANGED, violations=[V_DESCRIPTION]),
+                     SymbolEntry("B", status=STATUS_NEW)])],
+        footprint_libs=[FootprintLibrary(
+            "Plain", FP_CUSTOM, "Custom", changed=[ChangedFootprint("F", STATUS_NEW)])],
+    )
+    w = _widget(qtbot, scan)
+    assert "ki_" not in _all_tip_text(w)
