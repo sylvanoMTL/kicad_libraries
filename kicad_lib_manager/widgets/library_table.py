@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
     QLabel, QMenu, QHeaderView,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 
 from ..models import (
@@ -26,6 +26,9 @@ def _rich_tip(lines: list[str]) -> str:
 
 
 class LibraryTableWidget(QWidget):
+    # (library rel_path, symbol name) of a marked symbol row the user double-clicked
+    symbol_activated = Signal(str, str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
@@ -85,6 +88,7 @@ class LibraryTableWidget(QWidget):
         self._updating = False
 
         self._sym_tree.itemChanged.connect(self._on_sym_item_changed)
+        self._sym_tree.itemDoubleClicked.connect(self._on_sym_item_double_clicked)
         self._fp_tree.itemChanged.connect(self._on_fp_item_changed)
 
     @staticmethod
@@ -298,6 +302,10 @@ class LibraryTableWidget(QWidget):
 
         # Update selected state for the changed item (and children if group)
         lib = item.data(0, Qt.ItemDataRole.UserRole)
+        # Symbol child rows are display only; only library rows and top-level group
+        # headers may change what gets selected
+        if not isinstance(lib, SymbolLibrary) and item.parent() is not None:
+            return
         checked_libs: list[SymbolLibrary] = []
         if isinstance(lib, SymbolLibrary):
             lib.selected = item.checkState(0) == Qt.CheckState.Checked
@@ -327,6 +335,18 @@ class LibraryTableWidget(QWidget):
         for peer_source in sorted(peer_sources - {source}):
             self._sync_footprint_selection(peer_source)
         self._sync_footprint_selection(source)
+
+    def _on_sym_item_double_clicked(self, item: QTreeWidgetItem, column: int):
+        """Hand a symbol row that has rule problems or cleanup findings to the check dialog."""
+        entry = item.data(0, Qt.ItemDataRole.UserRole)
+        parent = item.parent()
+        if not isinstance(entry, SymbolEntry) or parent is None:
+            return
+        lib = parent.data(0, Qt.ItemDataRole.UserRole)
+        if not isinstance(lib, SymbolLibrary):
+            return
+        if entry.violations or entry.findings:
+            self.symbol_activated.emit(lib.rel_path, entry.name)
 
     def _collision_tip(self, lib) -> str:
         return f"Same nickname as {', '.join(lib.collision_peers)}; only one can be selected"
