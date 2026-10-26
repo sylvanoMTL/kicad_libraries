@@ -122,6 +122,9 @@ class LibraryTableWidget(QWidget):
         warn_icon = self.style().standardIcon(
             self.style().StandardPixmap.SP_MessageBoxWarning
         )
+        info_icon = self.style().standardIcon(
+            self.style().StandardPixmap.SP_MessageBoxInformation
+        )
 
         bold_font = self._sym_tree.font()
         bold_font.setBold(True)
@@ -182,10 +185,13 @@ class LibraryTableWidget(QWidget):
                 else:
                     item.setToolTip(3, status)
                 for entry in lib.symbols:
-                    item.addChild(self._make_symbol_row(entry, warn_icon))
+                    item.addChild(self._make_symbol_row(entry, warn_icon, info_icon))
                 group.addChild(item)
+                # Spanning only takes effect once the row is in the tree
+                self._span_problem_rows(item)
                 self._sym_items[lib.rel_path] = item
-                # Open only libraries that have something to look at (the item must be in the tree first)
+                # Open only libraries that have something to look at (the item must be in the tree first);
+                # symbol rows stay collapsed so the library shows its component list
                 if any(e.failing or e.status for e in lib.symbols):
                     item.setExpanded(True)
 
@@ -231,7 +237,7 @@ class LibraryTableWidget(QWidget):
         # Render the selected flags as given; footprint selection is never recomputed here
 
     @staticmethod
-    def _make_symbol_row(entry: SymbolEntry, warn_icon) -> QTreeWidgetItem:
+    def _make_symbol_row(entry: SymbolEntry, warn_icon, info_icon) -> QTreeWidgetItem:
         """Child row for one symbol: inert for selection, marked when new, changed or failing."""
         count = len(entry.violations)
         parts = []
@@ -259,7 +265,19 @@ class LibraryTableWidget(QWidget):
         for violation in entry.violations:
             child.addChild(LibraryTableWidget._make_problem_row(
                 violation.text, violation, warn_icon, AMBER))
+        # Then one plain row per note (leftover data, unknown manufacturer, ...)
+        for finding in entry.findings:
+            child.addChild(LibraryTableWidget._make_problem_row(
+                finding.text, finding, info_icon, None))
         return child
+
+    @staticmethod
+    def _span_problem_rows(lib_item: QTreeWidgetItem) -> None:
+        """Let problem and note rows use the full row width instead of the name column."""
+        for i in range(lib_item.childCount()):
+            symbol_row = lib_item.child(i)
+            for j in range(symbol_row.childCount()):
+                symbol_row.child(j).setFirstColumnSpanned(True)
 
     @staticmethod
     def _make_problem_row(text: str, data, icon, colour: str | None) -> QTreeWidgetItem:
@@ -318,8 +336,8 @@ class LibraryTableWidget(QWidget):
 
         # Update selected state for the changed item (and children if group)
         lib = item.data(0, Qt.ItemDataRole.UserRole)
-        # Symbol child rows are display only; only library rows and top-level group
-        # headers may change what gets selected
+        # Symbol rows and their problem and note rows are display only; only library
+        # rows and top-level group headers may change what gets selected
         if not isinstance(lib, SymbolLibrary) and item.parent() is not None:
             return
         checked_libs: list[SymbolLibrary] = []
