@@ -800,3 +800,62 @@ def test_atomic_action_opens_dialog_and_apply_rescans(make_window, qtbot):
     assert "Fixed Custom/Symbols/X.kicad_sym" in _log_text(w)
     assert len(make_window.calls) == calls_before + 1
     dialog.reject()
+
+
+def test_atomic_symbol_activated_opens_dialog_with_that_symbol_current(make_window):
+    w = make_window([_atomic_scan()])
+
+    w._tree.symbol_activated.emit(ATOMIC_REL, "FFC-0.5-20")
+
+    dialog = w._atomic_dialog
+    assert dialog is not None
+    assert dialog._problems.currentItem().text(0) == "Atomic_Connector / FFC-0.5-20"
+    dialog.reject()
+
+
+def test_atomic_action_is_disabled_while_a_scan_runs(make_window, qtbot):
+    gate = threading.Event()
+    w = make_window([_gated(_atomic_scan(), gate)], wait=False)
+    try:
+        qtbot.waitUntil(lambda: len(make_window.calls) == 1, timeout=5000)
+        assert not w._act_check_atomic.isEnabled()
+    finally:
+        gate.set()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert w._act_check_atomic.isEnabled()
+
+
+def test_atomic_check_without_a_scan_result_logs_and_opens_nothing(make_window):
+    w = make_window([_raising("boom")])
+    assert w._scan_result is None
+
+    w._open_atomic_check()
+
+    assert w._atomic_dialog is None
+    assert "No scan result yet; rescan first." in _log_text(w)
+
+
+def test_atomic_second_open_request_opens_no_second_dialog(make_window):
+    w = make_window([_atomic_scan()])
+    w._open_atomic_check()
+    first = w._atomic_dialog
+
+    w._open_atomic_check()
+    w._tree.symbol_activated.emit(ATOMIC_REL, "FFC-0.5-20")
+
+    assert w._atomic_dialog is first
+    first.reject()
+    assert w._atomic_dialog is None
+
+
+def test_atomic_dialog_is_rejected_when_the_window_closes(make_window):
+    w = make_window([_atomic_scan()])
+    w._open_atomic_check()
+    dialog = w._atomic_dialog
+    assert dialog is not None
+
+    assert w.close() is True
+
+    assert w._atomic_dialog is None
+    assert dialog.result() == dialog.DialogCode.Rejected
