@@ -38,6 +38,7 @@ UAT_MARKER = ".atomic_uat_scratch"
 # (source library stem, Atomic_ name it gets in the scratch copy); a stem missing from the source is replaced
 REAL_PARTS = (("Connector_FFC_GCT", "Atomic_Connector_FFC-FPC"), ("IC_Battery_Charger_TI", "Atomic_Battery_Management"))
 EDITED_DATASHEET = "https://example.com/uat-edit.pdf"
+EDITED_DESCRIPTION = "UAT edit: description changed"
 NEW_FOOTPRINT = "NEW-UAT"
 _GIT_TIMEOUT = 120
 
@@ -123,15 +124,38 @@ def _renamed_parts(stems: list[str]) -> list[tuple[str, str]]:
     return pairs
 
 
-def _edit_first_datasheet(path: Path) -> None:
-    """Set the Datasheet of the first symbol of a library file, keeping every other byte and the file's encoding."""
+def _edit_first_symbol(path: Path) -> None:
+    """Change the first symbol of a library file, keeping every other byte and the file's encoding.
+
+    Edits the first of Description, ki_description and Datasheet the symbol has (Description is what the owner
+    edited by hand in UAT). A symbol with none of them gets a hidden Datasheet instead.
+    """
     loaded = kicad_files.load(path)
     assert not isinstance(loaded, Issue), f"could not read {path.name}: {loaded}"
     symbols = kicad_files.find_symbols(loaded.root)
     assert symbols, f"{path.name} holds no symbol"
-    datasheet = kicad_files.find_property(symbols[0].node, "Datasheet")
-    assert datasheet is not None, f"{path.name}: {symbols[0].name} has no Datasheet field"
-    edit = kicad_files.set_property_edit(datasheet, EDITED_DATASHEET)
+    ref = symbols[0]
+    for name, value in (
+        ("Description", EDITED_DESCRIPTION),
+        ("ki_description", EDITED_DESCRIPTION),
+        ("Datasheet", EDITED_DATASHEET),
+    ):
+        prop = kicad_files.find_property(ref.node, name)
+        if prop is not None:
+            edit = kicad_files.set_property_edit(prop, value)
+            break
+    else:
+        # Same insert sequence as atomic_fixes._insert_property, which is private
+        version = kicad_files.file_version(loaded.root)
+        next_id = kicad_files.next_property_id(ref.node)
+        template = kicad_files.hidden_template(ref.node)
+        if template is not None:
+            block = kicad_files.new_property_text(
+                loaded.source.text, template, "Datasheet", EDITED_DATASHEET, next_id, version=version)
+        else:
+            block = kicad_files.synth_property_text(
+                "Datasheet", EDITED_DATASHEET, version=version, next_id=next_id)
+        edit = kicad_files.property_insert_edit(loaded.source.text, ref.node, block, loaded.source.eol)
     text = sexpr.apply_edits(loaded.source.text, [edit])
     path.write_bytes(fsutil.encode_source(text, loaded.source.bom))
 
@@ -141,8 +165,9 @@ def build_atomic_uat(dest: Path, source_custom: Path, app_root: Path) -> Path:
 
     The scratch holds the app code, the source Custom/ libraries with two real libraries renamed to Atomic_ names,
     the synthetic Atomic_ inventory and Custom/ as its own git repo with one baseline commit. After that commit
-    one symbol of a real Atomic_ library and one symbol of a library without the prefix are edited and one
-    footprint is added, so the app shows Changed, Changed and New. source_custom is only read.
+    one symbol of a real Atomic_ library and one symbol of a library without the prefix are edited (a property
+    the symbol already has changes, or a Datasheet is added when it has neither) and one footprint is added, so
+    the app shows Changed, Changed and New. source_custom is only read.
     """
     dest, source_custom, app_root = Path(dest).resolve(), Path(source_custom).resolve(), Path(app_root).resolve()
     scratch = dest / "repo"
@@ -179,8 +204,8 @@ def build_atomic_uat(dest: Path, source_custom: Path, app_root: Path) -> Path:
     _git(custom, env, "add", "-A")
     _git(custom, env, "commit", "-m", "UAT baseline")
 
-    _edit_first_datasheet(symbols_dir / f"{renamed[0][1]}.kicad_sym")
-    _edit_first_datasheet(symbols_dir / f"{source_plain[0]}.kicad_sym")
+    _edit_first_symbol(symbols_dir / f"{renamed[0][1]}.kicad_sym")
+    _edit_first_symbol(symbols_dir / f"{source_plain[0]}.kicad_sym")
     pretty = custom / "Footprints" / f"{ATOMIC_FOOTPRINTS}.pretty"
     shutil.copyfile(pretty / "GENERIC-2PIN.kicad_mod", pretty / f"{NEW_FOOTPRINT}.kicad_mod")
     return scratch
@@ -275,11 +300,12 @@ def test_uat_atomic_scratch():
     print(f"\nUAT scratch repo: {scratch}")
     print(f"Run the app on it: {python} {scratch / 'kicad_lib_manager.py'}")
     print("Check in the app:")
-    print("  1. Atomic_ libraries with problems are expanded; failing parts are amber with a warning icon.")
-    print("  2. Each tooltip names every broken rule; each library row reads 'N of M fail'; the log has one line per failure.")
-    print("  3. One real Atomic_ part and one part of a library without the prefix show Changed, the footprint NEW-UAT shows New.")
-    print("  4. Ctrl+Shift+A (or double-click an amber part): apply one fix of each kind, check the preview and the rescan.")
-    print("  5. With KiCad open, preview again: the KiCad-running warning is shown.")
+    print("  1. Atomic_ libraries with problems open to their parts; each part stays collapsed and shows its Status count (for example 'Changed · 3 rules').")
+    print("  2. Expand a failing part: one amber row per broken rule and one plain row per note, worded as in the tooltip, the log and the dialog.")
+    print("  3. Double-click a problem row: Check Atomic Parts opens on its part.")
+    print("  4. One real Atomic_ part and one part of a library without the prefix show Changed, the footprint NEW-UAT shows New.")
+    print("  5. Ctrl+Shift+A (or double-click an amber part): apply one fix of each kind, check the preview and the rescan.")
+    print("  6. With KiCad open, preview again: the KiCad-running warning is shown.")
 
 
 # ── the helper edits a property the first symbol has, or adds a Datasheet ──
@@ -291,7 +317,7 @@ def _first_symbol(path: Path):
 
 
 def _property_names(symbol) -> list[str]:
-    return [c.children[1].value for c in symbol.node.children if c.head == "property"]
+    return [c.children[1].text for c in symbol.node.children if c.head == "property"]
 
 
 def _write_lib(tmp_path: Path, symbols, *, eol: str = "\n") -> Path:
