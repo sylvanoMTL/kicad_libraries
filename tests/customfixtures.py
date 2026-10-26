@@ -15,10 +15,10 @@ from pathlib import Path
 
 import pytest
 
-from installfixtures import target_lib, vendor_footprint
+from installfixtures import V10_VERSION, _tree, _v10_pin, _v10_property, target_lib, vendor_footprint
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR
-from zipfixtures import STEP_BYTES
+from zipfixtures import STEP_BYTES, _quote
 
 # Today's v1 library names (D-02). IC_MOSFET_Dual_TI is the one a new-library test creates.
 BATTERY_CHARGER = "IC_Battery_Charger_TI"
@@ -91,6 +91,228 @@ def write_synthetic_custom(root: Path) -> RepoLayout:
                 (pretty / f"{footprint}.kicad_mod").write_bytes(vendor_footprint(footprint, model=model))
         for model_name in lib.models:
             (models_dir / model_name).write_bytes(STEP_BYTES)
+    return RepoLayout.for_repo(root)
+
+
+# ── Atomic_ libraries (Phase 9) ──────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class AtomicSymbol:
+    """One symbol of an atomic fixture library; props exclude Reference, which is always written first."""
+
+    name: str
+    props: tuple[tuple[str, str], ...]
+    extends: str | None = None
+
+
+@dataclass(frozen=True)
+class AtomicLibrary:
+    """One .kicad_sym of the atomic inventory; folder is repo-relative and posix."""
+
+    name: str
+    symbols: tuple[AtomicSymbol, ...]
+    folder: str = "Custom/Symbols"
+
+
+ATOMIC_FOOTPRINTS = "Atomic_Footprints"
+ATOMIC_FOOTPRINT_NAMES = ("USB4105-GF-A", "GENERIC-2PIN")
+_ATOMIC_CUSTOM_PREFIX = "Custom/"
+
+
+def atomic_part(
+    name: str,
+    *,
+    replace: dict[str, str] | None = None,
+    drop: tuple[str, ...] = (),
+    extra: tuple[tuple[str, str], ...] = (),
+    extends: str | None = None,
+) -> AtomicSymbol:
+    """Build a symbol that passes every atomic rule, then apply replace, drop and extra.
+
+    Default properties in order: Value=name, Footprint, Datasheet, Description, MPN=name,
+    Manufacturer. replace overrides a default value, drop removes defaults by name, extra
+    appends (name, value) pairs after them.
+    """
+    replace = replace or {}
+    defaults = (
+        ("Value", name),
+        ("Footprint", f"{ATOMIC_FOOTPRINTS}:GENERIC-2PIN"),
+        ("Datasheet", f"https://example.com/{name}.pdf"),
+        ("Description", f"Test part {name}"),
+        ("MPN", name),
+        ("Manufacturer", "Global Connector Technology"),
+    )
+    props = tuple((key, replace.get(key, value)) for key, value in defaults if key not in drop)
+    return AtomicSymbol(name, props + tuple(extra), extends)
+
+
+def _atomic_symbol_tree(symbol: AtomicSymbol) -> tuple:
+    props = (_v10_property("Reference", "U", hide=False),) + tuple(
+        _v10_property(key, value, hide=key != "Value") for key, value in symbol.props
+    )
+    if symbol.extends is not None:
+        # A derived symbol as KiCad 10 writes it: the parent link, its own properties, no drawing
+        return ("symbol", _quote(symbol.name), ("extends", _quote(symbol.extends)), *props, ("embedded_fonts", "no"))
+    return (
+        "symbol", _quote(symbol.name),
+        ("exclude_from_sim", "no"),
+        ("in_bom", "yes"),
+        ("on_board", "yes"),
+        ("in_pos_files", "yes"),
+        ("duplicate_pin_numbers_are_jumpers", "no"),
+        *props,
+        (
+            "symbol", _quote(f"{symbol.name}_1_1"),
+            _v10_pin("1", x="-5.08", angle="0"),
+            _v10_pin("2", x="5.08", angle="180"),
+        ),
+        ("embedded_fonts", "no"),
+    )
+
+
+def atomic_lib(symbols: tuple[AtomicSymbol, ...], *, eol: str = "\n") -> bytes:
+    """Build a KiCad 10 (20251024) .kicad_sym holding the given symbols in order."""
+    library = (
+        "kicad_symbol_lib",
+        ("version", str(V10_VERSION)),
+        ("generator", _quote("kicad_symbol_editor")),
+        ("generator_version", _quote("10.0")),
+        *(_atomic_symbol_tree(symbol) for symbol in symbols),
+    )
+    return (eol.join(_tree(library)) + eol).encode("utf-8")
+
+
+# The single atomic inventory source; every symbol of an Atomic_ library must pass every rule
+# that is not named in ATOMIC_EXPECTED for it.
+ATOMIC_LIBRARIES = (
+    AtomicLibrary(
+        "Atomic_Connector",
+        (
+            atomic_part("USB4105-GF-A", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:USB4105-GF-A"}),
+            atomic_part("DS-EMPTY", replace={"Datasheet": "~"}),
+            atomic_part("DS-WORDS", replace={"Datasheet": "see website"}),
+            atomic_part("DESC-EMPTY", replace={"Description": ""}),
+            atomic_part("MPN-NONE", drop=("MPN",)),
+            atomic_part("MPN-AS-MP", drop=("MPN",), extra=(("MP", "MPN-AS-MP"),)),
+            atomic_part("MFR-NONE", drop=("Manufacturer",)),
+            atomic_part("MFR-AS-MF", drop=("Manufacturer",), extra=(("MF", "GCT"),)),
+            atomic_part("MFR-SHORT", replace={"Manufacturer": "TI"}),
+            atomic_part(
+                "MFR-DUP-OK",
+                drop=("Manufacturer",),
+                extra=(("MF", "GCT"), ("MANUFACTURER", "Global Connector Technology")),
+            ),
+            atomic_part(
+                "MFR-DUP-BAD", drop=("Manufacturer",), extra=(("MF", "GCT"), ("MANUFACTURER", "Molex"))
+            ),
+            atomic_part("FFC-0.5-20", replace={"Value": "FFC20", "MPN": "FH12-20S-0.5SH"}),
+            # Price and stock leftovers and an unknown manufacturer are notes, never failures
+            atomic_part(
+                "LEFTOVER-1",
+                extra=(("Price", "1.20"), ("Availability", "In stock"), ("Check_prices", "https://example.com/p")),
+            ),
+            atomic_part("MFR-HIROSE", replace={"Manufacturer": "Hirose"}),
+        ),
+    ),
+    AtomicLibrary("Atomic_Empty", ()),
+    # Variants: each derived symbol is judged on its own fields, a missing one is taken from the parent
+    AtomicLibrary(
+        "Atomic_Regulator",
+        (
+            atomic_part("TLV75533PDBVR", replace={"Manufacturer": "Texas Instruments"}),
+            atomic_part("TLV75518PDBVR", drop=("Manufacturer",), extends="TLV75533PDBVR"),
+            atomic_part(
+                "TLV75525PDBVR",
+                replace={"Manufacturer": "Texas Instruments"},
+                drop=("MPN",),
+                extends="TLV75533PDBVR",
+            ),
+            atomic_part(
+                "TLV75530PDBVR",
+                replace={"Manufacturer": "Texas Instruments", "Datasheet": "~"},
+                extends="TLV75533PDBVR",
+            ),
+        ),
+    ),
+    # KiCad refuses a missing parent, so this library stays out of the kicad-cli load test
+    AtomicLibrary(
+        "Atomic_Orphan",
+        (atomic_part("ORPHAN-1", drop=("Manufacturer",), extends="NOT-THERE"),),
+    ),
+    # Never checked: none carries the exact Atomic_ prefix, whatever its Datasheet says
+    AtomicLibrary("Connector_Legacy", (atomic_part("LEGACY-1", replace={"Datasheet": ""}),)),
+    AtomicLibrary("atomic_Lower", (atomic_part("LOWER-1", replace={"Datasheet": ""}),)),
+    AtomicLibrary("ATOMIC_Upper", (atomic_part("UPPER-1", replace={"Datasheet": ""}),)),
+    AtomicLibrary("AtomicNoUnderscore", (atomic_part("NOUNDERSCORE-1", replace={"Datasheet": ""}),)),
+    AtomicLibrary(
+        "WE-Connectors",
+        (atomic_part("WE-1", replace={"Datasheet": ""}),),
+        folder="WurthElektronik/KiCad-Library/symbols",
+    ),
+    # Judged like any Atomic_ library, but outside Custom/, so it gets no fix and no fill
+    AtomicLibrary(
+        "Atomic_Elsewhere",
+        (atomic_part("ELSEWHERE-1", replace={"Datasheet": ""}),),
+        folder="Other/Symbols",
+    ),
+)
+
+# (library, symbol) -> the rule ids expected to fail, for every symbol of every Atomic_ library
+ATOMIC_EXPECTED: dict[tuple[str, str], frozenset[str]] = {
+    ("Atomic_Connector", "USB4105-GF-A"): frozenset(),
+    ("Atomic_Connector", "DS-EMPTY"): frozenset({"datasheet"}),
+    ("Atomic_Connector", "DS-WORDS"): frozenset({"datasheet"}),
+    ("Atomic_Connector", "DESC-EMPTY"): frozenset({"description"}),
+    ("Atomic_Connector", "MPN-NONE"): frozenset({"mpn"}),
+    ("Atomic_Connector", "MPN-AS-MP"): frozenset({"mpn"}),
+    ("Atomic_Connector", "MFR-NONE"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "MFR-AS-MF"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "MFR-SHORT"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "MFR-DUP-OK"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "MFR-DUP-BAD"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "FFC-0.5-20"): frozenset({"value"}),
+    ("Atomic_Connector", "LEFTOVER-1"): frozenset(),
+    ("Atomic_Connector", "MFR-HIROSE"): frozenset(),
+    ("Atomic_Regulator", "TLV75533PDBVR"): frozenset(),
+    ("Atomic_Regulator", "TLV75518PDBVR"): frozenset(),
+    ("Atomic_Regulator", "TLV75525PDBVR"): frozenset({"mpn"}),
+    ("Atomic_Regulator", "TLV75530PDBVR"): frozenset({"datasheet"}),
+    ("Atomic_Orphan", "ORPHAN-1"): frozenset({"manufacturer"}),
+    ("Atomic_Elsewhere", "ELSEWHERE-1"): frozenset({"datasheet"}),
+}
+
+
+def write_atomic_files(custom_dir: Path) -> None:
+    """Write the Custom/ part of the atomic inventory directly under custom_dir.
+
+    Symbol libraries whose folder starts with Custom/, the Atomic_Footprints.pretty folder
+    and the STEP files its footprints link.
+    """
+    for lib in ATOMIC_LIBRARIES:
+        if not lib.folder.startswith(_ATOMIC_CUSTOM_PREFIX):
+            continue
+        folder = custom_dir / lib.folder[len(_ATOMIC_CUSTOM_PREFIX):]
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{lib.name}.kicad_sym").write_bytes(atomic_lib(lib.symbols))
+    pretty = custom_dir / "Footprints" / f"{ATOMIC_FOOTPRINTS}.pretty"
+    models = custom_dir / "3DModels"
+    pretty.mkdir(parents=True, exist_ok=True)
+    models.mkdir(parents=True, exist_ok=True)
+    for name in ATOMIC_FOOTPRINT_NAMES:
+        (pretty / f"{name}.kicad_mod").write_bytes(vendor_footprint(name, models=(f"{MODEL_DIR_VAR}/{name}.step",)))
+        (models / f"{name}.step").write_bytes(STEP_BYTES)
+
+
+def write_atomic_custom(root: Path) -> RepoLayout:
+    """Write the atomic inventory under root (Custom/ part plus libraries elsewhere) and return the layout."""
+    write_atomic_files(root / "Custom")
+    for lib in ATOMIC_LIBRARIES:
+        if lib.folder.startswith(_ATOMIC_CUSTOM_PREFIX):
+            continue
+        folder = root / lib.folder
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / f"{lib.name}.kicad_sym").write_bytes(atomic_lib(lib.symbols))
     return RepoLayout.for_repo(root)
 
 

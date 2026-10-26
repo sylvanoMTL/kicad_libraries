@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable
 
 from . import fsutil, kicad_files
+from .atomic_check import check_libraries
 from .kicad_process import kicad_running
 from .models import (
     FootprintLibrary,
@@ -534,6 +535,12 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
     issues = find_nickname_collisions(sym_libs, fp_libs)
     issues.extend(cross_reference(sym_libs, fp_libs, kicad_fp_dir))
     issues.extend(check_3d_model_paths(repo_root, progress))
+
+    if progress:
+        progress("Checking atomic parts...", 96, 100)
+    # The same KiCad libraries the cross-reference sees, so both agree on what exists (D-20)
+    kicad_fp_dir = kicad_fp_dir if kicad_fp_dir is not None else find_kicad_footprint_dir()
+    issues.extend(check_libraries(repo_root, sym_libs, fp_libs, kicad_fp_dir))
 
     if progress:
         progress("Done", 100, 100)
