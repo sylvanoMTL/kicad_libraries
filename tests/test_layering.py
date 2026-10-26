@@ -28,6 +28,8 @@ ALLOWED = {
     "atomic_check": {"models", "fsutil", "kicad_files", "sexpr", "manufacturers", "importer"},
     # what changed in Custom/ since its last commit (Phase 9); read-only git through gitops
     "changes": {"models", "gitops", "kicad_files", "sexpr", "importer"},
+    # the fix engine behind the check dialog (Phase 9); writes only through fsutil
+    "atomic_fixes": {"models", "fsutil", "kicad_files", "sexpr", "atomic_check", "kicad_process", "importer"},
 }
 
 _CODE = """
@@ -37,7 +39,7 @@ import kicad_lib_manager.models, kicad_lib_manager.sexpr
 import kicad_lib_manager.fsutil, kicad_lib_manager.kicad_files
 import kicad_lib_manager.table_generator, kicad_lib_manager.library_scanner, kicad_lib_manager.kicad_process
 import kicad_lib_manager.gitops, kicad_lib_manager.manufacturers, kicad_lib_manager.atomic_check
-import kicad_lib_manager.changes
+import kicad_lib_manager.changes, kicad_lib_manager.atomic_fixes
 for name in sorted(sys.modules):
     if name.split(".")[0] in ("PySide6", "shiboken6"):
         print(name)
