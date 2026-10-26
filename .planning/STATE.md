@@ -2,20 +2,20 @@
 gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Atomic Libraries
-current_phase: 09
-current_phase_name: Atomic Rule Check and Scan Detection
-status: executing
-stopped_at: Phase 9 context gathered
-last_updated: "2026-10-26T16:07:50.580Z"
+current_phase: 10
+current_phase_name: Importer on the Atomic Scheme
+status: planning
+stopped_at: Phase 09 complete, ready to plan Phase 10
+last_updated: "2026-10-26T17:31:28.121Z"
 last_activity: 2026-10-26
-last_activity_desc: Phase 09 execution resumed (wave continue)
-state_head: ede4f72e8db1bc677b19a0de7972c8ed38978cf4
+last_activity_desc: Phase 09 complete, transitioned to Phase 10
+state_head: f32969fa3cae4cb89c2fd75782861d0145408960
 progress:
   total_phases: 6
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 15
-  completed_plans: 14
-  percent: 17
+  completed_plans: 15
+  percent: 33
 ---
 
 # Project State
@@ -25,21 +25,21 @@ progress:
 See: .planning/PROJECT.md (updated 2026-10-26)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 09 — Atomic Rule Check and Scan Detection
+**Current focus:** Phase 10 — Importer on the Atomic Scheme
 
 ## Current Position
 
-Phase: 09 (Atomic Rule Check and Scan Detection) — EXECUTING
-Plan: 1 of 8
-Status: Executing Phase 09
-Last activity: 2026-10-26 — Phase 09 execution resumed (wave continue)
+Phase: 10 — Importer on the Atomic Scheme
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-26 — Phase 09 complete, transitioned to Phase 10
 
-Progress: [██░░░░░░░░] 17%
+Progress: [███░░░░░░░] 33%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 76
+- Total plans completed: 85
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -55,6 +55,7 @@ Progress: [██░░░░░░░░] 17%
 | 06 | 8 | - | - |
 | 07 | 13 | - | - |
 | 08 | 6 | - | - |
+| 09 | 9 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -86,6 +87,8 @@ The full decision log is in the PROJECT.md Key Decisions table. The v1.0 per-pha
 - [v2.0 roadmap]: Phase 12 depends only on Phase 8. It is placed before Phase 13 so the chooser setup (TBL-02) reuses the `kicad_common.json` write corrected by REV-05.
 - [v2.0 roadmap]: TBL-01 and TBL-02 go with the migration (Phase 13). The table descriptions are written when the tables are regenerated, and the chooser pins the `Atomic_` libraries once they exist.
 - [Phase 08]: 08-06: Wurth parse budget is max(60 s, 0.05 s per file); measured 69.5 s for 6034 files
+- [Phase 09]: UAT passed 2026-10-26 (3/3 re-test): G-09-1 helper fix verified on the live Custom/ (read only); WR-01 accepted, double-click on a part both opens Check Atomic Parts and toggles expansion
+- [Phase 09]: The UAT scratch repo's Atomic_Connector holds synthetic rule-case parts (DS-EMPTY, MPN-NONE, ...), one per rule; only Atomic_Connector_FFC-FPC and Atomic_Battery_Management carry real parts
 - [Phase 08]: VER-01 closed: the KiCad 10 Symbol Editor check (08-UAT.md test 2) passed on 2026-10-26, with the scratch library unchanged by the session
 
 ### Pending Todos
@@ -117,10 +120,10 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-26T09:51:07.285Z
-Stopped at: Phase 9 context gathered
-Resume file: .planning/phases/09-atomic-rule-check-and-scan-detection/09-CONTEXT.md
+Last session: 2026-10-26
+Stopped at: Phase 09 complete, ready to plan Phase 10
+Resume file: None
 
 ## Operator Next Steps
 
-- Discuss Phase 9 with /gsd-discuss-phase 9, then plan it with /gsd-plan-phase 9
+- Discuss Phase 10 with /gsd-discuss-phase 10, then plan it with /gsd-plan-phase 10

@@ -27,7 +27,7 @@
 Phase 8 makes the suite green first, so every later phase starts from a baseline it can trust. Phase 9 builds the shared atomic rule check and the canonical manufacturer table, with the scan as their first user. Phase 10 moves the importer onto the `Atomic_` scheme and gates Install on the check, so new imports cannot bring the old names back before the migration. Phase 11 adds the atomic commit gate next to the open commit-panel fixes, because they touch the same panel. Phase 12 holds the remaining v1.0 import-flow fixes and the case-sensitive re-test. It depends only on Phase 8 and gates nothing in the atomic chain, but it is placed before Phase 13 so the chooser setup reuses the corrected `kicad_common.json` write (REV-05). Phase 13 migrates the existing parts last, because it uses the check, the metadata generation, the table generator and the commit step.
 
 - [x] **Phase 8: Test Isolation and KiCad 10** - Tests build their own synthetic `Custom/`, kicad-cli tests expect KiCad 10, the deferred D-01 re-test passes, and `pytest` is green on the workstation (completed 2026-10-26)
-- [ ] **Phase 9: Atomic Rule Check and Scan Detection** - One atomic rule check and one canonical manufacturer table, run on every scan, with tree marks, changed-part highlights and a check dialog of safe fixes
+- [x] **Phase 9: Atomic Rule Check and Scan Detection** - One atomic rule check and one canonical manufacturer table, run on every scan, with tree marks, changed-part highlights and a check dialog of safe fixes (completed 2026-10-26)
 - [ ] **Phase 10: Importer on the Atomic Scheme** - Importer suggests `Atomic_<stem>`, installs footprints into `Atomic_Footprints`, generates keywords and footprint tags, and blocks Install until the part is atomic
 - [ ] **Phase 11: Commit Gate and Commit Panel Fixes** - Commit panel refuses non-atomic parts, reports what git really did, and follows the theme
 - [ ] **Phase 12: Import Flow Fixes and Case-Sensitive Re-test** - Post-install table step, import threading, `kicad_common.json` write and Help dialog fixed; case-twin rollback re-tested
@@ -75,7 +75,7 @@ Plans:
   4. The check dialog lists every violation. It offers one-click fixes only for Value := MPN, `MF`/`MP` → `Manufacturer`/`MPN`, canonical manufacturer spelling and removing price and stock leftovers. Each fix is previewed, written with a backup, and gone on the next scan. A missing Datasheet, Description or 3D model can be filled in the dialog, or it stays a reported error.
   5. A Manufacturer written as an alias is reported with its canonical name from the one manufacturer table (a name plus its aliases), and the fix writes that canonical name.
 
-**Plans:** 9/9 plans executed
+**Plans:** 9/9 plans complete
 
 Plans:
 **Wave 1**
@@ -169,7 +169,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
-| 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | In Progress | - |
+| 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 0/TBD | Not started | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |

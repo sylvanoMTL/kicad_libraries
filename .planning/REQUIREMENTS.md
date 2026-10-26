@@ -17,7 +17,7 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### Atomic Rule
 
-- [ ] **ATOM-01**: For every symbol in an `Atomic_` library, the check reports each broken rule in plain language. The rules are:
+- [x] **ATOM-01**: For every symbol in an `Atomic_` library, the check reports each broken rule in plain language. The rules are:
   - MPN present;
   - Manufacturer present;
   - the Footprint field resolves to exactly one existing `<Lib>:<FP>`;
@@ -25,8 +25,8 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
   - Datasheet present (not empty or `~`);
   - Description present;
   - the linked footprint references a 3D model file that exists.
-- [ ] **ATOM-02**: Derived symbols (`extends`) are checked on their own fields, and each needs its own MPN.
-- [ ] **ATOM-03**: Every rule is blocking for `Atomic_` libraries. Libraries without the `Atomic_` prefix (Würth, anything else) are not checked.
+- [x] **ATOM-02**: Derived symbols (`extends`) are checked on their own fields, and each needs its own MPN.
+- [x] **ATOM-03**: Every rule is blocking for `Atomic_` libraries. Libraries without the `Atomic_` prefix (Würth, anything else) are not checked.
 
 ### Library Naming
 
@@ -42,9 +42,9 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### Scan Detection
 
-- [ ] **SCAN-01**: Every scan runs the atomic check on all `Atomic_` libraries. Failing symbols are marked in the library tree with a tooltip, with one log line per failure.
-- [ ] **SCAN-02**: Symbols added or changed since the last `Custom` commit are highlighted, so a part made by hand in KiCad is noticed.
-- [ ] **SCAN-03**: A check dialog lists every violation and offers one-click fixes only where they're safe:
+- [x] **SCAN-01**: Every scan runs the atomic check on all `Atomic_` libraries. Failing symbols are marked in the library tree with a tooltip, with one log line per failure.
+- [x] **SCAN-02**: Symbols added or changed since the last `Custom` commit are highlighted, so a part made by hand in KiCad is noticed.
+- [x] **SCAN-03**: A check dialog lists every violation and offers one-click fixes only where they're safe:
   - Value := MPN;
   - `MF`/`MP` → `Manufacturer`/`MPN`;
   - canonical manufacturer spelling;
@@ -55,7 +55,7 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 ### Part Metadata
 
 - [ ] **FLD-01**: The importer and the migration generate `ki_keywords`: function words, interfaces, package codes, manufacturer aliases and MPN variants. They're editable in the preview.
-- [ ] **FLD-02**: One canonical manufacturer table (a name plus its aliases) is used by the importer, the check and the migration. An alias is reported and fixable.
+- [x] **FLD-02**: One canonical manufacturer table (a name plus its aliases) is used by the importer, the check and the migration. An alias is reported and fixable.
 - [ ] **FLD-03**: Footprints written by the importer or the migration get a description and tags: package, IPC name, vendor package code and pitch.
 
 ### Library Tables and KiCad Setup
@@ -144,18 +144,18 @@ Which phases cover which requirements. Filled in during roadmap creation.
 | TEST-01 | Phase 8 | Complete |
 | TEST-02 | Phase 8 | Complete |
 | TEST-03 | Phase 8 | Complete |
-| ATOM-01 | Phase 9 | Pending |
-| ATOM-02 | Phase 9 | Pending |
-| ATOM-03 | Phase 9 | Pending |
+| ATOM-01 | Phase 9 | Complete |
+| ATOM-02 | Phase 9 | Complete |
+| ATOM-03 | Phase 9 | Complete |
 | LIB-04 | Phase 10 | Pending |
 | LIB-05 | Phase 10 | Pending |
 | LIB-06 | Phase 10 | Pending |
 | LIB-07 | Phase 10 | Pending |
-| SCAN-01 | Phase 9 | Pending |
-| SCAN-02 | Phase 9 | Pending |
-| SCAN-03 | Phase 9 | Pending |
+| SCAN-01 | Phase 9 | Complete |
+| SCAN-02 | Phase 9 | Complete |
+| SCAN-03 | Phase 9 | Complete |
 | FLD-01 | Phase 10 | Pending |
-| FLD-02 | Phase 9 | Pending |
+| FLD-02 | Phase 9 | Complete |
 | FLD-03 | Phase 10 | Pending |
 | TBL-01 | Phase 13 | Pending |
 | TBL-02 | Phase 13 | Pending |

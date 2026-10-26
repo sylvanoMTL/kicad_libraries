@@ -89,13 +89,14 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ Real kicad-cli tests expect KiCad 10 output (format 20251024) and skip with a stated reason when kicad-cli 10 is absent (TEST-02) — Phase 8
 - ✓ Bare `pytest` on the workstation: 8063 passed, 3 documented skips, 0 failed (TEST-03) — Phase 8
 - ✓ D-01 re-tested on KiCad 10: installing into a 20241209 `Custom/` library keeps the header, merges the symbol as-is with one warning, and the result opens in KiCad 10's Symbol Editor with both units placeable (VER-01, UAT 2026-10-26) — Phase 8
+- ✓ One atomic rule check (MPN, Manufacturer, footprint link resolving to exactly one `<Lib>:<FP>`, Value = MPN, Datasheet, Description, 3D model) with one canonical manufacturer table; every rule blocking for `Atomic_` libraries only, derived symbols checked on their own fields (ATOM-01..03) — Phase 9
+- ✓ Every scan runs the check: failing symbols marked in the tree per part with Status count and one row per broken rule and note, one log line per failure; parts new or changed since the last `Custom` commit highlighted; Check Atomic Parts (Ctrl+Shift+A, or double-click) previews and applies only safe fixes (SCAN-01..03, UAT 2026-10-26) — Phase 9
 
 ### Active
 
 **Atomic libraries (v2.0)**
 - [ ] Own symbol libraries named `Atomic_<official KiCad stem>`, footprints in one shared `Atomic_Footprints`; parts filed by what the device is
-- [ ] One atomic rule check (MPN, Manufacturer, resolving footprint link, Value = MPN, Datasheet, Description, 3D model — all blocking), used by the importer and by every scan
-- [ ] Hand-made or edited parts in `Atomic_` libraries detected on scan, with safe one-click fixes
+- [ ] The atomic rule check also gates the importer's Install (the check and scan side shipped in Phase 9)
 - [ ] Importer suggests `Atomic_<stem>` and installs footprints into `Atomic_Footprints` (1:1 pairing dropped)
 - [ ] Existing `Custom/` parts migrated in one previewed commit, every part passing the rule, tables regenerated
 
@@ -140,7 +141,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | Support UL, SnapEDA, SamacSys/CSE and loose files in v1 | Owner uses all of them; zip layouts differ | ✓ Good — Phase 7 UAT passed on the real SnapEDA and SamacSys zips |
 | Preview before every write; per-conflict overwrite/rename/skip | Avoid silent damage to curated libraries | ✓ Good — Phase 5 UAT passed |
 | Library name suggested from `<Type>_<SubCategory>_<Manufacturer>`, editable | Keeps the convention without blocking edge cases | ⚠️ Revisit — replaced in v2.0 by `Atomic_<KiCad stem>` (worked in v1.0, Phase 5 UAT passed) |
-| Own libraries are `Atomic_<official KiCad stem>` with one shared `Atomic_Footprints`; every part must pass a blocking atomic rule (MPN, Manufacturer, footprint link, Value = MPN, Datasheet, Description, 3D model) | KiCad 10 ships libraries under every bare target stem, so a token is mandatory; "atomic" names the guarantee instead of a brand and appears nowhere in KiCad's stock libraries; the owner wants hand-made parts held to the same rule (2026-10-25) | — Pending (v2.0) |
+| Own libraries are `Atomic_<official KiCad stem>` with one shared `Atomic_Footprints`; every part must pass a blocking atomic rule (MPN, Manufacturer, footprint link, Value = MPN, Datasheet, Description, 3D model) | KiCad 10 ships libraries under every bare target stem, so a token is mandatory; "atomic" names the guarantee instead of a brand and appears nowhere in KiCad's stock libraries; the owner wants hand-made parts held to the same rule (2026-10-25) | — Pending (v2.0); the check and scan detection shipped and passed UAT in Phase 9 |
 | Footprint keeps vendor name by default, editable | Package codes are often the right name; user can override | ✓ Good — Phase 5 UAT passed |
 | Footprint link set automatically; other fields editable in preview | Footprint link is the most error-prone manual step | ✓ Good — Phase 5 UAT passed |
 | No 3D model → install without it and warn | Keep the flow simple; models can be added later | ✓ Good — SnapEDA no-model warning verified (Phase 7 UAT) |
@@ -185,4 +186,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-26 after Phase 8*
+*Last updated: 2026-10-26 after Phase 9*
