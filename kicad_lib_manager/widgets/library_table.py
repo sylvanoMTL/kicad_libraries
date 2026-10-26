@@ -8,8 +8,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 
 from ..models import (
-    STATUS_CHANGED, STATUS_NEW, ChangedFootprint, ScanResult, SymbolEntry, SymbolLibrary,
-    FootprintLibrary,
+    STATUS_CHANGED, STATUS_NEW, ChangedFootprint, Finding, ScanResult, SymbolEntry,
+    SymbolLibrary, FootprintLibrary, Violation,
 )
 from .theme import ACCENT, AMBER, HEADING_PT
 
@@ -255,7 +255,23 @@ class LibraryTableWidget(QWidget):
             tip = _rich_tip(lines)
             child.setToolTip(0, tip)
             child.setToolTip(3, tip)
+        # One display-only row per broken rule, texts unchanged (G-09-1, D-01)
+        for violation in entry.violations:
+            child.addChild(LibraryTableWidget._make_problem_row(
+                violation.text, violation, warn_icon, AMBER))
         return child
+
+    @staticmethod
+    def _make_problem_row(text: str, data, icon, colour: str | None) -> QTreeWidgetItem:
+        """Row for one broken rule or note under a symbol: display only, never checkable."""
+        row = QTreeWidgetItem([text])
+        row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+        row.setData(0, Qt.ItemDataRole.UserRole, data)
+        row.setIcon(0, icon)
+        if colour is not None:
+            LibraryTableWidget._colour_row(row, colour)
+        row.setToolTip(0, _rich_tip([text]))
+        return row
 
     @staticmethod
     def _make_footprint_row(fp: ChangedFootprint) -> QTreeWidgetItem:
@@ -337,8 +353,14 @@ class LibraryTableWidget(QWidget):
         self._sync_footprint_selection(source)
 
     def _on_sym_item_double_clicked(self, item: QTreeWidgetItem, column: int):
-        """Hand a symbol row that has rule problems or cleanup findings to the check dialog."""
+        """Hand a symbol row, or one of its problem and note rows, to the check dialog."""
         entry = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(entry, (Violation, Finding)):
+            # A problem or note row stands for its parent symbol (D-12)
+            item = item.parent()
+            if item is None:
+                return
+            entry = item.data(0, Qt.ItemDataRole.UserRole)
         parent = item.parent()
         if not isinstance(entry, SymbolEntry) or parent is None:
             return
