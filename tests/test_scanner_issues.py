@@ -258,7 +258,9 @@ def test_model_issue_text_starts_with_repo_relative_path(tmp_path):
 def test_scan_all_includes_model_issues(tmp_path):
     _write_mod(tmp_path, _CUSTOM_FP, "a", "${KIPRJMOD}/a.step")
     result = scan_all(tmp_path, kicad_fp_dir=tmp_path / "no_such_dir")
-    assert [i.code for i in result.issues] == ["scan.model_var"]
+    assert [i.code for i in result.issues if i.severity is not Severity.INFO] == ["scan.model_var"]
+    # This tmp tree has a Custom/ footprint library and is not a git checkout
+    assert [i.code for i in result.issues if i.code == "scan.changes_skipped"] == ["scan.changes_skipped"]
 
 
 def test_scanner_no_longer_exposes_model_regex():

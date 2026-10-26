@@ -9,6 +9,7 @@ from typing import Callable
 
 from . import fsutil, kicad_files
 from .atomic_check import check_libraries
+from .changes import mark_changes
 from .kicad_process import kicad_running
 from .models import (
     FootprintLibrary,
@@ -541,6 +542,10 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
     # The same KiCad libraries the cross-reference sees, so both agree on what exists (D-20)
     kicad_fp_dir = kicad_fp_dir if kicad_fp_dir is not None else find_kicad_footprint_dir()
     issues.extend(check_libraries(repo_root, sym_libs, fp_libs, kicad_fp_dir))
+
+    if progress:
+        progress("Looking for changed parts...", 98, 100)
+    issues.extend(mark_changes(repo_root, sym_libs, fp_libs))
 
     if progress:
         progress("Done", 100, 100)

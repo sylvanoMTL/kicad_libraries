@@ -18,7 +18,7 @@ ALLOWED = {
     "kicad_files": {"sexpr", "fsutil", "models"},
     "table_generator": {"fsutil", "kicad_files", "models", "sexpr"},
     # kicad_files is used from plan 02-05 on
-    "library_scanner": {"atomic_check", "fsutil", "kicad_files", "kicad_process", "models"},
+    "library_scanner": {"atomic_check", "changes", "fsutil", "kicad_files", "kicad_process", "models"},
     "kicad_process": set(),
     # the only module that starts git (Phase 6)
     "gitops": {"models"},
@@ -26,6 +26,8 @@ ALLOWED = {
     "manufacturers": set(),
     # the one atomic rule check (Phase 9); reads the importer's field rules and size caps
     "atomic_check": {"models", "fsutil", "kicad_files", "sexpr", "manufacturers", "importer"},
+    # what changed in Custom/ since its last commit (Phase 9); read-only git through gitops
+    "changes": {"models", "gitops", "kicad_files", "sexpr", "importer"},
 }
 
 _CODE = """
@@ -35,6 +37,7 @@ import kicad_lib_manager.models, kicad_lib_manager.sexpr
 import kicad_lib_manager.fsutil, kicad_lib_manager.kicad_files
 import kicad_lib_manager.table_generator, kicad_lib_manager.library_scanner, kicad_lib_manager.kicad_process
 import kicad_lib_manager.gitops, kicad_lib_manager.manufacturers, kicad_lib_manager.atomic_check
+import kicad_lib_manager.changes
 for name in sorted(sys.modules):
     if name.split(".")[0] in ("PySide6", "shiboken6"):
         print(name)

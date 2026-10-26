@@ -793,3 +793,56 @@ def test_long_atom_and_whitespace_runs_parse_linearly(text):
     # Audit pin: single-character-class repeats keep no per-character backtracking state
     _, peak = traced_peak(lambda: parse(text))
     assert peak <= 3 * sys.getsizeof(text)
+
+
+# -- token_stream: the layout-independent token run used to compare two versions of a part -------------
+
+
+def _stream(text: str) -> tuple[tuple[str, str], ...]:
+    return sexpr_module.token_stream(parse(text))
+
+
+def test_token_stream_of_nested_lists_is_the_flat_token_run():
+    assert _stream('(a (b "c d") e)') == (
+        ("(", ""), ("atom", "a"), ("(", ""), ("atom", "b"), ("str", '"c d"'), (")", ""), ("atom", "e"), (")", ""),
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['(a\t(b   "c d")\te)', '(a\r\n(b "c d")\r\ne)', '  (a   (b\n\n"c d")\n e)  \n'],
+    ids=["tabs", "crlf", "blank_lines"],
+)
+def test_token_stream_ignores_whitespace_and_line_endings(text):
+    assert _stream(text) == _stream('(a (b "c d") e)')
+
+
+def test_token_stream_keeps_parentheses_inside_a_string_as_one_token():
+    stream = _stream('(a "x(y)")')
+    assert [token for token in stream if token[0] == "str"] == [("str", '"x(y)"')]
+    assert len(stream) == 4
+
+
+def test_token_stream_differs_when_one_atom_changes():
+    assert _stream('(a (b "c") e)') != _stream('(a (b "c") f)')
+    assert _stream('(a (b "c") e)') != _stream('(a (b "d") e)')
+
+
+def test_token_stream_of_a_string_holding_a_backslash_n_escape_is_equal_across_line_endings():
+    escaped = r'"x\ny"'  # a backslash and an n, not a line break
+    lf = f"(a\n(b {escaped})\n)\n"
+    crlf = lf.replace("\n", "\r\n")
+    assert _stream(lf) == _stream(crlf)
+    assert ("str", escaped) in _stream(lf)
+
+
+def test_token_stream_of_a_root_walks_only_its_children():
+    assert _stream("") == ()
+    assert _stream("(a) (b)") == (("(", ""), ("atom", "a"), (")", ""), ("(", ""), ("atom", "b"), (")", ""))
+
+
+def test_token_stream_handles_five_thousand_nested_lists_without_recursion():
+    depth = 5000
+    stream = _stream("(" * depth + "x" + ")" * depth)
+    assert len(stream) == 2 * depth + 1
+    assert stream[depth] == ("atom", "x")
