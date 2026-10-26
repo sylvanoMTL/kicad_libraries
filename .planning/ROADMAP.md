@@ -113,7 +113,49 @@ Plans:
   4. Install stays disabled while the incoming part fails the atomic check. Each failure is a clickable reason that jumps to its field. Value defaults to the MPN, and filling in Datasheet, Description or the 3D model in the preview clears the matching reason.
   5. The preview shows generated `ki_keywords` (function words, interfaces, package codes, manufacturer aliases, MPN variants) and a footprint description and tags (package, IPC name, vendor package code, pitch). All of them are editable, and the installed files carry exactly what the preview showed.
 
-**Plans**: TBD
+**Plans:** 16 plans
+
+Plans:
+**Wave 1**
+- [ ] 10-01-PLAN.md — Stem allow-list and the Atomic_ name verdict, layering registrations for every new module (wave 1)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 10-02-PLAN.md — Name rule enforced in build_plan and the form; every test targets an Atomic_ library (wave 2)
+- [ ] 10-03-PLAN.md — Stock sibling index and official footprint index over KiCad's folders, synthetic stock fixture (wave 2)
+- [ ] 10-04-PLAN.md — Category map, keyword generation and the manufacturer datasheet domains (wave 2)
+- [ ] 10-05-PLAN.md — Footprint pitch, body, family, description and tags, and the descr/tags write primitive (wave 2)
+- [ ] 10-06-PLAN.md — Incoming-part atomic check on planned bytes (repo_context planned files, incoming.py) (wave 2)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 10-07-PLAN.md — Footprints into the shared Atomic_Footprints.pretty, no .pretty pairing, two table nicknames (wave 3)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 10-08-PLAN.md — One footprint per part: single choice and the Not used preview section (wave 4)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 10-09-PLAN.md — Shared-library clash rules: token-stream reuse, <FP>_<MPN> rename, Overwrite names linking parts (wave 5)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 10-10-PLAN.md — Atomic suggestion (own siblings, KiCad siblings, category map, ask) and the library picker (wave 6)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 10-11-PLAN.md — Value follows MPN (read-only), canonical Manufacturer, v1 token code removed (wave 7)
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 10-12-PLAN.md — Install gate: the incoming part must pass the atomic check; suite made gate-ready (wave 8)
+
+**Wave 9** *(blocked on Wave 8 completion)*
+- [ ] 10-13-PLAN.md — Clickable gate reasons that focus their field and clear live; model reason on Add 3D model... (wave 9)
+
+**Wave 10** *(blocked on Wave 9 completion)*
+- [ ] 10-14-PLAN.md — Generated keywords, footprint description and tags in the plan, editable with Regenerate (wave 10)
+
+**Wave 11** *(blocked on Wave 10 completion)*
+- [ ] 10-15-PLAN.md — Official KiCad footprint choice: ranked filterable picker, KiCad's model, pad-check warning (wave 11)
+
+**Wave 12** *(blocked on Wave 11 completion)*
+- [ ] 10-16-PLAN.md — Help page, test docs and the end-of-phase UAT checklist (wave 12)
+
 **UI hint**: yes
 
 ### Phase 11: Commit Gate and Commit Panel Fixes
@@ -170,7 +212,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 |-------|-----------|----------------|--------|-----------|
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
-| 10. Importer on the Atomic Scheme | v2.0 | 0/TBD | Not started | - |
+| 10. Importer on the Atomic Scheme | v2.0 | 0/16 | Planned | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
