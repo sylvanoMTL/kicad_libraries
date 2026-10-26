@@ -9,12 +9,13 @@ from pathlib import Path
 
 import pytest
 
-from customfixtures import atomic_lib, atomic_part, write_atomic_custom, write_fake_kicad
+from customfixtures import atomic_lib, atomic_part, digest_tree, write_atomic_custom, write_fake_kicad
 from installfixtures import V6_VERSION, target_lib
 from kicad_lib_manager import atomic_fixes, kicad_files
 from kicad_lib_manager.atomic_fixes import apply_preview, build_preview, preview_text
 from kicad_lib_manager.library_scanner import scan_all
-from kicad_lib_manager.models import FixSpec, Severity
+from kicad_lib_manager.models import FixSpec, Issue, Severity
+from zipfixtures import STEP_BYTES, VRML_BYTES, make_zip
 
 SYMBOL_REL = "Custom/Symbols/Atomic_Connector.kicad_sym"
 FOOTPRINT_DIR = "Custom/Footprints/Atomic_Footprints.pretty"
@@ -543,3 +544,468 @@ def test_a_bom_and_crlf_file_keeps_both_after_every_kind_of_fix(tmp_path):
     assert data.startswith(b"\xef\xbb\xbf") and data.count(b"\xef\xbb\xbf") == 1
     assert data.count(b"\n") == data.count(b"\r\n")
     assert _entries(root, footprints, "Atomic_Crlf")["CRLF-1"].violations == []
+
+
+# ── Stale refusal, rollback, containment, KiCad notice and the 3D model intake ──────────────
+
+
+def _model_source(tmp_path, name="NEW-MODEL.step", data=STEP_BYTES):
+    folder = tmp_path / "src"
+    folder.mkdir(exist_ok=True)
+    path = folder / name
+    path.write_bytes(data)
+    return path
+
+
+def _attach(entries, symbol, source):
+    return atomic_fixes.complete_fill(_fill(entries[symbol], "attach_model"), str(source))
+
+
+def _footprint_text(root, name):
+    return (root / FOOTPRINT_DIR / f"{name}.kicad_mod").read_bytes().decode("utf-8")
+
+
+@pytest.mark.parametrize("change", [lambda d: d + b" ", lambda d: d.replace(b"USB4105-GF-A", b"USB4105-GF-B", 1)])
+def test_a_one_byte_change_after_the_preview_refuses_the_whole_batch(tmp_path, change):
+    root, footprints = _setup(tmp_path)
+    preview = _preview(root, _fixes(_entries(root, footprints)["FFC-0.5-20"]))
+    path = root / SYMBOL_REL
+    changed = change(path.read_bytes())
+    path.write_bytes(changed)
+
+    result = apply_preview(preview, backup_root=tmp_path / "bk")
+
+    assert result.ok is False
+    assert [(i.severity, i.code) for i in result.issues] == [(Severity.ERROR, "atomic.stale_file")]
+    assert result.issues[0].text == f"{SYMBOL_REL} changed after the preview was built; preview again"
+    assert path.read_bytes() == changed
+    assert not (tmp_path / "bk").exists()
+
+
+def test_a_file_that_vanished_after_the_preview_refuses_the_batch(tmp_path):
+    root, footprints = _setup(tmp_path)
+    preview = _preview(root, _fixes(_entries(root, footprints)["FFC-0.5-20"]))
+    (root / SYMBOL_REL).unlink()
+
+    result = apply_preview(preview, backup_root=tmp_path / "bk")
+
+    assert [i.code for i in result.issues] == ["atomic.stale_file"]
+    assert not (tmp_path / "bk").exists()
+
+
+def test_a_new_model_name_that_appeared_after_the_preview_refuses_the_batch(tmp_path):
+    root, footprints = _setup(tmp_path)
+    source = _model_source(tmp_path)
+    preview = _preview(root, [_attach(_entries(root, footprints), "MODEL-MISSING", source)])
+    appeared = root / "Custom" / "3DModels" / "new-model.STEP"
+    appeared.write_bytes(b"someone else's file")
+    before = digest_tree(root)
+
+    result = apply_preview(preview, backup_root=tmp_path / "bk")
+
+    assert [i.code for i in result.issues] == ["atomic.stale_file"]
+    assert digest_tree(root) == before
+    assert not (tmp_path / "bk").exists()
+
+
+def _flaky_second_text_write(monkeypatch):
+    real = atomic_fixes.fsutil.atomic_write_text
+    calls = []
+
+    def flaky(path, text, **kwargs):
+        calls.append(path)
+        if len(calls) == 2:
+            return Issue(Severity.ERROR, "fs.write_failed", f"Could not write {path.name}: disk full")
+        return real(path, text, **kwargs)
+
+    monkeypatch.setattr(atomic_fixes.fsutil, "atomic_write_text", flaky)
+    return calls
+
+
+def _two_files_and_a_model(tmp_path):
+    root, footprints = _setup(tmp_path)
+    _write_library(root, "Atomic_Second", (atomic_part("SECOND-1", replace={"Value": "X"}),))
+    entries = _entries(root, footprints)
+    second = _entries(root, footprints, "Atomic_Second")
+    source = _model_source(tmp_path)
+    specs = [
+        *_fixes(entries["FFC-0.5-20"]),
+        *_fixes(second["SECOND-1"]),
+        _attach(entries, "MODEL-MISSING", source),
+    ]
+    return root, specs
+
+
+def test_a_failed_write_restores_every_earlier_file_and_removes_the_copied_model(tmp_path, monkeypatch):
+    root, specs = _two_files_and_a_model(tmp_path)
+    preview = _preview(root, specs)
+    assert len(preview.changes) == 4 and preview.changes[0].new_bytes is not None
+    before = digest_tree(root)
+    calls = _flaky_second_text_write(monkeypatch)
+
+    result = apply_preview(preview, backup_root=tmp_path / "bk")
+
+    assert result.ok is False
+    assert [i.code for i in result.issues] == ["atomic.write_failed"]
+    assert "disk full" in result.issues[0].text and result.issues[0].text.endswith("; no fix was kept")
+    assert len(calls) == 2
+    assert digest_tree(root) == before
+    assert not (root / "Custom" / "3DModels" / "NEW-MODEL.step").exists()
+
+
+def test_a_restore_that_fails_is_reported_with_the_backup_folder(tmp_path, monkeypatch):
+    root, footprints = _setup(tmp_path)
+    _write_library(root, "Atomic_Second", (atomic_part("SECOND-1", replace={"Value": "X"}),))
+    specs = [
+        *_fixes(_entries(root, footprints)["FFC-0.5-20"]),
+        *_fixes(_entries(root, footprints, "Atomic_Second")["SECOND-1"]),
+    ]
+    preview = _preview(root, specs)
+    real = atomic_fixes.fsutil.atomic_write_text
+    calls = []
+
+    def fail_then_lock(path, text, **kwargs):
+        calls.append(path)
+        if len(calls) == 2:
+            # From here on nothing can be written, so the restore of the first file fails too
+            monkeypatch.setattr(
+                atomic_fixes.fsutil, "atomic_write_bytes",
+                lambda p, data, **kw: Issue(Severity.ERROR, "fs.locked", "Could not write: in use"),
+            )
+            return Issue(Severity.ERROR, "fs.write_failed", f"Could not write {path.name}: disk full")
+        return real(path, text, **kwargs)
+
+    monkeypatch.setattr(atomic_fixes.fsutil, "atomic_write_text", fail_then_lock)
+
+    result = apply_preview(preview, backup_root=tmp_path / "bk")
+
+    assert result.ok is False
+    assert [i.code for i in result.issues] == ["atomic.write_failed", "atomic.rollback_failed"]
+    assert result.issues[1].text == (
+        f"{SYMBOL_REL} could not be restored; the original is in {result.backup_dir}"
+    )
+    assert (result.backup_dir / "Atomic_Connector.kicad_sym_backup_1").exists()
+
+
+def test_a_write_that_raises_is_a_failed_write_not_a_crash(tmp_path, monkeypatch):
+    root, footprints = _setup(tmp_path)
+    preview = _preview(root, _fixes(_entries(root, footprints)["FFC-0.5-20"]))
+    before = digest_tree(root)
+
+    def explode(path, text, **kwargs):
+        raise OSError("boom")
+
+    monkeypatch.setattr(atomic_fixes.fsutil, "atomic_write_text", explode)
+
+    result = apply_preview(preview, backup_root=tmp_path / "bk")
+
+    assert result.ok is False and result.issues[0].code == "atomic.write_failed"
+    assert digest_tree(root) == before
+
+
+def test_a_backup_that_cannot_be_made_refuses_the_batch_before_any_write(tmp_path, monkeypatch):
+    root, footprints = _setup(tmp_path)
+    preview = _preview(root, _fixes(_entries(root, footprints)["FFC-0.5-20"]))
+    before = digest_tree(root)
+    monkeypatch.setattr(
+        atomic_fixes.fsutil, "backup_file", lambda path, folder: Issue(Severity.ERROR, "fs.backup_failed", "no space")
+    )
+
+    result = apply_preview(preview, backup_root=tmp_path / "bk")
+
+    assert result.ok is False and [i.code for i in result.issues] == ["fs.backup_failed"]
+    assert digest_tree(root) == before
+
+
+def test_a_path_outside_custom_is_refused_and_nothing_is_changed(tmp_path):
+    root, footprints = _setup(tmp_path)
+    (root / "outside.kicad_sym").write_bytes(b"(kicad_symbol_lib)")
+    before = digest_tree(root)
+    outside = [
+        "WurthElektronik/KiCad-Library/symbols/WE-Connectors.kicad_sym",
+        "Custom/../outside.kicad_sym",
+        "Custom\\..\\outside.kicad_sym",
+        str(tmp_path / "x.kicad_sym"),
+        "Other/Symbols/Atomic_Elsewhere.kicad_sym",
+        "outside.kicad_sym",
+        "Custom",
+        "",
+    ]
+    specs = [FixSpec("value_to_mpn", rel, "A", "x", {"property": "Value", "value": "A"}) for rel in outside]
+    # A symbol fix may not name a footprint file, and an attach_model may not leave Custom/Footprints
+    specs.append(FixSpec("value_to_mpn", f"{FOOTPRINT_DIR}/NO-MODEL.kicad_mod", "A", "x", {"property": "Value", "value": "A"}))
+    source = str(_model_source(tmp_path))
+    for footprint in (
+        "Other/Footprints/Dup_Footprints.pretty/DUP-1.kicad_mod",
+        "Custom/Symbols/Atomic_Connector.kicad_sym",
+        "Custom/../outside.kicad_mod",
+        str(tmp_path / "x.kicad_mod"),
+    ):
+        specs.append(FixSpec("attach_model", footprint, "A", "x", {"footprint": footprint, "source": source}))
+    # rel_path inside, params.footprint outside
+    specs.append(FixSpec(
+        "attach_model", f"{FOOTPRINT_DIR}/NO-MODEL.kicad_mod", "A", "x",
+        {"footprint": "Other/Footprints/Dup_Footprints.pretty/DUP-1.kicad_mod", "source": source},
+    ))
+
+    preview = _preview(root, specs)
+
+    assert preview.changes == []
+    assert [i.code for i in preview.issues] == ["atomic.path_outside_custom"] * len(specs)
+    assert preview.issues[0].text == "Not changed: WurthElektronik/KiCad-Library/symbols/WE-Connectors.kicad_sym is outside Custom/"
+    assert digest_tree(root) == before
+
+
+def test_a_fix_kind_outside_the_safe_and_fill_lists_is_refused(tmp_path):
+    root, footprints = _setup(tmp_path)
+    spec = FixSpec("delete_symbol", SYMBOL_REL, "FFC-0.5-20", "Delete it", {})
+
+    preview = _preview(root, [spec])
+
+    assert preview.changes == []
+    assert [(i.severity, i.code) for i in preview.issues] == [(Severity.ERROR, "atomic.fix_unknown")]
+
+
+def test_a_hand_built_preview_pointing_outside_custom_is_never_written(tmp_path):
+    root, _ = _setup(tmp_path)
+    target = root / "outside.kicad_sym"
+    target.write_bytes(b"old")
+    change = atomic_fixes.FileChange(
+        target, "outside.kicad_sym", "old", "new", None, hashlib.sha256(b"old").hexdigest(), False
+    )
+
+    result = apply_preview(atomic_fixes.FixPreview(root, [change]), backup_root=tmp_path / "bk")
+
+    assert result.ok is False and [i.code for i in result.issues] == ["atomic.path_outside_custom"]
+    assert target.read_bytes() == b"old"
+
+
+@pytest.mark.parametrize("names", [["kicad.exe"], []])
+def test_the_running_kicad_processes_are_recorded_on_the_preview(tmp_path, names):
+    root, footprints = _setup(tmp_path)
+    specs = _fixes(_entries(root, footprints)["FFC-0.5-20"])
+
+    preview = build_preview(root, specs, running=lambda: list(names))
+
+    assert preview.kicad_running == names
+
+
+def test_attach_model_copies_the_model_and_repoints_the_one_broken_line(tmp_path):
+    root, footprints = _setup(tmp_path)
+    source = _model_source(tmp_path)
+    before = _footprint_text(root, "MISSING-MODEL")
+    spec = _attach(_entries(root, footprints), "MODEL-MISSING", source)
+    assert spec.label == '3D model → "NEW-MODEL.step"'
+
+    preview = _preview(root, [spec])
+
+    assert preview.issues == []
+    assert [c.rel_path for c in preview.changes] == [
+        "Custom/3DModels/NEW-MODEL.step", f"{FOOTPRINT_DIR}/MISSING-MODEL.kicad_mod",
+    ]
+    assert preview_text(preview.changes[0]) == f"New file Custom/3DModels/NEW-MODEL.step ({len(STEP_BYTES)} bytes)"
+    assert preview.changes[1].new_text == before.replace(
+        "${CUSTOM_3DMODEL_DIR}/MISSING-MODEL.step", "${CUSTOM_3DMODEL_DIR}/NEW-MODEL.step"
+    )
+    assert apply_preview(preview, backup_root=tmp_path / "bk").ok is True
+    assert (root / "Custom" / "3DModels" / "NEW-MODEL.step").read_bytes() == STEP_BYTES
+    assert _footprint_text(root, "MISSING-MODEL").count("(model") == 1
+    assert _entries(root, footprints)["MODEL-MISSING"].violations == []
+
+
+def test_attach_model_adds_a_model_line_to_a_footprint_that_has_none(tmp_path):
+    root, footprints = _setup(tmp_path)
+    source = _model_source(tmp_path)
+    before = _footprint_text(root, "NO-MODEL")
+    assert "(model" not in before
+
+    preview = _preview(root, [_attach(_entries(root, footprints), "MODEL-NONE", source)])
+    assert apply_preview(preview, backup_root=tmp_path / "bk").ok is True
+
+    after = _footprint_text(root, "NO-MODEL")
+    assert after.count("(model") == 1
+    assert '(model "${CUSTOM_3DMODEL_DIR}/NEW-MODEL.step"' in after
+    block = (
+        '\r\n  (model "${CUSTOM_3DMODEL_DIR}/NEW-MODEL.step"\r\n    (offset (xyz 0 0 0))\r\n'
+        "    (scale (xyz 1 1 1))\r\n    (rotate (xyz 0 0 0))\r\n  )"
+    )
+    assert after == before.replace("\r\n)\r\n", block + "\r\n)\r\n")
+    assert after.count("\n") == after.count("\r\n")
+    assert _entries(root, footprints)["MODEL-NONE"].violations == []
+
+
+def test_one_picked_model_is_copied_once_for_two_footprints(tmp_path):
+    root, footprints = _setup(tmp_path)
+    source = _model_source(tmp_path)
+    entries = _entries(root, footprints)
+    specs = [_attach(entries, "MODEL-MISSING", source), _attach(entries, "MODEL-NONE", source)]
+
+    preview = _preview(root, specs)
+
+    assert [c.new_bytes is not None for c in preview.changes] == [True, False, False]
+    assert apply_preview(preview, backup_root=tmp_path / "bk").ok is True
+    after = _entries(root, footprints)
+    assert after["MODEL-MISSING"].violations == [] and after["MODEL-NONE"].violations == []
+
+
+def test_a_model_already_in_custom_with_the_same_bytes_is_reused_not_copied(tmp_path):
+    root, footprints = _setup(tmp_path)
+    # The folder holds WRONG-CASE.step; a file of that name in any case and the same bytes is the same model
+    source = _model_source(tmp_path, "wrong-case.step", STEP_BYTES)
+    spec = _attach(_entries(root, footprints), "MODEL-WRONG-CASE", source)
+
+    preview = _preview(root, [spec])
+
+    assert [c.rel_path for c in preview.changes] == [f"{FOOTPRINT_DIR}/WRONG-CASE-MODEL.kicad_mod"]
+    assert '"${CUSTOM_3DMODEL_DIR}/WRONG-CASE.step"' in preview.changes[0].new_text
+    assert apply_preview(preview, backup_root=tmp_path / "bk").ok is True
+    assert _entries(root, footprints)["MODEL-WRONG-CASE"].violations == []
+
+
+@pytest.mark.parametrize("name", ["wrong-case.step", "WRONG-CASE.step"])
+def test_a_different_model_with_a_taken_name_is_refused_compared_casefolded(tmp_path, name):
+    root, footprints = _setup(tmp_path)
+    source = _model_source(tmp_path, name, b"different bytes")
+    before = digest_tree(root)
+
+    preview = _preview(root, [_attach(_entries(root, footprints), "MODEL-WRONG-CASE", source)])
+
+    assert preview.changes == []
+    (issue,) = preview.issues
+    assert issue.code == "atomic.model_name_taken"
+    assert issue.text == (
+        f'A different 3D model named "{name}" is already in Custom/3DModels; rename the file and choose it again'
+    )
+    assert digest_tree(root) == before
+
+
+def test_a_source_that_is_not_a_model_is_refused_with_the_intake_reason(tmp_path):
+    root, footprints = _setup(tmp_path)
+    entries = _entries(root, footprints)
+    notes = tmp_path / "src" / "notes.txt"
+    notes.parent.mkdir()
+    notes.write_text("not a model", encoding="utf-8")
+
+    preview = _preview(root, [_attach(entries, "MODEL-MISSING", notes)])
+
+    assert preview.changes == []
+    assert [i.code for i in preview.issues] == ["intake.unsupported"]
+    assert "pick a .step, .stp or .wrl file" in preview.issues[0].text
+
+    missing = _preview(root, [_attach(entries, "MODEL-MISSING", tmp_path / "src" / "gone.step")])
+    assert [i.code for i in missing.issues] == ["intake.not_found"]
+
+
+def test_a_zip_must_hold_exactly_one_model(tmp_path):
+    root, footprints = _setup(tmp_path)
+    entries = _entries(root, footprints)
+    folder = tmp_path / "zips"
+    folder.mkdir()
+    two = make_zip(folder / "two.zip", [("a.step", STEP_BYTES), ("b.wrl", VRML_BYTES)])
+    none = make_zip(folder / "none.zip", [("readme.txt", b"hello")])
+    one = make_zip(folder / "one.zip", [("models/ONE.stp", STEP_BYTES), ("readme.txt", b"hello")])
+
+    refused = _preview(root, [_attach(entries, "MODEL-MISSING", two)])
+    empty = _preview(root, [_attach(entries, "MODEL-MISSING", none)])
+    accepted = _preview(root, [_attach(entries, "MODEL-MISSING", one)])
+
+    assert refused.changes == []
+    assert [i.code for i in refused.issues] == ["atomic.fix_incomplete"]
+    assert "pick a file or a zip holding exactly one 3D model" in refused.issues[0].text
+    assert empty.changes == [] and "intake.no_model_in_source" in [i.code for i in empty.issues]
+    assert [c.rel_path for c in accepted.changes][0] == "Custom/3DModels/ONE.stp"
+    assert accepted.changes[0].new_bytes == STEP_BYTES
+
+
+def test_an_attach_without_a_chosen_file_is_incomplete(tmp_path):
+    root, footprints = _setup(tmp_path)
+    fill = _fill(_entries(root, footprints)["MODEL-MISSING"], "attach_model")
+
+    assert atomic_fixes.complete_fill(fill, "") == "Choose a 3D model file first"
+    preview = _preview(root, [fill])
+
+    assert preview.changes == []
+    assert [i.code for i in preview.issues] == ["atomic.fix_incomplete"]
+
+
+def test_a_footprint_whose_models_all_resolve_is_skipped(tmp_path):
+    root, footprints = _setup(tmp_path)
+    source = _model_source(tmp_path)
+    spec = _attach(_entries(root, footprints), "MODEL-MISSING", source)
+    (root / "Custom" / "3DModels" / "MISSING-MODEL.step").write_bytes(STEP_BYTES)
+
+    preview = _preview(root, [spec])
+
+    assert preview.changes == []
+    assert [(i.severity, i.code) for i in preview.issues] == [(Severity.INFO, "atomic.fix_skipped")]
+
+
+def test_the_model_size_boundary_is_exact(tmp_path, monkeypatch):
+    root, footprints = _setup(tmp_path)
+    spec = _attach(_entries(root, footprints), "MODEL-MISSING", _model_source(tmp_path))
+    limit = "kicad_lib_manager.importer.package.MAX_MEMBER_BYTES"
+
+    monkeypatch.setattr(limit, len(STEP_BYTES))
+    assert [c.rel_path for c in _preview(root, [spec]).changes][0] == "Custom/3DModels/NEW-MODEL.step"
+
+    monkeypatch.setattr(limit, len(STEP_BYTES) - 1)
+    refused = _preview(root, [spec])
+    assert refused.changes == []
+    assert [i.code for i in refused.issues] == ["intake.too_large"]
+
+
+def test_the_kicad_file_size_boundary_is_exact(tmp_path, monkeypatch):
+    root, footprints = _setup(tmp_path)
+    specs = _fixes(_entries(root, footprints)["FFC-0.5-20"])
+    size = (root / SYMBOL_REL).stat().st_size
+
+    monkeypatch.setattr(atomic_fixes, "MAX_KICAD_TEXT_BYTES", size)
+    assert len(_preview(root, specs).changes) == 1
+
+    monkeypatch.setattr(atomic_fixes, "MAX_KICAD_TEXT_BYTES", size - 1)
+    refused = _preview(root, specs)
+    assert refused.changes == []
+    assert [i.code for i in refused.issues] == ["atomic.file_too_large"]
+
+
+def test_reserved_and_odd_model_names_are_not_usable():
+    assert atomic_fixes._model_name_problem("CON.step") is not None
+    assert atomic_fixes._model_name_problem("a:b.step") is not None
+    assert atomic_fixes._model_name_problem("model.txt") is not None
+    assert atomic_fixes._model_name_problem("fine-name.STEP") is None
+
+
+def test_only_apply_preview_changes_anything_on_disk(tmp_path):
+    root, footprints = _setup(tmp_path)
+    entries = _entries(root, footprints)
+    source = _model_source(tmp_path)
+    two = make_zip(tmp_path / "two.zip", [("a.step", STEP_BYTES), ("b.wrl", VRML_BYTES)])
+    before = digest_tree(tmp_path)
+    specs = [
+        *_fixes(entries["FFC-0.5-20"]),
+        _attach(entries, "MODEL-MISSING", source),
+        _attach(entries, "MODEL-NONE", two),
+        atomic_fixes.complete_fill(_fill(entries["DS-EMPTY"], "fill_datasheet"), "https://example.com/x.pdf"),
+    ]
+
+    preview = _preview(root, specs)
+    for change in preview.changes:
+        preview_text(change)
+    atomic_fixes.default_fix_backup_dir(tmp_path / "bk")
+    atomic_fixes.complete_fill(specs[-1], "https://example.com/y.pdf")
+
+    assert preview.changes
+    assert digest_tree(tmp_path) == before
+
+
+def test_only_the_apply_helpers_reach_a_write_call():
+    import ast
+
+    tree = ast.parse(Path(atomic_fixes.__file__).read_text(encoding="utf-8"))
+    writers = {"atomic_write_text", "atomic_write_bytes", "backup_file", "unlink", "mkdir", "write_bytes", "write_text"}
+    found = {}
+    for function in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)):
+        for call in (n for n in ast.walk(function) if isinstance(n, ast.Call)):
+            if isinstance(call.func, ast.Attribute) and call.func.attr in writers:
+                found.setdefault(function.name, set()).add(call.func.attr)
+    assert set(found) <= {"_write", "_roll_back", "apply_preview"}, found
