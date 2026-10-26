@@ -18,6 +18,11 @@ ATOMIC_PREFIX = "Atomic_"
 # The blocking rules of ATOM-01 in their reporting order
 ATOMIC_RULES = ("mpn", "manufacturer", "footprint", "value", "datasheet", "description", "model_3d")
 
+# The D-13 list: the only edits a one-click fix may make
+SAFE_FIX_KINDS = ("value_to_mpn", "rename_alias", "canonical_manufacturer", "merge_alias", "remove_leftover")
+# Templates the dialog completes with typed or picked input
+FILL_KINDS = ("fill_datasheet", "fill_description", "attach_model")
+
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _VARIABLE_PATH_RE = re.compile(r"\$\{[^}]+\}[/\\]")
 _MIB = 1024 * 1024
@@ -49,6 +54,11 @@ def _blank(value: str) -> bool:
 
 def _find_property(properties: list[kicad_files.PropertyRef], name: str) -> kicad_files.PropertyRef | None:
     return next((p for p in properties if p.name == name), None)
+
+
+def effective_mpn(symbol_node: Node) -> str | None:
+    """Return the symbol's own MPN, or None when absent or disagreeing (stub, filled in with the MPN rule)."""
+    return None
 
 
 def _datasheet_violation(

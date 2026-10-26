@@ -193,6 +193,26 @@ ATOMIC_LIBRARIES = (
             atomic_part("DS-EMPTY", replace={"Datasheet": "~"}),
             atomic_part("DS-WORDS", replace={"Datasheet": "see website"}),
             atomic_part("DESC-EMPTY", replace={"Description": ""}),
+            atomic_part("MPN-NONE", drop=("MPN",)),
+            atomic_part("MPN-AS-MP", drop=("MPN",), extra=(("MP", "MPN-AS-MP"),)),
+            atomic_part("MFR-NONE", drop=("Manufacturer",)),
+            atomic_part("MFR-AS-MF", drop=("Manufacturer",), extra=(("MF", "GCT"),)),
+            atomic_part("MFR-SHORT", replace={"Manufacturer": "TI"}),
+            atomic_part(
+                "MFR-DUP-OK",
+                drop=("Manufacturer",),
+                extra=(("MF", "GCT"), ("MANUFACTURER", "Global Connector Technology")),
+            ),
+            atomic_part(
+                "MFR-DUP-BAD", drop=("Manufacturer",), extra=(("MF", "GCT"), ("MANUFACTURER", "Molex"))
+            ),
+            atomic_part("FFC-0.5-20", replace={"Value": "FFC20", "MPN": "FH12-20S-0.5SH"}),
+            # Price and stock leftovers and an unknown manufacturer are notes, never failures
+            atomic_part(
+                "LEFTOVER-1",
+                extra=(("Price", "1.20"), ("Availability", "In stock"), ("Check_prices", "https://example.com/p")),
+            ),
+            atomic_part("MFR-HIROSE", replace={"Manufacturer": "Hirose"}),
         ),
     ),
     AtomicLibrary("Atomic_Empty", ()),
@@ -220,6 +240,16 @@ ATOMIC_EXPECTED: dict[tuple[str, str], frozenset[str]] = {
     ("Atomic_Connector", "DS-EMPTY"): frozenset({"datasheet"}),
     ("Atomic_Connector", "DS-WORDS"): frozenset({"datasheet"}),
     ("Atomic_Connector", "DESC-EMPTY"): frozenset({"description"}),
+    ("Atomic_Connector", "MPN-NONE"): frozenset({"mpn"}),
+    ("Atomic_Connector", "MPN-AS-MP"): frozenset({"mpn"}),
+    ("Atomic_Connector", "MFR-NONE"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "MFR-AS-MF"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "MFR-SHORT"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "MFR-DUP-OK"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "MFR-DUP-BAD"): frozenset({"manufacturer"}),
+    ("Atomic_Connector", "FFC-0.5-20"): frozenset({"value"}),
+    ("Atomic_Connector", "LEFTOVER-1"): frozenset(),
+    ("Atomic_Connector", "MFR-HIROSE"): frozenset(),
     ("Atomic_Elsewhere", "ELSEWHERE-1"): frozenset({"datasheet"}),
 }
 
