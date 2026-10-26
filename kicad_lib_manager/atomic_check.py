@@ -5,7 +5,9 @@ library half-changed. Every reason is plain language (MPN, Manufacturer, Value, 
 never a raw KiCad field name. A Datasheet value is judged as a string and is never fetched or opened.
 """
 
+import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
@@ -24,7 +26,16 @@ SAFE_FIX_KINDS = ("value_to_mpn", "rename_alias", "canonical_manufacturer", "mer
 # Templates the dialog completes with typed or picked input
 FILL_KINDS = ("fill_datasheet", "fill_description", "attach_model")
 
+# The model folder variable of Custom/ (the same value library_scanner uses; plan 09-06 reuses this constant)
+CUSTOM_MODEL_PREFIX = "${CUSTOM_3DMODEL_DIR}/"
+
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
+_KICAD_MODEL_RE = re.compile(r"\$\{KICAD\d+_3DMODEL_DIR\}/")
+_VARIABLE_RE = re.compile(r"\$\{[^}]*\}")
+_SEPARATOR_RE = re.compile(r"[\\/]")
+_NO_MODEL_LINE = "the footprint has no 3D model"
+_NO_KICAD_MODELS = "Could not check the 3D model: KiCad's 3D model folder was not found"
+_UNREADABLE_FOOTPRINT = "Could not check the 3D model: the footprint could not be read"
 _VARIABLE_PATH_RE = re.compile(r"\$\{[^}]+\}[/\\]")
 _MIB = 1024 * 1024
 
@@ -322,6 +333,185 @@ def _mpn_absent(units: list[_Unit]) -> str:
     return "no MPN"
 
 
+@dataclass(frozen=True)
+class FootprintTarget:
+    """What a symbol's Footprint field points at: the footprint file, or the plain reason it does not resolve.
+
+    rel_path is the repo-relative posix path of a footprint in the repo and None for a KiCad footprint.
+    """
+
+    text: str
+    library: str
+    footprint: str
+    path: Path | None
+    rel_path: str | None
+    problem: str | None
+
+
+@dataclass(frozen=True)
+class AtomicContext:
+    """What the check needs from the outside: where footprints and their 3D models live.
+
+    repo_context builds one for the repo; a later phase passes its own for an incoming part.
+    """
+
+    resolve_footprint: Callable[[str], FootprintTarget]
+    model_problems: Callable[[FootprintTarget], list[str]]
+
+
+def _listing(cache: dict[Path, frozenset[str]], folder: Path) -> frozenset[str]:
+    """The exact names in a folder, as the disk spells them; an unlistable folder is empty. Cached per scan."""
+    names = cache.get(folder)
+    if names is None:
+        try:
+            names = frozenset(os.listdir(folder))
+        except OSError:
+            names = frozenset()
+        cache[folder] = names
+    return names
+
+
+def repo_context(repo_root: Path, fp_libs: list[FootprintLibrary], kicad_fp_dir: Path | None) -> AtomicContext:
+    """Build the context for the repo: its footprint libraries (any source) and KiCad's installed footprints.
+
+    Names are matched against exact directory listings before any path is built, so a wrong-case
+    name fails on Windows too and untrusted text never forms a path.
+    """
+    listings: dict[Path, frozenset[str]] = {}
+    repo_libs: dict[str, list[FootprintLibrary]] = {}
+    for lib in fp_libs:
+        repo_libs.setdefault(lib.nickname, []).append(lib)
+
+    def failed(text: str, library: str, footprint: str, problem: str) -> FootprintTarget:
+        return FootprintTarget(text, library, footprint, None, None, problem)
+
+    def resolve_footprint(text: str) -> FootprintTarget:
+        if _blank(text):
+            return failed(text, "", "", "no footprint")
+        library, colon, footprint = text.partition(":")
+        if not colon or not library or not footprint:
+            return failed(text, "", "", f'Footprint "{text}" does not name a library (expected Library:Footprint)')
+        # Each candidate is (folder of the library, repo-relative path of that folder or None for KiCad)
+        candidates: list[tuple[Path, str | None]] = [(repo_root / lib.rel_path, lib.rel_path) for lib in repo_libs.get(library, [])]
+        if kicad_fp_dir is not None and f"{library}.pretty" in _listing(listings, kicad_fp_dir):
+            candidates.append((kicad_fp_dir / f"{library}.pretty", None))
+        if not candidates:
+            return failed(text, library, footprint, f'footprint library "{library}" was not found')
+        if len(candidates) > 1:
+            return failed(text, library, footprint, f'footprint library "{library}" is defined more than once')
+        folder, folder_rel = candidates[0]
+        file_name = f"{footprint}.kicad_mod"
+        if file_name not in _listing(listings, folder):
+            return failed(text, library, footprint, f'footprint "{footprint}" is not in library "{library}"')
+        rel = f"{folder_rel}/{file_name}" if folder_rel is not None else None
+        return FootprintTarget(text, library, footprint, folder / file_name, rel, None)
+
+    custom_names: list[frozenset[str]] = []
+    verdicts: dict[Path, list[str]] = {}
+
+    def custom_model_names() -> frozenset[str]:
+        """Exact relative names of every file under Custom/3DModels, listed once per scan."""
+        # Compare against a set of names: a filesystem existence probe ignores case on Windows
+        if not custom_names:
+            model_dir = repo_root / "Custom" / "3DModels"
+            try:
+                found = frozenset(p.relative_to(model_dir).as_posix() for p in model_dir.rglob("*") if p.is_file())
+            except OSError:
+                found = frozenset()
+            custom_names.append(found)
+        return custom_names[0]
+
+    def in_kicad_models(rel: str) -> str | None:
+        """Return why rel is not in KiCad's 3D model folder, or None when every segment is listed exactly."""
+        base = kicad_fp_dir.parent / "3dmodels" if kicad_fp_dir is not None else None
+        if base is None or not base.is_dir():
+            return _NO_KICAD_MODELS
+        folder = base
+        segments = rel.split("/")
+        for position, segment in enumerate(segments):
+            if segment not in _listing(listings, folder):
+                return f'3D model "{rel}" is not in KiCad\'s 3D model folder'
+            if position < len(segments) - 1:
+                folder = folder / segment
+        return None
+
+    def model_path_problem(path: str) -> str | None:
+        """Return why one (model ...) path cannot be confirmed, or None when its file is really there."""
+        rel_start = len(CUSTOM_MODEL_PREFIX) if path.startswith(CUSTOM_MODEL_PREFIX) else 0
+        kicad_link = None if rel_start else _KICAD_MODEL_RE.match(path)
+        variable = None if rel_start or kicad_link else _VARIABLE_RE.match(path)
+        if variable is not None:
+            return f"Could not check the 3D model: it uses {variable.group(0)}"
+        absolute = PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
+        if not (rel_start or kicad_link or absolute):
+            return f'Could not check the 3D model: "{path}" does not start with a folder variable'
+        rel = path[kicad_link.end():] if kicad_link else path[rel_start:]
+        parts = _SEPARATOR_RE.split(rel)
+        # An absolute path starts with a root ("" or a drive) that is not a segment to judge
+        if any(part in ("", ".", "..") for part in (parts[1:] if absolute else parts)):
+            return f'3D model path "{path}" is not valid'
+        if rel_start:
+            if rel not in custom_model_names():
+                return f'3D model "{rel}" is not in Custom/3DModels (names are case-sensitive)'
+            return None
+        if kicad_link:
+            return in_kicad_models(rel)
+        file_path = Path(path)
+        if file_path.name not in _listing(listings, file_path.parent):
+            return f'3D model file "{path}" was not found (names are case-sensitive)'
+        return None
+
+    def footprint_model_problems(path: Path) -> list[str]:
+        try:
+            if path.stat().st_size > MAX_KICAD_TEXT_BYTES:
+                return [_UNREADABLE_FOOTPRINT]
+            data = path.read_bytes()
+        except OSError:
+            return [_UNREADABLE_FOOTPRINT]
+        loaded = kicad_files.parse_bytes(data, path.name, max_nodes=MAX_KICAD_TEXT_NODES)
+        named = None if isinstance(loaded, Issue) else kicad_files.footprint_name(loaded.root)
+        if named is None:
+            return [_UNREADABLE_FOOTPRINT]
+        models = kicad_files.find_models(named.node)
+        if not models:
+            return [_NO_MODEL_LINE]
+        problems = (model_path_problem(model.path) for model in models)
+        return list(dict.fromkeys(problem for problem in problems if problem is not None))
+
+    def model_problems(target: FootprintTarget) -> list[str]:
+        if target.path is None:
+            return [_UNREADABLE_FOOTPRINT]
+        if target.path not in verdicts:
+            verdicts[target.path] = footprint_model_problems(target.path)
+        return list(verdicts[target.path])
+
+    return AtomicContext(resolve_footprint, model_problems)
+
+
+def _footprint_violation(owner: _Owner, ctx: AtomicContext) -> tuple[Violation | None, FootprintTarget | None]:
+    """Judge the Footprint field read from its owner; the target is returned only when it resolved."""
+    prop = _find_property(owner.properties, "Footprint")
+    target = ctx.resolve_footprint(prop.value if prop is not None else "")
+    if target.problem is None:
+        return None, target
+    return Violation("footprint", target.problem + owner.suffix), None
+
+
+def _model_violation(target: FootprintTarget, symbol: str, fixable: bool, ctx: AtomicContext) -> Violation | None:
+    """Judge the 3D model of the resolved footprint; a Custom footprint can be given a model from the dialog."""
+    problems = ctx.model_problems(target)
+    if not problems:
+        return None
+    fill = None
+    in_custom = target.rel_path is not None and target.rel_path.startswith("Custom/")
+    if fixable and in_custom and _UNREADABLE_FOOTPRINT not in problems:
+        fill = FixSpec(
+            "attach_model", target.rel_path, symbol, "Choose a 3D model file",
+            {"footprint": target.rel_path, "source": ""},
+        )
+    return Violation("model_3d", "; ".join(problems), fill=fill)
+
+
 def _check_ref(
     root: Node,
     ref: kicad_files.SymbolRef,
@@ -329,6 +519,7 @@ def _check_ref(
     *,
     rel_path: str,
     fixable: bool,
+    ctx: AtomicContext,
 ) -> SymbolEntry:
     name = ref.name
     entry = SymbolEntry(name, extends=kicad_files.extends_name(ref.node))
@@ -343,12 +534,17 @@ def _check_ref(
         suffix=manufacturer_owner.suffix, label_suffix=manufacturer_owner.label_suffix,
     )
     version = kicad_files.file_version(root)
+    footprint, target = _footprint_violation(_owner(units, missing, ("Footprint",)), ctx)
+    # The model rule judges the footprint the field resolved to, so it stays silent when that failed
+    model = _model_violation(target, name, fixable, ctx) if target is not None else None
     found = [
         mpn,
         manufacturer,
+        footprint,
         _value_violation(ref.node, properties, name, rel_path, fixable),
         _datasheet_violation(_owner(units, missing, ("Datasheet",)), rel_path, fixable),
         _description_violation(_owner(units, missing, fieldrules.DESCRIPTION_FIELDS), version, rel_path, fixable),
+        model,
     ]
     entry.violations = sorted((v for v in found if v is not None), key=lambda v: ATOMIC_RULES.index(v.rule))
     # The note about an inherited manufacturer belongs to the symbol that holds it
@@ -365,7 +561,7 @@ def _symbol_index(root: Node) -> dict[str, kicad_files.SymbolRef]:
     return index
 
 
-def check_symbol(root: Node, name: str, *, rel_path: str, fixable: bool) -> SymbolEntry:
+def check_symbol(root: Node, name: str, *, rel_path: str, fixable: bool, ctx: AtomicContext) -> SymbolEntry:
     """Check one symbol of a parsed .kicad_sym and return its entry with one violation per broken rule.
 
     A derived symbol is judged on its own fields: its MPN and Value must be its own, while an absent
@@ -374,7 +570,7 @@ def check_symbol(root: Node, name: str, *, rel_path: str, fixable: bool) -> Symb
     ref = kicad_files.find_symbol(root, name)
     if ref is None:
         return SymbolEntry(name)
-    return _check_ref(root, ref, _symbol_index(root), rel_path=rel_path, fixable=fixable)
+    return _check_ref(root, ref, _symbol_index(root), rel_path=rel_path, fixable=fixable, ctx=ctx)
 
 
 def _read_library(path: Path) -> tuple[Node | None, str | None]:
@@ -419,6 +615,7 @@ def check_libraries(
     """
     issues: list[Issue] = []
     seen = failing = total = problems = 0
+    ctx = repo_context(repo_root, fp_libs, kicad_fp_dir)
     for lib in sym_libs:
         if not is_atomic(lib.nickname):
             continue
@@ -434,7 +631,7 @@ def check_libraries(
         fixable = lib.source == "Custom"
         index = _symbol_index(root)
         for ref in kicad_files.find_symbols(root):
-            entry = _check_ref(root, ref, index, rel_path=lib.rel_path, fixable=fixable)
+            entry = _check_ref(root, ref, index, rel_path=lib.rel_path, fixable=fixable, ctx=ctx)
             lib.symbols.append(entry)
             total += 1
             if entry.failing:

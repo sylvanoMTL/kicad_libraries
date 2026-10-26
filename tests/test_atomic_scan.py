@@ -11,6 +11,7 @@ from customfixtures import (
     atomic_lib,
     digest_tree,
     write_atomic_custom,
+    write_fake_kicad,
     write_synthetic_custom,
 )
 from kicad_lib_manager.library_scanner import scan_all
@@ -25,10 +26,11 @@ def _root(tmp_path):
 
 
 def _scan(tmp_path):
-    """Write the atomic inventory and scan it, with a KiCad folder that does not exist."""
+    """Write the atomic inventory and scan it, with the fake KiCad folders."""
     root = _root(tmp_path)
     write_atomic_custom(root)
-    return scan_all(root, kicad_fp_dir=tmp_path / "no_kicad")
+    footprints, _ = write_fake_kicad(tmp_path)
+    return scan_all(root, kicad_fp_dir=footprints)
 
 
 def _atomic_issues(result):
@@ -58,6 +60,32 @@ def test_every_atomic_library_has_its_symbols_in_file_order_with_the_expected_ru
         for entry in scanned.symbols:
             got = frozenset(v.rule for v in entry.violations)
             assert got == ATOMIC_EXPECTED[(lib.name, entry.name)], (lib.name, entry.name)
+
+
+def test_a_stock_kicad_footprint_is_unknown_when_the_scan_has_no_kicad_folder(tmp_path):
+    root = _root(tmp_path)
+    write_atomic_custom(root)
+
+    result = scan_all(root, kicad_fp_dir=tmp_path / "no_kicad")
+
+    entries = {e.name: e for e in _lib(result, "Atomic_Connector").symbols}
+    official = entries["OFFICIAL-FP"]
+    assert [(v.rule, v.text) for v in official.violations] == [
+        ("footprint", 'footprint library "Package_TO_SOT_SMD" was not found')
+    ]
+    assert not [i for i in _atomic_issues(result) if "OFFICIAL-FP" in i.text and i.code == "atomic.model_3d"]
+
+
+def test_a_custom_footprint_with_a_model_problem_carries_the_fill_that_names_the_footprint(tmp_path):
+    entries = {e.name: e for e in _lib(_scan(tmp_path), "Atomic_Connector").symbols}
+
+    for symbol, footprint in (("MODEL-NONE", "NO-MODEL"), ("MODEL-MISSING", "MISSING-MODEL")):
+        violation = entries[symbol].violations[0]
+        rel = f"Custom/Footprints/Atomic_Footprints.pretty/{footprint}.kicad_mod"
+        assert violation.rule == "model_3d"
+        assert violation.fill == FixSpec(
+            "attach_model", rel, symbol, "Choose a 3D model file", {"footprint": rel, "source": ""}
+        )
 
 
 def test_each_broken_rule_is_one_warning_with_library_symbol_and_reason(tmp_path):
@@ -156,7 +184,7 @@ def test_an_unreadable_library_is_reported_and_the_others_are_still_checked(tmp_
     write_atomic_custom(root)
     (root / "Custom" / "Symbols" / "Atomic_Broken.kicad_sym").write_bytes(b"(kicad_symbol_lib \xff\xfe broken")
 
-    result = scan_all(root, kicad_fp_dir=tmp_path / "no_kicad")
+    result = scan_all(root, kicad_fp_dir=write_fake_kicad(tmp_path)[0])
 
     broken = _lib(result, "Atomic_Broken")
     assert broken.atomic is True

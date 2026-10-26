@@ -118,6 +118,22 @@ class AtomicLibrary:
 ATOMIC_FOOTPRINTS = "Atomic_Footprints"
 ATOMIC_FOOTPRINT_NAMES = ("USB4105-GF-A", "GENERIC-2PIN")
 _ATOMIC_CUSTOM_PREFIX = "Custom/"
+# 3D model cases, each a footprint in Atomic_Footprints.pretty: (footprint name, model path or None for no model line)
+ATOMIC_MODEL_FOOTPRINTS = (
+    ("NO-MODEL", None),
+    ("MISSING-MODEL", f"{MODEL_DIR_VAR}/MISSING-MODEL.step"),
+    ("WRONG-CASE-MODEL", f"{MODEL_DIR_VAR}/wrong-case.step"),
+    ("OTHER-VAR-MODEL", "${KIPRJMOD}/x.step"),
+)
+# The one model file those cases sit next to: only the exact name WRONG-CASE.step exists
+ATOMIC_WRONG_CASE_MODEL = "WRONG-CASE.step"
+# One footprint library name written twice (under Custom/ and under Other/), so its nickname is ambiguous
+ATOMIC_DUP_LIBRARY = "Dup_Footprints"
+ATOMIC_DUP_FOOTPRINT = "DUP-1"
+# The one stock KiCad footprint the fake KiCad install holds, and the model it links
+OFFICIAL_LIBRARY = "Package_TO_SOT_SMD"
+OFFICIAL_FOOTPRINT = "SOT-23-5"
+OFFICIAL_MODEL = f"{OFFICIAL_LIBRARY}.3dshapes/{OFFICIAL_FOOTPRINT}.step"
 
 
 def atomic_part(
@@ -213,6 +229,20 @@ ATOMIC_LIBRARIES = (
                 extra=(("Price", "1.20"), ("Availability", "In stock"), ("Check_prices", "https://example.com/p")),
             ),
             atomic_part("MFR-HIROSE", replace={"Manufacturer": "Hirose"}),
+            # Footprint rule: each way the field can fail to name exactly one existing footprint
+            atomic_part("FP-EMPTY", replace={"Footprint": ""}),
+            atomic_part("FP-NOLIB", replace={"Footprint": "GENERIC-2PIN"}),
+            atomic_part("FP-UNKNOWN-LIB", replace={"Footprint": "Nope_Library:GENERIC-2PIN"}),
+            atomic_part("FP-MISSING", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:NOT-THERE"}),
+            atomic_part("FP-WRONG-CASE", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:generic-2pin"}),
+            atomic_part("FP-AMBIG", replace={"Footprint": f"{ATOMIC_DUP_LIBRARY}:{ATOMIC_DUP_FOOTPRINT}"}),
+            # A stock KiCad footprint, found only when the scan is given the fake KiCad folders
+            atomic_part("OFFICIAL-FP", replace={"Footprint": f"{OFFICIAL_LIBRARY}:{OFFICIAL_FOOTPRINT}"}),
+            # 3D model rule: each way the linked footprint's model can fail
+            atomic_part("MODEL-NONE", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:NO-MODEL"}),
+            atomic_part("MODEL-MISSING", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:MISSING-MODEL"}),
+            atomic_part("MODEL-WRONG-CASE", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:WRONG-CASE-MODEL"}),
+            atomic_part("MODEL-OTHER-VAR", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:OTHER-VAR-MODEL"}),
         ),
     ),
     AtomicLibrary("Atomic_Empty", ()),
@@ -274,6 +304,17 @@ ATOMIC_EXPECTED: dict[tuple[str, str], frozenset[str]] = {
     ("Atomic_Connector", "FFC-0.5-20"): frozenset({"value"}),
     ("Atomic_Connector", "LEFTOVER-1"): frozenset(),
     ("Atomic_Connector", "MFR-HIROSE"): frozenset(),
+    ("Atomic_Connector", "FP-EMPTY"): frozenset({"footprint"}),
+    ("Atomic_Connector", "FP-NOLIB"): frozenset({"footprint"}),
+    ("Atomic_Connector", "FP-UNKNOWN-LIB"): frozenset({"footprint"}),
+    ("Atomic_Connector", "FP-MISSING"): frozenset({"footprint"}),
+    ("Atomic_Connector", "FP-WRONG-CASE"): frozenset({"footprint"}),
+    ("Atomic_Connector", "FP-AMBIG"): frozenset({"footprint"}),
+    ("Atomic_Connector", "OFFICIAL-FP"): frozenset(),
+    ("Atomic_Connector", "MODEL-NONE"): frozenset({"model_3d"}),
+    ("Atomic_Connector", "MODEL-MISSING"): frozenset({"model_3d"}),
+    ("Atomic_Connector", "MODEL-WRONG-CASE"): frozenset({"model_3d"}),
+    ("Atomic_Connector", "MODEL-OTHER-VAR"): frozenset({"model_3d"}),
     ("Atomic_Regulator", "TLV75533PDBVR"): frozenset(),
     ("Atomic_Regulator", "TLV75518PDBVR"): frozenset(),
     ("Atomic_Regulator", "TLV75525PDBVR"): frozenset({"mpn"}),
@@ -302,6 +343,37 @@ def write_atomic_files(custom_dir: Path) -> None:
     for name in ATOMIC_FOOTPRINT_NAMES:
         (pretty / f"{name}.kicad_mod").write_bytes(vendor_footprint(name, models=(f"{MODEL_DIR_VAR}/{name}.step",)))
         (models / f"{name}.step").write_bytes(STEP_BYTES)
+    for name, model in ATOMIC_MODEL_FOOTPRINTS:
+        links = (model,) if model is not None else ()
+        (pretty / f"{name}.kicad_mod").write_bytes(vendor_footprint(name, models=links))
+    (models / ATOMIC_WRONG_CASE_MODEL).write_bytes(STEP_BYTES)
+    _write_dup_footprint(custom_dir / "Footprints")
+
+
+def _write_dup_footprint(footprints_dir: Path) -> None:
+    """Write Dup_Footprints.pretty/DUP-1.kicad_mod under footprints_dir, linking an existing Custom model."""
+    pretty = footprints_dir / f"{ATOMIC_DUP_LIBRARY}.pretty"
+    pretty.mkdir(parents=True, exist_ok=True)
+    model = f"{MODEL_DIR_VAR}/{ATOMIC_FOOTPRINT_NAMES[1]}.step"
+    (pretty / f"{ATOMIC_DUP_FOOTPRINT}.kicad_mod").write_bytes(vendor_footprint(ATOMIC_DUP_FOOTPRINT, models=(model,)))
+
+
+def write_fake_kicad(root: Path) -> tuple[Path, Path]:
+    """Write a stand-in KiCad install under root/kicad and return (footprints dir, 3dmodels dir).
+
+    It holds one stock footprint, Package_TO_SOT_SMD:SOT-23-5, and the model that footprint links,
+    laid out like the real share/kicad folders (3dmodels next to footprints).
+    """
+    footprints = root / "kicad" / "footprints"
+    models = root / "kicad" / "3dmodels"
+    pretty = footprints / f"{OFFICIAL_LIBRARY}.pretty"
+    shapes = models / f"{OFFICIAL_LIBRARY}.3dshapes"
+    pretty.mkdir(parents=True, exist_ok=True)
+    shapes.mkdir(parents=True, exist_ok=True)
+    link = f"${{KICAD10_3DMODEL_DIR}}/{OFFICIAL_MODEL}"
+    (pretty / f"{OFFICIAL_FOOTPRINT}.kicad_mod").write_bytes(vendor_footprint(OFFICIAL_FOOTPRINT, model=link))
+    (shapes / f"{OFFICIAL_FOOTPRINT}.step").write_bytes(STEP_BYTES)
+    return footprints, models
 
 
 def write_atomic_custom(root: Path) -> RepoLayout:
@@ -313,6 +385,8 @@ def write_atomic_custom(root: Path) -> RepoLayout:
         folder = root / lib.folder
         folder.mkdir(parents=True, exist_ok=True)
         (folder / f"{lib.name}.kicad_sym").write_bytes(atomic_lib(lib.symbols))
+    # The second Dup_Footprints, outside Custom/, makes the nickname ambiguous
+    _write_dup_footprint(root / "Other" / "Footprints")
     return RepoLayout.for_repo(root)
 
 
