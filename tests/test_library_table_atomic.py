@@ -429,3 +429,122 @@ def test_double_click_on_a_problem_row_emits_its_parent_symbol(widget, qtbot):
     with qtbot.waitSignal(widget.symbol_activated, timeout=1000) as blocker:
         widget._sym_tree.itemDoubleClicked.emit(second, 0)
     assert blocker.args == [ATOMIC, "TWO_BAD"]
+
+
+# ── G-09-1 task 2: note rows, spanning, collapsed components, selection safety ──
+
+LEFTOVER = Finding("leftover", "Leftover price data is present")
+UNKNOWN_MFR = Finding("manufacturer", "Not in the manufacturer table")
+
+
+def _mixed_widget(qtbot, extra=()):
+    entry = SymbolEntry("MIXED", violations=[V_FOOTPRINT, V_DESCRIPTION],
+                        findings=[LEFTOVER, UNKNOWN_MFR])
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Atomic_Test", ATOMIC, "Custom", atomic=True, symbols=[entry, *extra])])
+    return _widget(qtbot, scan)
+
+
+def _problem_and_note_rows(widget):
+    return [
+        row for lib in widget._sym_items.values() for sym in _children(lib)
+        for row in _children(sym)
+    ]
+
+
+def test_note_rows_follow_problem_rows_in_order(qtbot):
+    w = _mixed_widget(qtbot)
+    assert [r.text(0) for r in _children(_sym_row(w, "MIXED"))] == [
+        V_FOOTPRINT.text, V_DESCRIPTION.text, LEFTOVER.text, UNKNOWN_MFR.text,
+    ]
+
+
+def test_note_row_is_plain_with_the_information_icon(qtbot):
+    w = _mixed_widget(qtbot)
+    problem, _, note, _ = _children(_sym_row(w, "MIXED"))
+    assert isinstance(note.data(0, Qt.ItemDataRole.UserRole), Finding)
+    assert not note.icon(0).isNull()
+    assert note.icon(0).cacheKey() != problem.icon(0).cacheKey()
+    assert note.foreground(0).style() == Qt.BrushStyle.NoBrush
+    assert note.data(0, Qt.ItemDataRole.CheckStateRole) is None
+    assert not (note.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+
+
+def test_problem_and_note_rows_span_the_full_width(qtbot):
+    w = _mixed_widget(qtbot)
+    rows = _problem_and_note_rows(w)
+    assert len(rows) == 4
+    assert all(r.isFirstColumnSpanned() for r in rows)
+
+
+def test_symbol_rows_start_collapsed_and_libraries_still_expand(qtbot):
+    quiet = SymbolEntry("QUIET")
+    w = _mixed_widget(qtbot, extra=[quiet])
+    mixed = _sym_row(w, "MIXED")
+    assert mixed.childCount() == 4
+    assert not mixed.isExpanded()
+    assert _lib_item(w).isExpanded()
+    w._sym_tree.expandAll()
+    assert mixed.isExpanded()
+    w._sym_tree.collapseAll()
+    assert not mixed.isExpanded()
+
+
+def test_double_click_on_a_note_row_emits_its_parent_symbol(qtbot):
+    entry = SymbolEntry("S1", findings=[LEFTOVER])
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Atomic_Test", ATOMIC, "Custom", atomic=True, symbols=[entry])])
+    w = _widget(qtbot, scan)
+    (note,) = _children(_sym_row(w, "S1"))
+    with qtbot.waitSignal(w.symbol_activated, timeout=1000) as blocker:
+        _activate(w, note)
+    assert blocker.args == [ATOMIC, "S1"]
+
+
+def test_problem_row_change_leaves_selection_unchanged(qtbot):
+    scan = _selection_scan()
+    w = _widget(qtbot, scan)
+    fp_item = w._fp_items[FP_REF]
+    fp_item.setCheckState(0, Qt.CheckState.Checked)
+    before = (_checks(scan), fp_item.checkState(0))
+    assert before[0] == [False, True]
+
+    row = _children(_sym_row(w, "TWO_BAD"))[0]
+    row.setText(0, "Custom")
+    row.setIcon(0, w.style().standardIcon(w.style().StandardPixmap.SP_MessageBoxWarning))
+    row.setData(0, Qt.ItemDataRole.UserRole, row.data(0, Qt.ItemDataRole.UserRole))
+
+    assert (_checks(scan), fp_item.checkState(0)) == before
+
+
+def test_select_all_gives_problem_rows_no_check_state(qtbot):
+    scan = _selection_scan()
+    scan.symbol_libs[0].symbols[1].findings.append(LEFTOVER)
+    w = _widget(qtbot, scan)
+    rows = _problem_and_note_rows(w)
+    assert len(rows) == 4
+    for action in (w.select_all, w.deselect_all):
+        action()
+        for row in rows:
+            assert row.data(0, Qt.ItemDataRole.CheckStateRole) is None
+    assert _checks(scan) == [False, False]
+
+
+def test_problem_and_note_tooltips_are_escaped(qtbot):
+    evil = Violation("r", "Bad <b>x</b> value")
+    entry = SymbolEntry("S1", violations=[evil], findings=[Finding("k", "<i>note</i>")])
+    scan = ScanResult(symbol_libs=[SymbolLibrary(
+        "Atomic_Test", ATOMIC, "Custom", atomic=True, symbols=[entry])])
+    w = _widget(qtbot, scan)
+    problem, note = _children(_sym_row(w, "S1"))
+    assert problem.text(0) == "Bad <b>x</b> value"
+    assert note.text(0) == "<i>note</i>"
+    assert "&lt;b&gt;x&lt;/b&gt;" in problem.toolTip(0)
+    assert "&lt;i&gt;note&lt;/i&gt;" in note.toolTip(0)
+    for tip in (problem.toolTip(0), note.toolTip(0)):
+        assert "<b>" not in tip and "<i>" not in tip
+
+
+def test_no_internal_field_names_in_problem_and_note_rows(qtbot):
+    w = _mixed_widget(qtbot)
+    assert "ki_" not in _all_tip_text(w)
