@@ -10,19 +10,21 @@ import difflib
 import hashlib
 import os
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from . import fsutil, kicad_files
 from . import kicad_process
-from .atomic_check import FILL_KINDS, SAFE_FIX_KINDS, effective_mpn
+from .atomic_check import FILL_KINDS, SAFE_FIX_KINDS, datasheet_problem, effective_mpn
+from .importer import fieldrules
 from .importer.package import MAX_KICAD_TEXT_BYTES, MAX_KICAD_TEXT_NODES
 from .models import FixSpec, Issue, Severity
 from .sexpr import Edit, SexprError, apply_edits, parse
 
 _CUSTOM = "Custom"
 _MIB = 1024 * 1024
+_GROUP_NAMES = {"mpn": fieldrules.MPN_FIELDS, "manufacturer": fieldrules.MANUFACTURER_FIELDS}
 
 
 @dataclass
@@ -161,6 +163,10 @@ def _set_or_insert(
     return [_insert_property(text, loaded, ref, insert_as or names[0], value, extra_ids)]
 
 
+def _group_of(names: Sequence[str]) -> str:
+    return "MPN" if names[0] == fieldrules.MPN_FIELDS[0] else "Manufacturer"
+
+
 def _symbol_edits(
     spec: FixSpec, text: str, loaded: kicad_files.LoadedFile, ref: kicad_files.SymbolRef, extra_ids: dict[str, int], notes: _Notes
 ) -> list[Edit]:
@@ -179,6 +185,95 @@ def _symbol_edits(
         edits = _set_or_insert(text, loaded, ref, ("Value",), value, extra_ids)
         if edits is None:
             notes.skip(spec, "Value is already right")
+            return []
+        return edits
+    if kind == "rename_alias":
+        old, new = params.get("property", ""), params.get("new_name", "")
+        group = next((names for names in _GROUP_NAMES.values() if old in names), None)
+        if group is None or new != group[0] or old == new:
+            notes.unknown(spec, "is not a rename of an MPN or Manufacturer alias")
+            return []
+        prop = kicad_files.find_property(node, old)
+        if prop is None:
+            notes.skip(spec, f'there is no "{old}" field any more')
+            return []
+        if kicad_files.find_property(node, new) is not None:
+            notes.skip(spec, f'it already has a "{new}" field')
+            return []
+        return [kicad_files.rename_property_edit(prop, new)]
+    if kind == "canonical_manufacturer":
+        name, value = params.get("property", ""), params.get("value", "").strip()
+        if name not in fieldrules.MANUFACTURER_FIELDS or not value:
+            notes.unknown(spec, "does not name a Manufacturer field and its table spelling")
+            return []
+        prop = kicad_files.find_property(node, name)
+        if prop is None:
+            notes.skip(spec, f'there is no "{name}" field any more')
+            return []
+        if prop.value == value:
+            notes.skip(spec, "the manufacturer is already written that way")
+            return []
+        return [kicad_files.set_property_edit(prop, value)]
+    if kind == "merge_alias":
+        names = _GROUP_NAMES.get(params.get("group", ""))
+        if names is None:
+            notes.unknown(spec, "does not name the MPN or Manufacturer fields")
+            return []
+        value = params.get("value", "").strip()
+        if not value:
+            notes.incomplete(spec, "needs the value to keep first")
+            return []
+        members = [p for p in kicad_files.list_properties(node) if p.name in names]
+        keep = next((p for p in members if p.name == params.get("keep")), None)
+        if keep is None:
+            notes.skip(spec, "the field to keep is gone")
+            return []
+        # The kept field takes the canonical name, otherwise a kept alias such as MF fails the rule again
+        edits = []
+        if keep.name != names[0]:
+            edits.append(kicad_files.rename_property_edit(keep, names[0]))
+        if keep.value != value:
+            edits.append(kicad_files.set_property_edit(keep, value))
+        edits.extend(kicad_files.remove_property_edit(text, p) for p in members if p.node is not keep.node)
+        if not edits:
+            notes.skip(spec, f"there is already one {_group_of(names)} field with that value")
+        return edits
+    if kind == "remove_leftover":
+        name = params.get("property", "")
+        if not fieldrules.is_volatile(name) or fieldrules.is_protected(name):
+            notes.unknown(spec, "is not a leftover price or stock field")
+            return []
+        prop = kicad_files.find_property(node, name)
+        if prop is None:
+            notes.skip(spec, f'there is no "{name}" field any more')
+            return []
+        return [kicad_files.remove_property_edit(text, prop)]
+    if kind == "fill_datasheet":
+        value = params.get("value", "").strip()
+        if not value:
+            notes.incomplete(spec, "needs a datasheet link or file path first")
+            return []
+        problem = datasheet_problem(value)
+        if problem is not None:
+            notes.incomplete(spec, f"cannot be used: {problem}")
+            return []
+        edits = _set_or_insert(text, loaded, ref, ("Datasheet",), value, extra_ids)
+        if edits is None:
+            notes.skip(spec, "the datasheet is already that")
+            return []
+        return edits
+    if kind == "fill_description":
+        value = fieldrules.clean_description(params.get("value", ""))
+        if not value:
+            notes.incomplete(spec, "needs a description first")
+            return []
+        wanted = params.get("property", "")
+        names = tuple(dict.fromkeys(n for n in (wanted, *fieldrules.DESCRIPTION_FIELDS) if n in fieldrules.DESCRIPTION_FIELDS))
+        # An existing Description or ki_description is set; a new one is named by the file's own format
+        field_name = kicad_files.description_field_name(ref.node, kicad_files.file_version(loaded.root))
+        edits = _set_or_insert(text, loaded, ref, names, value, extra_ids, insert_as=field_name)
+        if edits is None:
+            notes.skip(spec, "the description is already that")
             return []
         return edits
     notes.unknown(spec, "is not a fix this tool can make")
@@ -398,3 +493,33 @@ def apply_preview(preview: FixPreview, *, backup_root: Path | None = None) -> Ap
         for c in preview.changes
     ]
     return ApplyResult(True, done, backup_dir)
+
+
+def complete_fill(spec: FixSpec, value: str) -> FixSpec | str:
+    """Turn a fill template and the typed or picked input into a fix, or return the plain reason it cannot be used."""
+    if spec.kind == "fill_datasheet":
+        problem = datasheet_problem(value)
+        if problem is not None:
+            return problem
+        stored = value.strip()
+        label = f'Datasheet → "{stored}"'
+    elif spec.kind == "fill_description":
+        stored = fieldrules.clean_description(value)
+        if not stored:
+            return "Type a description first"
+        label = f'Description → "{stored}"'
+    elif spec.kind == "merge_alias":
+        stored = value.strip()
+        if not stored:
+            return "Pick the value to keep first"
+        group = "MPN" if spec.params.get("group") == "mpn" else "manufacturer"
+        label = f'Keep "{stored}" as the only {group} value'
+    elif spec.kind == "attach_model":
+        if not value.strip():
+            return "Choose a 3D model file first"
+        stored = value
+        label = f'3D model → "{PureWindowsPath(value).name}"'
+    else:
+        return spec
+    key = "source" if spec.kind == "attach_model" else "value"
+    return replace(spec, label=label, params={**spec.params, key: stored})
