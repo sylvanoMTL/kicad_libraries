@@ -245,6 +245,7 @@ class MainWindow(QMainWindow):
 
         # Library tree
         self._tree = LibraryTableWidget()
+        self._tree.symbol_activated.connect(self._on_symbol_activated)
         layout.addWidget(self._tree, stretch=1)
 
         # Log panel
@@ -328,6 +329,7 @@ class MainWindow(QMainWindow):
             self._rescan_btn, self._act_rescan, self._act_set_kicad_path,
             self._act_generate, self._generate_btn, self._act_import,
             self._import_btn, self._select_all_btn, self._deselect_all_btn,
+            self._act_check_atomic,
         ):
             control.setEnabled(not running)
 
@@ -796,6 +798,10 @@ class MainWindow(QMainWindow):
         self._atomic_dialog = dialog
         dialog.open()
 
+    def _on_symbol_activated(self, rel_path: str, name: str):
+        """A marked symbol row was double-clicked in the tree: open the check on that symbol."""
+        self._open_atomic_check(focus=(rel_path, name))
+
     def _on_atomic_fixes_applied(self, issues: list[Issue]):
         """Fixes were written: log them, then rescan so the fixed problems are gone."""
         self._log_issues(issues)
@@ -976,6 +982,9 @@ class MainWindow(QMainWindow):
                 return
             # Waits for the dialog's workers and closes the opened package first
             dialog.reject()
+        # The check dialog only holds the last scan result, so closing it loses nothing
+        if self._atomic_dialog is not None:
+            self._atomic_dialog.reject()
         # Never destroy a running QThread
         if self._worker is not None:
             self._worker.wait()

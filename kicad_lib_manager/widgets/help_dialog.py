@@ -5,7 +5,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from .import_dialog import ADD_MODEL_TEXT, REMOVE_MODEL_TEXT
-from .theme import AMBER
+from .theme import ACCENT, AMBER
 
 CSS = """
 body {
@@ -165,6 +165,20 @@ HELP_PAGES["library_tree"] = _wrap(
     "</ul>"
     "<p>Libraries with missing footprint references are highlighted in "
     f"<span style='color:{AMBER};font-weight:bold'>amber</span>.</p>"
+    "<h3>Atomic parts</h3>"
+    "<p>Libraries whose name starts with <code>Atomic_</code> show one row for each part. "
+    f"A part that breaks an atomic rule is shown in <span style='color:{AMBER};font-weight:bold'>"
+    "amber</span> with a warning icon, and its tooltip lists every rule it breaks in plain words. "
+    "The library row counts the parts that fail, for example <i>1 of 3 fail</i>.</p>"
+    "<p>Parts added or edited since the last Custom commit are marked "
+    f"<span style='color:{ACCENT};font-weight:bold'>New</span> or "
+    f"<span style='color:{ACCENT};font-weight:bold'>Changed</span> in the Status column. "
+    "This works for every library in Custom, not only the atomic ones.</p>"
+    "<p>To fix a marked part, double-click it, or press <code>Ctrl+Shift+A</code>. "
+    "<b>Check Atomic Parts</b> lists every problem and offers the safe fixes as ticked rows. "
+    "You can type in a missing datasheet or description, or pick a missing 3D model. "
+    "You see the exact changes before anything is written, and the libraries are scanned "
+    "again afterwards.</p>"
 )
 
 HELP_PAGES["selecting"] = _wrap(
@@ -343,6 +357,7 @@ HELP_PAGES["shortcuts"] = _wrap(
     "<tr><td><code>Ctrl+G</code></td><td>Generate Tables</td></tr>"
     "<tr><td><code>Ctrl+R</code></td><td>Restore Backup</td></tr>"
     "<tr><td><code>Ctrl+Shift+R</code></td><td>Rescan Libraries</td></tr>"
+    "<tr><td><code>Ctrl+Shift+A</code></td><td>Check Atomic Parts</td></tr>"
     "<tr><td><code>Ctrl+K</code></td><td>Set KiCad Footprint Path</td></tr>"
     "<tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>"
     "<tr><td><code>F1</code></td><td>Open this User Guide</td></tr>"
