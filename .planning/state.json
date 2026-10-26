@@ -16,7 +16,7 @@
     {
       "number": "10",
       "name": "Importer on the Atomic Scheme",
-      "status": "pending"
+      "status": "in_progress"
     },
     {
       "number": "11",
@@ -36,8 +36,8 @@
   ],
   "next": {
     "command": "/gsd-progress --next",
-    "label": "Advance to the next step (plan phase 10)",
-    "reason": "Phase 3 of 6 — needs a plan"
+    "label": "Advance to the next step",
+    "reason": "Phase 3 of 6 · 33% · executing"
   },
-  "updated_at": "2026-10-26T17:31:28.191Z"
+  "updated_at": "2026-10-26T22:50:19.270Z"
 }

@@ -63,10 +63,10 @@ Task rows are added from the PLAN.md files once planning completes (and confirme
 - [ ] `tests/test_suggest_atomic.py` and a synthetic stock KiCad dir builder (`tests/stockfixtures.py`: small `symbols/*.kicad_sym` and `footprints/*.pretty` trees) so no unit test depends on the installed KiCad
 - [ ] `tests/test_incoming_check.py`, `tests/test_keywords.py`, `tests/test_footprint_text.py`
 - [ ] Fixture migration: Atomic counterparts of `CURRENT_CUSTOM_SYMBOL_LIBS` / `CURRENT_CUSTOM_FOOTPRINT_LIBS` and an `Atomic_Footprints.pretty` in `write_custom_layout` (`tests/zipfixtures.py`)
-- [ ] Every new importer module registered in `ALLOWED` of `tests/test_importer_layering.py`; `tests/test_layering.py` updated for `atomic_check` / `kicad_files` / `manufacturers` changes
+- [ ] Every new importer module registered in `ALLOWED` of `tests/test_importer_layering.py` (owned by plan 10-01); `tests/test_layering.py` needs no edit, since no Phase 10 change adds a top-level `kicad_lib_manager` import (recorded per plan), and it runs as a guard
 - [ ] `tests/test_naming_suggest.py` retargeted to the new API, keeping the `datasheet_host` / `registered_domain` / `is_aggregator_host` tests
 - [ ] `tests/test_help_dialog.py` updated for the rewritten "Target library" and "Items" help text
-- [ ] UAT scratch builder expectation retargeted: `PowerSupply_SubCategory_RECOM` → `Atomic_Converter_DCDC_Isolated`
+- [ ] RECOM suggestion expectation retargeted: `PowerSupply_SubCategory_RECOM` → `Atomic_Converter_DCDC_Isolated` in `tests/test_real_vendor_samples.py` and `tests/test_samacsys_adapter.py` (owned by plan 10-15); the `tests/test_atomic_uat.py` scratch builder only needs a change if a plan alters what it builds
 
 ---
 
