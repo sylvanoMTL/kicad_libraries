@@ -151,6 +151,28 @@ def parse(text: str, *, max_nodes: int | None = None) -> Node:
     return root
 
 
+def token_stream(node: Node) -> tuple[tuple[str, str], ...]:
+    """Return a node as a flat run of tokens that ignores whitespace and line endings.
+
+    A list gives ("(", "") ... (")", ""); a string or atom gives (kind, raw token text). Only the children of a
+    root node are walked. Two files that differ only in layout give equal streams.
+    """
+    out: list[tuple[str, str]] = []
+    # Explicit stack: no recursion limit on deeply nested input. A None marks "close the list".
+    stack: list[Node | None] = list(reversed(node.children)) if node.kind == "root" else [node]
+    while stack:
+        item = stack.pop()
+        if item is None:
+            out.append((")", ""))
+        elif item.kind == "list":
+            out.append(("(", ""))
+            stack.append(None)
+            stack.extend(reversed(item.children))
+        else:
+            out.append((item.kind, item.text))
+    return tuple(out)
+
+
 @dataclass(frozen=True)
 class Edit:
     start: int
