@@ -118,6 +118,15 @@ class AtomicLibrary:
 ATOMIC_FOOTPRINTS = "Atomic_Footprints"
 ATOMIC_FOOTPRINT_NAMES = ("USB4105-GF-A", "GENERIC-2PIN")
 _ATOMIC_CUSTOM_PREFIX = "Custom/"
+# 3D model cases, each a footprint in Atomic_Footprints.pretty: (footprint name, model path or None for no model line)
+ATOMIC_MODEL_FOOTPRINTS = (
+    ("NO-MODEL", None),
+    ("MISSING-MODEL", f"{MODEL_DIR_VAR}/MISSING-MODEL.step"),
+    ("WRONG-CASE-MODEL", f"{MODEL_DIR_VAR}/wrong-case.step"),
+    ("OTHER-VAR-MODEL", "${KIPRJMOD}/x.step"),
+)
+# The one model file those cases sit next to: only the exact name WRONG-CASE.step exists
+ATOMIC_WRONG_CASE_MODEL = "WRONG-CASE.step"
 # One footprint library name written twice (under Custom/ and under Other/), so its nickname is ambiguous
 ATOMIC_DUP_LIBRARY = "Dup_Footprints"
 ATOMIC_DUP_FOOTPRINT = "DUP-1"
@@ -229,6 +238,11 @@ ATOMIC_LIBRARIES = (
             atomic_part("FP-AMBIG", replace={"Footprint": f"{ATOMIC_DUP_LIBRARY}:{ATOMIC_DUP_FOOTPRINT}"}),
             # A stock KiCad footprint, found only when the scan is given the fake KiCad folders
             atomic_part("OFFICIAL-FP", replace={"Footprint": f"{OFFICIAL_LIBRARY}:{OFFICIAL_FOOTPRINT}"}),
+            # 3D model rule: each way the linked footprint's model can fail
+            atomic_part("MODEL-NONE", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:NO-MODEL"}),
+            atomic_part("MODEL-MISSING", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:MISSING-MODEL"}),
+            atomic_part("MODEL-WRONG-CASE", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:WRONG-CASE-MODEL"}),
+            atomic_part("MODEL-OTHER-VAR", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:OTHER-VAR-MODEL"}),
         ),
     ),
     AtomicLibrary("Atomic_Empty", ()),
@@ -297,6 +311,10 @@ ATOMIC_EXPECTED: dict[tuple[str, str], frozenset[str]] = {
     ("Atomic_Connector", "FP-WRONG-CASE"): frozenset({"footprint"}),
     ("Atomic_Connector", "FP-AMBIG"): frozenset({"footprint"}),
     ("Atomic_Connector", "OFFICIAL-FP"): frozenset(),
+    ("Atomic_Connector", "MODEL-NONE"): frozenset({"model_3d"}),
+    ("Atomic_Connector", "MODEL-MISSING"): frozenset({"model_3d"}),
+    ("Atomic_Connector", "MODEL-WRONG-CASE"): frozenset({"model_3d"}),
+    ("Atomic_Connector", "MODEL-OTHER-VAR"): frozenset({"model_3d"}),
     ("Atomic_Regulator", "TLV75533PDBVR"): frozenset(),
     ("Atomic_Regulator", "TLV75518PDBVR"): frozenset(),
     ("Atomic_Regulator", "TLV75525PDBVR"): frozenset({"mpn"}),
@@ -325,6 +343,10 @@ def write_atomic_files(custom_dir: Path) -> None:
     for name in ATOMIC_FOOTPRINT_NAMES:
         (pretty / f"{name}.kicad_mod").write_bytes(vendor_footprint(name, models=(f"{MODEL_DIR_VAR}/{name}.step",)))
         (models / f"{name}.step").write_bytes(STEP_BYTES)
+    for name, model in ATOMIC_MODEL_FOOTPRINTS:
+        links = (model,) if model is not None else ()
+        (pretty / f"{name}.kicad_mod").write_bytes(vendor_footprint(name, models=links))
+    (models / ATOMIC_WRONG_CASE_MODEL).write_bytes(STEP_BYTES)
     _write_dup_footprint(custom_dir / "Footprints")
 
 

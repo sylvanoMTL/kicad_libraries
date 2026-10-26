@@ -62,6 +62,32 @@ def test_every_atomic_library_has_its_symbols_in_file_order_with_the_expected_ru
             assert got == ATOMIC_EXPECTED[(lib.name, entry.name)], (lib.name, entry.name)
 
 
+def test_a_stock_kicad_footprint_is_unknown_when_the_scan_has_no_kicad_folder(tmp_path):
+    root = _root(tmp_path)
+    write_atomic_custom(root)
+
+    result = scan_all(root, kicad_fp_dir=tmp_path / "no_kicad")
+
+    entries = {e.name: e for e in _lib(result, "Atomic_Connector").symbols}
+    official = entries["OFFICIAL-FP"]
+    assert [(v.rule, v.text) for v in official.violations] == [
+        ("footprint", 'footprint library "Package_TO_SOT_SMD" was not found')
+    ]
+    assert not [i for i in _atomic_issues(result) if "OFFICIAL-FP" in i.text and i.code == "atomic.model_3d"]
+
+
+def test_a_custom_footprint_with_a_model_problem_carries_the_fill_that_names_the_footprint(tmp_path):
+    entries = {e.name: e for e in _lib(_scan(tmp_path), "Atomic_Connector").symbols}
+
+    for symbol, footprint in (("MODEL-NONE", "NO-MODEL"), ("MODEL-MISSING", "MISSING-MODEL")):
+        violation = entries[symbol].violations[0]
+        rel = f"Custom/Footprints/Atomic_Footprints.pretty/{footprint}.kicad_mod"
+        assert violation.rule == "model_3d"
+        assert violation.fill == FixSpec(
+            "attach_model", rel, symbol, "Choose a 3D model file", {"footprint": rel, "source": ""}
+        )
+
+
 def test_each_broken_rule_is_one_warning_with_library_symbol_and_reason(tmp_path):
     issues = _atomic_issues(_scan(tmp_path))
 

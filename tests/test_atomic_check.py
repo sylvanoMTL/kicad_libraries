@@ -12,6 +12,7 @@ from customfixtures import (
     write_atomic_files,
     write_fake_kicad,
 )
+from installfixtures import vendor_footprint
 from kicad_lib_manager import kicad_files
 from kicad_lib_manager.atomic_check import (
     ATOMIC_RULES,
@@ -630,3 +631,218 @@ def test_footprint_rule_comes_between_manufacturer_and_value_in_the_reporting_or
     entry = _check(atomic_lib((part,)), "P1", ctx=_fp_ctx(tmp_path))
 
     assert _rules(entry) == ["manufacturer", "footprint", "value"]
+
+
+# -- 3D model rule (D-19, D-15) -------------------------------------------------
+
+NO_KICAD_MODELS = "Could not check the 3D model: KiCad's 3D model folder was not found"
+UNREADABLE = "Could not check the 3D model: the footprint could not be read"
+KICAD_LINK = "${KICAD10_3DMODEL_DIR}/Package_TO_SOT_SMD.3dshapes/SOT-23-5.step"
+OTHER_LIB = FootprintLibrary(ATOMIC_FOOTPRINTS, f"Other/Footprints/{ATOMIC_FOOTPRINTS}.pretty", "Other")
+
+
+def _model_ctx(tmp_path, footprint, *, models=(), raw=None, kicad="fake", lib=FP_LIB):
+    """Write one footprint FP-T into lib's folder and return a context over the repo.
+
+    kicad is "fake" (the fake install), "none" (no KiCad folder) or "no_models" (footprints folder only).
+    """
+    root, _ = _repo(tmp_path, kicad=False)
+    folder = root / lib.rel_path
+    folder.mkdir(parents=True, exist_ok=True)
+    data = raw if raw is not None else vendor_footprint(footprint, models=tuple(models))
+    (folder / f"{footprint}.kicad_mod").write_bytes(data)
+    kicad_dir = None
+    if kicad == "fake":
+        kicad_dir = write_fake_kicad(tmp_path)[0]
+    elif kicad == "no_models":
+        kicad_dir = tmp_path / "bare" / "footprints"
+        kicad_dir.mkdir(parents=True)
+    return repo_context(root, [lib], kicad_dir)
+
+
+def _model_entry(tmp_path, *, models=(), raw=None, kicad="fake", lib=FP_LIB, fixable=True, footprint="FP-T"):
+    ctx = _model_ctx(tmp_path, footprint, models=models, raw=raw, kicad=kicad, lib=lib)
+    part = atomic_part("P1", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:{footprint}"})
+    return _check(atomic_lib((part,)), "P1", ctx=ctx, fixable=fixable)
+
+
+def test_model_in_custom_3dmodels_with_the_exact_name_passes(tmp_path):
+    entry = _model_entry(tmp_path, footprint="USB4105-GF-A", models=("${CUSTOM_3DMODEL_DIR}/USB4105-GF-A.step",))
+
+    assert entry.violations == []
+
+
+def test_model_missing_from_custom_3dmodels_is_named(tmp_path):
+    entry = _model_entry(tmp_path, models=("${CUSTOM_3DMODEL_DIR}/MISSING-MODEL.step",))
+
+    assert _violation(entry, "model_3d").text == (
+        '3D model "MISSING-MODEL.step" is not in Custom/3DModels (names are case-sensitive)'
+    )
+
+
+def test_model_with_the_wrong_case_fails_even_on_a_case_insensitive_disk(tmp_path):
+    entry = _model_entry(tmp_path, models=("${CUSTOM_3DMODEL_DIR}/wrong-case.step",))
+
+    assert _violation(entry, "model_3d").text == (
+        '3D model "wrong-case.step" is not in Custom/3DModels (names are case-sensitive)'
+    )
+
+
+def test_model_footprint_without_a_model_line_fails(tmp_path):
+    entry = _model_entry(tmp_path, models=())
+
+    assert _violation(entry, "model_3d").text == "the footprint has no 3D model"
+
+
+def test_model_every_line_must_resolve_and_only_the_missing_one_is_named(tmp_path):
+    entry = _model_entry(
+        tmp_path, models=("${CUSTOM_3DMODEL_DIR}/GENERIC-2PIN.step", "${CUSTOM_3DMODEL_DIR}/GONE.step")
+    )
+
+    assert _violation(entry, "model_3d").text == '3D model "GONE.step" is not in Custom/3DModels (names are case-sensitive)'
+
+
+def test_model_several_problems_are_joined_into_one_violation(tmp_path):
+    entry = _model_entry(tmp_path, models=("${CUSTOM_3DMODEL_DIR}/GONE.step", "${KIPRJMOD}/x.step"))
+
+    assert _violation(entry, "model_3d").text == (
+        '3D model "GONE.step" is not in Custom/3DModels (names are case-sensitive); '
+        "Could not check the 3D model: it uses ${KIPRJMOD}"
+    )
+
+
+@pytest.mark.parametrize("variable", ["KICAD10", "KICAD9"])
+def test_model_in_kicad_3dmodels_resolves_for_any_numbered_variable(tmp_path, variable):
+    link = KICAD_LINK.replace("KICAD10", variable)
+
+    entry = _model_entry(tmp_path, models=(link,), footprint="FP-T")
+
+    assert entry.violations == []
+
+
+def test_model_missing_from_the_kicad_folder_is_named(tmp_path):
+    entry = _model_entry(tmp_path, models=("${KICAD10_3DMODEL_DIR}/Package_TO_SOT_SMD.3dshapes/X.step",))
+
+    assert _violation(entry, "model_3d").text == '3D model "Package_TO_SOT_SMD.3dshapes/X.step" is not in KiCad\'s 3D model folder'
+
+
+def test_model_in_the_kicad_folder_with_the_wrong_case_fails(tmp_path):
+    entry = _model_entry(tmp_path, models=(KICAD_LINK.replace("SOT-23-5.step", "sot-23-5.step"),))
+
+    assert [v.rule for v in entry.violations] == ["model_3d"]
+
+
+@pytest.mark.parametrize("kicad", ["none", "no_models"])
+def test_model_kicad_path_cannot_be_checked_without_the_kicad_model_folder(tmp_path, kicad):
+    entry = _model_entry(tmp_path, models=(KICAD_LINK,), kicad=kicad)
+
+    assert _violation(entry, "model_3d").text == NO_KICAD_MODELS
+
+
+def test_model_with_another_variable_fails_and_names_it(tmp_path):
+    entry = _model_entry(tmp_path, models=("${KIPRJMOD}/x.step",))
+
+    assert _violation(entry, "model_3d").text == "Could not check the 3D model: it uses ${KIPRJMOD}"
+
+
+def test_model_absolute_path_passes_only_with_the_exact_file_name(tmp_path):
+    folder = tmp_path / "elsewhere"
+    folder.mkdir()
+    (folder / "Part.step").write_bytes(b"x")
+
+    good = _model_entry(tmp_path, models=((folder / "Part.step").as_posix(),))
+    wrong = _model_entry(tmp_path / "second", models=((folder / "part.step").as_posix(),))
+
+    assert good.violations == []
+    assert [v.rule for v in wrong.violations] == ["model_3d"]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "${CUSTOM_3DMODEL_DIR}/../x.step",
+        "${CUSTOM_3DMODEL_DIR}/./x.step",
+        "${CUSTOM_3DMODEL_DIR}//x.step",
+        "${CUSTOM_3DMODEL_DIR}/",
+        "${KICAD10_3DMODEL_DIR}/../x.step",
+    ],
+)
+def test_model_path_with_an_empty_dot_or_dotdot_segment_is_not_valid(tmp_path, path):
+    entry = _model_entry(tmp_path, models=(path,))
+
+    assert _violation(entry, "model_3d").text == f'3D model path "{path}" is not valid'
+
+
+def test_model_path_without_any_folder_variable_cannot_be_checked(tmp_path):
+    entry = _model_entry(tmp_path, models=("models/x.step",))
+
+    assert _violation(entry, "model_3d").text.startswith("Could not check the 3D model: ")
+
+
+def test_model_footprint_that_cannot_be_parsed_says_it_could_not_be_read(tmp_path):
+    entry = _model_entry(tmp_path, raw=b"(footprint \xff\xfe broken")
+
+    violation = _violation(entry, "model_3d")
+    assert violation.text == UNREADABLE
+    assert violation.fill is None
+
+
+def test_model_rule_is_not_reported_when_the_footprint_rule_fails(tmp_path):
+    part = atomic_part("P1", replace={"Footprint": f"{ATOMIC_FOOTPRINTS}:NOT-THERE"})
+
+    entry = _check(atomic_lib((part,)), "P1", ctx=_fp_ctx(tmp_path))
+
+    assert _rules(entry) == ["footprint"]
+
+
+def test_model_fill_for_a_custom_footprint_names_the_footprint_to_fix(tmp_path):
+    entry = _model_entry(tmp_path, models=())
+
+    fill = _violation(entry, "model_3d").fill
+    rel = f"Custom/Footprints/{ATOMIC_FOOTPRINTS}.pretty/FP-T.kicad_mod"
+    assert fill == FixSpec("attach_model", rel, "P1", "Choose a 3D model file", {"footprint": rel, "source": ""})
+    assert _violation(entry, "model_3d").fixes == ()
+
+
+def test_model_fill_is_not_offered_for_a_footprint_outside_custom(tmp_path):
+    entry = _model_entry(tmp_path, models=(), lib=OTHER_LIB)
+
+    assert _violation(entry, "model_3d").fill is None
+
+
+def test_model_fill_is_not_offered_when_the_symbol_is_not_fixable(tmp_path):
+    entry = _model_entry(tmp_path, models=(), fixable=False)
+
+    assert _violation(entry, "model_3d").fill is None
+
+
+def test_model_fill_is_not_offered_for_an_official_kicad_footprint(tmp_path):
+    root, kicad_dir = _repo(tmp_path)
+    stock = kicad_dir / "Package_TO_SOT_SMD.pretty" / "SOT-23-5.kicad_mod"
+    stock.write_bytes(vendor_footprint("SOT-23-5", models=()))
+    part = atomic_part("P1", replace={"Footprint": "Package_TO_SOT_SMD:SOT-23-5"})
+
+    entry = _check(atomic_lib((part,)), "P1", ctx=repo_context(root, [FP_LIB], kicad_dir))
+
+    violation = _violation(entry, "model_3d")
+    assert violation.text == "the footprint has no 3D model"
+    assert violation.fill is None
+
+
+def test_model_two_symbols_linking_one_footprint_parse_it_once(tmp_path, monkeypatch):
+    calls = []
+    real = kicad_files.parse_bytes
+
+    def counting(data, name, **kwargs):
+        calls.append(name)
+        return real(data, name, **kwargs)
+
+    ctx = _model_ctx(tmp_path, "FP-T", models=("${CUSTOM_3DMODEL_DIR}/GENERIC-2PIN.step",))
+    monkeypatch.setattr(kicad_files, "parse_bytes", counting)
+    target = ctx.resolve_footprint(f"{ATOMIC_FOOTPRINTS}:FP-T")
+
+    first = ctx.model_problems(target)
+    second = ctx.model_problems(ctx.resolve_footprint(f"{ATOMIC_FOOTPRINTS}:FP-T"))
+
+    assert first == second == []
+    assert calls == ["FP-T.kicad_mod"]
