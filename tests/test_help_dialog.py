@@ -15,7 +15,7 @@ from kicad_lib_manager.widgets.commit_panel import CommitPanel
 from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
 from kicad_lib_manager.widgets.import_result import ImportResultView
-from kicad_lib_manager.widgets.theme import AMBER
+from kicad_lib_manager.widgets.theme import ACCENT, AMBER
 
 
 def _find_item(dialog: HelpDialog, key: str) -> QTreeWidgetItem:
@@ -57,9 +57,24 @@ def test_help_shortcuts_complete():
         ("Ctrl+I", "Import Part"), ("Ctrl+Shift+R", "Rescan Libraries"),
         ("Ctrl+G", "Generate Tables"), ("Ctrl+R", "Restore Backup"),
         ("Ctrl+K", "Set KiCad Footprint Path"), ("Ctrl+Q", "Exit"), ("F1", "User Guide"),
+        ("Ctrl+Shift+A", "Check Atomic Parts"),
     ):
         assert shortcut in page, shortcut
         assert action in page, action
+
+
+def test_help_library_tree_explains_the_atomic_marks():
+    raw = HELP_PAGES["library_tree"]
+    page = _page_text("library_tree")
+    assert "Atomic parts" in page
+    for text in (
+        "Atomic_", "amber", "tooltip", "New", "Changed", "last Custom commit",
+        "double-click", "Ctrl+Shift+A", "Check Atomic Parts",
+    ):
+        assert text in page, text
+    assert AMBER in raw and ACCENT in raw
+    assert "ki_" not in page.casefold()
+    assert "#CC7700" not in raw
 
 
 def _page_text(key: str) -> str:
