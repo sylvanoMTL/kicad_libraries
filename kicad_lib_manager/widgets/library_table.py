@@ -1,3 +1,5 @@
+import html
+
 from PySide6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QTreeWidget, QTreeWidgetItem,
     QLabel, QMenu, QHeaderView,
@@ -5,8 +7,13 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QFont
 
-from ..models import ScanResult, SymbolLibrary, FootprintLibrary
+from ..models import ScanResult, SymbolEntry, SymbolLibrary, FootprintLibrary
 from .theme import AMBER, HEADING_PT
+
+
+def _rich_tip(lines: list[str]) -> str:
+    """Tooltip with one escaped line per entry, so vendor text is never read as markup."""
+    return "<qt>" + "<br>".join(html.escape(line) for line in lines) + "</qt>"
 
 
 class LibraryTableWidget(QWidget):
@@ -122,8 +129,13 @@ class LibraryTableWidget(QWidget):
                 )
                 has_missing = any(not r.found_in_repo for r in lib.footprint_refs)
                 state = Qt.CheckState.Checked if lib.selected else Qt.CheckState.Unchecked
+                failing = sum(1 for e in lib.symbols if e.failing) if lib.atomic else 0
+                count_text = f"{failing} of {len(lib.symbols)} fail"
+                count_tip = f"{failing} of {len(lib.symbols)} symbols fail the atomic check"
                 if lib.collision_peers:
                     status = "Collision"
+                elif failing:
+                    status = count_text
                 elif has_missing:
                     status = "Missing FP"
                 else:
@@ -133,7 +145,7 @@ class LibraryTableWidget(QWidget):
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(0, state)
                 item.setData(0, Qt.ItemDataRole.UserRole, lib)
-                if lib.collision_peers or has_missing:
+                if lib.collision_peers or has_missing or failing:
                     item.setIcon(3, warn_icon)
                     orange = QBrush(QColor(AMBER))
                     for col in range(item.columnCount()):
@@ -142,10 +154,16 @@ class LibraryTableWidget(QWidget):
                     tip = self._collision_tip(lib)
                     if has_missing:
                         tip += "; Missing FP"
+                    if failing:
+                        tip += "; " + count_tip
                     item.setToolTip(0, tip)
                     item.setToolTip(3, tip)
+                elif failing:
+                    item.setToolTip(3, count_tip)
                 else:
                     item.setToolTip(3, status)
+                for entry in lib.symbols:
+                    item.addChild(self._make_symbol_row(entry, warn_icon))
                 group.addChild(item)
                 self._sym_items[lib.rel_path] = item
 
@@ -185,6 +203,24 @@ class LibraryTableWidget(QWidget):
             group.setExpanded(True)
 
         # Render the selected flags as given; footprint selection is never recomputed here
+
+    @staticmethod
+    def _make_symbol_row(entry: SymbolEntry, warn_icon) -> QTreeWidgetItem:
+        """Child row for one symbol: inert for selection, marked when it breaks rules."""
+        count = len(entry.violations)
+        status = ("1 rule" if count == 1 else f"{count} rules") if count else "OK"
+        child = QTreeWidgetItem([entry.name, "", "", status])
+        child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+        child.setData(0, Qt.ItemDataRole.UserRole, entry)
+        if entry.failing:
+            child.setIcon(3, warn_icon)
+            amber = QBrush(QColor(AMBER))
+            for col in range(child.columnCount()):
+                child.setForeground(col, amber)
+            tip = _rich_tip([v.text for v in entry.violations])
+            child.setToolTip(0, tip)
+            child.setToolTip(3, tip)
+        return child
 
     def reveal(self, sym_rel_path: str | None, fp_rel_path: str | None) -> None:
         """Expand, make current and scroll to the rows of one library in both trees; check states are not touched (D-16)"""
