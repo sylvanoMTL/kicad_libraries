@@ -10,17 +10,25 @@ from pathlib import Path
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
-    QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QStackedWidget,
-    QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QComboBox, QDialog, QFileDialog, QHBoxLayout, QLabel, QLineEdit,
+    QPlainTextEdit, QPushButton, QStackedWidget, QTreeWidget, QTreeWidgetItem, QVBoxLayout,
+    QWidget,
 )
 
-from ..atomic_fixes import FixPreview, apply_preview, build_preview, preview_text
-from ..models import FixSpec, ScanResult, SymbolEntry
+from ..atomic_fixes import FixPreview, apply_preview, build_preview, complete_fill, preview_text
+from ..models import FixSpec, ScanResult, SymbolEntry, Violation
 from .theme import AMBER, MONO_FAMILY, MONO_PT, PRIMARY_BUTTON_QSS, SP_MD, SP_SM
 
 _PAGE_PROBLEMS = 0
 _PAGE_PREVIEW = 1
 NO_ONE_CLICK_FIX = "No one-click fix"
+NO_PROBLEMS = "No atomic rule problems in the last scan."
+PICK_A_VALUE = "Pick the value to keep"
+CHOOSE_MODEL = "Choose 3D model..."
+# On a violation row that takes input: the fill template, and the values to choose from
+_FILL_ROLE = Qt.ItemDataRole.UserRole + 1
+# True on the rows made from the input of a violation row (its fix row or its reason row)
+_INPUT_ROW_ROLE = Qt.ItemDataRole.UserRole + 2
 
 
 def _plural(count: int, one: str, many: str) -> str:
@@ -49,6 +57,7 @@ class AtomicCheckDialog(QDialog):
         self._backup_root = backup_root
         self._running = running
         self._pick_model = pick_model
+        self._focus = focus
         self._preview: FixPreview | None = None
 
         layout = QVBoxLayout(self)
@@ -73,6 +82,12 @@ class AtomicCheckDialog(QDialog):
         self._problems.setHeaderLabels(["Problem", "Fix"])
         self._problems.setColumnWidth(0, 520)
         layout.addWidget(self._problems, stretch=1)
+
+        self._empty_label = QLabel(NO_PROBLEMS)
+        self._empty_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._empty_label.hide()
+        layout.addWidget(self._empty_label, stretch=1)
 
         buttons = QHBoxLayout()
         self._select_all_btn = QPushButton("Select All")
@@ -106,7 +121,12 @@ class AtomicCheckDialog(QDialog):
                         continue
                     symbols += 1
                     problems += len(entry.violations) + len(entry.findings)
-                    self._problems.addTopLevelItem(self._symbol_row(lib.nickname, lib.rel_path, entry))
+                    row = self._symbol_row(lib.nickname, lib.rel_path, entry)
+                    self._problems.addTopLevelItem(row)
+                    # An item widget needs an item that is already in the tree
+                    for j in range(row.childCount()):
+                        if row.child(j).data(0, _FILL_ROLE) is not None:
+                            self._add_input(row.child(j))
         finally:
             self._problems.blockSignals(False)
         self._problems.expandAll()
@@ -114,6 +134,28 @@ class AtomicCheckDialog(QDialog):
             f"{_plural(problems, 'problem', 'problems')} in "
             f"{_plural(symbols, 'symbol', 'symbols')}, from the last scan"
         )
+        if not symbols:
+            self._problems.hide()
+            self._empty_label.show()
+            self._summary.hide()
+            self._select_all_btn.setEnabled(False)
+            self._deselect_all_btn.setEnabled(False)
+        self._scroll_to_focus()
+
+    def _scroll_to_focus(self):
+        if self._focus is None:
+            return
+        for i in range(self._problems.topLevelItemCount()):
+            row = self._problems.topLevelItem(i)
+            if row.data(0, Qt.ItemDataRole.UserRole) == tuple(self._focus):
+                self._problems.setCurrentItem(row)
+                self._problems.scrollToItem(row, QAbstractItemView.ScrollHint.PositionAtTop)
+                return
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # The tree has its final size only once shown, so scroll again
+        self._scroll_to_focus()
 
     def _symbol_row(self, nickname: str, rel_path: str, entry: SymbolEntry) -> QTreeWidgetItem:
         row = QTreeWidgetItem([f"{nickname} / {entry.name}", ""])
@@ -126,7 +168,9 @@ class AtomicCheckDialog(QDialog):
             row.addChild(item)
             for spec in violation.fixes:
                 item.addChild(self._fix_row(spec))
-            if not violation.fixes and violation.fill is None:
+            if violation.fill is not None:
+                item.setData(0, _FILL_ROLE, violation)
+            elif not violation.fixes:
                 item.setText(1, NO_ONE_CLICK_FIX)
         for finding in entry.findings:
             item = QTreeWidgetItem([finding.text, ""])
@@ -142,6 +186,71 @@ class AtomicCheckDialog(QDialog):
         item.setCheckState(0, Qt.CheckState.Checked)
         item.setData(0, Qt.ItemDataRole.UserRole, spec)
         return item
+
+    # ── Inputs for problems that need a typed or picked value ───────────────
+
+    def _add_input(self, item: QTreeWidgetItem):
+        """Put the matching input into column 1 of a violation row that carries a fill template."""
+        violation: Violation = item.data(0, _FILL_ROLE)
+        kind = violation.fill.kind
+        if violation.choices:
+            widget = QComboBox()
+            widget.addItem(PICK_A_VALUE)
+            widget.addItems(list(violation.choices))
+            widget.currentIndexChanged.connect(
+                lambda index, w=widget: self._on_input(item, w.itemText(index) if index > 0 else "", w)
+            )
+        elif kind in ("fill_datasheet", "fill_description"):
+            widget = QLineEdit()
+            widget.setPlaceholderText(
+                "Paste the datasheet link or file path" if kind == "fill_datasheet"
+                else "Type a short description"
+            )
+            widget.editingFinished.connect(lambda w=widget: self._on_input(item, w.text(), w))
+        elif kind == "attach_model":
+            widget = QPushButton(CHOOSE_MODEL)
+            widget.clicked.connect(lambda _checked=False, w=widget: self._on_choose_model(item, w))
+        else:
+            return
+        self._problems.setItemWidget(item, 1, widget)
+
+    def _on_choose_model(self, item: QTreeWidgetItem, widget: QWidget):
+        picked = (self._pick_model or self._default_pick_model)(self)
+        if picked is not None:
+            self._on_input(item, str(picked), widget)
+
+    @staticmethod
+    def _default_pick_model(parent: QWidget) -> Path | None:
+        name, _filter = QFileDialog.getOpenFileName(
+            parent, "Choose a 3D model", "", "3D models (*.step *.stp *.wrl *.zip)"
+        )
+        return Path(name) if name else None
+
+    def _on_input(self, item: QTreeWidgetItem, value: str, widget: QWidget):
+        """Check the typed or picked value like the scan does; it becomes the one fix row of this problem."""
+        violation: Violation = item.data(0, _FILL_ROLE)
+        self._problems.blockSignals(True)
+        try:
+            for index in reversed(range(item.childCount())):
+                if item.child(index).data(0, _INPUT_ROW_ROLE):
+                    item.takeChild(index)
+            widget.setToolTip("")
+            if value.strip():
+                outcome = complete_fill(violation.fill, value)
+                if isinstance(outcome, str):
+                    widget.setToolTip(outcome)
+                    note = QTreeWidgetItem(["", outcome])
+                    note.setForeground(1, QBrush(QColor(AMBER)))
+                    note.setData(0, _INPUT_ROW_ROLE, True)
+                    item.addChild(note)
+                else:
+                    row = self._fix_row(outcome)
+                    row.setData(0, _INPUT_ROW_ROLE, True)
+                    item.addChild(row)
+                item.setExpanded(True)
+        finally:
+            self._problems.blockSignals(False)
+        self._refresh_count()
 
     def _fix_items(self) -> Iterator[QTreeWidgetItem]:
         """Every checkable fix row, in tree order."""

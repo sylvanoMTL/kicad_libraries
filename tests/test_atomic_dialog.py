@@ -201,6 +201,20 @@ def test_a_typed_datasheet_is_checked_like_the_scan_and_becomes_one_fix_row(setu
     assert len(dialog.checked_specs()) == before
 
 
+def test_a_typed_datasheet_is_previewed_and_written(setup, qtbot):
+    dialog = setup.make()
+    item = _fill_item(dialog, "DS-EMPTY")
+    dialog._deselect_all_btn.click()
+    _type(dialog, item, "https://example.com/ds.pdf")
+
+    dialog._preview_btn.click()
+
+    assert "https://example.com/ds.pdf" in dialog._preview_text.toPlainText()
+    with qtbot.waitSignal(dialog.applied):
+        dialog._apply_btn.click()
+    assert '"https://example.com/ds.pdf"' in (setup.root / SYMBOL_REL).read_text(encoding="utf-8")
+
+
 def test_a_typed_description_becomes_a_fix_row_and_blank_text_adds_none(setup):
     dialog = setup.make()
     item = _fill_item(dialog, "DESC-EMPTY")
@@ -231,7 +245,8 @@ def test_a_picked_3d_model_becomes_a_fix_row_and_cancelling_adds_nothing(setup, 
 
     assert picks == [dialog]
     assert _result_rows(item) == [('3D model → "picked.step"', "", True)]
-    spec = dialog.checked_specs()[-1]
+    spec = item.child(0).data(0, ROLE)
+    assert spec in dialog.checked_specs()
     assert spec.kind == "attach_model" and spec.params["source"] == str(model)
 
     answer[0] = None
@@ -254,7 +269,8 @@ def test_disagreeing_duplicate_values_offer_a_choice_of_the_values(setup):
 
     rows = _result_rows(item)
     assert len(rows) == 1 and rows[0][2] is True and "Molex" in rows[0][0]
-    spec = dialog.checked_specs()[-1]
+    spec = item.child(0).data(0, ROLE)
+    assert spec in dialog.checked_specs()
     assert spec.kind == "merge_alias" and spec.params["value"] == "Molex"
 
     combo.setCurrentIndex(0)
