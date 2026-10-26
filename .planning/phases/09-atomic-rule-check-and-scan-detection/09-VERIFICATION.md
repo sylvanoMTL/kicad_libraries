@@ -1,8 +1,8 @@
 ---
 phase: 09-atomic-rule-check-and-scan-detection
-verified: 2026-10-26T15:00:00Z
+verified: 2026-10-26T18:00:00Z
 status: human_needed
-score: 5/5 must-haves verified
+score: 11/12 must-haves verified
 covered_files:
   - ".planning/phases/09-atomic-rule-check-and-scan-detection/09-01-PLAN.md"
   - ".planning/phases/09-atomic-rule-check-and-scan-detection/09-01-SUMMARY.md"
@@ -20,6 +20,8 @@ covered_files:
   - ".planning/phases/09-atomic-rule-check-and-scan-detection/09-07-SUMMARY.md"
   - ".planning/phases/09-atomic-rule-check-and-scan-detection/09-08-PLAN.md"
   - ".planning/phases/09-atomic-rule-check-and-scan-detection/09-08-SUMMARY.md"
+  - ".planning/phases/09-atomic-rule-check-and-scan-detection/09-09-PLAN.md"
+  - ".planning/phases/09-atomic-rule-check-and-scan-detection/09-09-SUMMARY.md"
   - "kicad_lib_manager/atomic_check.py"
   - "kicad_lib_manager/atomic_fixes.py"
   - "kicad_lib_manager/changes.py"
@@ -28,80 +30,99 @@ covered_files:
   - "kicad_lib_manager/manufacturers.py"
   - "kicad_lib_manager/models.py"
   - "kicad_lib_manager/widgets/atomic_check_dialog.py"
+  - "kicad_lib_manager/widgets/help_dialog.py"
   - "kicad_lib_manager/widgets/library_table.py"
-covered_digest: "v3:sha256:7f25944e229b7597e1371d1da61626b3c573c35103ca90c6f10135086f7a48a5"
+  - "tests/test_atomic_uat.py"
+  - "tests/test_help_dialog.py"
+  - "tests/test_library_table_atomic.py"
+  - "tests/test_main_window.py"
+covered_digest: "v3:sha256:1a2c9a25b6de476f8848f33ee5a5ca698e89ab300f84f9d1880c1ef75573645f"
 behavior_unverified: 0
 overrides_applied: 0
+re_verification:
+  previous_status: human_needed
+  previous_score: 5/5
+  gaps_closed:
+    - "G-09-1: library tree has no component level; problems only in a tooltip (UAT test 1)"
+    - "UAT helper crashed on a symbol without a Datasheet field (unit-level; live run still pending)"
+  gaps_remaining: []
+  regressions: []
 human_verification:
-  - test: "Open the GUI on a scratch repo (build it with KICAD_ATOMIC_UAT_DIR, tests/test_atomic_uat.py) or on the live Custom/ and look at the library tree after a scan"
-    expected: "Failing symbols carry the warning icon and amber row; New/Changed symbols carry the accent colour; libraries with problems auto-expand; tooltips read clearly (rich text, plain language)"
-    why_human: "Visual look of marks, colours and tooltips cannot be judged from code. 09-UI-REVIEW scored 17/24."
-  - test: "Open Check Atomic Parts (Ctrl+Shift+A, or double-click a failing symbol) on real parts, tick fixes, Preview & apply, then rescan"
-    expected: "Dialog lists every violation per symbol, the diff preview matches what lands on disk, a backup exists, and the fixed violations are gone on the next scan (D-25 UAT on real parts)"
-    why_human: "D-25 owner UAT on the real parts; the synthetic end-to-end is automated but the owner has to judge the dialog wording and flow"
-  - test: "Read the reason wording in the tooltip, log and dialog for each of the seven rules"
-    expected: "Owner finds the wording plain and unambiguous"
-    why_human: "Wording is a judgment call"
-  - test: "Review the canonical manufacturer table (kicad_lib_manager/manufacturers.py) for the Murata and TDK spellings and the acquired-brand entries (Maxim, Linear, InvenSense)"
-    expected: "Owner confirms the canonical names and aliases"
-    why_human: "Which spelling is canonical is an owner decision flagged by the executors"
-  - test: "Decide whether an undigited ${KICAD_3DMODEL_DIR} model path should resolve against KiCad's 3dmodels folder"
-    expected: "Owner states the rule; today only ${KICADn_3DMODEL_DIR} (digited) resolves and the undigited form is reported as 'Could not check the 3D model: it uses ${...}'"
-    why_human: "Product decision flagged by the executors"
+  - test: "Run the opt-in live build, outside the repo, once the owner has finished importing into Custom/: git -C Custom status --porcelain > \"$LOCALAPPDATA/Temp/g091_custom_before.txt\"; KICAD_ATOMIC_UAT_DIR=\"$LOCALAPPDATA/Temp/kicad_atomic_uat_g091\" env/Scripts/python.exe -m pytest tests/test_atomic_uat.py::test_uat_atomic_scratch -rs -q -s; git -C Custom status --porcelain | diff - \"$LOCALAPPDATA/Temp/g091_custom_before.txt\""
+    expected: "1 passed (not skipped), scratch repo path printed, empty diff of the live Custom/ status. FFC2A32-06-T (no Datasheet field) no longer crashes the helper"
+    why_human: "Deliberately not run by the verifier: the owner is importing a part into the live Custom/ right now, so nothing may read or write it. The three helper paths are proven on synthetic fixtures only"
+  - test: "Re-test UAT test 1 on the scratch repo: open the GUI, look at an Atomic_ library with problems, expand a failing part, double-click a part and a problem row"
+    expected: "Library, then part with its Status count (for example 'Changed - 3 rules') collapsed, then one amber row per broken rule and one plain row per note, full width and readable; double-clicking opens Check Atomic Parts on that part"
+    why_human: "Whether the three-level tree reads clearly is the owner's judgment (UAT test 1 was a visual-clarity complaint). 09-UI-REVIEW scored the earlier two-level tree 17/24"
+  - test: "Decide on WR-01: double-clicking a part row also expands or collapses it"
+    expected: "Owner accepts the toggle, or asks for setExpandsOnDoubleClick(False) on the symbol tree (library and group rows would then also stop toggling on double-click)"
+    why_human: "UX judgment on a side effect that does not break any must-have"
 ---
 
 # Phase 9: Atomic Rule Check and Scan Detection Verification Report
 
 **Phase Goal:** Every part in an `Atomic_` library is held to the atomic rule on every scan, so a broken or hand-made part is flagged, explained and, where it is safe, fixed in one click
-**Verified:** 2026-10-26T15:00:00Z
+**Verified:** 2026-10-26T18:00:00Z
 **Status:** human_needed
-**Re-verification:** No, initial verification
+**Re-verification:** Yes, after gap-closure plan 09-09 (UAT gap G-09-1). Previous report: human_needed, 5/5. No regression found in the five roadmap truths.
 
 ## Goal Achievement
 
 ### Observable Truths
 
-| # | Truth (ROADMAP success criterion) | Status | Evidence |
-|---|-----------------------------------|--------|----------|
-| 1 | After a scan each `Atomic_` symbol that breaks a rule is marked in the tree; the tooltip names each broken rule in plain language; the log has one line per failure; the seven rules are enforced | VERIFIED | `atomic_check.check_libraries` (called from `library_scanner.scan_all` line 544) builds one `Violation` per broken rule for all seven `ATOMIC_RULES` (mpn, manufacturer, footprint, value, datasheet, description, model_3d) and emits one `Issue(WARNING, "atomic.<rule>")` per violation plus a summary line. `widgets/library_table._symbol_row` marks failing rows (warn icon, AMBER) and sets the tooltip from `v.text`. My own probe scan on a synthetic repo reproduced all seven rules and one log line per violation (12 problems, 12 warning lines plus summary). |
-| 2 | A derived (`extends`) symbol is judged on its own fields and flagged without its own MPN even if the parent has one; non-`Atomic_` libraries (Wurth etc.) are never flagged | VERIFIED | `effective_mpn` and `_value_violation` read only the symbol's own properties; `_mpn_absent` yields "no MPN of its own (the parent's MPN does not count)". `is_atomic` is the exact case-sensitive `Atomic_` prefix test and `check_libraries` skips every other library. Probe: `CHILD extends ABC1` flagged with that reason while inheriting Datasheet/Description/Footprint cleanly; `Wurth_X` in another source got `atomic=False` and no entries. |
-| 3 | A symbol added or changed in KiCad since the last `Custom` commit is highlighted on the next scan | VERIFIED | `changes.mark_changes` (called from `scan_all`) diffs git status paths against HEAD blobs by sexpr token stream (formatting-only edits are not flagged); sets `SymbolEntry.status` new/changed, `FootprintLibrary.changed`, and logs `scan.symbol_new/changed`. Probe: a symbol hand-appended after a commit came back `status=new` with the log line "new since the last Custom commit". `test_scan_changes.py` passes. |
-| 4 | The check dialog lists every violation, offers one-click fixes only for Value := MPN, `MF`/`MP` to `Manufacturer`/`MPN`, canonical manufacturer spelling and price/stock leftover removal; each fix is previewed, written with backup, and gone on the next scan; missing Datasheet/Description/3D model can be filled in the dialog or stays an error | VERIFIED | `SAFE_FIX_KINDS` is exactly value_to_mpn, rename_alias, canonical_manufacturer, merge_alias, remove_leftover; `FILL_KINDS` is fill_datasheet, fill_description, attach_model. `atomic_fixes.build_preview` (read-only, SHA-256 staleness) then `apply_preview` (backup dir, atomic write, rollback, `_inside` containment to Custom/). `AtomicCheckDialog` + `MainWindow._open_atomic_check` wire the dialog to menu, Ctrl+Shift+A and tree double-click. Probe: 4 safe specs previewed to one file change, applied with `ok=True`, a backup folder created, and on rescan the MPN, Manufacturer and Value violations were gone while Datasheet/Description/3D model remained as reported errors (fill-ins, not auto-fixes). |
-| 5 | A Manufacturer written as an alias is reported with its canonical name from the one manufacturer table, and the fix writes that canonical name | VERIFIED | `manufacturers.MANUFACTURERS` is the single Qt-free table (name, aliases, token, owner); `lookup` folds names and rejects two companies on one key at import. `atomic_check._group_violation` reports `"TI" is not written as "Texas Instruments"` and builds a `canonical_manufacturer` FixSpec carrying `found.entry.name`; `importer/suggest.py` derives its alias map from `manufacturers.token_map()`. Probe: `MF=TI` reported with canonical name and, after the fix, no longer flagged. |
+ROADMAP success criteria (the contract), then the plan 09-09 must-haves.
 
-**Score:** 5/5 truths verified (0 present, behavior-unverified)
+| # | Truth | Status | Evidence |
+|---|-------|--------|----------|
+| 1 | After a scan each `Atomic_` symbol that breaks a rule is marked in the tree; tooltip names each broken rule in plain language; the log has one line per failure; the seven rules are enforced | VERIFIED | Unchanged since the prior report: `atomic_check.check_libraries` called from `scan_all`, `_make_symbol_row` marks failing rows and builds the tooltip from `v.text`. Regression run: `test_atomic_check/dialog/fixes/scan`, `test_manufacturers`, `test_scan_changes`, `test_naming_suggest` 317 passed |
+| 2 | Derived (`extends`) symbols judged on their own fields; non-`Atomic_` libraries never flagged | VERIFIED | Unchanged (`effective_mpn`, `is_atomic`); covered by the 317 passing regression tests |
+| 3 | A symbol added or changed since the last `Custom` commit is highlighted | VERIFIED | Unchanged (`changes.mark_changes`); `test_scan_changes.py` passes |
+| 4 | Check dialog lists every violation and offers one-click, previewed, backed-up fixes for the safe kinds; fill-ins for Datasheet/Description/3D model | VERIFIED | Unchanged (`atomic_fixes`, `AtomicCheckDialog`); `test_atomic_fixes.py`, `test_atomic_dialog.py` pass. Owner UAT test 2 (D-25 on real parts) passed |
+| 5 | Alias Manufacturer reported with canonical name from the one table; fix writes it | VERIFIED | Unchanged (`manufacturers.py`, `_group_violation`); `test_manufacturers.py` passes. Owner UAT test 4 passed |
+| 6 | G-09-1: each symbol with problems or notes has one row per broken rule then one row per note under it; problem rows first in `violations` order, then notes in `findings` order; text is `Violation.text` / `Finding.text` unchanged | VERIFIED | `library_table._make_symbol_row` (lines 264-271) adds `_make_problem_row(violation.text, ...)` per violation then per finding, text unchanged. My probe: three child rows in order footprint, description, leftover note, text including raw `<b>x</b>`. Tests `test_note_rows_follow_problem_rows_in_order` and siblings pass (37 tests in `test_library_table_atomic.py`) |
+| 7 | Problem row: amber text and warning icon; note row: plain text, information icon; both span full width; theme tokens only | VERIFIED | `_make_problem_row` calls `_colour_row(row, AMBER)` for violations, no brush for findings; icons `SP_MessageBoxWarning` / `SP_MessageBoxInformation`; `_span_problem_rows` runs after `group.addChild(item)`. Probe: `isFirstColumnSpanned()` True on all three rows, icons not null. `grep` for a quoted `#RRGGBB` literal outside comments: 0 |
+| 8 | After a scan symbol rows start collapsed (library still shows its component list and Status count); libraries holding a failing, new or changed symbol still expand; Expand All / Collapse All reach problem rows | VERIFIED | No `setExpanded` on symbol rows; library auto-expand condition unchanged (line 195). Probe: library expanded True, symbol row expanded False. `test_symbol_rows_start_collapsed_and_libraries_still_expand` and `test_expand_all_and_collapse_all_reach_child_rows` pass |
+| 9 | Problem and note rows are display only: no checkbox, no check state; changing them, or Select All / Deselect All, never changes library selection or footprint check states | VERIFIED | `ItemIsUserCheckable` cleared; `_on_sym_item_changed` early-return guard (parent present, data not a `SymbolLibrary`); `_set_all_check_state` walks library rows only. Probe: after `select_all()` problem-row check state is `None` for all rows. Tests `test_problem_row_change_leaves_selection_unchanged`, `test_select_all_gives_problem_rows_no_check_state` pass; `test_library_table_widget.py` unchanged and passing |
+| 10 | Double-clicking a problem or note row opens Check Atomic Parts with its parent symbol current, exactly as double-clicking the symbol row does | VERIFIED (WR-01 side effect noted) | `_on_sym_item_double_clicked` steps from a `Violation`/`Finding` row to `item.parent()` and emits `(lib.rel_path, entry.name)`. My probe with real `QTest` mouse clicks on the real widget: double-click on the symbol row emitted `(ATOMIC, "TWO_BAD")`; double-click on a problem row emitted the identical `(ATOMIC, "TWO_BAD")`. End-to-end `test_atomic_problem_row_double_click_opens_dialog_on_its_symbol` (real `MainWindow`, dialog current item "Atomic_Connector / FFC-0.5-20") passes. WR-01 is real (see Anti-Patterns): the symbol row now also toggles its expansion. The must-have is about which symbol the dialog opens on and the emitted arguments, and both are identical for the two rows, so the truth holds. The toggle is a side effect |
+| 11 | Problem and note tooltips are escaped rich text; no tree text or tooltip contains an internal field name | VERIFIED | `row.setToolTip(0, _rich_tip([text]))` (html.escape inside `<qt>`); `test_problem_and_note_tooltips_are_escaped` and the `_all_tip_text` "ki_" check pass |
+| 12 | UAT helper edits a property the first symbol has (Description, then Datasheet), adds a Datasheet only when it has neither, so the live `test_uat_atomic_scratch` passes on the owner's live Custom/ (FFC2A32-06-T has no Datasheet) and leaves the live Custom/ byte-identical | UNCERTAIN (human) | `_edit_first_symbol` exists and implements Description, ki_description, Datasheet, then insert via `property_insert_edit`, keeping EOL and BOM. Four helper tests pass (no-Datasheet edits Description; no-Description edits Datasheet; neither adds Datasheet; CRLF kept). The live run was deliberately not executed (owner is importing into the live Custom/; verifier instruction). The claim on the live data is therefore unproven, not failed |
+
+**Score:** 11/12 truths verified (0 present, behavior-unverified; 1 uncertain, awaiting the owner)
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 |----------|----------|--------|---------|
-| `kicad_lib_manager/manufacturers.py` (95 lines) | Canonical table, lookup, fold | VERIFIED | Substantive, imported by `atomic_check` and `importer/suggest` |
-| `kicad_lib_manager/atomic_check.py` (648 lines) | Seven-rule check, derived symbols, fix specs, `check_libraries` | VERIFIED | Wired from `scan_all`; data flows from real parsed `.kicad_sym` and real directory listings |
-| `kicad_lib_manager/atomic_fixes.py` (708 lines) | Preview, backup, atomic apply, model intake | VERIFIED | Wired from `AtomicCheckDialog`; exercised in my probe |
-| `kicad_lib_manager/changes.py` (192 lines) | Changed-since-last-commit detection | VERIFIED | Wired from `scan_all` |
-| `kicad_lib_manager/models.py` | `Violation`, `FixSpec`, `Finding`, `SymbolEntry`, status constants | VERIFIED | Used by scanner, tree, dialog |
-| `kicad_lib_manager/widgets/library_table.py` | Child rows, marks, tooltips, `symbol_activated` | VERIFIED | Connected in `main_window` line 248 |
-| `kicad_lib_manager/widgets/atomic_check_dialog.py` | Check dialog | VERIFIED | Opened by menu action, shortcut and double-click; closed with the main window |
+| `kicad_lib_manager/widgets/library_table.py` | `_make_problem_row`, `_span_problem_rows`, double-click from a problem row | VERIFIED | Present, substantive, wired from `_make_symbol_row` and `_populate_trees`; double-click handler connected at line 91 |
+| `tests/test_library_table_atomic.py` | Three-level tree tests | VERIFIED | 37 tests, contains `isFirstColumnSpanned` |
+| `tests/test_main_window.py` | End-to-end problem-row double-click test | VERIFIED | `test_atomic_problem_row_double_click_opens_dialog_on_its_symbol` present and passing |
+| `kicad_lib_manager/widgets/help_dialog.py` | Help text for problem and note rows | VERIFIED | "one row for each problem" appears once (line 174); "one row for each note" at line 176 |
+| `tests/test_atomic_uat.py` | `_edit_first_symbol` with tests for three paths | VERIFIED (unit level) | `def _edit_first_symbol` line 127, `EDITED_DESCRIPTION` line 41, `property_insert_edit` line 158 |
+| Phase 9 artifacts from the prior report (`manufacturers.py`, `atomic_check.py`, `atomic_fixes.py`, `changes.py`, `models.py`, `atomic_check_dialog.py`) | as before | VERIFIED | Files unchanged by 09-09 (diff since `ede4f72` touches only the six 09-09 files); regression tests pass |
 
 ### Key Link Verification
 
 | From | To | Via | Status |
 |------|----|-----|--------|
-| `scan_all` | `check_libraries` | direct call, after cross-reference, with KiCad footprint dir | WIRED |
-| `scan_all` | `mark_changes` | direct call after the atomic check, so entries exist | WIRED |
-| `ScanResult` | `LibraryTableWidget.populate` | `SymbolLibrary.symbols` rendered as child rows | WIRED |
-| `LibraryTableWidget.symbol_activated` | `MainWindow._open_atomic_check` | `_on_symbol_activated` | WIRED |
-| `AtomicCheckDialog.applied` | `MainWindow._on_atomic_fixes_applied` (log, rescan) | signal | WIRED |
-| `check_libraries` violations | log panel | `Issue` list through `_log_issues` | WIRED |
-| `manufacturers` | `suggest` and `atomic_check` | import | WIRED |
+| `library_table.py` problem rows | `models.py` | `Violation` / `Finding` stored in `UserRole`, imported at line 10-13 | WIRED |
+| `library_table.py` | `main_window.py` | `symbol_activated.emit(lib.rel_path, entry.name)` for a problem row's parent, connected to `MainWindow._on_symbol_activated` | WIRED (probe plus end-to-end test) |
+| `tests/test_atomic_uat.py` | `kicad_files.py` | `find_property`, `set_property_edit`, `property_insert_edit` etc. | WIRED |
+| All earlier phase links (scan -> check, scan -> changes, dialog -> apply -> rescan, manufacturers -> suggest and check) | | | WIRED (unchanged; regression tests pass) |
+
+### Data-Flow Trace (Level 4)
+
+| Artifact | Data Variable | Source | Produces Real Data | Status |
+|----------|---------------|--------|--------------------|--------|
+| Problem and note rows | `entry.violations`, `entry.findings` | `atomic_check.check_libraries` from parsed `.kicad_sym`, copied onto `SymbolEntry` by `scan_all` | Yes | FLOWING |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 |----------|---------|--------|--------|
-| Phase 9 test files | `pytest -m "not wurth" tests/test_atomic_check.py test_atomic_dialog.py test_atomic_fixes.py test_atomic_scan.py test_atomic_uat.py test_library_table_atomic.py test_manufacturers.py test_scan_changes.py test_naming_suggest.py` | 344 passed, 1 skipped (the opt-in `KICAD_ATOMIC_UAT_DIR` builder) | PASS |
-| End-to-end scan, fix, rescan on a synthetic repo | own script in the scratchpad (scan_all, build_preview, apply_preview, scan_all) | Violations, derived MPN, new-symbol highlight, Wurth skip, fix removal and backup all as described above | PASS |
-| Whole suite (orchestrator evidence, not re-run) | `pytest -m "not wurth"` | 2350 passed, 4 documented skips; prior-phase regression gate 6392 passed, 1 skip | PASS (reported) |
+| 09-09 test files | `pytest tests/test_library_table_atomic.py test_library_table_widget.py test_main_window.py test_help_dialog.py test_atomic_uat.py test_layering.py` | 135 passed, 1 skipped (opt-in live build) | PASS |
+| Phase 9 regression files | `pytest -m "not wurth"` on atomic_check, atomic_dialog, atomic_fixes, atomic_scan, manufacturers, scan_changes, naming_suggest | 317 passed | PASS |
+| Real widget, real mouse double-click (own probe, offscreen Qt, scratchpad) | `probe09.py`: populate a 3-row symbol, `QTest.mouseDClick` on the symbol row, then on a problem row, then `select_all()` | Both double-clicks emit the same `(rel_path, "TWO_BAD")`; symbol row expanded True afterwards (WR-01); problem rows span the full width, have icons, no check state, unchanged by `select_all()` | PASS (WR-01 noted) |
+| Whole suite (orchestrator evidence, not re-run) | `pytest -m "not wurth"` on merged HEAD | 2371 passed, 4 skipped, 0 failed | PASS (reported) |
 
 ### Probe Execution
 
@@ -109,47 +130,47 @@ SKIPPED: no probe scripts are declared by the phase and none exist under `script
 
 ### Requirements Coverage
 
-All seven phase requirement IDs appear in plan frontmatter and in REQUIREMENTS.md; none is orphaned. REQUIREMENTS.md still shows them as Pending and unchecked; that is a tracking update for the orchestrator, not a code gap.
+All seven phase IDs appear in plan frontmatter (09-09 declares SCAN-01 and SCAN-03; the others are claimed by 09-01 to 09-08) and in REQUIREMENTS.md; none is orphaned.
 
 | Requirement | Source Plan(s) | Description | Status | Evidence |
 |-------------|----------------|-------------|--------|----------|
-| ATOM-01 | 09-03, 09-04 | Seven rules reported in plain language | SATISFIED | `ATOMIC_RULES`, `_check_ref`, footprint/model resolution through `repo_context` including KiCad's official footprints |
-| ATOM-02 | 09-03 | Derived symbols judged on own fields, own MPN | SATISFIED | `effective_mpn`, `_mpn_absent`; probe `CHILD` |
-| ATOM-03 | 09-03, 09-04 | Every rule blocking, only `Atomic_` libraries checked | SATISFIED | Every rule is a `Violation` (counts in `SymbolEntry.failing`); leftovers and unknown manufacturers are non-blocking `Finding`s; `is_atomic` gate |
-| FLD-02 | 09-01, 09-03, 09-06 | One canonical manufacturer table; alias reported and fixable | SATISFIED for Phase 9 scope | Table used by `suggest` and the check, fix writes canonical name. The migration consumer belongs to Phase 13 and is not claimed here. |
-| SCAN-01 | 09-02, 09-03, 09-07, 09-08 | Atomic check every scan; tree mark, tooltip, one log line per failure | SATISFIED | Truth 1 |
+| ATOM-01 | 09-03, 09-04 | Seven rules, plain language | SATISFIED | Truth 1; regression tests |
+| ATOM-02 | 09-03 | Derived symbols on own fields | SATISFIED | Truth 2 |
+| ATOM-03 | 09-03, 09-04 | Every rule blocking; only `Atomic_` checked | SATISFIED | Truths 1 and 2 |
+| FLD-02 | 09-01, 09-03, 09-06 | One canonical manufacturer table; alias reported and fixable | SATISFIED for Phase 9 scope | Truth 5; migration consumer belongs to Phase 13 |
+| SCAN-01 | 09-02, 09-03, 09-07, 09-08, 09-09 | Check every scan; tree mark, tooltip, one log line per failure | SATISFIED | Truths 1, 6 to 9, 11. Component-level problem rows now make the marks readable |
 | SCAN-02 | 09-02, 09-05, 09-08 | Added or changed symbols highlighted | SATISFIED | Truth 3 |
-| SCAN-03 | 09-06, 09-07, 09-08 | Check dialog with safe previewed, backed-up fixes and fill-ins | SATISFIED | Truth 4 |
+| SCAN-03 | 09-06, 09-07, 09-08, 09-09 | Check dialog with safe previewed, backed-up fixes and fill-ins; path from marked part to dialog | SATISFIED in code; live UAT scratch build pending | Truths 4 and 10; truth 12 awaits the owner |
+
+REQUIREMENTS.md still shows all seven as Pending / unchecked and ROADMAP Phase 9 is still `[ ]`. That is a tracking update for the orchestrator, not a code gap.
 
 ### Anti-Patterns Found
 
-No `TBD`, `FIXME`, `XXX`, `TODO` or `HACK` marker in any file the phase touched (grep returned nothing). No stub returns on the rendered path.
+No `TBD`, `FIXME`, `XXX`, `TODO` or `HACK` in the 09-09 source or test files. No stub on the rendered path. No hardcoded colour literal in `library_table.py`.
 
-The 4 warnings and 8 info items in 09-REVIEW.md are all still `open` in 09-REVIEW-DISPOSITION.md. None is a critical finding and none breaks a roadmap truth, so they are advisory warnings, not gaps:
+Open review items (09-REVIEW-DISPOSITION.md lists all as `open`); none is critical and none breaks a must-have, so all are warnings or info, not gaps:
 
 | Item | Severity | Impact |
 |------|----------|--------|
-| WR-01 `"Preview & apply"` button text loses the `&` and gets `Alt+Space` (`atomic_check_dialog.py:286`) | Warning | Cosmetic and a stolen Windows shortcut; fix is `&&` |
-| WR-02 NUL character in a footprint 3D model path aborts the scan | Warning | Robustness edge. I tried the Custom-variable form and it did not crash, so the failing path is a different model form than the one I tried; not re-reproduced |
-| WR-03 Two symbols sharing a footprint can attach different models to it | Warning | Edge in the model-attach fill-in |
-| WR-04 A refused group leaves model copies registered so a later footprint may link a file never copied | Warning | Edge in the model-attach fill-in; can leave a dangling model link |
-| IN-01 to IN-08 | Info | Duplication, dead-ish code, out-of-date User Guide Status text, inconsistent backslash handling |
+| WR-01 (09-09 review): symbol rows now have children, `expandsOnDoubleClick` is still true, so double-clicking a part opens the dialog and also toggles the part's expansion. Reproduced with real mouse events | Warning | Weighed against truth 10: the dialog opens on the right symbol with identical arguments for both gestures, so the truth holds. Side effect is cosmetic: cancelling the dialog leaves the row toggled. Fix, if wanted: `self._sym_tree.setExpandsOnDoubleClick(False)` (this also stops library and group rows toggling on double-click), plus a `QTest.mouseDClick` test. The existing tests emit `itemDoubleClicked` directly, so they cannot see it. Routed to the owner as a decision |
+| IN-01 expansion state lost on rescan | Info | Parts the user had expanded collapse after a fix is applied |
+| IN-02 libraries holding only notes stay collapsed | Info | Pre-existing condition (`e.failing or e.status`); matches truth 8 as written; notes are still in the tooltip, log and dialog |
+| IN-03 UAT helper copies `atomic_fixes._insert_property` | Info | Test-fixture drift risk only |
+| Phase-level WR-01 (`&` in "Preview & apply"), WR-02, WR-03, WR-04, IN-04 to IN-08 from the earlier review | Warning / Info | Unchanged from the prior report; edge cases and cosmetics, still open |
 
 ### Human Verification Required
 
-See the `human_verification` list in the frontmatter. In short:
-
-1. **Visual look of the tree marks and tooltips.** Test: run the GUI on the scratch repo or the live `Custom/`. Expected: amber failing rows, accent New/Changed rows, auto-expand, readable tooltips. Why human: appearance.
-2. **D-25 UAT on real parts.** Test: open Check Atomic Parts, tick fixes, preview, apply, rescan. Expected: preview equals disk, backup exists, fixed items gone on the next scan. Why human: owner UAT on real data.
-3. **Reason wording for all seven rules.** Why human: judgment of plainness.
-4. **Murata and TDK canonical spellings** (and the acquired-brand entries). Why human: owner decision on which spelling is canonical.
-5. **Undigited `${KICAD_3DMODEL_DIR}`** should it resolve? Why human: product decision.
+1. **Live scratch build on the owner's real Custom/ (deferred on purpose).** Run only after the owner has finished importing. Command in the frontmatter. Expected: `1 passed` (not skipped), scratch repo path printed, empty diff of `git -C Custom status --porcelain`. Why human: the verifier must not read or write the live `Custom/` while the owner is importing; truth 12 is unit-proven only.
+2. **Re-test UAT test 1 (G-09-1) on the scratch repo.** Open the GUI; check Library, part (collapsed, with its count), amber problem rows, plain note rows, double-click opens Check Atomic Parts. Why human: it was a clarity complaint; only the owner can judge the new shape.
+3. **WR-01 decision.** Accept the double-click expand toggle or switch it off.
 
 ### Gaps Summary
 
-No gaps. All five roadmap success criteria hold in the code and were exercised end to end by my own scan, fix and rescan script, in addition to the phase test files (344 passed). All seven requirement IDs are accounted for in plans and in REQUIREMENTS.md. The status is `human_needed` only because the owner has visual, wording, canonical-spelling and real-parts UAT decisions the executors explicitly deferred. Housekeeping for the orchestrator: ATOM-01..03, FLD-02 and SCAN-01..03 are still unchecked and "Pending" in REQUIREMENTS.md, and the ROADMAP Phase 9 checkbox is still `[ ]`.
+No gaps. G-09-1 is closed in code: the Symbols tree now has Library, then Component (with Status count, collapsed), then one display-only row per broken rule (amber, warning icon) and per note (plain, information icon), with unchanged texts, full-width spanning, escaped tooltips, no selection side effects, and double-click on a problem row opens Check Atomic Parts on its parent symbol. I confirmed this with the test files (135 passed plus 317 passed on the regression set) and with my own real-widget, real-mouse probe. The five roadmap truths show no regression and all seven requirement IDs are accounted for in plans and REQUIREMENTS.md.
+
+The status is `human_needed` rather than `passed` for one reason that is not a failure: the opt-in live build against the owner's real `Custom/` (must-have 12, the claim that the helper now survives FFC2A32-06-T) was deliberately not run, and the owner still has to re-test the visual tree (UAT test 1) and decide on WR-01. Housekeeping for the orchestrator: tick ATOM-01..03, FLD-02, SCAN-01..03 in REQUIREMENTS.md and the Phase 9 box in ROADMAP.md once the owner checks are done.
 
 ---
 
-_Verified: 2026-10-26T15:00:00Z_
+_Verified: 2026-10-26T18:00:00Z_
 _Verifier: Claude (gsd-verifier)_
