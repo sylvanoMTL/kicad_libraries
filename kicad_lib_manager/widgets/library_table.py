@@ -7,8 +7,17 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QFont
 
-from ..models import ScanResult, SymbolEntry, SymbolLibrary, FootprintLibrary
-from .theme import AMBER, HEADING_PT
+from ..models import (
+    STATUS_CHANGED, STATUS_NEW, ChangedFootprint, ScanResult, SymbolEntry, SymbolLibrary,
+    FootprintLibrary,
+)
+from .theme import ACCENT, AMBER, HEADING_PT
+
+_STATUS_WORD = {STATUS_NEW: "New", STATUS_CHANGED: "Changed"}
+_STATUS_TIP = {
+    STATUS_NEW: "New since the last Custom commit",
+    STATUS_CHANGED: "Changed since the last Custom commit",
+}
 
 
 def _rich_tip(lines: list[str]) -> str:
@@ -134,10 +143,14 @@ class LibraryTableWidget(QWidget):
                 count_tip = f"{failing} of {len(lib.symbols)} symbols fail the atomic check"
                 if lib.collision_peers:
                     status = "Collision"
+                elif lib.check_problem:
+                    status = "Could not check"
                 elif failing:
                     status = count_text
                 elif has_missing:
                     status = "Missing FP"
+                elif lib.atomic and not lib.symbols:
+                    status = "No symbols"
                 else:
                     status = "OK"
 
@@ -145,7 +158,7 @@ class LibraryTableWidget(QWidget):
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 item.setCheckState(0, state)
                 item.setData(0, Qt.ItemDataRole.UserRole, lib)
-                if lib.collision_peers or has_missing or failing:
+                if lib.collision_peers or has_missing or failing or lib.check_problem:
                     item.setIcon(3, warn_icon)
                     orange = QBrush(QColor(AMBER))
                     for col in range(item.columnCount()):
@@ -158,6 +171,8 @@ class LibraryTableWidget(QWidget):
                         tip += "; " + count_tip
                     item.setToolTip(0, tip)
                     item.setToolTip(3, tip)
+                elif lib.check_problem:
+                    item.setToolTip(3, _rich_tip([lib.check_problem]))
                 elif failing:
                     item.setToolTip(3, count_tip)
                 else:
@@ -166,6 +181,9 @@ class LibraryTableWidget(QWidget):
                     item.addChild(self._make_symbol_row(entry, warn_icon))
                 group.addChild(item)
                 self._sym_items[lib.rel_path] = item
+                # Open only libraries that have something to look at (the item must be in the tree first)
+                if any(e.failing or e.status for e in lib.symbols):
+                    item.setExpanded(True)
 
             group.setExpanded(True)
 
@@ -197,8 +215,12 @@ class LibraryTableWidget(QWidget):
                     item.setToolTip(2, tip)
                 else:
                     item.setToolTip(2, "OK")
+                for fp in lib.changed:
+                    item.addChild(self._make_footprint_row(fp))
                 group.addChild(item)
                 self._fp_items[lib.rel_path] = item
+                if lib.changed:
+                    item.setExpanded(True)
 
             group.setExpanded(True)
 
@@ -206,21 +228,49 @@ class LibraryTableWidget(QWidget):
 
     @staticmethod
     def _make_symbol_row(entry: SymbolEntry, warn_icon) -> QTreeWidgetItem:
-        """Child row for one symbol: inert for selection, marked when it breaks rules."""
+        """Child row for one symbol: inert for selection, marked when new, changed or failing."""
         count = len(entry.violations)
-        status = ("1 rule" if count == 1 else f"{count} rules") if count else "OK"
-        child = QTreeWidgetItem([entry.name, "", "", status])
+        parts = []
+        if entry.status in _STATUS_WORD:
+            parts.append(_STATUS_WORD[entry.status])
+        if count:
+            parts.append("1 rule" if count == 1 else f"{count} rules")
+        child = QTreeWidgetItem([entry.name, "", "", " · ".join(parts) or "OK"])
         child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
         child.setData(0, Qt.ItemDataRole.UserRole, entry)
+        # A failing symbol keeps the warning styling even when it is also new or changed
         if entry.failing:
             child.setIcon(3, warn_icon)
-            amber = QBrush(QColor(AMBER))
-            for col in range(child.columnCount()):
-                child.setForeground(col, amber)
-            tip = _rich_tip([v.text for v in entry.violations])
+            LibraryTableWidget._colour_row(child, AMBER)
+        elif entry.status in _STATUS_WORD:
+            LibraryTableWidget._colour_row(child, ACCENT)
+        lines = [v.text for v in entry.violations] + [f.text for f in entry.findings]
+        if entry.status in _STATUS_TIP:
+            lines.append(_STATUS_TIP[entry.status])
+        if lines:
+            tip = _rich_tip(lines)
             child.setToolTip(0, tip)
             child.setToolTip(3, tip)
         return child
+
+    @staticmethod
+    def _make_footprint_row(fp: ChangedFootprint) -> QTreeWidgetItem:
+        """Child row for one new or changed footprint: highlighted, inert for selection."""
+        child = QTreeWidgetItem([fp.name, "", _STATUS_WORD.get(fp.status, "")])
+        child.setFlags(child.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+        child.setData(0, Qt.ItemDataRole.UserRole, fp)
+        LibraryTableWidget._colour_row(child, ACCENT)
+        if fp.status in _STATUS_TIP:
+            tip = _rich_tip([_STATUS_TIP[fp.status]])
+            child.setToolTip(0, tip)
+            child.setToolTip(2, tip)
+        return child
+
+    @staticmethod
+    def _colour_row(item: QTreeWidgetItem, colour: str) -> None:
+        brush = QBrush(QColor(colour))
+        for col in range(item.columnCount()):
+            item.setForeground(col, brush)
 
     def reveal(self, sym_rel_path: str | None, fp_rel_path: str | None) -> None:
         """Expand, make current and scroll to the rows of one library in both trees; check states are not touched (D-16)"""
