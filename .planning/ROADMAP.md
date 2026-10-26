@@ -75,7 +75,7 @@ Plans:
   4. The check dialog lists every violation. It offers one-click fixes only for Value := MPN, `MF`/`MP` → `Manufacturer`/`MPN`, canonical manufacturer spelling and removing price and stock leftovers. Each fix is previewed, written with a backup, and gone on the next scan. A missing Datasheet, Description or 3D model can be filled in the dialog, or it stays a reported error.
   5. A Manufacturer written as an alias is reported with its canonical name from the one manufacturer table (a name plus its aliases), and the fix writes that canonical name.
 
-**Plans:** 2/8 plans executed
+**Plans:** 3/8 plans executed
 
 Plans:
 **Wave 1**
@@ -83,7 +83,7 @@ Plans:
 - [x] 09-02-PLAN.md — Scan result contract in models.py and library-tree marks, New/Changed highlights, auto-expand, double-click signal (wave 1)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 09-03-PLAN.md — Atomic check on every scan: MPN, Manufacturer, Value, Datasheet, Description, derived symbols, safe-fix specs, log lines (wave 2)
+- [x] 09-03-PLAN.md — Atomic check on every scan: MPN, Manufacturer, Value, Datasheet, Description, derived symbols, safe-fix specs, log lines (wave 2)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 09-04-PLAN.md — Footprint and 3D model rules through an injected resolver context, official KiCad footprints included (wave 3)
@@ -166,7 +166,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
-| 9. Atomic Rule Check and Scan Detection | v2.0 | 2/8 | In Progress | - |
+| 9. Atomic Rule Check and Scan Detection | v2.0 | 3/8 | In Progress | - |
 | 10. Importer on the Atomic Scheme | v2.0 | 0/TBD | Not started | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
