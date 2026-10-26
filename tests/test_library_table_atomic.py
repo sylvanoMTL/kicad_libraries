@@ -387,3 +387,45 @@ def test_double_click_on_ok_changed_only_library_and_footprint_rows_emits_nothin
         _activate(w, w._sym_tree.topLevelItem(0))
         w._fp_tree.itemDoubleClicked.emit(fp_row, 0)
         w._fp_tree.itemDoubleClicked.emit(w._fp_items[FP_REF], 0)
+
+
+# ── G-09-1 tracer: problem rows under failing symbols ──
+
+def _sym_row(widget, name, rel_path=ATOMIC):
+    return next(r for r in _children(_lib_item(widget, rel_path)) if r.text(0) == name)
+
+
+def test_failing_symbol_has_one_problem_row_per_violation_in_order(widget):
+    assert [r.text(0) for r in _children(_sym_row(widget, "TWO_BAD"))] == [
+        V_FOOTPRINT.text, V_DESCRIPTION.text,
+    ]
+    assert [r.text(0) for r in _children(_sym_row(widget, "ONE_BAD"))] == [V_KEYWORDS.text]
+    assert _children(_sym_row(widget, "OK_PART")) == []
+
+
+def test_problem_row_is_amber_with_warning_icon_and_inert(widget):
+    rows = _children(_sym_row(widget, "TWO_BAD"))
+    assert len(rows) == 2
+    for row in rows:
+        assert row.data(0, Qt.ItemDataRole.CheckStateRole) is None
+        assert not (row.flags() & Qt.ItemFlag.ItemIsUserCheckable)
+        assert isinstance(row.data(0, Qt.ItemDataRole.UserRole), Violation)
+        assert not row.icon(0).isNull()
+        assert _colour(row) == theme.AMBER.lower()
+
+
+def test_symbol_rows_keep_their_status_styling_and_tooltip(widget):
+    two = _sym_row(widget, "TWO_BAD")
+    assert two.text(3) == "2 rules"
+    assert _sym_row(widget, "ONE_BAD").text(3) == "1 rule"
+    assert _sym_row(widget, "OK_PART").text(3) == "OK"
+    assert not two.icon(3).isNull()
+    assert _colour(two) == theme.AMBER.lower()
+    assert V_FOOTPRINT.text in two.toolTip(0) and V_DESCRIPTION.text in two.toolTip(0)
+
+
+def test_double_click_on_a_problem_row_emits_its_parent_symbol(widget, qtbot):
+    second = _children(_sym_row(widget, "TWO_BAD"))[1]
+    with qtbot.waitSignal(widget.symbol_activated, timeout=1000) as blocker:
+        widget._sym_tree.itemDoubleClicked.emit(second, 0)
+    assert blocker.args == [ATOMIC, "TWO_BAD"]
