@@ -23,6 +23,8 @@ Adding or removing a real part in `Custom/` must not change a test result.
 - It writes one library per format version (20211014, 20231120, 20241209, 20251024) with today's naming, in a temporary folder.
   It never contains the Ultra Librarian sample part.
 - Do not copy real libraries into fixtures.
+  The one exception is the opt-in atomic UAT builder (`tests/test_atomic_uat.py`): it reads the live `Custom/` only to make a scratch copy outside the repository and never writes it, and it does not run unless `KICAD_ATOMIC_UAT_DIR` is set.
+  The other opt-in builder (`KICAD_IMPORT_UAT_DIR`) does not read the live `Custom/` at all.
 - A session guard in `tests/conftest.py` fails the run if the live `Custom/` changes while the suite runs, and names the paths.
   If you edit `Custom/` by hand during a run, run the suite again.
 
@@ -36,9 +38,10 @@ Each row is one condition that makes tests skip. `pytest -rs` prints the message
 | Symlinks not permitted | `symlinks not permitted here: [WinError 1314] A required privilege is not held by the client: ...` | Creating a symbolic link needs a privilege that a normal Windows account does not have. | Turn on Windows Developer Mode, or run the tests from an elevated shell. |
 | No WurthElektronik submodule | `WurthElektronik submodule not checked out (git submodule update --init WurthElektronik/KiCad-Library)` | The stress and round-trip corpus reads the Wurth library. | `git submodule update --init WurthElektronik/KiCad-Library` |
 | `KICAD_IMPORT_UAT_DIR` unset | `set KICAD_IMPORT_UAT_DIR to build the manual UAT scratch install` | This test builds a scratch install for the owner to open in KiCad 10. It is not an automated check. | Set `KICAD_IMPORT_UAT_DIR` to a folder outside the repository, then run `tests/test_install_e2e.py::test_uat_scratch_install -s` and open the result in KiCad 10. |
+| `KICAD_ATOMIC_UAT_DIR` unset | `set KICAD_ATOMIC_UAT_DIR to build the atomic-check UAT scratch repo` | This test builds a scratch copy of the repo with Atomic_ libraries for the owner to open in the app. It is not an automated check. | Set `KICAD_ATOMIC_UAT_DIR` to a folder outside the repository, run `tests/test_atomic_uat.py::test_uat_atomic_scratch -s`, then start the command it prints. |
 | `local_kicad` | `no KiCad user config tables found` | These tests read the user's real KiCad library tables, read-only, and have nothing to read on a machine without them. | They run when the tables exist. Deselect them with `-m "not local_kicad"`. |
 
-On the workstation the expected skips are exactly three: the two symlink skips (`tests/test_model_source.py` and `tests/test_package_folder.py`) and the `KICAD_IMPORT_UAT_DIR` skip.
+On the workstation the expected skips are exactly four: the two symlink skips (`tests/test_model_source.py` and `tests/test_package_folder.py`), the `KICAD_IMPORT_UAT_DIR` skip and the `KICAD_ATOMIC_UAT_DIR` skip.
 Anything else that is skipped there is a finding.
 
 ## Other conditional skips
