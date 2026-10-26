@@ -75,7 +75,7 @@ Plans:
   4. The check dialog lists every violation. It offers one-click fixes only for Value := MPN, `MF`/`MP` → `Manufacturer`/`MPN`, canonical manufacturer spelling and removing price and stock leftovers. Each fix is previewed, written with a backup, and gone on the next scan. A missing Datasheet, Description or 3D model can be filled in the dialog, or it stays a reported error.
   5. A Manufacturer written as an alias is reported with its canonical name from the one manufacturer table (a name plus its aliases), and the fix writes that canonical name.
 
-**Plans:** 8/9 plans executed
+**Plans:** 9/9 plans executed
 
 Plans:
 **Wave 1**
@@ -97,7 +97,7 @@ Plans:
 - [x] 09-08-PLAN.md — D-25 UAT scratch repo builder, tests/README.md skip row, end-of-phase checklist (wave 5)
 
 **Wave 6** *(gap closure: UAT G-09-1)*
-- [ ] 09-09-PLAN.md — Library tree component level: one row per problem and note under each collapsed symbol, double-click to the check; UAT helper no longer needs a Datasheet field (wave 6)
+- [x] 09-09-PLAN.md — Library tree component level: one row per problem and note under each collapsed symbol, double-click to the check; UAT helper no longer needs a Datasheet field (wave 6)
 
 **UI hint**: yes
 
@@ -169,7 +169,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
-| 9. Atomic Rule Check and Scan Detection | v2.0 | 8/8 | In Progress | - |
+| 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | In Progress | - |
 | 10. Importer on the Atomic Scheme | v2.0 | 0/TBD | Not started | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
