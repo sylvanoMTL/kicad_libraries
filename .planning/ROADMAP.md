@@ -75,7 +75,7 @@ Plans:
   4. The check dialog lists every violation. It offers one-click fixes only for Value := MPN, `MF`/`MP` → `Manufacturer`/`MPN`, canonical manufacturer spelling and removing price and stock leftovers. Each fix is previewed, written with a backup, and gone on the next scan. A missing Datasheet, Description or 3D model can be filled in the dialog, or it stays a reported error.
   5. A Manufacturer written as an alias is reported with its canonical name from the one manufacturer table (a name plus its aliases), and the fix writes that canonical name.
 
-**Plans:** 5/8 plans executed
+**Plans:** 6/8 plans executed
 
 Plans:
 **Wave 1**
@@ -90,7 +90,7 @@ Plans:
 - [x] 09-05-PLAN.md — Changed-since-last-Custom-commit detection by token stream, symbols and footprints (wave 3)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 09-06-PLAN.md — Qt-free fix engine: preview, stale check, backup, atomic write, rollback, 3D model intake (wave 4)
+- [x] 09-06-PLAN.md — Qt-free fix engine: preview, stale check, backup, atomic write, rollback, 3D model intake (wave 4)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 09-07-PLAN.md — Check Atomic Parts dialog (Ctrl+Shift+A, double-click), fill-ins, preview and apply, rescan (wave 5)
@@ -166,7 +166,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | Phase | Milestone | Plans Complete | Status | Completed |
 |-------|-----------|----------------|--------|-----------|
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
-| 9. Atomic Rule Check and Scan Detection | v2.0 | 5/8 | In Progress | - |
+| 9. Atomic Rule Check and Scan Detection | v2.0 | 6/8 | In Progress | - |
 | 10. Importer on the Atomic Scheme | v2.0 | 0/TBD | Not started | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
