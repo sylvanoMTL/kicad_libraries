@@ -22,6 +22,8 @@ ALLOWED = {
     "kicad_process": set(),
     # the only module that starts git (Phase 6)
     "gitops": {"models"},
+    # the canonical manufacturer table (Phase 9); a stdlib-only leaf
+    "manufacturers": set(),
 }
 
 _CODE = """
@@ -30,7 +32,7 @@ sys.path.insert(0, sys.argv[1])
 import kicad_lib_manager.models, kicad_lib_manager.sexpr
 import kicad_lib_manager.fsutil, kicad_lib_manager.kicad_files
 import kicad_lib_manager.table_generator, kicad_lib_manager.library_scanner, kicad_lib_manager.kicad_process
-import kicad_lib_manager.gitops
+import kicad_lib_manager.gitops, kicad_lib_manager.manufacturers
 for name in sorted(sys.modules):
     if name.split(".")[0] in ("PySide6", "shiboken6"):
         print(name)
