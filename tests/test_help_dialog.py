@@ -70,6 +70,7 @@ def test_help_library_tree_explains_the_atomic_marks():
     for text in (
         "Atomic_", "amber", "tooltip", "New", "Changed", "last Custom commit",
         "double-click", "Ctrl+Shift+A", "Check Atomic Parts",
+        "one row for each problem", "one row for each note", "problem row",
     ):
         assert text in page, text
     assert AMBER in raw and ACCENT in raw

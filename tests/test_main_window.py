@@ -813,6 +813,24 @@ def test_atomic_symbol_activated_opens_dialog_with_that_symbol_current(make_wind
     dialog.reject()
 
 
+def test_atomic_problem_row_double_click_opens_dialog_on_its_symbol(make_window):
+    w = make_window([_atomic_scan()])
+    lib_item = w._tree._sym_items[ATOMIC_REL]
+    symbol_row = next(
+        lib_item.child(i) for i in range(lib_item.childCount())
+        if lib_item.child(i).text(0) == "FFC-0.5-20"
+    )
+    problem_row = symbol_row.child(0)
+    assert problem_row.text(0) == "Value is not the part number"
+
+    w._tree._sym_tree.itemDoubleClicked.emit(problem_row, 0)
+
+    dialog = w._atomic_dialog
+    assert dialog is not None
+    assert dialog._problems.currentItem().text(0) == "Atomic_Connector / FFC-0.5-20"
+    dialog.reject()
+
+
 def test_atomic_action_is_disabled_while_a_scan_runs(make_window, qtbot):
     gate = threading.Event()
     w = make_window([_gated(_atomic_scan(), gate)], wait=False)

@@ -8,8 +8,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont
 
 from ..models import (
-    STATUS_CHANGED, STATUS_NEW, ChangedFootprint, ScanResult, SymbolEntry, SymbolLibrary,
-    FootprintLibrary,
+    STATUS_CHANGED, STATUS_NEW, ChangedFootprint, Finding, ScanResult, SymbolEntry,
+    SymbolLibrary, FootprintLibrary, Violation,
 )
 from .theme import ACCENT, AMBER, HEADING_PT
 
@@ -122,6 +122,9 @@ class LibraryTableWidget(QWidget):
         warn_icon = self.style().standardIcon(
             self.style().StandardPixmap.SP_MessageBoxWarning
         )
+        info_icon = self.style().standardIcon(
+            self.style().StandardPixmap.SP_MessageBoxInformation
+        )
 
         bold_font = self._sym_tree.font()
         bold_font.setBold(True)
@@ -182,10 +185,13 @@ class LibraryTableWidget(QWidget):
                 else:
                     item.setToolTip(3, status)
                 for entry in lib.symbols:
-                    item.addChild(self._make_symbol_row(entry, warn_icon))
+                    item.addChild(self._make_symbol_row(entry, warn_icon, info_icon))
                 group.addChild(item)
+                # Spanning only takes effect once the row is in the tree
+                self._span_problem_rows(item)
                 self._sym_items[lib.rel_path] = item
-                # Open only libraries that have something to look at (the item must be in the tree first)
+                # Open only libraries that have something to look at (the item must be in the tree first);
+                # symbol rows stay collapsed so the library shows its component list
                 if any(e.failing or e.status for e in lib.symbols):
                     item.setExpanded(True)
 
@@ -231,7 +237,7 @@ class LibraryTableWidget(QWidget):
         # Render the selected flags as given; footprint selection is never recomputed here
 
     @staticmethod
-    def _make_symbol_row(entry: SymbolEntry, warn_icon) -> QTreeWidgetItem:
+    def _make_symbol_row(entry: SymbolEntry, warn_icon, info_icon) -> QTreeWidgetItem:
         """Child row for one symbol: inert for selection, marked when new, changed or failing."""
         count = len(entry.violations)
         parts = []
@@ -255,7 +261,35 @@ class LibraryTableWidget(QWidget):
             tip = _rich_tip(lines)
             child.setToolTip(0, tip)
             child.setToolTip(3, tip)
+        # One display-only row per broken rule, texts unchanged (G-09-1, D-01)
+        for violation in entry.violations:
+            child.addChild(LibraryTableWidget._make_problem_row(
+                violation.text, violation, warn_icon, AMBER))
+        # Then one plain row per note (leftover data, unknown manufacturer, ...)
+        for finding in entry.findings:
+            child.addChild(LibraryTableWidget._make_problem_row(
+                finding.text, finding, info_icon, None))
         return child
+
+    @staticmethod
+    def _span_problem_rows(lib_item: QTreeWidgetItem) -> None:
+        """Let problem and note rows use the full row width instead of the name column."""
+        for i in range(lib_item.childCount()):
+            symbol_row = lib_item.child(i)
+            for j in range(symbol_row.childCount()):
+                symbol_row.child(j).setFirstColumnSpanned(True)
+
+    @staticmethod
+    def _make_problem_row(text: str, data, icon, colour: str | None) -> QTreeWidgetItem:
+        """Row for one broken rule or note under a symbol: display only, never checkable."""
+        row = QTreeWidgetItem([text])
+        row.setFlags(row.flags() & ~Qt.ItemFlag.ItemIsUserCheckable)
+        row.setData(0, Qt.ItemDataRole.UserRole, data)
+        row.setIcon(0, icon)
+        if colour is not None:
+            LibraryTableWidget._colour_row(row, colour)
+        row.setToolTip(0, _rich_tip([text]))
+        return row
 
     @staticmethod
     def _make_footprint_row(fp: ChangedFootprint) -> QTreeWidgetItem:
@@ -302,8 +336,8 @@ class LibraryTableWidget(QWidget):
 
         # Update selected state for the changed item (and children if group)
         lib = item.data(0, Qt.ItemDataRole.UserRole)
-        # Symbol child rows are display only; only library rows and top-level group
-        # headers may change what gets selected
+        # Symbol rows and their problem and note rows are display only; only library
+        # rows and top-level group headers may change what gets selected
         if not isinstance(lib, SymbolLibrary) and item.parent() is not None:
             return
         checked_libs: list[SymbolLibrary] = []
@@ -337,8 +371,14 @@ class LibraryTableWidget(QWidget):
         self._sync_footprint_selection(source)
 
     def _on_sym_item_double_clicked(self, item: QTreeWidgetItem, column: int):
-        """Hand a symbol row that has rule problems or cleanup findings to the check dialog."""
+        """Hand a symbol row, or one of its problem and note rows, to the check dialog."""
         entry = item.data(0, Qt.ItemDataRole.UserRole)
+        if isinstance(entry, (Violation, Finding)):
+            # A problem or note row stands for its parent symbol (D-12)
+            item = item.parent()
+            if item is None:
+                return
+            entry = item.data(0, Qt.ItemDataRole.UserRole)
         parent = item.parent()
         if not isinstance(entry, SymbolEntry) or parent is None:
             return
