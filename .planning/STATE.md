@@ -2,44 +2,44 @@
 gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Atomic Libraries
-current_phase: 08
-current_phase_name: Test Isolation and KiCad 10
-status: executing
-stopped_at: Completed 08-06-PLAN.md
-last_updated: "2026-10-25T19:22:18.745Z"
-last_activity: 2026-10-25
-last_activity_desc: Phase 08 execution started
-state_head: f326a3379db666e02f92a2f1f0aa399427b8138a
+current_phase: 9
+current_phase_name: Atomic Rule Check and Scan Detection
+status: planning
+stopped_at: Phase 08 complete, ready to plan Phase 9
+last_updated: "2026-10-26T09:18:50.719Z"
+last_activity: 2026-10-26
+last_activity_desc: Phase 08 complete, transitioned to Phase 9
+state_head: df3471cfec18a807cd157ff398460c7d810780b6
 progress:
   total_phases: 6
-  completed_phases: 0
+  completed_phases: 1
   total_plans: 6
   completed_plans: 6
-  percent: 0
+  percent: 17
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-25)
+See: .planning/PROJECT.md (updated 2026-10-26)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 08 — Test Isolation and KiCad 10
+**Current focus:** Phase 9 — Atomic Rule Check and Scan Detection
 
 ## Current Position
 
-Phase: 08 (Test Isolation and KiCad 10) — EXECUTING
-Plan: 2 of 6
-Status: Ready to execute
-Last activity: 2026-10-25 — Phase 08 execution started
+Phase: 9 — Atomic Rule Check and Scan Detection
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-10-26 — Phase 08 complete, transitioned to Phase 9
 
-Progress: [░░░░░░░░░░] 0%
+Progress: [██░░░░░░░░] 17%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 70
+- Total plans completed: 76
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -54,6 +54,7 @@ Progress: [░░░░░░░░░░] 0%
 | 05 | 11 | - | - |
 | 06 | 8 | - | - |
 | 07 | 13 | - | - |
+| 08 | 6 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -85,7 +86,7 @@ The full decision log is in the PROJECT.md Key Decisions table. The v1.0 per-pha
 - [v2.0 roadmap]: Phase 12 depends only on Phase 8. It is placed before Phase 13 so the chooser setup (TBL-02) reuses the `kicad_common.json` write corrected by REV-05.
 - [v2.0 roadmap]: TBL-01 and TBL-02 go with the migration (Phase 13). The table descriptions are written when the tables are regenerated, and the chooser pins the `Atomic_` libraries once they exist.
 - [Phase 08]: 08-06: Wurth parse budget is max(60 s, 0.05 s per file); measured 69.5 s for 6034 files
-- [Phase 08]: 08-06: VER-01 records claim only the automated KiCad 10 result; Symbol Editor check pending in 08-UAT.md test 2
+- [Phase 08]: VER-01 closed: the KiCad 10 Symbol Editor check (08-UAT.md test 2) passed on 2026-10-26, with the scratch library unchanged by the session
 
 ### Pending Todos
 
@@ -95,9 +96,7 @@ None yet.
 
 Open, carried into v2.0 and now mapped to phases (none block the milestone):
 
-- [Tests]: 14 tests copy the live `Custom/` tree and assume the UL sample part is absent. They fail since `Custom` commit `eecac22` (2026-10-23) added CSD85301Q2 (`test_commit_plan`, `test_install_apply`, `test_install_e2e`, `test_install_plan`). They need an isolated fixture. → Phase 8 (TEST-01)
-- [Tests]: 7 real kicad-cli tests expect KiCad 9 output (20241209), but the installed KiCad 10 CLI writes 20251024 (`test_kicad_cli`, `test_install_plan` x3, `test_install_e2e` x3). Retarget them at KiCad 10. → Phase 8 (TEST-02)
-- [Backlog]: 999.1 (re-test D-01 on KiCad 10, which is now installed) and 999.2 (case-twin rollback on a case-sensitive folder). → VER-01 in Phase 8, VER-02 in Phase 12; removed from the ROADMAP backlog
+- [Backlog]: 999.2 (case-twin rollback on a case-sensitive folder) → VER-02 in Phase 12; removed from the ROADMAP backlog. 999.1 closed as VER-01 in Phase 8
 - [Review]: Phase 4 WR-04, IN-01/02/03/05; Phase 5 WR-01..WR-06 (WR-04 closed, WR-05 GUI thread waits up to 60 s on kicad-cli); Phase 6 WR-01..WR-05, IN-01..IN-03. See the REVIEW-DISPOSITION files under `milestones/v1.0-phases/`. → Phase 5 WR-01/02/03/05/06 are REV-01..05 (Phase 12). Phase 6 WR-01..05 and IN-01..03 are REV-06..11 (Phase 11). Phase 4 WR-04 is deferred as REF-01. Phase 4 IN-01/02/03/05 and Phase 5 IN-01..06 are not in v2.0.
 - [UI review]: Help dialog hard-codes colours and px font sizes outside `theme.py`, and `conflict_row.py` has `#FFFFFF` literals (05-UI-REVIEW 17/24). The Commit panel primary-button and outcome-tint items are in 06-UI-REVIEW (17/24). → UI-01 (Phase 12), UI-02 (Phase 11)
 
@@ -118,10 +117,10 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-25T19:22:18.680Z
-Stopped at: Completed 08-06-PLAN.md
+Last session: 2026-10-26T09:25:00Z
+Stopped at: Phase 08 complete, ready to plan Phase 9
 Resume file: None
 
 ## Operator Next Steps
 
-- Discuss the first v2.0 phase with /gsd-discuss-phase 8, then plan it with /gsd-plan-phase 8
+- Discuss Phase 9 with /gsd-discuss-phase 9, then plan it with /gsd-plan-phase 9

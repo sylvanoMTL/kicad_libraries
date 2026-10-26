@@ -85,6 +85,10 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ An unusable model source (no model, failed content check, partly bad zip, read failure) is a red blocking error on the model row with Remove / Add 3D model... recovery; preview columns are user-resizable and elide; status-strip reasons carry a click hint (G-07-5, G-07-7, G-07-8) — Phase 7
 - ✓ Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code; real-sample tests skip when the local downloads are absent — v1.0 (1966 passing at close)
 - ✓ All 54 v1 requirements (FOUND, HARD, INTK, FMT2-02, LIB, PREV, INST, POST, GIT, UX) — v1.0
+- ✓ Tests build their own synthetic `Custom/` and never read or write the live one, guarded by a write-protect check; the suite passes whatever parts the owner has installed (TEST-01) — Phase 8
+- ✓ Real kicad-cli tests expect KiCad 10 output (format 20251024) and skip with a stated reason when kicad-cli 10 is absent (TEST-02) — Phase 8
+- ✓ Bare `pytest` on the workstation: 8063 passed, 3 documented skips, 0 failed (TEST-03) — Phase 8
+- ✓ D-01 re-tested on KiCad 10: installing into a 20241209 `Custom/` library keeps the header, merges the symbol as-is with one warning, and the result opens in KiCad 10's Symbol Editor with both units placeable (VER-01, UAT 2026-10-26) — Phase 8
 
 ### Active
 
@@ -96,8 +100,6 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - [ ] Existing `Custom/` parts migrated in one previewed commit, every part passing the rule, tables regenerated
 
 **Quality**
-- [ ] Tests that copy the live `Custom/` tree assume the Ultra Librarian sample part is absent. Since `Custom` commit `eecac22` (2026-10-23, CSD85301Q2 added) 14 of them fail (`test_commit_plan`, `test_install_apply`, `test_install_e2e`, `test_install_plan`). They need a fixture that does not depend on what the owner has installed
-- [ ] 7 real kicad-cli tests (`test_kicad_cli`, `test_install_plan`, `test_install_e2e`) hard-code KiCad 9 output (format 20241209). The workstation now runs KiCad 10 (20251024) and KiCad 9 is no longer a target, so retarget them at KiCad 10
 - [ ] Phase 5 review warnings, open and non-blocking: WR-01 misleading "already listed" text, WR-02 table write to the process cwd when Destination is empty, WR-03 one-off build can overlap Install, WR-05 GUI thread waits up to 60 s on kicad-cli, WR-06 stale `kicad_common.json` content after the confirm dialog (05-REVIEW-DISPOSITION.md)
 - [ ] Help dialog styling outside the theme tokens (hard-coded colours, px font sizes) per 05-UI-REVIEW.md
 - [ ] Phase 6 review findings, open and non-blocking (06-REVIEW-DISPOSITION.md): WR-01 a commit timeout is reported as "nothing committed" without checking HEAD, WR-02 parent-message preview differs from the committed text when `gitlink_old` is None, WR-03 the "finish it by hand" command uses POSIX quoting on Windows, WR-04 files identical to HEAD raise a spurious "missing" error, WR-05 a refusal leaves the panel on a stale probe; IN-01..IN-03
@@ -183,4 +185,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-10-25 at v2.0 milestone start*
+*Last updated: 2026-10-26 after Phase 8*
