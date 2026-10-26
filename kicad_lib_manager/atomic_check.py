@@ -6,6 +6,7 @@ never a raw KiCad field name. A Datasheet value is judged as a string and is nev
 """
 
 import re
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
 from . import kicad_files, manufacturers
@@ -221,58 +222,159 @@ def _leftover_findings(properties: list[kicad_files.PropertyRef], symbol: str, r
     return found
 
 
-def _datasheet_violation(
-    properties: list[kicad_files.PropertyRef], symbol: str, rel_path: str, fixable: bool
-) -> Violation | None:
-    prop = _find_property(properties, "Datasheet")
+@dataclass(frozen=True)
+class _Unit:
+    """One symbol with its own properties, as a link in a derived symbol's chain."""
+
+    ref: kicad_files.SymbolRef
+    properties: list[kicad_files.PropertyRef]
+
+
+def _chain(ref: kicad_files.SymbolRef, index: dict[str, kicad_files.SymbolRef]) -> tuple[list[_Unit], str | None]:
+    """Return the symbol and its extends ancestors, nearest first, and the first parent name missing from the file.
+
+    A loop in the extends chain simply ends the walk.
+    """
+    units = [_Unit(ref, kicad_files.list_properties(ref.node))]
+    seen = {ref.name}
+    missing = None
+    current = kicad_files.extends_name(ref.node)
+    while current is not None and current not in seen:
+        parent = index.get(current)
+        if parent is None:
+            missing = current
+            break
+        units.append(_Unit(parent, kicad_files.list_properties(parent.node)))
+        seen.add(current)
+        current = kicad_files.extends_name(parent.node)
+    return units, missing
+
+
+@dataclass(frozen=True)
+class _Owner:
+    """Where a rule reads a property group: the symbol itself, an ancestor, or nowhere (absent)."""
+
+    unit: _Unit | None
+    # appended to the reason and to every fix label when an ancestor owns the group
+    suffix: str
+    label_suffix: str
+    # the symbol the fix edits
+    symbol: str
+
+    @property
+    def properties(self) -> list[kicad_files.PropertyRef]:
+        return self.unit.properties if self.unit is not None else []
+
+    @property
+    def inherited(self) -> bool:
+        return bool(self.suffix)
+
+
+def _owner(units: list[_Unit], missing: str | None, names: tuple[str, ...]) -> _Owner:
+    """Find the nearest symbol, the symbol itself first, that declares any property of the group, even a blank one."""
+    own = units[0].ref.name
+    for position, unit in enumerate(units):
+        if any(p.name in names for p in unit.properties):
+            if position == 0:
+                return _Owner(unit, "", "", own)
+            name = unit.ref.name
+            return _Owner(
+                unit,
+                f' (inherited from "{name}")',
+                f' (in parent "{name}"; its other variants change too)',
+                name,
+            )
+    suffix = f' (its parent symbol "{missing}" is missing)' if missing is not None else ""
+    return _Owner(None, suffix, "", own)
+
+
+def _datasheet_violation(owner: _Owner, rel_path: str, fixable: bool) -> Violation | None:
+    prop = _find_property(owner.properties, "Datasheet")
     problem = datasheet_problem(prop.value if prop is not None else "")
     if problem is None:
         return None
     fill = None
     if fixable:
-        fill = FixSpec("fill_datasheet", rel_path, symbol, "Fill in the datasheet link", {"property": "Datasheet", "value": ""})
-    return Violation("datasheet", problem, fill=fill)
+        fill = FixSpec(
+            "fill_datasheet", rel_path, owner.symbol, "Fill in the datasheet link" + owner.label_suffix,
+            {"property": "Datasheet", "value": ""},
+        )
+    return Violation("datasheet", problem + owner.suffix, fill=fill)
 
 
-def _description_violation(
-    root: Node,
-    symbol_node: Node,
-    properties: list[kicad_files.PropertyRef],
-    symbol: str,
-    rel_path: str,
-    fixable: bool,
-) -> Violation | None:
-    if any(p.name in fieldrules.DESCRIPTION_FIELDS and not _blank(p.value) for p in properties):
+def _description_violation(owner: _Owner, version: int | None, rel_path: str, fixable: bool) -> Violation | None:
+    if any(p.name in fieldrules.DESCRIPTION_FIELDS and not _blank(p.value) for p in owner.properties):
         return None
     fill = None
     if fixable:
-        field_name = kicad_files.description_field_name(symbol_node, kicad_files.file_version(root))
-        fill = FixSpec("fill_description", rel_path, symbol, "Fill in the description", {"property": field_name, "value": ""})
-    return Violation("description", "no description", fill=fill)
+        holder = owner.unit.ref.node if owner.unit is not None else None
+        field_name = kicad_files.description_field_name(holder, version) if holder is not None else "Description"
+        fill = FixSpec(
+            "fill_description", rel_path, owner.symbol, "Fill in the description" + owner.label_suffix,
+            {"property": field_name, "value": ""},
+        )
+    return Violation("description", "no description" + owner.suffix, fill=fill)
 
 
-def check_symbol(root: Node, name: str, *, rel_path: str, fixable: bool) -> SymbolEntry:
-    """Check one symbol of a parsed .kicad_sym and return its entry with one violation per broken rule."""
-    ref = kicad_files.find_symbol(root, name)
-    entry = SymbolEntry(name)
-    if ref is None:
-        return entry
-    entry.extends = kicad_files.extends_name(ref.node)
-    properties = kicad_files.list_properties(ref.node)
-    mpn, _ = _group_violation("mpn", properties, name, rel_path, fixable, absent="no MPN")
-    manufacturer, unknown = _group_violation("manufacturer", properties, name, rel_path, fixable, absent="no manufacturer")
+def _mpn_absent(units: list[_Unit]) -> str:
+    if any(_filled(unit.properties, fieldrules.MPN_FIELDS) for unit in units[1:]):
+        return "no MPN of its own (the parent's MPN does not count)"
+    return "no MPN"
+
+
+def _check_ref(
+    root: Node,
+    ref: kicad_files.SymbolRef,
+    index: dict[str, kicad_files.SymbolRef],
+    *,
+    rel_path: str,
+    fixable: bool,
+) -> SymbolEntry:
+    name = ref.name
+    entry = SymbolEntry(name, extends=kicad_files.extends_name(ref.node))
+    units, missing = _chain(ref, index)
+    properties = units[0].properties
+    # MPN and Value are judged on the symbol's own properties only (ATOM-02)
+    mpn, _ = _group_violation("mpn", properties, name, rel_path, fixable, absent=_mpn_absent(units))
+    manufacturer_owner = _owner(units, missing, fieldrules.MANUFACTURER_FIELDS)
+    manufacturer, unknown = _group_violation(
+        "manufacturer", manufacturer_owner.properties, manufacturer_owner.symbol, rel_path, fixable,
+        absent="no manufacturer" + manufacturer_owner.suffix,
+        suffix=manufacturer_owner.suffix, label_suffix=manufacturer_owner.label_suffix,
+    )
+    version = kicad_files.file_version(root)
     found = [
         mpn,
         manufacturer,
         _value_violation(ref.node, properties, name, rel_path, fixable),
-        _datasheet_violation(properties, name, rel_path, fixable),
-        _description_violation(root, ref.node, properties, name, rel_path, fixable),
+        _datasheet_violation(_owner(units, missing, ("Datasheet",)), rel_path, fixable),
+        _description_violation(_owner(units, missing, fieldrules.DESCRIPTION_FIELDS), version, rel_path, fixable),
     ]
     entry.violations = sorted((v for v in found if v is not None), key=lambda v: ATOMIC_RULES.index(v.rule))
-    if unknown is not None:
+    # The note about an inherited manufacturer belongs to the symbol that holds it
+    if unknown is not None and not manufacturer_owner.inherited:
         entry.findings.append(unknown)
     entry.findings.extend(_leftover_findings(properties, name, rel_path, fixable))
     return entry
+
+
+def _symbol_index(root: Node) -> dict[str, kicad_files.SymbolRef]:
+    index: dict[str, kicad_files.SymbolRef] = {}
+    for ref in kicad_files.find_symbols(root):
+        index.setdefault(ref.name, ref)
+    return index
+
+
+def check_symbol(root: Node, name: str, *, rel_path: str, fixable: bool) -> SymbolEntry:
+    """Check one symbol of a parsed .kicad_sym and return its entry with one violation per broken rule.
+
+    A derived symbol is judged on its own fields: its MPN and Value must be its own, while an absent
+    Manufacturer, Datasheet or Description is taken from the nearest ancestor that declares it.
+    """
+    ref = kicad_files.find_symbol(root, name)
+    if ref is None:
+        return SymbolEntry(name)
+    return _check_ref(root, ref, _symbol_index(root), rel_path=rel_path, fixable=fixable)
 
 
 def _read_library(path: Path) -> tuple[Node | None, str | None]:
@@ -330,8 +432,9 @@ def check_libraries(
             issues.append(Issue(Severity.WARNING, "atomic.unreadable", f"{lib.nickname}: could not be checked: {problem}"))
             continue
         fixable = lib.source == "Custom"
+        index = _symbol_index(root)
         for ref in kicad_files.find_symbols(root):
-            entry = check_symbol(root, ref.name, rel_path=lib.rel_path, fixable=fixable)
+            entry = _check_ref(root, ref, index, rel_path=lib.rel_path, fixable=fixable)
             lib.symbols.append(entry)
             total += 1
             if entry.failing:
