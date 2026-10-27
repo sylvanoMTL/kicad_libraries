@@ -193,20 +193,24 @@ def _edit_symbol(
         value = spell(chosen) if spell is not None else chosen
         exact = find_property(node, name)
         target = exact or (usable[0] if usable else (present[0] if present else None))
+        at = target.node.start if target is not None else node.end
+        note: FieldChange | None = None
         if value != chosen:
-            at = target.node.start if target is not None else node.end
-            positioned.append((at, FieldChange(new_name, "set", name, chosen, value, "canonical")))
+            note = FieldChange(new_name, "set", name, chosen, value, "canonical")
         elif inferred and override is None and not vendor_value and value:
-            at = target.node.start if target is not None else node.end
             before = target.value if target is not None and not is_placeholder(target.value) else ""
-            positioned.append((at, FieldChange(new_name, "set", name, before, value, "datasheet_host")))
+            note = FieldChange(new_name, "set", name, before, value, "datasheet_host")
         if target is None:
             add(name, value)
+            if note is not None:
+                positioned.append((at, note))
             return value
         handled.add(target.node.start)
         if target is not exact:
             edits.append(rename_property_edit(target, name))
-            positioned.append((target.node.start, FieldChange(new_name, "rename", target.name, "", name, "alias")))
+            positioned.append((at, FieldChange(new_name, "rename", target.name, "", name, "alias")))
+        if note is not None:
+            positioned.append((at, note))
         if target.value != value:
             edits.append(set_property_edit(target, value))
         for alias in present:
