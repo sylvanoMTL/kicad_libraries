@@ -114,7 +114,7 @@ def test_ul_symbol_added_others_identical(atomic_custom, ul_package, tmp_path):
     assert find_property(symbol.node, "ki_fp_filters").value == "DQK0006B"
     manufacturer = find_property(symbol.node, "Manufacturer")
     mpn = find_property(symbol.node, "MPN")
-    assert (manufacturer.value, mpn.value) == ("TI", "CSD85301Q2")
+    assert (manufacturer.value, mpn.value) == ("Texas Instruments", "CSD85301Q2")
     assert _hidden(manufacturer) and _hidden(mpn)
 
     model = layout.models_dir / "CSD85301Q2.stp"
@@ -186,7 +186,7 @@ def test_sc1_ul_footprint_model_and_fields(atomic_custom, ul_package, tmp_path):
     assert find_property(symbol.node, "Footprint").value == f"{footprint_library_for(LIBRARY)}:DQK0006B"
     assert find_property(symbol.node, "ki_fp_filters").value == "DQK0006B"
     manufacturer, mpn = find_property(symbol.node, "Manufacturer"), find_property(symbol.node, "MPN")
-    assert (manufacturer.value, mpn.value) == ("TI", SYMBOL)
+    assert (manufacturer.value, mpn.value) == ("Texas Instruments", SYMBOL)
     assert _hidden(manufacturer) and _hidden(mpn)
     assert plan.linked_footprint == "DQK0006B" and plan.model_file == f"{SYMBOL}.stp"
 

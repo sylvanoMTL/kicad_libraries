@@ -33,7 +33,7 @@ SINGLE_LIBRARY = "Atomic_Sensor_Pressure"
 VENDOR = "PART"
 V6, V8, V9 = 20211014, 20231120, 20241209
 DATASHEET = {"Datasheet": "https://example.com/part"}
-ORDER = ("Files", "Renames", "Path rewrites", "Format", "Conflicts", "Issues")
+ORDER = ("Files", "Renames", "Path rewrites", "Field changes", "Format", "Conflicts", "Issues")
 
 
 @pytest.fixture(autouse=True)

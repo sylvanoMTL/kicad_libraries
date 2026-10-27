@@ -116,6 +116,12 @@ def lookup(value: str) -> ManufacturerMatch | None:
     return ManufacturerMatch(entry, value == entry.name)
 
 
+def canonical(value: str) -> str:
+    """Return the canonical spelling of a manufacturer the table knows, else the value exactly as given (D-23)."""
+    match = lookup(value)
+    return match.entry.name if match is not None else value
+
+
 def by_host(domain: str) -> Manufacturer | None:
     """Return the company that registered this datasheet domain, or None for an empty or unlisted one.
 

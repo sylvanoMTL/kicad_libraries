@@ -184,7 +184,10 @@ def test_generic_rules_for_other_vendors(ul_package, tmp_path):
     layout = RepoLayout.for_repo(tmp_path / "repo")
     plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), layout, ToolContext())
     assert not plan.blocked, [i.text for i in plan.issues]
-    assert plan.field_changes == ()
+    # No rename, drop or clean; the only change is the Manufacturer the UL datasheet link names (D-23)
+    assert plan.field_changes == (
+        FieldChange("CSD85301Q2", "set", "Manufacturer", "", "Texas Instruments", "datasheet_host"),
+    )
 
 
 def _names_of(data, symbol_name):
@@ -244,7 +247,10 @@ def test_field_changes_section(ul_package, tmp_path):
     write_custom_layout(tmp_path / "ul", [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
     ul_options = InstallOptions(library=UL_LIBRARY)
     ul_plan = build_plan(ul_candidate, ul_options, RepoLayout.for_repo(tmp_path / "ul"), ToolContext())
-    assert _field_rows(preview_sections(ul_plan, ul_candidate, ul_options)) is None
+    ul_section = _field_rows(preview_sections(ul_plan, ul_candidate, ul_options))
+    assert [(row.text, row.detail) for row in ul_section.rows] == [
+        ("Set Manufacturer", "(empty) → Texas Instruments: found from the datasheet link")
+    ]
 
 
 def test_field_change_row_format(tmp_path):
@@ -402,7 +408,9 @@ def test_vendor_field_outcomes(name, tmp_path):
         assert values["SnapEDA_Link"].startswith("https://www.snapeda.com/parts/")
         gone = ("MANUFACTURER", "SNAPEDA_PN", "Price", "Check_prices", "Availability", "Package", "MF", "MP")
     else:
-        assert values["Manufacturer"] == "RECOM Power" == SAMACSYS_MANUFACTURER
+        # The vendor wrote "RECOM Power"; it installs in the canonical spelling (D-23)
+        assert SAMACSYS_MANUFACTURER == "RECOM Power"
+        assert values["Manufacturer"] == "RECOM"
         assert values["MPN"] == "PSU7-0505S/Q1" == SAMACSYS_MPN
         assert values["Mouser Part Number"] == "919-PSU7-0505S/Q1"
         assert values["ki_description"] == "Isolated DC/DC converter 1W, 5V in, 5V out"

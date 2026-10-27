@@ -322,7 +322,8 @@ def test_real_samacsys_installs(staging_root, tmp_path):
         assert (layout.models_dir / "RS3-1212S_H3.stp").is_file()
     assert [m.path for m in find_models(footprint_name(footprint.root).node)] == [f"{MODEL_DIR_VAR}/RS3-1212S_H3.stp"]
     assert values["Footprint"] == f"{footprint_library_for(library)}:RS3"
-    assert values["Manufacturer"] == "RECOM Power"
+    # part_info.txt says "RECOM Power"; the symbol is written in the canonical spelling (D-23)
+    assert values["Manufacturer"] == "RECOM"
     assert values["MPN"] == "RS3-1212S/H3"
     assert "Mouser Part Number" in values
     for gone in ("Mouser Price/Stock", "Arrow Price/Stock", "Height", "Arrow Part Number"):
