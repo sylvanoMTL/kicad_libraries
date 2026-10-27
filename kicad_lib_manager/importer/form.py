@@ -46,14 +46,14 @@ class FieldDefaults:
 class FormValues:
     """The dialog's choices at one moment.
 
-    symbol, footprints and model are vendor item names (or None / empty), never blank strings.
-    footprints lists the linked footprint first. footprint_name None means the name was not edited,
-    and fields holds only the fields the user edited.
+    symbol, footprint and model are vendor item names (or None), never blank strings.
+    footprint is the one footprint the part uses (D-14). footprint_name None means the name was not
+    edited, and fields holds only the fields the user edited.
     """
 
     library: str
     symbol: str | None
-    footprints: tuple[str, ...]
+    footprint: str | None
     model: str | None
     no_model: bool
     footprint_name: str | None
@@ -293,12 +293,13 @@ def build_options(values: FormValues, defaults: FieldDefaults, linked_vendor: st
             texts[name] = ""
             cleared.add(name)
     footprint_names: dict[str, str] = {}
-    if values.footprint_name is not None and linked_vendor:
-        footprint_names[linked_vendor] = values.footprint_name.strip()
+    chosen = values.footprint or linked_vendor
+    if values.footprint_name is not None and chosen:
+        footprint_names[chosen] = values.footprint_name.strip()
     return InstallOptions(
         library=values.library.strip(),
         symbol=values.symbol,
-        footprints=tuple(values.footprints),
+        footprint=values.footprint,
         model=values.model,
         no_model=values.no_model,
         footprint_names=footprint_names,

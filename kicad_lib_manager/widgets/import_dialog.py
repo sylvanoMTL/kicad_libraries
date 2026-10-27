@@ -313,6 +313,7 @@ class ImportDialog(QDialog):
         self._symbol_combo: QComboBox | None = None
         self._symbol_label: _OfferLabel | None = None
         self._fp_list: QListWidget | None = None
+        self._fp_combo: QComboBox | None = None
         self._fp_label: _OfferLabel | None = None
         self._make_linked_btn: QPushButton | None = None
         self._model_combo: QComboBox | None = None
@@ -1248,7 +1249,7 @@ class ImportDialog(QDialog):
         return build_options(self._form_values(), self._defaults, self._linked_fp)
 
     def _form_values(self) -> FormValues:
-        """Read the controls: item choices as vendor names, the linked footprint first (IN-04)."""
+        """Read the controls: item choices as vendor names, one footprint (D-14)."""
         candidate = self._candidate
         symbol: str | None = None
         if self._symbol_combo is not None:
@@ -1256,13 +1257,11 @@ class ImportDialog(QDialog):
         elif candidate.symbols:
             symbol = candidate.symbols[0].name
 
-        footprints: tuple[str, ...] = ()
-        if self._fp_list is not None:
-            checked = self._checked_footprints()
-            rest = [name for name in checked if name != self._linked_fp]
-            footprints = (*([self._linked_fp] if self._linked_fp in checked else []), *rest)
+        footprint: str | None = None
+        if self._fp_combo is not None:
+            footprint = self._fp_combo.currentData()
         elif candidate.footprints:
-            footprints = (candidate.footprints[0].name,)
+            footprint = candidate.footprints[0].name
 
         model: str | None = None
         no_model = False
@@ -1276,7 +1275,7 @@ class ImportDialog(QDialog):
         return FormValues(
             library=self._library_combo.currentText(),
             symbol=symbol,
-            footprints=footprints,
+            footprint=footprint,
             model=model,
             no_model=no_model,
             footprint_name=self._fp_name_edit.text() if self._fp_name_edited else None,
@@ -1289,7 +1288,7 @@ class ImportDialog(QDialog):
     def _clear_items(self):
         self._symbol_combo = self._model_combo = None
         self._symbol_label = self._fp_label = self._model_label = None
-        self._fp_list = self._make_linked_btn = None
+        self._fp_list = self._make_linked_btn = self._fp_combo = None
         self._add_model_btn = self._model_slot = self._model_note = None
         self._remove_model_btn = None
         self._model_rejection = None
@@ -1378,19 +1377,21 @@ class ImportDialog(QDialog):
         symbol_lay.addWidget(note)
         form.addRow("Symbol", symbol_box)
 
-        # Footprints: the linked one carries the model and names the symbol's Footprint field
+        # Footprint: one per part (D-14); the chosen one carries the model and names the symbol's Footprint field
         footprints = [f.name for f in candidate.footprints]
         if len(footprints) > 1:
-            form.addRow("Footprints", self._build_footprint_list(footprints))
+            combo = self._item_combo(footprints, "Vendor footprint")
+            combo.currentIndexChanged.connect(self._on_footprint_changed)
+            self._fp_combo = combo
+            form.addRow("Vendor footprint", self._framed(combo, "footprints"))
             self._linked_fp = footprints[0]
-            self._render_footprint_list()
         elif footprints:
             self._fp_label = self._item_label(footprints[0])
-            form.addRow("Footprints", self._fp_label)
+            form.addRow("Vendor footprint", self._fp_label)
             self._linked_fp = footprints[0]
         else:
             self._fp_label = self._item_label("No footprint in this package", missing=True)
-            form.addRow("Footprints", self._fp_label)
+            form.addRow("Vendor footprint", self._fp_label)
 
         # 3D model: several give a combo that ends with "No model"; Add 3D model... sits under it
         form.addRow("3D model", self._build_model_row())
@@ -1514,8 +1515,7 @@ class ImportDialog(QDialog):
         chain: list[QWidget] = [self._change_btn]
         for widget in (
             self._symbol_combo,
-            self._fp_list,
-            self._make_linked_btn,
+            self._fp_combo,
             self._model_combo,
             self._add_model_btn,
             self._remove_model_btn,
@@ -1624,6 +1624,15 @@ class ImportDialog(QDialog):
         if name != self._linked_fp:
             self._linked_fp = name
             self._reset_fp_name()
+
+    def _on_footprint_changed(self, _index: int = -1):
+        """Another footprint chosen: it becomes the linked one and its name field starts again from its vendor name (D-14, D-20)."""
+        combo = self._fp_combo
+        if combo is None or self._candidate is None:
+            return
+        combo.setToolTip(combo.currentText())
+        self._set_linked(combo.currentData())
+        self._request_rebuild()
 
     def _on_symbol_changed(self, _index: int = -1):
         combo = self._symbol_combo
