@@ -8,9 +8,10 @@ and the footprint_library_for helper, never against the symbol library name dire
 import dataclasses
 from datetime import date
 
-from customfixtures import BATTERY_CHARGER
+from customfixtures import ABSENT_LIBRARY, BATTERY_CHARGER
 from zipfixtures import footprint_library_for
 
+from kicad_lib_manager.importer import stems
 from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.commit_plan import build_commit_plan, default_message
 from kicad_lib_manager.importer.plan import InstallOptions, Resolution, ToolContext
@@ -81,3 +82,50 @@ def test_a_kept_symbol_links_no_footprint(atomic_custom, ul_package, tmp_path):
     assert plan.footprint_library is None
     assert plan.footprint_link is None
     assert plan.linked_footprint is None
+
+
+def test_footprint_library_for_is_the_shared_library():
+    assert footprint_library_for(BATTERY_CHARGER) == stems.SHARED_FOOTPRINT_LIBRARY == "Atomic_Footprints"
+    assert footprint_library_for(ABSENT_LIBRARY) == stems.SHARED_FOOTPRINT_LIBRARY
+
+
+def test_tracer_new_symbol_library_comes_alone_with_a_shared_footprint(synthetic_custom, ul_package, tmp_path):
+    _, candidate = ul_package
+    # The v1 tree has no Atomic_Footprints.pretty yet
+    assert not (synthetic_custom.footprints_dir / "Atomic_Footprints.pretty").exists()
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), synthetic_custom, ToolContext())
+    assert not plan.blocked, plan.issues
+
+    shared = synthetic_custom.footprints_dir / "Atomic_Footprints.pretty"
+    ops = {(op.kind, op.path) for op in plan.ops}
+    assert ("mkdir", shared) in ops
+    assert ("footprint", shared / "DQK0006B.kicad_mod") in ops
+    assert ("symbol_lib", synthetic_custom.symbols_dir / f"{ABSENT_LIBRARY}.kicad_sym") in ops
+    assert any(op.kind == "model" for op in plan.ops)
+    assert not [op for op in plan.ops if op.path.name == f"{ABSENT_LIBRARY}.pretty"]
+    assert "install.pair_completed" not in [i.code for i in plan.issues]
+    assert plan.new_symbol_lib and plan.new_footprint_lib
+    assert plan.new_library
+    assert plan.pretty_path == shared
+    assert plan.footprint_library == "Atomic_Footprints"
+    assert plan.footprint_link == "Atomic_Footprints:DQK0006B"
+
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert result.ok, result.issues
+    assert not (synthetic_custom.footprints_dir / f"{ABSENT_LIBRARY}.pretty").exists()
+    assert (shared / "DQK0006B.kicad_mod").is_file()
+    assert not [i for i in verify_install(plan) if i.severity is Severity.ERROR]
+    library = load(synthetic_custom.symbols_dir / f"{ABSENT_LIBRARY}.kicad_sym")
+    symbol = find_symbol(library.root, SYMBOL)
+    assert find_property(symbol.node, "Footprint").value == "Atomic_Footprints:DQK0006B"
+
+
+def test_tracer_existing_library_writes_into_the_existing_shared_folder(atomic_custom, ul_package):
+    _, candidate = ul_package
+    shared = atomic_custom.footprints_dir / "Atomic_Footprints.pretty"
+    assert shared.is_dir()
+    plan = build_plan(candidate, InstallOptions(library=BATTERY_CHARGER), atomic_custom, ToolContext())
+    assert not plan.blocked, plan.issues
+    assert not [op for op in plan.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
+    assert ("footprint", shared / "DQK0006B.kicad_mod") in {(op.kind, op.path) for op in plan.ops}
+    assert not plan.new_footprint_lib

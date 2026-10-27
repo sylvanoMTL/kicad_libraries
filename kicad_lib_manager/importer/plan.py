@@ -12,6 +12,7 @@ from pathlib import Path
 from ..models import Issue, Severity
 from .layout import RepoLayout
 from .package import PackageFile
+from .stems import SHARED_FOOTPRINT_LIBRARY
 
 MODEL_DIR_VAR = "${CUSTOM_3DMODEL_DIR}"
 
@@ -177,7 +178,8 @@ class InstallPlan:
 
     @property
     def new_library(self) -> bool:
-        return self.new_symbol_lib or self.new_footprint_lib
+        """True when the symbol library is new; the shared footprint library's own state is new_footprint_lib."""
+        return self.new_symbol_lib
 
     @property
     def symbol_lib_path(self) -> Path:
@@ -185,7 +187,7 @@ class InstallPlan:
 
     @property
     def pretty_path(self) -> Path:
-        return self.layout.footprints_dir / f"{self.library}.pretty"
+        return self.layout.footprints_dir / f"{SHARED_FOOTPRINT_LIBRARY}.pretty"
 
     @property
     def unresolved_conflicts(self) -> tuple[Conflict, ...]:
