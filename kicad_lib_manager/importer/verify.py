@@ -22,7 +22,6 @@ from ..models import Issue, Severity
 from ..sexpr import Node, quote, unquote
 from .layout import RepoLayout
 from .plan import MODEL_DIR_VAR, InstallPlan, ToolContext
-from .stems import SHARED_FOOTPRINT_LIBRARY
 
 _DIGITS = re.compile(r"(\d+)")
 _WURTH_PREFIX = "WurthElektronik:"
@@ -62,7 +61,7 @@ def _linked_footprint(plan: InstallPlan, library: LoadedFile) -> tuple[LoadedFil
         return None, [_err("verify.link_unresolved", f"The Footprint field of {plan.symbol_name} is {value!r}, expected {expected!r}")]
     lib, _, name = value.partition(":")
     pretty = f"{lib}.pretty"
-    if plan.footprint_library != SHARED_FOOTPRINT_LIBRARY:
+    if plan.footprint_library != plan.pretty_path.stem:
         # D-16: an official link points into KiCad's own footprints; the exact-case listing is the only proof
         official = plan.tools.kicad_footprints_dir
         if official is None or pretty not in _listing(official) or f"{name}.kicad_mod" not in _listing(official / pretty):
