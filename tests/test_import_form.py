@@ -575,3 +575,23 @@ def test_carry_resolutions():
     assert kept is not old
     assert carry_resolutions(old, fake_plan()) == {}
     assert carry_resolutions({}, fake_plan(conflicts=(Conflict("model:x.step", "model", "x.step", "3D"),))) == {}
+
+
+def test_build_options_generated_texts():
+    """An edited generated text is passed exactly as typed, an empty one too; an untouched one passes None (D-30)."""
+    from kicad_lib_manager.importer.form import TEXT_LABELS, TEXT_NAMES
+
+    assert TEXT_NAMES == ("keywords", "fp_description", "fp_tags")
+    assert [TEXT_LABELS[name] for name in TEXT_NAMES] == ["Keywords", "Footprint description", "Footprint tags"]
+    untouched = build_options(values(), DEFAULTS)
+    assert [getattr(untouched, name) for name in TEXT_NAMES] == [None] * 3
+    assert untouched.related_stems == ()
+    edited = build_options(
+        values(texts={"keywords": " a  b ", "fp_tags": ""}, related_stems=("Sensor_Motion", "Diode")), DEFAULTS
+    )
+    assert edited.keywords == " a  b "  # exactly as typed
+    assert edited.fp_tags == ""
+    assert edited.fp_description is None
+    assert edited.related_stems == ("Sensor_Motion", "Diode")
+    # the empty text is not part of the blank-field "cleared" rule
+    assert edited.cleared == frozenset()
