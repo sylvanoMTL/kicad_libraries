@@ -164,4 +164,21 @@ def name_verdict(text: str, allowed: frozenset[str] | None = None) -> NameVerdic
             name=official,
             note=f"Spelling corrected to {official}",
         )
-    return _refuse(text, f"{text} is not an allowed library name")
+    folded = text.casefold()
+    if folded in _EXCLUDED_FOLD:
+        return _refuse(text, f"{text} is a KiCad library that is not for parts; pick another library")
+    bare = {stem.casefold(): stem for stem in stems}.get(folded)
+    if bare is not None:
+        return _refuse(text, f"{text} is the name of a KiCad library; use {ATOMIC_PREFIX}{bare}")
+    if folded.startswith(ATOMIC_PREFIX.casefold()):
+        excluded = _EXCLUDED_FOLD.get(folded[len(ATOMIC_PREFIX) :])
+        if excluded is not None:
+            return _refuse(text, f"{text} cannot be used: {excluded} is not a library for parts")
+        return _refuse(
+            text,
+            f"{text} is not a library name: after Atomic_ comes a KiCad library name, such as Atomic_Transistor_FET",
+        )
+    return _refuse(
+        text,
+        f"{text} does not follow the naming: use Atomic_ and a KiCad library name, such as Atomic_Transistor_FET",
+    )
