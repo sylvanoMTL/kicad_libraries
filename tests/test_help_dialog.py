@@ -118,19 +118,27 @@ def test_help_import_page_matches_finished_flow(qtbot, tmp_path):
         assert label in page, label
 
 
+def _section(heading: str) -> str:
+    """One h3 section of the importing page as the reader sees it."""
+    raw = HELP_PAGES["importing"]
+    start = raw.index(f"<h3>{heading}</h3>")
+    end = raw.find("<h3>", start + 1)
+    text = html_module.unescape(re.sub(r"<[^>]+>", "", raw[start:end if end != -1 else len(raw)]))
+    return re.sub(r"\s+", " ", text)
+
+
 def test_help_import_page_describes_add_model():
     page = _page_text("importing")
     assert import_dialog.ADD_MODEL_TEXT in page
     for text in (".zip", ".step", ".stp", ".wrl"):
         assert text in page, text
-    items = page[page.index("Items"):page.index("Target library")]
+    items = _section("Items")
     assert "SnapEDA" in items
     assert import_dialog.ADD_MODEL_TEXT in items
 
 
 def test_help_import_page_describes_rejected_model():
-    page = _page_text("importing")
-    items = page[page.index("Items"):page.index("Target library")]
+    items = _section("Items")
     assert import_dialog.REMOVE_MODEL_TEXT in items
     assert "red" in items
     assert "Install Part stays blocked" in items
@@ -220,3 +228,50 @@ def test_help_dialog_opens_importing_page(qtbot):
     dialog._toc.setCurrentItem(_find_item(dialog, "importing"))
     assert "Importing Parts" in dialog._browser.toPlainText()
     assert "Install Part" in dialog._browser.toPlainText()
+
+
+def test_help_import_page_sections_follow_the_flow():
+    raw = HELP_PAGES["importing"]
+    order = ["Items", "Target library", "Footprint", "Fields", "Atomic check", "Conflicts", "Install and result"]
+    positions = [raw.index(f"<h3>{name}</h3>") for name in order]
+    assert positions == sorted(positions)
+    for name in order:
+        assert raw.count(f"<h3>{name}</h3>") == 1, name
+
+
+def test_help_import_page_explains_the_atomic_scheme():
+    page = _page_text("importing")
+    target = _section("Target library")
+    for text in ("Atomic_Transistor_FET", "Atomic_", "tooltip", "similar parts", "Atomic_TI", "letter case", ".kicad_sym"):
+        assert text in target, text
+    assert "Atomic_Footprints" in page
+    footprint = _section("Footprint")
+    for text in (
+        "Atomic_Footprints", import_dialog.OFFICIAL_FOOTPRINT_TEXT, import_dialog.VENDOR_FOOTPRINT_TEXT,
+        "official KiCad footprint", "Not used", "never changed", "Overwrite", "Rename", "Skip", "reused",
+    ):
+        assert text in footprint, text
+    assert "official KiCad footprint" in page
+    items = _section("Items")
+    assert "Not used" in items and "only the one you pick" in items
+
+
+def test_help_import_page_explains_fields_and_the_install_gate():
+    fields = _section("Fields")
+    for text in ("Value always equals the MPN", "Texas Instruments", "Regenerate", "Keywords", "Footprint description",
+                 "Footprint tags", "MPN cannot be empty"):
+        assert text in fields, text
+    gate = _section("Atomic check")
+    for text in ("Install Part", "blocked", "MPN", "Manufacturer", "Datasheet", "Description", "3D model", "Click a problem",
+                 import_dialog.ADD_MODEL_TEXT, "official KiCad footprint"):
+        assert text in gate, text
+
+
+def test_help_import_page_uses_plain_words():
+    raw = HELP_PAGES["importing"]
+    page = _page_text("importing")
+    for banned in ("SubCategory", "Make linked", "ki_", "install.atomic", "<Type>"):
+        assert banned not in page, banned
+    assert "ki_" not in raw
+    # the old generic-word rule is gone: no sentence about name parts
+    assert "generic words" not in page
