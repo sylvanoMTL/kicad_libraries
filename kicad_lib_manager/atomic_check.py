@@ -624,6 +624,18 @@ def _summary(libraries_seen: int, failing: int, total: int, problems: int) -> Is
     return Issue(Severity.SUCCESS, "atomic.summary", f"Atomic check: all {total} symbols pass")
 
 
+def summary_line(sym_libs: list[SymbolLibrary]) -> Issue | None:
+    """The atomic.summary line for libraries already checked, as check_libraries ends its list with."""
+    checked = [lib for lib in sym_libs if lib.atomic]
+    entries = [entry for lib in checked for entry in lib.symbols]
+    return _summary(
+        len(checked),
+        sum(1 for entry in entries if entry.failing),
+        len(entries),
+        sum(len(entry.violations) for entry in entries),
+    )
+
+
 def check_libraries(
     repo_root: Path,
     sym_libs: list[SymbolLibrary],
