@@ -676,11 +676,19 @@ def build_plan(
     # D-10: a name that differs from a library on disk only by letter case is a second library on Linux and the same one on Windows
     sym_libs = list_symbol_libs(layout)
     pretty_libs = list_footprint_libs(layout)
-    twins = [name for name in dict.fromkeys([*sym_libs, *pretty_libs]) if name != library and name.casefold() == library.casefold()]
+    twins = [name for name in sym_libs if name != library and name.casefold() == library.casefold()]
     if twins:
         return refuse(_err(
             "install.library_case_clash",
             f"{library} differs from the existing library {twins[0]} only by letter case; use {twins[0]} or pick another name",
+        ))
+    # D-15: every footprint goes into the one shared library, so a folder that differs from it only by case would split it on Linux
+    shared = stems.SHARED_FOOTPRINT_LIBRARY
+    shared_twins = [name for name in pretty_libs if name != shared and name.casefold() == shared.casefold()]
+    if shared_twins:
+        return refuse(_err(
+            "install.library_case_clash",
+            f"Custom/Footprints holds {shared_twins[0]}.pretty, which differs from {shared} only by letter case; rename that folder to {shared}",
         ))
     # D-13: Value and MPN can be cleared by the caller but never installed empty (MPN names the 3D model file)
     empty = []
@@ -691,16 +699,16 @@ def build_plan(
     if empty:
         return refuse(*empty)
     # WR-02: creating a library needs its Custom folder; say so before anything is read or written
-    for exists, folder, code in (
-        (library in sym_libs, layout.symbols_dir, "install.symbols_dir_missing"),
-        (library in pretty_libs, layout.footprints_dir, "install.footprints_dir_missing"),
+    for exists, folder, code, created in (
+        (library in sym_libs, layout.symbols_dir, "install.symbols_dir_missing", library),
+        (shared in pretty_libs, layout.footprints_dir, "install.footprints_dir_missing", shared),
     ):
         if not exists and not folder.is_dir():
             try:
                 shown = folder.relative_to(layout.repo_root).as_posix()
             except ValueError:
                 shown = folder.name
-            return refuse(_err(code, f"Cannot create {library}: the {shown} folder is missing. Check the Custom submodule is checked out."))
+            return refuse(_err(code, f"Cannot create {created}: the {shown} folder is missing. Check the Custom submodule is checked out."))
     sym_item, fp_items, model_item, problems = _select(candidate, options)
     if problems or sym_item is None:
         return refuse(*problems)
@@ -718,9 +726,9 @@ def build_plan(
 
     step("Reading the target library", 2)
     sym_path = layout.symbols_dir / f"{library}.kicad_sym"
-    pretty = layout.footprints_dir / f"{library}.pretty"
+    pretty = layout.footprints_dir / f"{shared}.pretty"
     sym_exists = library in sym_libs
-    pretty_exists = library in pretty_libs
+    pretty_exists = shared in pretty_libs
     target: LoadedFile | None = None
     target_bytes = b""
     if sym_exists:
@@ -734,14 +742,6 @@ def build_plan(
         if file_kind(parsed.root) != "kicad_symbol_lib":
             return refuse(_err("install.target_unreadable", f"{sym_path.name} is not a KiCad symbol library"))
         target = parsed
-    if sym_exists != pretty_exists:
-        # LIB-02: a library is always a symbol and footprint pair, so the missing half is created by this install
-        created = f"{library}.pretty" if sym_exists else f"{library}.kicad_sym"
-        issues.append(Issue(
-            Severity.WARNING,
-            "install.pair_completed",
-            f"{created} does not exist yet and is created with this install, so {library} becomes a complete symbol and footprint pair",
-        ))
 
     vendor_ref = find_symbol(vendor_sym.root, sym_item.name)
     if vendor_ref is None:
@@ -873,7 +873,7 @@ def build_plan(
         renders[memo] = (edited, blocks, final_mpn, all_changes)
         return renders[memo]
 
-    first = render_symbols(new_names, f"{library}:{fp_names[0]}", " ".join(fp_names))
+    first = render_symbols(new_names, f"{stems.SHARED_FOOTPRINT_LIBRARY}:{fp_names[0]}", " ".join(fp_names))
     if isinstance(first, Issue):
         return refuse(first)
     final_mpn = first[2]
@@ -1017,8 +1017,8 @@ def build_plan(
     fp_decisions = [
         _decide_file(
             footprint_spec(index),
-            f"footprint:{library}:{name.casefold()}",
-            resolution_for(f"footprint:{library}:{name.casefold()}"),
+            f"footprint:{stems.SHARED_FOOTPRINT_LIBRARY}:{name.casefold()}",
+            resolution_for(f"footprint:{stems.SHARED_FOOTPRINT_LIBRARY}:{name.casefold()}"),
         )
         for index, name in enumerate(fp_names)
     ]
@@ -1043,7 +1043,7 @@ def build_plan(
             issues.extend(render_fp(index, decision.name)[1])
 
     # The symbol is judged last: its Footprint field and filters carry the footprint names that survived
-    link = f"{library}:{linked}"
+    link = f"{stems.SHARED_FOOTPRINT_LIBRARY}:{linked}"
     filters = " ".join(final_fps)
     existing_syms = {} if target is None else {ref.name: ref for ref in find_symbols(target.root)}
 
@@ -1190,8 +1190,7 @@ def build_plan(
         footprint_names=final_fps,
         # A kept chosen symbol still has whatever Footprint field it had, so this install links nothing
         linked_footprint=None if states[-1].kind == "skip" else linked,
-        # Until footprints are shared the footprint library is the symbol library
-        footprint_library=None if states[-1].kind == "skip" else library,
+        footprint_library=None if states[-1].kind == "skip" else stems.SHARED_FOOTPRINT_LIBRARY,
         model_file=model_dec.name if model_dec is not None else None,
         source_version=source_version,
         target_version=target_version,

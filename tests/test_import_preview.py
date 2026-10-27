@@ -168,18 +168,29 @@ def test_rows_case_twin_is_conflict_not_unchanged(ul_package, ul_layout):
     assert file_counts(plan, candidate, options) == FileCounts(new=1, modified=1, unchanged=0)
 
 
-def test_rows_new_library_mkdir(ul_package, ul_layout):
+def test_rows_new_library_comes_alone(ul_package, ul_layout):
+    # The shared footprint folder exists, so a new symbol library lists no folder row and no matching .pretty
     plan, candidate, options = _ul_plan(ul_package, ul_layout, library=NEW_LIBRARY)
     assert not plan.blocked, plan.issues
     files = _sections(plan, candidate, options)["Files"]
     assert _texts(files) == [
-        f"+ Custom/Footprints/{footprint_library_for(NEW_LIBRARY)}.pretty/",
         "+ Custom/3DModels/CSD85301Q2.stp",
         f"+ Custom/Footprints/{footprint_library_for(NEW_LIBRARY)}.pretty/DQK0006B.kicad_mod",
         f"+ Custom/Symbols/{NEW_LIBRARY}.kicad_sym",
     ]
+    assert files.rows[0].detail.startswith("new")
+    assert file_counts(plan, candidate, options) == FileCounts(new=3, modified=0, unchanged=0)
+
+
+def test_rows_shared_footprint_folder_mkdir(ul_package, tmp_path):
+    # Without Atomic_Footprints.pretty the first install lists the one folder, which is not a file and is never counted
+    write_custom_layout(tmp_path, [UL_LIBRARY], [])
+    layout = RepoLayout.for_repo(tmp_path)
+    plan, candidate, options = _ul_plan(ul_package, layout, library=NEW_LIBRARY)
+    assert not plan.blocked, plan.issues
+    files = _sections(plan, candidate, options)["Files"]
+    assert _texts(files)[0] == "+ Custom/Footprints/Atomic_Footprints.pretty/"
     assert files.rows[0].detail == "new"
-    # A folder is not a file: it is listed but never counted
     assert file_counts(plan, candidate, options) == FileCounts(new=3, modified=0, unchanged=0)
 
 
@@ -200,9 +211,8 @@ def test_rows_new_library_without_model_has_no_model_row(layout, tmp_path):
         options = InstallOptions(library=SINGLE_LIBRARY)
         plan = build_plan(candidate, options, layout, ToolContext())
         files = _sections(plan, candidate, options)["Files"]
-    assert files.title == "Files (3)"
+    assert files.title == "Files (2)"
     assert _texts(files) == [
-        f"+ Custom/Footprints/{footprint_library_for(SINGLE_LIBRARY)}.pretty/",
         f"+ Custom/Footprints/{footprint_library_for(SINGLE_LIBRARY)}.pretty/FP.kicad_mod",
         f"+ Custom/Symbols/{SINGLE_LIBRARY}.kicad_sym",
     ]

@@ -313,12 +313,12 @@ CURRENT_CUSTOM_FOOTPRINT_LIBS = tuple(
 def footprint_library_for(library: str) -> str:
     """Name the footprint library that a part of the symbol library `library` installs into.
 
-    This is the rule the planner follows today: the footprint library carries the symbol
-    library's name. Every test that names the footprint library of an install target goes
-    through this helper, so plan 10-12 can move footprints into the shared Atomic_Footprints
-    (D-15) by changing it together with the planner.
+    Every footprint goes into the one shared Atomic_Footprints library (D-15, LIB-06), whatever
+    the symbol library is. Every test that names the footprint library of an install target
+    goes through this helper; a test pins the value to stems.SHARED_FOOTPRINT_LIBRARY, since
+    this module stays standard-library only.
     """
-    return library
+    return "Atomic_Footprints"
 
 
 # The nine Atomic_ symbol libraries Phase 13 migrates the live tree to; the v1 mirror above stays

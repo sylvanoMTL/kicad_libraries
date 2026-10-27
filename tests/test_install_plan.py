@@ -356,7 +356,7 @@ def test_new_library_refused_when_footprints_missing(tmp_path):
     assert plan.blocked and not plan.ops
     assert _codes(plan) == ["install.footprints_dir_missing"]
     assert _error(plan, "install.footprints_dir_missing").text == (
-        f"Cannot create {NEW_LIBRARY}: the Custom/Footprints folder is missing. Check the Custom submodule is checked out."
+        "Cannot create Atomic_Footprints: the Custom/Footprints folder is missing. Check the Custom submodule is checked out."
     )
 
 
@@ -696,14 +696,16 @@ def _header(data):
     return loaded.source.text[: find_symbols(loaded.root)[0].node.start]
 
 
-def test_library_new_pair_with_cli(tmp_path):
+def test_library_new_symbol_library_with_cli(tmp_path):
+    # A new symbol library creates only its .kicad_sym: the shared footprint folder is already there
     layout = _pair_layout(tmp_path)
     fake = FakeCli(output_version=V9)
     plan = _plan(tmp_path, layout, _tools(fake), options=InstallOptions(library=NEW_LIBRARY))
     assert not plan.blocked, plan.issues
-    assert [op.kind for op in plan.ops] == ["mkdir", "model", "footprint", "symbol_lib"]
-    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (True, True)
-    assert plan.ops[0].path == layout.footprints_dir / f"{footprint_library_for(NEW_LIBRARY)}.pretty"
+    assert [op.kind for op in plan.ops] == ["model", "footprint", "symbol_lib"]
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (True, False)
+    assert plan.new_library
+    assert not [op for op in plan.ops if op.path.name == f"{NEW_LIBRARY}.pretty"]
     sym_op = _op(plan, "symbol_lib")
     assert sym_op.path == layout.symbols_dir / f"{NEW_LIBRARY}.kicad_sym"
     assert sym_op.base_sha256 is None
@@ -717,12 +719,16 @@ def test_library_new_pair_with_cli(tmp_path):
     assert find_property(symbol.node, "Footprint").value == f"{footprint_library_for(NEW_LIBRARY)}:FP"
 
 
-def test_library_new_pair_without_cli(tmp_path):
-    layout = _pair_layout(tmp_path)
+def test_library_new_symbol_library_without_cli(tmp_path):
+    # With no Atomic_Footprints.pretty yet, the one mkdir is the shared folder, never <library>.pretty
+    layout = _pair_layout(tmp_path, footprint_libs=())
     vendor = vendor_symbol_lib(VENDOR)
     plan = _plan(tmp_path, layout, ToolContext(), vendor, InstallOptions(library=NEW_LIBRARY))
     assert not plan.blocked, plan.issues
     assert [op.kind for op in plan.ops] == ["mkdir", "model", "footprint", "symbol_lib"]
+    assert plan.ops[0].path == layout.footprints_dir / "Atomic_Footprints.pretty"
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (True, True)
+    assert not [i for i in plan.issues if i.severity is Severity.WARNING and i.code.startswith("install.pair")]
     data = _op(plan, "symbol_lib").data
     assert file_version(parse_bytes(data, "lib").root) == V6
     # The header is the vendor's own, so version and content agree
@@ -732,29 +738,33 @@ def test_library_new_pair_without_cli(tmp_path):
     assert [i.severity for i in plan.issues if i.code == "install.cli_not_found"] == [Severity.INFO]
 
 
-def test_library_pair_completed_pretty_missing(atomic_custom, ul_package, tmp_path):
-    # The synthetic Atomic_ IMU library has a symbol library and, by construction, no footprint library
-    assert not (atomic_custom.footprints_dir / f"{footprint_library_for(IMU)}.pretty").exists()
+def test_library_existing_symbol_library_without_footprint_folder(atomic_custom, ul_package, tmp_path):
+    # The synthetic Atomic_ IMU library has a symbol library and, by construction, no footprint of its own
     _, candidate = ul_package
     plan = build_plan(candidate, InstallOptions(library=IMU), atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
-    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, True)
-    assert [op.path for op in plan.ops if op.kind == "mkdir"] == [atomic_custom.footprints_dir / f"{footprint_library_for(IMU)}.pretty"]
+    # The shared footprint folder exists in this tree, so no folder is created at all
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, False)
+    assert not plan.new_library
+    assert not [op for op in plan.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
     assert _op(plan, "symbol_lib").base_sha256 is not None
-    assert [i.severity for i in plan.issues if i.code == "install.pair_completed"] == [Severity.WARNING]
-    assert f"{footprint_library_for(IMU)}.pretty" in _error_or_warning(plan, "install.pair_completed").text
+    assert not [i for i in plan.issues if i.severity is Severity.WARNING and i.code.startswith("install.pair")]
     result = apply_plan(plan, backup_root=tmp_path / "bk")
     assert result.ok, result.issues
-    assert (atomic_custom.footprints_dir / f"{footprint_library_for(IMU)}.pretty" / "DQK0006B.kicad_mod").is_file()
+    assert (atomic_custom.footprints_dir / "Atomic_Footprints.pretty" / "DQK0006B.kicad_mod").is_file()
+    assert not (atomic_custom.footprints_dir / f"{IMU}.pretty").exists()
 
 
-def _error_or_warning(plan, code):
-    found = [i for i in plan.issues if i.code == code]
-    assert found, f"no {code} in {[i.code for i in plan.issues]}"
-    return found[0]
+def test_library_existing_symbol_library_creates_the_shared_folder_once(tmp_path):
+    layout = _pair_layout(tmp_path, footprint_libs=())
+    plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY))
+    assert not plan.blocked, plan.issues
+    assert [op.path for op in plan.ops if op.kind == "mkdir"] == [layout.footprints_dir / "Atomic_Footprints.pretty"]
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, True)
+    assert not [i for i in plan.issues if i.severity is Severity.WARNING]
 
 
-def test_library_pair_completed_sym_missing(tmp_path):
+def test_library_new_symbol_library_next_to_a_footprint_library(tmp_path):
     layout = _pair_layout(tmp_path, symbol_libs=(), footprint_libs=(footprint_library_for(LIBRARY),))
     plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY))
     assert not plan.blocked, plan.issues
@@ -763,14 +773,13 @@ def test_library_pair_completed_sym_missing(tmp_path):
     sym_op = _op(plan, "symbol_lib")
     assert sym_op.path == layout.symbols_dir / f"{LIBRARY}.kicad_sym" and sym_op.base_sha256 is None
     assert [s.name for s in find_symbols(parse_bytes(sym_op.data, "lib").root)] == [VENDOR]
-    assert [i.severity for i in plan.issues if i.code == "install.pair_completed"] == [Severity.WARNING]
-    assert "kicad_sym" in _error_or_warning(plan, "install.pair_completed").text
+    assert not [i for i in plan.issues if i.severity is Severity.WARNING and i.code.startswith("install.pair")]
 
 
 @pytest.mark.parametrize(
     "symbol_libs, footprint_libs",
-    [((LIBRARY.lower(),), (LIBRARY.lower(),)), ((LIBRARY.lower(),), ()), ((), (LIBRARY.lower(),))],
-    ids=["pair", "symbols-only", "footprints-only"],
+    [((LIBRARY.lower(),), (LIBRARY.lower(),)), ((LIBRARY.lower(),), ())],
+    ids=["with-footprints", "symbols-only"],
 )
 def test_library_case_clash(tmp_path, snapshot, symbol_libs, footprint_libs):
     # A lower-case twin on disk; the allowed name is passed exactly

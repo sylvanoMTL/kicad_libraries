@@ -272,29 +272,32 @@ def test_package_issue_reaches_install_result_from_a_zip(atomic_custom, ul_packa
     assert [i for i in result.issues if i.code == "intake.ignored_members"] == own
 
 
-def test_sc3_new_library_pair(atomic_custom, ul_package, tmp_path):
+def test_sc3_new_symbol_library_comes_alone(atomic_custom, ul_package, tmp_path):
     _, candidate = ul_package
     layout = atomic_custom
     plan, result = _install(candidate, layout, tmp_path, library=NEW_LIBRARY)
     assert result.ok, result.issues
-    assert result.new_library is True and plan.new_symbol_lib and plan.new_footprint_lib
+    # The symbol library is new; the shared footprint library already exists, so no .pretty is created
+    assert result.new_library is True and plan.new_symbol_lib and not plan.new_footprint_lib
     sym_path = layout.symbols_dir / f"{NEW_LIBRARY}.kicad_sym"
     pretty = layout.footprints_dir / f"{footprint_library_for(NEW_LIBRARY)}.pretty"
+    assert pretty.name == "Atomic_Footprints.pretty"
     assert sym_path.is_file() and (pretty / "DQK0006B.kicad_mod").is_file()
+    assert not (layout.footprints_dir / f"{NEW_LIBRARY}.pretty").exists()
     assert [s.name for s in find_symbols(load(sym_path).root)] == [SYMBOL]
     # A new library has no pre-existing file to back up
     assert result.backup_dir is None
 
 
 @pytest.mark.parametrize(
-    "library, version_mismatch, pair_completed",
+    "library, version_mismatch",
     [
-        (BATTERY_CHARGER, False, False),
-        (IMU, True, True),
-        (MAGNETOMETER, True, False),
+        (BATTERY_CHARGER, False),
+        (IMU, True),
+        (MAGNETOMETER, True),
     ],
 )
-def test_sc3_existing_headers_unchanged(atomic_custom, ul_package, tmp_path, library, version_mismatch, pair_completed):
+def test_sc3_existing_headers_unchanged(atomic_custom, ul_package, tmp_path, library, version_mismatch):
     _, candidate = ul_package
     layout = atomic_custom
     sym_path = layout.symbols_dir / f"{library}.kicad_sym"
@@ -304,7 +307,7 @@ def test_sc3_existing_headers_unchanged(atomic_custom, ul_package, tmp_path, lib
     assert result.ok, result.issues
     codes = _codes(result.issues)
     assert ("install.version_mismatch" in codes) is version_mismatch
-    assert ("install.pair_completed" in codes) is pair_completed
+    assert "install.pair_completed" not in codes
     assert plan.normalised is False
 
     written = sym_path.read_bytes()
@@ -490,7 +493,7 @@ def _scenario_target_not_cli_format(candidate, layout, tmp_path, tools):
     assert plan.normalised is False
     found = {i.code: i.severity for i in plan.issues}
     assert found["install.version_mismatch"] is Severity.WARNING
-    assert found["install.pair_completed"] is Severity.WARNING
+    assert "install.pair_completed" not in found
     return result, IMU
 
 

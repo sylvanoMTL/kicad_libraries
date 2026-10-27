@@ -118,14 +118,22 @@ def scan_with(*, selected_usb=False, with_installed=True, peer=None, selected_pe
     """A scan holding the USB connector library and (optionally) the installed library, with an optional same-nickname peer."""
     symbols = [SymbolLibrary(USB_LIB, USB_SYM_REL, "Custom")]
     footprints = [FootprintLibrary(USB_FP_LIB, USB_FP_REL, "Custom")]
+
+    def footprint_lib(nickname: str, rel_path: str) -> FootprintLibrary:
+        """Every Custom symbol library shares Atomic_Footprints, so a scan lists that one folder once."""
+        known = next((f for f in footprints if f.rel_path == rel_path), None)
+        if known is None:
+            known = FootprintLibrary(nickname, rel_path, "Custom")
+            footprints.append(known)
+        return known
+
     if with_ffc:
         symbols.append(SymbolLibrary(FFC_LIB, FFC_SYM_REL, "Custom"))
-        footprints.append(FootprintLibrary(FFC_FP_LIB, FFC_FP_REL, "Custom"))
+        footprint_lib(FFC_FP_LIB, FFC_FP_REL)
     if with_installed:
         sym = SymbolLibrary(lib, f"Custom/Symbols/{lib}.kicad_sym", "Custom")
-        fp = FootprintLibrary(footprint_library_for(lib), f"Custom/Footprints/{footprint_library_for(lib)}.pretty", "Custom")
+        fp = footprint_lib(footprint_library_for(lib), f"Custom/Footprints/{footprint_library_for(lib)}.pretty")
         symbols.append(sym)
-        footprints.append(fp)
         if peer is not None:
             peer_sym = SymbolLibrary(LIB, f"{peer}/Symbols/{LIB}.kicad_sym", peer)
             peer_fp = FootprintLibrary(FP_LIB, f"{peer}/Footprints/{FP_LIB}.pretty", peer)
@@ -331,11 +339,13 @@ def write_tables_in(repo: Path, sym_entries: str, fp_entries: str) -> tuple[byte
     return sym, fp
 
 
-def usb_tables(repo: Path, extra_sym: str = "", extra_fp: str = "") -> tuple[bytes, bytes]:
+def usb_tables(repo: Path, extra_sym: str = "", extra_fp: str = "", *, shared_listed: bool = True) -> tuple[bytes, bytes]:
+    """Tables listing the USB symbol library; shared_listed=False leaves Atomic_Footprints out, so the first install adds it."""
+    shared_entry = _managed(USB_FP_LIB, USB_FP_REL) if shared_listed else ""
     return write_tables_in(
         repo,
         EXT_SYM + _managed(USB_LIB, USB_SYM_REL) + extra_sym,
-        EXT_FP + _managed(USB_FP_LIB, USB_FP_REL) + extra_fp,
+        EXT_FP + shared_entry + extra_fp,
     )
 
 
@@ -352,7 +362,7 @@ def deselect_all_but_ffc(w):
 def test_tables_new_library_add_only(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    old_sym, old_fp = usb_tables(repo)
+    old_sym, old_fp = usb_tables(repo, shared_listed=False)
     first = scan_with(with_installed=False, with_ffc=True)
     second = scan_with(lib=NEW_LIB, with_ffc=True)
     w = make_window([first, second], repo=repo)
@@ -368,7 +378,7 @@ def test_tables_new_library_add_only(qtbot, make_window, tmp_path):
     fp_new = (repo / "fp-lib-table").read_bytes()
     assert sym_new == old_sym[:-2] + sym_line + b")\n"
     assert fp_new == old_fp[:-2] + fp_line + b")\n"
-    assert FFC_LIB.encode() not in sym_new and FFC_FP_LIB.encode() not in fp_new
+    assert FFC_LIB.encode() not in sym_new
     assert make_window.config_file.read_text(encoding="utf-8") != config_before
     assert "KICAD_LIB_GITHUB" in make_window.config_file.read_text(encoding="utf-8")
     # the post-install path asks through the same helper as Generate
@@ -382,7 +392,7 @@ def test_tables_new_library_add_only(qtbot, make_window, tmp_path):
 def test_tables_new_library_declined_keeps_kicad_config(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    old_sym, old_fp = usb_tables(repo)
+    old_sym, old_fp = usb_tables(repo, shared_listed=False)
     first = scan_with(with_installed=False, with_ffc=True)
     second = scan_with(lib=NEW_LIB, with_ffc=True)
     make_window.answer = QMessageBox.StandardButton.No
@@ -423,9 +433,7 @@ def test_tables_existing_library_not_in_tables_warns(qtbot, make_window, tmp_pat
 def test_tables_existing_library_listed_no_warning(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    old_sym, old_fp = usb_tables(
-        repo, _managed(LIB, SYM_REL), _managed(FP_LIB, FP_REL),
-    )
+    old_sym, old_fp = usb_tables(repo, _managed(LIB, SYM_REL))
     w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
 
     w._on_import_installed(install_result(), stub_plan(repo))
@@ -440,7 +448,7 @@ def test_tables_existing_library_listed_no_warning(qtbot, make_window, tmp_path)
 def test_tables_written_even_when_rescan_fails(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    old_sym, old_fp = usb_tables(repo)
+    old_sym, old_fp = usb_tables(repo, shared_listed=False)
 
     def failing():
         raise RuntimeError("scan boom")
@@ -739,7 +747,7 @@ def run_install(qtbot, w, repo, lib, new_library):
 def test_status_rows_new_library_settle(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    usb_tables(repo)
+    usb_tables(repo, shared_listed=False)
     w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
 
     dialog, at_once = run_install(qtbot, w, repo, NEW_LIB, True)
@@ -845,7 +853,7 @@ def test_status_rows_destination_missing(qtbot, make_window, tmp_path):
 def test_status_rows_skipped_after_dialog_closed(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    usb_tables(repo)
+    usb_tables(repo, shared_listed=False)
     w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
     dialog = RecordingDialog()
     w._import_dialog = dialog
@@ -917,7 +925,7 @@ SHARED_FP_REL = f"Custom/Footprints/{SHARED_FP}.pretty"
 def test_tables_new_symbol_and_new_footprint_library_use_their_own_names(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    old_sym, old_fp = usb_tables(repo)
+    old_sym, old_fp = usb_tables(repo, shared_listed=False)
     w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
 
     w._on_import_installed(
@@ -935,7 +943,7 @@ def test_tables_new_symbol_and_new_footprint_library_use_their_own_names(qtbot, 
 def test_tables_only_the_footprint_library_is_new(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    old_sym, old_fp = usb_tables(repo, _managed(LIB, SYM_REL))
+    old_sym, old_fp = usb_tables(repo, _managed(LIB, SYM_REL), shared_listed=False)
     w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
 
     plan = stub_plan(repo, LIB, new_symbol_lib=False, new_footprint_lib=True, footprint_library=SHARED_FP)
@@ -946,6 +954,20 @@ def test_tables_only_the_footprint_library_is_new(qtbot, make_window, tmp_path):
     assert (repo / "fp-lib-table").read_bytes() == old_fp[:-2] + _managed(SHARED_FP, SHARED_FP_REL).encode("utf-8") + b")\n"
     assert f"Added {SHARED_FP} to fp-lib-table" in log_text(w)
     assert "is not in the library tables" not in log_text(w)
+
+
+def test_tables_shared_footprint_library_already_listed_adds_only_the_symbol(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    w._on_import_installed(install_result(), stub_plan(repo, NEW_LIB, new_symbol_lib=True, new_footprint_lib=False))
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert (repo / "sym-lib-table").read_bytes() == old_sym[:-2] + _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8") + b")\n"
+    assert (repo / "fp-lib-table").read_bytes() == old_fp
+    assert f"Added {NEW_LIB} to sym-lib-table" in log_text(w)
 
 
 def test_tables_a_footprint_library_outside_the_repo_gets_no_fp_entry(qtbot, make_window, tmp_path):
@@ -967,7 +989,7 @@ def test_tables_a_footprint_library_outside_the_repo_gets_no_fp_entry(qtbot, mak
 def test_hint_names_both_libraries_when_neither_is_in_the_tables(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    usb_tables(repo)
+    usb_tables(repo, shared_listed=False)
     w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
 
     plan = stub_plan(repo, LIB, new_symbol_lib=False, new_footprint_lib=False, footprint_library=SHARED_FP)

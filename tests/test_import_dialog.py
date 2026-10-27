@@ -384,7 +384,9 @@ def test_preview_sections_follow_plan_ops(ul_package, atomic_custom):
 
     fresh = real_build_plan(candidate, replace(options, library=NEW_A), atomic_custom)
     fresh_files = preview_sections(fresh, candidate, options)[0]
-    assert fresh_files.rows[0].text == f"+ Custom/Footprints/{footprint_library_for(NEW_A)}.pretty/"
+    # A new symbol library comes alone: the shared footprint folder exists, so no folder row is listed
+    assert not [r.text for r in fresh_files.rows if r.text.endswith(".pretty/")]
+    assert fresh_files.rows[-1].text == f"+ Custom/Symbols/{NEW_A}.kicad_sym"
     assert file_counts(fresh, candidate, options).new == 3
 
 
@@ -2152,7 +2154,7 @@ def test_conflict_rename_field_and_empty_reason(qtbot, make_item_dialog, item_la
 
 
 def test_conflict_choice_carried_by_key(qtbot, make_item_dialog, item_layout):
-    """T-05-31 / D-14a: a choice never moves to another item."""
+    """T-05-31 / D-14a: a choice is carried by the item key; the shared footprint folder makes the footprint one item for every symbol library."""
     write_clashes(item_layout, model=False, library=OTHER_LIB)
     dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
     row = dialog._conflict_rows[FP_KEY]
@@ -2165,24 +2167,23 @@ def test_conflict_choice_carried_by_key(qtbot, make_item_dialog, item_layout):
     assert row.current_resolution() == Resolution("overwrite")
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
 
-    # another library has the same clash, but its key is another item
+    # another symbol library installs into the same shared footprint folder: the footprint is the same item, so its choice stays
     other_key = f"footprint:{footprint_library_for(OTHER_LIB)}:dqk0006b"
+    assert other_key == FP_KEY
     set_library(dialog, OTHER_LIB)
     wait_current(qtbot, dialog)
-    assert set(dialog._conflict_rows) == {other_key}
-    assert dialog._resolutions == {}
-    assert dialog._conflict_rows[other_key].current_resolution() is None
-    assert not dialog._install_btn.isEnabled()
+    assert set(dialog._conflict_rows) == {FP_KEY}
+    assert dialog._resolutions == {FP_KEY: Resolution("overwrite")}
+    assert dialog._conflict_rows[FP_KEY].current_resolution() == Resolution("overwrite")
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
 
-    # coming back does not bring the old choice back
+    # coming back keeps the same choice
     set_library(dialog, LIB)
     wait_current(qtbot, dialog)
     row = dialog._conflict_rows[FP_KEY]
-    assert row.current_resolution() is None and dialog._resolutions == {}
+    assert row.current_resolution() == Resolution("overwrite")
 
     # a free footprint name removes the row and its choice
-    row._overwrite_btn.click()
-    wait_current(qtbot, dialog)
     type_text(qtbot, dialog._fp_name_edit, "OTHER_FP")
     wait_current(qtbot, dialog)
     assert dialog._conflict_rows == {} and dialog._resolutions == {}
