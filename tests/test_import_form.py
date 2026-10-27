@@ -74,7 +74,14 @@ from vendorfixtures import (  # noqa: E402
     SNAPEDA_SYMBOL,
     snapeda_zip,
 )
-from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib, write_custom_layout  # noqa: E402
+from zipfixtures import (  # noqa: E402
+    STEP_BYTES,
+    footprint,
+    footprint_library_for,
+    make_zip,
+    symbol_lib,
+    write_custom_layout,
+)
 
 from kicad_lib_manager.importer import form  # noqa: E402
 from kicad_lib_manager.importer.detect import detect_candidate  # noqa: E402
@@ -84,14 +91,18 @@ from kicad_lib_manager.importer.planner import build_plan  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UL_ZIP = REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip"
-UL_LIBRARY = "IC_Battery_Charger_TI"
-TEST_LIBRARY = "IC_Test_TI"
+UL_LIBRARY = "Atomic_Battery_Management"
+TEST_LIBRARY = "Atomic_Analog"
 _TI_DATASHEET = {"Datasheet": "https://www.ti.com/lit/gpn/part"}
 
 
 @pytest.fixture
 def eq_layout(tmp_path):
-    write_custom_layout(tmp_path / "repo", [UL_LIBRARY, TEST_LIBRARY], [UL_LIBRARY, TEST_LIBRARY])
+    write_custom_layout(
+        tmp_path / "repo",
+        [UL_LIBRARY, TEST_LIBRARY],
+        [footprint_library_for(UL_LIBRARY), footprint_library_for(TEST_LIBRARY)],
+    )
     return RepoLayout.for_repo(tmp_path / "repo")
 
 
@@ -247,7 +258,7 @@ def test_empty_footprint_name_blocks_the_plan(eq_layout):
 
 def test_typed_footprint_name_case_twin_is_a_conflict(eq_layout):
     """A typed name that differs from an installed footprint only by letter case collides (casefold)."""
-    pretty = eq_layout.footprints_dir / f"{UL_LIBRARY}.pretty"
+    pretty = eq_layout.footprints_dir / f"{footprint_library_for(UL_LIBRARY)}.pretty"
     (pretty / "DQK0006B.kicad_mod").write_bytes(footprint("DQK0006B"))
     with open_package(UL_ZIP, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
@@ -308,11 +319,11 @@ def test_library_tokens():
 
 
 def test_library_badge():
-    names = ["IC_Battery_Charger_TI", "Connector_USB_GCT"]
-    assert form.library_badge("IC_Battery_Charger_TI", names) == "existing"
-    assert form.library_badge("IC_New_TI", names) == "new - creates .kicad_sym + .pretty"
+    names = ["Atomic_Battery_Management", "Atomic_Connector"]
+    assert form.library_badge("Atomic_Battery_Management", names) == "existing"
+    assert form.library_badge("Atomic_Sensor_Temperature", names) == "new - creates .kicad_sym + .pretty"
     # a case twin is not the same library
-    assert form.library_badge("ic_battery_charger_ti", names) == "new - creates .kicad_sym + .pretty"
+    assert form.library_badge("atomic_battery_management", names) == "new - creates .kicad_sym + .pretty"
     assert form.library_badge("", names) == ""
     assert form.library_badge("   ", names) == ""
 
@@ -330,10 +341,14 @@ def test_cli_runs_once_across_rebuilds(eq_layout):
         symbol = candidate.symbols[0].name
         fp = candidate.footprints[0].name
         steps = [
-            InstallOptions(library="IC_Power_TI", symbol=symbol, footprints=(fp,)),
-            InstallOptions(library="IC_Power2_TI", symbol=symbol, footprints=(fp,)),
+            InstallOptions(library="Atomic_Sensor_Temperature", symbol=symbol, footprints=(fp,)),
+            InstallOptions(library="Atomic_Sensor_Pressure", symbol=symbol, footprints=(fp,)),
             InstallOptions(
-                library="IC_Power2_TI", symbol=symbol, footprints=(fp,), footprint_names={fp: "DQK6"}, manufacturer="Acme"
+                library="Atomic_Sensor_Pressure",
+                symbol=symbol,
+                footprints=(fp,),
+                footprint_names={fp: "DQK6"},
+                manufacturer="Acme",
             ),
         ]
         for options in steps:
@@ -356,7 +371,7 @@ def status(**changes) -> FormStatus:
     base = {
         "updating": False,
         "build_failed": False,
-        "library": "IC_Test_TI",
+        "library": TEST_LIBRARY,
         "value_text": "V",
         "mpn_text": "M",
         "several_footprints": False,
@@ -374,7 +389,7 @@ def fake_plan(issues=(), conflicts=()) -> InstallPlan:
         source=Path("pkg.zip"),
         layout=None,
         tools=ToolContext(),
-        library="IC_Test_TI",
+        library=TEST_LIBRARY,
         new_symbol_lib=False,
         new_footprint_lib=False,
         symbol_names=("S",),

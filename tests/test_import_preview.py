@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 from fakecli import FakeCli
 from installfixtures import target_lib, vendor_footprint, vendor_symbol_lib
-from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib, write_custom_layout
+from zipfixtures import STEP_BYTES, footprint, footprint_library_for, make_zip, symbol_lib, write_custom_layout
 
 from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.applier import apply_plan
@@ -26,8 +26,10 @@ from kicad_lib_manager.kicad_files import find_models, find_property, find_symbo
 from kicad_lib_manager.models import Issue, Severity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-UL_LIBRARY = "IC_Battery_Charger_TI"
-LIBRARY = "IC_Test_TI"
+UL_LIBRARY = "Atomic_Battery_Management"
+LIBRARY = "Atomic_Analog"
+NEW_LIBRARY = "Atomic_Sensor_Temperature"
+SINGLE_LIBRARY = "Atomic_Sensor_Pressure"
 VENDOR = "PART"
 V6, V8, V9 = 20211014, 20231120, 20241209
 DATASHEET = {"Datasheet": "https://example.com/part"}
@@ -43,14 +45,14 @@ def _fresh_cli_cache():
 
 @pytest.fixture
 def ul_layout(tmp_path):
-    """A synthetic Custom/ that already holds the IC_Battery_Charger_TI symbol/footprint pair."""
-    write_custom_layout(tmp_path, [UL_LIBRARY], [UL_LIBRARY])
+    """A synthetic Custom/ that already holds the Atomic_Battery_Management symbol/footprint pair."""
+    write_custom_layout(tmp_path, [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
     return RepoLayout.for_repo(tmp_path)
 
 
 @pytest.fixture
 def layout(tmp_path):
-    write_custom_layout(tmp_path, [LIBRARY], [LIBRARY])
+    write_custom_layout(tmp_path, [LIBRARY], [footprint_library_for(LIBRARY)])
     return RepoLayout.for_repo(tmp_path)
 
 
@@ -77,7 +79,7 @@ def _tools(fake):
 
 
 def _target_layout(tmp_path, version, names=("EXISTING_A",), *, library=LIBRARY):
-    write_custom_layout(tmp_path, [library], [library])
+    write_custom_layout(tmp_path, [library], [footprint_library_for(library)])
     layout = RepoLayout.for_repo(tmp_path)
     (layout.symbols_dir / f"{library}.kicad_sym").write_bytes(target_lib(version, names))
     return layout
@@ -109,8 +111,8 @@ def test_rows_ul_first_install(ul_package, ul_layout):
     assert files.title == "Files (3)"
     assert _texts(files) == [
         "+ Custom/3DModels/CSD85301Q2.stp",
-        "+ Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod",
-        "~ Custom/Symbols/IC_Battery_Charger_TI.kicad_sym",
+        f"+ Custom/Footprints/{footprint_library_for(UL_LIBRARY)}.pretty/DQK0006B.kicad_mod",
+        f"~ Custom/Symbols/{UL_LIBRARY}.kicad_sym",
     ]
     model, fp, sym = files.rows
     assert model.detail.startswith("new, ") and model.detail.endswith(" KiB")
@@ -132,8 +134,8 @@ def test_rows_reimport_shows_unchanged(ul_package, ul_layout, tmp_path):
     files = _sections(plan, candidate, options)["Files"]
     assert _texts(files) == [
         "= Custom/3DModels/CSD85301Q2.stp",
-        "= Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod",
-        "= Custom/Symbols/IC_Battery_Charger_TI.kicad_sym",
+        f"= Custom/Footprints/{footprint_library_for(UL_LIBRARY)}.pretty/DQK0006B.kicad_mod",
+        f"= Custom/Symbols/{UL_LIBRARY}.kicad_sym",
     ]
     assert [row.detail for row in files.rows] == ["unchanged"] * 3
     assert [row.tone for row in files.rows] == ["muted"] * 3
@@ -141,14 +143,14 @@ def test_rows_reimport_shows_unchanged(ul_package, ul_layout, tmp_path):
     assert file_counts(plan, candidate, options) == FileCounts(new=0, modified=0, unchanged=3)
 
 
-def test_rows_reimport_into_the_real_custom_library(ul_package, synthetic_custom, tmp_path):
+def test_rows_reimport_into_the_real_custom_library(ul_package, atomic_custom, tmp_path):
     # The same round trip against the synthetic Custom/ built by customfixtures (format mirror of the real library)
-    first, candidate, options = _ul_plan(ul_package, synthetic_custom)
+    first, candidate, options = _ul_plan(ul_package, atomic_custom)
     assert not first.blocked, first.issues
     files = _sections(first, candidate, options)["Files"]
     assert [r.text[0] for r in files.rows] == ["+", "+", "~"]
     assert apply_plan(first, backup_root=tmp_path / "backups").ok
-    plan = build_plan(candidate, options, synthetic_custom, ToolContext())
+    plan = build_plan(candidate, options, atomic_custom, ToolContext())
     assert plan.is_noop
     again = _sections(plan, candidate, options)["Files"]
     assert [r.text[0] for r in again.rows] == ["=", "=", "="]
@@ -156,7 +158,7 @@ def test_rows_reimport_into_the_real_custom_library(ul_package, synthetic_custom
 
 
 def test_rows_case_twin_is_conflict_not_unchanged(ul_package, ul_layout):
-    twin = ul_layout.footprints_dir / f"{UL_LIBRARY}.pretty" / "dqk0006b.kicad_mod"
+    twin = ul_layout.footprints_dir / f"{footprint_library_for(UL_LIBRARY)}.pretty" / "dqk0006b.kicad_mod"
     twin.write_bytes(b"(footprint \"different\")\n")
     plan, candidate, options = _ul_plan(ul_package, ul_layout)
     sections = _sections(plan, candidate, options)
@@ -167,14 +169,14 @@ def test_rows_case_twin_is_conflict_not_unchanged(ul_package, ul_layout):
 
 
 def test_rows_new_library_mkdir(ul_package, ul_layout):
-    plan, candidate, options = _ul_plan(ul_package, ul_layout, library="IC_New_TI")
+    plan, candidate, options = _ul_plan(ul_package, ul_layout, library=NEW_LIBRARY)
     assert not plan.blocked, plan.issues
     files = _sections(plan, candidate, options)["Files"]
     assert _texts(files) == [
-        "+ Custom/Footprints/IC_New_TI.pretty/",
+        f"+ Custom/Footprints/{footprint_library_for(NEW_LIBRARY)}.pretty/",
         "+ Custom/3DModels/CSD85301Q2.stp",
-        "+ Custom/Footprints/IC_New_TI.pretty/DQK0006B.kicad_mod",
-        "+ Custom/Symbols/IC_New_TI.kicad_sym",
+        f"+ Custom/Footprints/{footprint_library_for(NEW_LIBRARY)}.pretty/DQK0006B.kicad_mod",
+        f"+ Custom/Symbols/{NEW_LIBRARY}.kicad_sym",
     ]
     assert files.rows[0].detail == "new"
     # A folder is not a file: it is listed but never counted
@@ -195,14 +197,14 @@ def test_rows_refused_plan(ul_package, ul_layout):
 
 def test_rows_new_library_without_model_has_no_model_row(layout, tmp_path):
     with _open(tmp_path, _members()) as (_, candidate):
-        options = InstallOptions(library="IC_Single_TI")
+        options = InstallOptions(library=SINGLE_LIBRARY)
         plan = build_plan(candidate, options, layout, ToolContext())
         files = _sections(plan, candidate, options)["Files"]
     assert files.title == "Files (3)"
     assert _texts(files) == [
-        "+ Custom/Footprints/IC_Single_TI.pretty/",
-        "+ Custom/Footprints/IC_Single_TI.pretty/FP.kicad_mod",
-        "+ Custom/Symbols/IC_Single_TI.kicad_sym",
+        f"+ Custom/Footprints/{footprint_library_for(SINGLE_LIBRARY)}.pretty/",
+        f"+ Custom/Footprints/{footprint_library_for(SINGLE_LIBRARY)}.pretty/FP.kicad_mod",
+        f"+ Custom/Symbols/{SINGLE_LIBRARY}.kicad_sym",
     ]
 
 
@@ -230,7 +232,7 @@ def test_rewrites_match_planned_bytes(ul_package, ul_layout):
     planned_model = find_models(footprint_name(parse_bytes(fp_op.data, "fp").root).node)[0].path
 
     assert rewrites["Footprint"].endswith(f" → {planned_footprint}")
-    assert planned_footprint == f"{UL_LIBRARY}:DQK0006B"
+    assert planned_footprint == f"{footprint_library_for(UL_LIBRARY)}:DQK0006B"
     assert rewrites["Footprint Filter"].endswith(f" → {planned_filters}")
     assert rewrites["Model"] == f"(none) → {planned_model}"
     assert planned_model == "${CUSTOM_3DMODEL_DIR}/CSD85301Q2.stp"
@@ -246,7 +248,7 @@ def test_rewrites_without_model_have_no_model_row(layout, tmp_path):
         plan = build_plan(candidate, options, layout, ToolContext())
         rewrites = _sections(plan, candidate, options)["Path rewrites"]
     assert _texts(rewrites) == ["Footprint", "Footprint Filter"]
-    assert rewrites.rows[0].detail == f"(none) → {LIBRARY}:FP"
+    assert rewrites.rows[0].detail == f"(none) → {footprint_library_for(LIBRARY)}:FP"
 
 
 def test_rewrites_skip_a_kept_symbol(tmp_path):
@@ -317,7 +319,7 @@ def test_format_rows_cases(tmp_path, target, vendor, cli, row1, row2, glyph, ton
 
 
 def _conflict_plan(layout, tmp_path, resolutions):
-    (layout.footprints_dir / f"{LIBRARY}.pretty" / "FP.kicad_mod").write_bytes(footprint("FP", model="old.step"))
+    (layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty" / "FP.kicad_mod").write_bytes(footprint("FP", model="old.step"))
     with _open(tmp_path, _members()) as (_, candidate):
         options = InstallOptions(library=LIBRARY, resolutions=resolutions)
         plan = build_plan(candidate, options, layout, ToolContext())
@@ -325,8 +327,8 @@ def _conflict_plan(layout, tmp_path, resolutions):
 
 
 def test_conflict_rows_details(layout, tmp_path):
-    key = f"footprint:{LIBRARY}:fp"
-    pretty = f"Custom/Footprints/{LIBRARY}.pretty/FP.kicad_mod"
+    key = f"footprint:{footprint_library_for(LIBRARY)}:fp"
+    pretty = f"Custom/Footprints/{footprint_library_for(LIBRARY)}.pretty/FP.kicad_mod"
 
     _, sections, _ = _conflict_plan(layout, tmp_path, {})
     row = sections["Conflicts"].rows[0]
@@ -344,7 +346,7 @@ def test_conflict_rows_details(layout, tmp_path):
     plan, sections, _ = _conflict_plan(layout, tmp_path, {key: Resolution("rename", "FP_2")})
     assert sections["Conflicts"].rows[0].detail == "Rename → FP_2"
     assert "FP → FP_2" in _texts(sections["Renames"])
-    assert f"+ Custom/Footprints/{LIBRARY}.pretty/FP_2.kicad_mod" in _texts(sections["Files"])
+    assert f"+ Custom/Footprints/{footprint_library_for(LIBRARY)}.pretty/FP_2.kicad_mod" in _texts(sections["Files"])
     assert plan.footprint_names == ("FP_2",)
 
     _, sections, counts = _conflict_plan(layout, tmp_path, {key: Resolution("skip")})
