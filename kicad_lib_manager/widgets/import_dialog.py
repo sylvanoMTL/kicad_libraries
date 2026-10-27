@@ -24,9 +24,10 @@ from PySide6.QtGui import (
     QCloseEvent, QColor, QFont, QKeyEvent, QKeySequence, QPalette, QResizeEvent, QShortcut, QShowEvent,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QCompleter, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QListView, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton,
-    QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
+    QAbstractItemView, QButtonGroup, QComboBox, QCompleter, QDialog, QFileDialog, QFormLayout, QFrame,
+    QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar,
+    QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout,
+    QWidget,
 )
 
 from ..importer.adapters.base import attach_models
@@ -39,19 +40,22 @@ from ..importer.commit_step import (
 from ..importer.content import ContentText, op_content, unchanged_content
 from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
+from ..importer.footprint_index import build_index, rank, rank_with_pads
 from ..importer.form import (
     FIELD_LABELS, FIELD_NAMES, TEXT_LABELS, TEXT_NAMES, UPDATING_REASON, FieldDefaults, FormStatus, FormValues,
     Reason, blocking_reasons, build_options, carry_resolutions, field_defaults, kind_label, library_badge,
     noop_text, ready_text,
 )
 from ..importer.layout import RepoLayout, list_symbol_libs
-from ..importer.package import Package, open_model_source, open_package
+from ..importer.package import MAX_KICAD_TEXT_BYTES, MAX_KICAD_TEXT_NODES, Package, open_model_source, open_package
 from ..importer.plan import Conflict, InstallOptions, InstallPlan, InstallResult, PartText, Resolution, ToolContext
 from ..importer.planner import build_plan, detect_tools
 from ..importer.preview import file_counts, preview_sections
-from ..importer.siblings import own_index, stock_index
+from ..importer.siblings import SiblingIndex, own_index, pick, stock_index
 from ..importer.stems import ATOMIC_PREFIX, allowed_stems, name_verdict
 from ..importer.suggest import LibrarySuggestion, existing_libraries, suggest_library, suggestion_text
+from ..importer.verify import footprint_pad_numbers
+from ..kicad_files import footprint_name, parse_bytes
 from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
@@ -82,6 +86,14 @@ _TEXT_TIPS = {
     "fp_tags": "Words KiCad's footprint chooser searches. The vendor's tags come first, then the generated ones.",
 }
 _VALUE_TIP = "Value follows the MPN"
+VENDOR_FOOTPRINT_TEXT = "Install the vendor footprint into Atomic_Footprints"  # public: the help page names the choice
+OFFICIAL_FOOTPRINT_TEXT = "Use an official KiCad footprint"  # public: the help page names the choice
+_OFFICIAL_HINT = "KiCad's own footprints are never changed"
+_OFFICIAL_MODEL_NOTE = "KiCad's own 3D model is used"
+_OFFICIAL_UNAVAILABLE = "KiCad's footprints were not found"
+_OFFICIAL_READING = "Reading KiCad's footprints..."
+_OFFICIAL_PLACEHOLDER = "Type to filter KiCad's footprints"
+_OFFICIAL_POPUP_WIDTH = 420
 _NO_FOOTPRINT_FIELD = "(none)"
 _LIBRARY_PLACEHOLDER = "Pick a library, or type Atomic_ and a KiCad library name"
 _BUSY_DELAY_MS = 150  # the busy strip shows only if a rebuild takes longer than this (no flicker)
@@ -132,6 +144,59 @@ def incoming_op(plan: InstallPlan, conflict: Conflict):
     if conflict.kind == "model":
         return next((op for op in plan.ops if op.kind == "model" and op.path.name == plan.model_file), None)
     return None
+
+
+def _vendor_pads(path: Path | None) -> set[str]:
+    """The pad numbers of a staged vendor footprint, read under the usual size and node caps; none when unreadable."""
+    if path is None:
+        return set()
+    try:
+        with open(path, "rb") as handle:
+            data = handle.read(MAX_KICAD_TEXT_BYTES + 1)
+        if len(data) > MAX_KICAD_TEXT_BYTES:
+            return set()
+        loaded = parse_bytes(data, path.name, max_nodes=MAX_KICAD_TEXT_NODES)
+    except (OSError, MemoryError):
+        return set()
+    ref = None if isinstance(loaded, Issue) else footprint_name(loaded.root)
+    return footprint_pad_numbers(ref.node) if ref is not None else set()
+
+
+def _sibling_links(stock: SiblingIndex | None, part: str) -> dict[str, int]:
+    """Each footprint that a stock sibling of the part links, with the weight 1 (the vote's own prefix step decides who a sibling is).
+
+    A footprint counts once however many siblings link it: on KiCad 10 sixty-three of the seventy-five CSD siblings
+    link TDSON-8-1, and a count would let that popular package outrank the one whose name matches the vendor
+    package code and whose pads fit.
+    """
+    if stock is None or not part:
+        return {}
+    prefix = pick(stock, part).prefix
+    return {entry.footprint: 1 for entry in stock.matches(prefix) if entry.footprint} if prefix else {}
+
+
+def official_candidates(
+    footprint_index: Callable,
+    folder: Path,
+    *,
+    package_code: str,
+    vendor_path: Path | None,
+    stock: SiblingIndex | None,
+    part: str,
+    progress: Callable | None = None,
+) -> list[str]:
+    """Every footprint link of KiCad's folder for the picker: the best matches first, then the rest in name order (D-16).
+
+    The best matches are ranked by the vendor package code and the links of the part's siblings, then raised when
+    their pads fit the vendor footprint's pads. Only KiCad's own folder is listed, never a library of the repo.
+    """
+    index = footprint_index(folder, progress)
+    ranked = rank(index, package_code=package_code, linked=_sibling_links(stock, part))
+    ranked = rank_with_pads(index, ranked, _vendor_pads(vendor_path))
+    best = [item.link for item in ranked]
+    listed = set(best)
+    rest = sorted((link for link in index.links() if link not in listed), key=lambda link: (link.casefold(), link))
+    return [*best, *rest]
 
 
 class _OfferLabel(QLabel):
@@ -233,6 +298,7 @@ class ImportCore:
     run_commit: Callable = run_commit
     switch_to_main: Callable = switch_to_main
     pre_import_diff: Callable = pre_import_diff
+    footprint_index: Callable = build_index
 
 
 @dataclass(frozen=True)
@@ -245,6 +311,8 @@ class OpenOutcome:
     tools: ToolContext | None
     suggestion: LibrarySuggestion | None
     existing: tuple
+    # KiCad's stock symbols, kept so the official footprint list can count the links of the part's siblings
+    stock: SiblingIndex | None = None
 
 
 @dataclass(frozen=True)
@@ -365,6 +433,12 @@ class ImportDialog(QDialog):
         self._busy_timer.setSingleShot(True)
         self._busy_timer.setInterval(_BUSY_DELAY_MS)
         self._busy_timer.timeout.connect(self._on_busy_timeout)
+
+        # The official footprint choice (D-16): the stock symbols for the sibling count, the picker's list (built once
+        # per package on the first switch) and the worker that builds it
+        self._stock: SiblingIndex | None = None
+        self._official_links: list[str] | None = None
+        self._official_worker: TaskWorker | None = None
 
         self._workers: list[TaskWorker] = []
         self._open_worker: TaskWorker | None = None
@@ -857,8 +931,9 @@ class ImportDialog(QDialog):
         left_lay.addWidget(self._library_note)
 
     def _build_footprint_section(self, left_lay: QVBoxLayout):
-        """The footprint name (D-14, PREV-02): pre-filled with the linked footprint's sanitised vendor name."""
+        """The footprint choice (D-16) and name (D-14, PREV-02): the name is pre-filled with the linked footprint's sanitised vendor name."""
         left_lay.addWidget(self._heading("Footprint"))
+        self._build_destination_choice(left_lay)
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
         form.setSpacing(8)
@@ -884,6 +959,66 @@ class ImportDialog(QDialog):
         self._fp_name_hint.hide()
         form.addRow(self._fp_name_hint)
         left_lay.addLayout(form)
+
+    def _build_destination_choice(self, left_lay: QVBoxLayout):
+        """Two radio buttons (vendor footprint or an official KiCad one) and, for the official one, the filterable picker."""
+        self._fp_vendor_radio = QRadioButton(VENDOR_FOOTPRINT_TEXT)
+        self._fp_official_radio = QRadioButton(OFFICIAL_FOOTPRINT_TEXT)
+        self._fp_vendor_radio.setChecked(True)
+        self._fp_target_group = QButtonGroup(self)
+        self._fp_target_group.addButton(self._fp_vendor_radio)
+        self._fp_target_group.addButton(self._fp_official_radio)
+        for radio in (self._fp_vendor_radio, self._fp_official_radio):
+            # A long label shrinks with the pane instead of widening it
+            radio.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+            left_lay.addWidget(radio)
+        self._fp_official_radio.toggled.connect(self._on_fp_target_toggled)
+        # Why the official choice is off (no KiCad install found)
+        self._official_note = QLabel()
+        self._official_note.setTextFormat(Qt.TextFormat.PlainText)
+        self._official_note.setWordWrap(True)
+        self._official_note.setStyleSheet(f"color: {MUTED};")
+        self._official_note.hide()
+        left_lay.addWidget(self._official_note)
+
+        box = QWidget()
+        box_lay = QVBoxLayout(box)
+        box_lay.setContentsMargins(0, 0, 0, 0)
+        box_lay.setSpacing(4)
+        combo = QComboBox()
+        combo.setEditable(True)
+        combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        # Typing filters KiCad's footprints by substring, ignoring case; a pick rebuilds at once, typing waits
+        completer = QCompleter(combo.model(), combo)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        combo.setCompleter(completer)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(12)
+        combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        combo.setAccessibleName("Official footprint")
+        combo.view().setMinimumWidth(_OFFICIAL_POPUP_WIDTH)
+        combo.textActivated.connect(self._on_official_activated)
+        completer.activated[str].connect(self._on_official_activated)
+        combo.lineEdit().setPlaceholderText(_OFFICIAL_PLACEHOLDER)
+        combo.lineEdit().textEdited.connect(self._on_official_text_edited)
+        self._official_combo = combo
+        box_lay.addWidget(self._framed(combo, "official_footprint"))
+        self._official_status = QLabel()
+        self._official_status.setTextFormat(Qt.TextFormat.PlainText)
+        self._official_status.setWordWrap(True)
+        self._official_status.setStyleSheet(f"color: {MUTED};")
+        self._official_status.hide()
+        box_lay.addWidget(self._official_status)
+        hint = QLabel(_OFFICIAL_HINT)
+        hint.setTextFormat(Qt.TextFormat.PlainText)
+        hint.setWordWrap(True)
+        hint.setStyleSheet(f"color: {MUTED};")
+        box_lay.addWidget(hint)
+        box.hide()
+        self._official_box = box
+        left_lay.addWidget(box)
 
     def _build_fields_section(self, left_lay: QVBoxLayout):
         """Symbol, the read-only Footprint field, then the five editable fields with their restore buttons."""
@@ -1081,7 +1216,7 @@ class ImportDialog(QDialog):
             package = core.open_package(path, repo_root, progress)
             try:
                 candidate, detect_issues = core.detect_candidate(package)
-                tools = suggestion = None
+                tools = suggestion = stock = None
                 existing: tuple = ()
                 if candidate is not None:
                     tools = core.detect_tools(fp_dir)
@@ -1090,7 +1225,6 @@ class ImportDialog(QDialog):
                     if candidate.symbols:
                         # The sibling indexes are built here, never on the GUI thread (T-10-21)
                         own = core.own_index(layout.symbols_dir, allowed)
-                        stock = None
                         if tools.kicad_symbols_dir is not None:
                             stock = core.stock_index(tools.kicad_symbols_dir, progress)
                         suggestion = core.suggest_library(
@@ -1099,7 +1233,7 @@ class ImportDialog(QDialog):
             except BaseException:
                 package.close()
                 raise
-            return OpenOutcome(package, candidate, tuple(detect_issues), tools, suggestion, existing)
+            return OpenOutcome(package, candidate, tuple(detect_issues), tools, suggestion, existing, stock)
 
         worker = self._spawn(task)
         self._open_worker = worker
@@ -1162,6 +1296,7 @@ class ImportDialog(QDialog):
         self._tools = outcome.tools
         self._suggestion = outcome.suggestion
         self._existing = outcome.existing
+        self._stock = outcome.stock
         self.setWindowTitle(f"Import Part - {package.source.name}")
         if outcome.suggestion is not None and outcome.suggestion.issues:
             self.issues_logged.emit(list(outcome.suggestion.issues))
@@ -1169,6 +1304,7 @@ class ImportDialog(QDialog):
         self._vendor_label.setText(vendor_label(candidate.vendor))
         self._fill_library_combo()
         self._populate_items()
+        self._sync_official_availability()
         self._preview_stack.setCurrentWidget(self._building_page)
         self._stack.setCurrentWidget(self._edit_page)
         self._request_rebuild()
@@ -1322,6 +1458,7 @@ class ImportDialog(QDialog):
         self._defaults = FieldDefaults()
         self._clear_conflicts()
         self._clear_items()
+        self._reset_official_choice()
         self._preview.render(())
         self._preview_stack.setCurrentWidget(self._building_page)
         self._update_install_state()
@@ -1364,6 +1501,8 @@ class ImportDialog(QDialog):
             resolutions=dict(self._resolutions),
             texts={name: self._text_edits[name].text() for name in TEXT_NAMES if name in self._texts_edited},
             related_stems=self._suggestion.related_stems if self._suggestion is not None else (),
+            footprint_target="official" if self._official_checked() else "shared",
+            official_footprint=self._official_combo.currentText() if self._official_checked() else None,
         )
 
     # -- the item picker (INTK-07, D-04) -------------------------------------------
@@ -1610,7 +1749,8 @@ class ImportDialog(QDialog):
         ):
             if widget is not None:
                 chain.append(widget)
-        chain += [self._library_combo, self._fp_name_edit, self._fp_name_restore, self._fp_field]
+        chain += [self._library_combo, self._fp_vendor_radio, self._fp_official_radio, self._official_combo]
+        chain += [self._fp_name_edit, self._fp_name_restore, self._fp_field]
         for name in FIELD_NAMES:
             chain += [self._field_edits[name], self._field_restore[name]]
         for name in TEXT_NAMES:
@@ -1650,6 +1790,132 @@ class ImportDialog(QDialog):
         combo.setToolTip(combo.currentText())
         self._request_rebuild()
 
+    # -- the official footprint choice (LIB-06, D-16 to D-18) -------------------------------------
+
+    def _official_checked(self) -> bool:
+        return self._fp_official_radio.isChecked()
+
+    def _reset_official_choice(self):
+        """Back to the vendor footprint with an empty picker (a new or discarded package)."""
+        self._official_links = None
+        self._official_worker = None
+        self._stock = None
+        for widget in (self._fp_official_radio, self._fp_vendor_radio, self._official_combo):
+            widget.blockSignals(True)
+        try:
+            self._fp_vendor_radio.setChecked(True)
+            self._official_combo.clear()
+            self._official_combo.setEditText("")
+        finally:
+            for widget in (self._fp_official_radio, self._fp_vendor_radio, self._official_combo):
+                widget.blockSignals(False)
+        self._official_status.hide()
+        self._sync_official_availability()
+        self._apply_target_ui()
+
+    def _sync_official_availability(self):
+        """The official choice needs KiCad's footprints folder; without it the radio button is off and says why."""
+        folder = self._tools.kicad_footprints_dir if self._tools is not None else None
+        available = folder is not None or self._tools is None
+        self._fp_official_radio.setEnabled(available)
+        self._fp_official_radio.setToolTip("" if available else _OFFICIAL_UNAVAILABLE)
+        self._official_note.setText("" if available else _OFFICIAL_UNAVAILABLE)
+        self._official_note.setVisible(not available)
+
+    def _apply_target_ui(self):
+        """Show the picker and switch off the controls an official footprint makes meaningless (D-17, D-29)."""
+        official = self._official_checked()
+        self._official_box.setVisible(official)
+        item = self._linked_item()
+        self._fp_name_edit.setEnabled(item is not None and not official)
+        if official:
+            self._fp_name_restore.setEnabled(False)
+        for name in ("fp_description", "fp_tags"):
+            self._text_edits[name].setEnabled(not official)
+            self._update_text_regenerate(name)
+        self._sync_add_model_button()
+        if official:
+            self._set_model_note(_OFFICIAL_MODEL_NOTE, tone="muted")
+        else:
+            self._show_rejection()
+        self._set_tab_order()
+
+    def _on_fp_target_toggled(self, _checked: bool):
+        """The destination changed: the vendor footprint name and the generated texts start again, and the plan is rebuilt."""
+        if self._candidate is None:
+            return
+        # An official footprint is never edited, so a typed footprint text has nothing to apply to
+        self._texts_edited.difference_update(("fp_description", "fp_tags"))
+        self._reset_fp_name()
+        self._apply_target_ui()
+        if self._official_checked() and self._official_links is None and self._official_worker is None:
+            self._start_official_list()
+        self._request_rebuild()
+
+    def _start_official_list(self):
+        """Build the picker's list on a worker: KiCad's footprints ranked for this package, then all the others (D-16)."""
+        folder = self._tools.kicad_footprints_dir if self._tools is not None else None
+        chosen = self._chosen_symbol_name()
+        if folder is None or self._closing or self._candidate is None or chosen is None:
+            return
+        core, stock, session = self._core, self._stock, self._session
+        meta = next(s for s in self._candidate.symbols if s.name == chosen).meta
+        part = meta.mpn or meta.symbol_name
+        item = self._linked_item()
+        code = item.name if item is not None else ""
+        vendor_path = item.file.path if item is not None else None
+
+        def task(progress):
+            return official_candidates(
+                core.footprint_index, folder, package_code=code, vendor_path=vendor_path, stock=stock, part=part,
+                progress=progress,
+            )
+
+        worker = self._spawn(task)
+        self._official_worker = worker
+        self._official_status.setText(_OFFICIAL_READING)
+        self._official_status.show()
+        worker.result.connect(lambda links, w=worker, n=session: self._on_official_ready(w, n, links))
+        worker.failed.connect(lambda text, w=worker, n=session: self._on_official_failed(w, n, text))
+        worker.start()
+
+    def _on_official_ready(self, worker: TaskWorker, session: int, links: list[str]):
+        if self._official_worker is worker:
+            self._official_worker = None
+        if self._closing or session != self._session:
+            return
+        self._official_links = links
+        combo = self._official_combo
+        typed = combo.currentText()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItems(links)
+            # The list picks nothing: the owner chooses (D-16)
+            combo.setCurrentIndex(-1)
+            combo.setEditText(typed)
+        finally:
+            combo.blockSignals(False)
+        self._official_status.hide()
+
+    def _on_official_failed(self, worker: TaskWorker, session: int, text: str):
+        if self._official_worker is worker:
+            self._official_worker = None
+        if self._closing or session != self._session:
+            return
+        issue = Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {text}")
+        self.issues_logged.emit([issue])
+        self._official_status.setText(f"KiCad's footprints could not be listed: {text}")
+        self._official_status.show()
+
+    def _on_official_activated(self, _text: str = ""):
+        """A footprint picked from the list: no quiet period, the pending typing timer is superseded."""
+        self._request_rebuild()
+
+    def _on_official_text_edited(self, _text: str):
+        if self._candidate is not None:
+            self._mark_dirty()
+
     # -- Add 3D model... (G-07-2): a second intake source for a separately downloaded model ---------
 
     def _model_busy(self) -> bool:
@@ -1663,7 +1929,7 @@ class ImportDialog(QDialog):
         )
 
     def _on_add_model(self):
-        if self._model_busy():
+        if self._model_busy() or self._official_checked():
             return
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -1712,7 +1978,8 @@ class ImportDialog(QDialog):
         """Add 3D model... is on only while a package is open and no open, model, install or git job runs."""
         button = self._add_model_btn
         if button is not None:
-            button.setEnabled(not self._model_busy())
+            # An official footprint brings KiCad's own 3D model, so no vendor model is added (D-17)
+            button.setEnabled(not self._model_busy() and not self._official_checked())
         remove = self._remove_model_btn
         if remove is not None:
             remove.setEnabled(not self._model_busy())
@@ -2076,8 +2343,10 @@ class ImportDialog(QDialog):
         """Regenerate works while the row holds text other than the generated one."""
         plan = plan if plan is not None else self._plan
         generated = getattr(plan.generated_text, name) if plan is not None else ""
+        # The footprint's texts are never written for an official footprint, so they are not regenerated either
+        frozen = self._official_checked() and name in ("fp_description", "fp_tags")
         self._text_regenerate[name].setEnabled(
-            name in self._texts_edited and self._text_edits[name].text() != generated
+            not frozen and name in self._texts_edited and self._text_edits[name].text() != generated
         )
 
     def _on_text_edited(self, name: str, text: str):
@@ -2136,7 +2405,7 @@ class ImportDialog(QDialog):
             self._fp_name_edit.setCursorPosition(0)
         finally:
             self._fp_name_edit.blockSignals(False)
-        self._fp_name_edit.setEnabled(item is not None)
+        self._fp_name_edit.setEnabled(item is not None and not self._official_checked())
         self._fp_name_restore.setEnabled(False)
         differs = item is not None and item.name != item.name_check.sanitized
         self._fp_name_hint.setText(f"Vendor name: {item.name}" if differs else "")
@@ -2333,7 +2602,12 @@ class ImportDialog(QDialog):
             library=self._library_combo.currentText(),
             mpn_text=self._field_edits["mpn"].text(),
             resolutions=dict(self._resolutions),
-            model_error=self._model_rejection.issue.text if self._model_rejection is not None else "",
+            # An official footprint uses none of the vendor models, so a rejected one does not block
+            model_error=(
+                self._model_rejection.issue.text
+                if self._model_rejection is not None and not self._official_checked()
+                else ""
+            ),
             allowed=self._tools.allowed_stems if self._tools is not None else frozenset(),
             datasheet_text=self._field_edits["datasheet"].text(),
             description_text=self._field_edits["description"].text(),

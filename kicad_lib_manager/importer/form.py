@@ -293,6 +293,9 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
                 continue
             if issue.code.startswith(_ATOMIC_PREFIX):
                 reasons.append(atomic_reason(issue))
+            elif issue.code == "install.official_missing":
+                # A request, not a failure: it reads as the plain sentence and points at the picker
+                reasons.append(Reason(issue.text, "official_footprint"))
             else:
                 reasons.append(Reason(f"Error: {issue.text}", _issue_target(issue)))
     if status.model_error.strip():
