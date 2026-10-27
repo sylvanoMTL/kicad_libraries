@@ -1,4 +1,7 @@
-"""D-13: an explicitly cleared field installs as an empty value, and Value / MPN cannot be cleared (Phase 5)."""
+"""D-13: an explicitly cleared field installs as an empty value, and MPN cannot be cleared (Phase 5).
+
+Value cannot be cleared either: it has no option at all, because it always follows the MPN (D-22).
+"""
 
 import dataclasses
 
@@ -45,12 +48,12 @@ def test_cleared_options_store_empty():
         assert InstallOptions(library="X", datasheet=blank, cleared=cleared).datasheet == ""
     assert InstallOptions(library="X", datasheet="https://a", cleared=cleared).datasheet == "https://a"
     # A field not named in cleared keeps the WR-05 rule
-    assert InstallOptions(library="X", value="", cleared=cleared).value is None
+    assert InstallOptions(library="X", description="", cleared=cleared).description is None
     options = InstallOptions(library="X", manufacturer="", cleared=frozenset({"manufacturer"}))
-    again = dataclasses.replace(options, value="V")
+    again = dataclasses.replace(options, description="D")
     assert again.manufacturer == ""
     assert again.cleared == frozenset({"manufacturer"})
-    assert again.value == "V"
+    assert again.description == "D"
     with pytest.raises(ValueError, match="footprint"):
         InstallOptions(library="X", cleared=frozenset({"footprint"}))
 
@@ -90,25 +93,24 @@ def test_cleared_description_creates_empty_property(ul_layout, ul_package):
     assert [_prop(plan, "ki_description"), _prop(plan, "Description")].count("") == 1
 
 
-@pytest.mark.parametrize(
-    ("field", "text"),
-    [
-        ("value", "Value cannot be empty; enter a value"),
-        ("mpn", "MPN cannot be empty: it names the 3D model file; enter a part number"),
-    ],
-)
-def test_cleared_required_field_refused(ul_layout, ul_package, field, text):
+def test_cleared_mpn_refused_with_its_text(ul_layout, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({field})), ul_layout)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({"mpn"})), ul_layout)
     assert plan.blocked and not plan.ops
+    text = "MPN cannot be empty: it names the 3D model file; enter a part number"
     assert [(i.code, i.text) for i in _errors(plan)] == [("install.empty_required", text)]
 
 
-def test_cleared_value_refused(ul_layout, ul_package):
+def test_value_cannot_be_cleared_or_set(ul_layout, ul_package):
+    """There is no Value option (D-22): naming it is a programming error, and Value stays the MPN."""
+    with pytest.raises(ValueError, match="value"):
+        InstallOptions(library=UL_LIBRARY, cleared=frozenset({"value"}))
+    with pytest.raises(TypeError):
+        InstallOptions(library=UL_LIBRARY, value="")  # type: ignore[call-arg]
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({"value"})), ul_layout)
-    assert plan.blocked and not plan.ops
-    assert [i.code for i in _errors(plan)] == ["install.empty_required"]
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, mpn="NEW-MPN"), ul_layout)
+    assert not plan.blocked, plan.issues
+    assert _prop(plan, "Value") == _prop(plan, "MPN") == "NEW-MPN"
 
 
 def test_cleared_mpn_refused(ul_layout, ul_package):
@@ -121,6 +123,6 @@ def test_cleared_mpn_refused(ul_layout, ul_package):
 
 def test_override_text_written_exactly(ul_layout, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, value="Dual N-Channel  FET "), ul_layout)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description="Dual N-Channel  FET "), ul_layout)
     assert not plan.blocked, plan.issues
-    assert _prop(plan, "Value") == "Dual N-Channel  FET "
+    assert "Dual N-Channel  FET " in [_prop(plan, "ki_description"), _prop(plan, "Description")]

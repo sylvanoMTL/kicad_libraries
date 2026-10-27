@@ -390,7 +390,8 @@ def test_vendor_field_outcomes(name, tmp_path):
     with _install_case(case, tmp_path) as (layout, _, _, result):
         assert result.ok, [i.text for i in result.issues]
         values = _values(_installed_symbol(layout, case))
-    assert values["Value"] == case.symbol
+    # Value is the MPN, not the symbol name (D-22)
+    assert values["Value"] == values["MPN"]
     if name == "snapeda":
         assert values["Manufacturer"] == "Global Connector Technology" == SNAPEDA_MANUFACTURER
         assert values["MPN"] == "USBC4242-01-0099-A" == SNAPEDA_MPN

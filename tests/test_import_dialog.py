@@ -1205,7 +1205,8 @@ def test_fields_symbol_label_shows_rename(qtbot, make_item_dialog, tmp_path):
     dialog = make_item_dialog(zip_path, show=True, suggest_library=_good_suggestion)
     wait_current(qtbot, dialog)
     assert dialog._symbol_name_label.full_text() == "PART/1 → PART_1"
-    assert dialog._field_edits["value"].text() == "PART_1"
+    # Value is the MPN, which stays the vendor name when the symbol is renamed (D-22)
+    assert dialog._field_edits["value"].text() == dialog._field_edits["mpn"].text() == "PART/1"
 
 
 def test_fields_clear_and_restore(qtbot, make_item_dialog, recorded):
@@ -1236,15 +1237,20 @@ def test_fields_clear_and_restore(qtbot, make_item_dialog, recorded):
     wait_current(qtbot, dialog)
     assert recorded[-1].description is None and "description" not in recorded[-1].cleared
 
-    # Value cannot be emptied: the plan carries install.empty_required and Install stays off
-    type_text(qtbot, dialog._field_edits["value"], "")
+    # Value is read-only and follows the MPN: emptying the MPN empties Value, the plan carries
+    # install.empty_required and Install stays off; restoring the MPN brings both back
+    assert dialog._field_edits["value"].isReadOnly()
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    assert dialog._field_edits["value"].text() == ""
     wait_current(qtbot, dialog)
     assert dialog._plan.blocked
     assert "install.empty_required" in [i.code for i in dialog._plan.issues]
     assert not dialog._install_btn.isEnabled()
-    dialog._field_restore["value"].click()
+    dialog._field_restore["mpn"].click()
     wait_current(qtbot, dialog)
     assert dialog._install_btn.isEnabled()
+    assert dialog._field_edits["value"].text() == UL_DEFAULTS["mpn"]
+    assert not dialog._field_restore["value"].isEnabled()
 
     for name in ("datasheet", "description", "manufacturer"):
         assert dialog._field_edits[name].placeholderText() == "Empty - the field will be written blank"
@@ -1784,23 +1790,16 @@ def test_case_twin_and_invalid_name_show_the_plan_issue(qtbot, make_item_dialog,
 def test_strip_link_focuses_field(qtbot, make_item_dialog):
     """UI E7/error: the reason is a link; activating it puts the cursor in the field."""
     dialog = ul_dialog(make_item_dialog, qtbot)
-    type_text(qtbot, dialog._field_edits["value"], "")
-    wait_current(qtbot, dialog)
-    assert frame_blocked(dialog, "value") and not frame_blocked(dialog, "mpn")
-    links = strip_links(dialog)
-    assert "Value is empty" in links and "MPN is empty - it names the 3D model file" not in links
-    dialog._library_combo.setFocus()
-    dialog._strip.linkActivated.emit(links["Value is empty"])
-    assert dialog.focusWidget() is dialog._field_edits["value"]
-
     type_text(qtbot, dialog._field_edits["mpn"], "")
     wait_current(qtbot, dialog)
-    assert frame_blocked(dialog, "value") and frame_blocked(dialog, "mpn")
+    # Value follows the MPN and is read-only, so only the MPN frame is ever blocked and only the MPN is a reason
+    assert frame_blocked(dialog, "mpn") and not frame_blocked(dialog, "value")
     links = strip_links(dialog)
+    assert "MPN is empty - it names the 3D model file" in links and "Value is empty" not in links
+    dialog._library_combo.setFocus()
     dialog._strip.linkActivated.emit(links["MPN is empty - it names the 3D model file"])
     assert dialog.focusWidget() is dialog._field_edits["mpn"]
     # a restored field unblocks its frame
-    dialog._field_restore["value"].click()
     dialog._field_restore["mpn"].click()
     wait_current(qtbot, dialog)
     assert not frame_blocked(dialog, "value") and not frame_blocked(dialog, "mpn")
@@ -1890,15 +1889,15 @@ def test_strip_tooltip_says_reasons_are_links(qtbot, make_item_dialog):
     from PySide6.QtGui import Qt as GuiQt
 
     dialog = ul_dialog(make_item_dialog, qtbot)
-    type_text(qtbot, dialog._field_edits["value"], "")
+    type_text(qtbot, dialog._field_edits["mpn"], "")
     wait_current(qtbot, dialog)
-    assert list(strip_links(dialog)) == ["Value is empty"]
+    assert list(strip_links(dialog)) == ["MPN is empty - it names the 3D model file"]
     tooltip = dialog._strip.toolTip()
     hint = import_dialog_module.STRIP_LINK_HINT
     assert hint in tooltip
     assert GuiQt.mightBeRichText(tooltip)
     plain = _tooltip_plain_text(tooltip)
-    assert "Value is empty" in plain and hint in plain
+    assert "MPN is empty - it names the 3D model file" in plain and hint in plain
 
 
 def test_strip_tooltip_single_reason_decodes_entities(qtbot, make_item_dialog):
@@ -1924,14 +1923,14 @@ def test_strip_tooltip_style_scoped_to_strip(qtbot, make_item_dialog):
     """
     scoped = r"QLabel#installStrip \{ [^{}]+ \}"
     dialog = ul_dialog(make_item_dialog, qtbot)
-    type_text(qtbot, dialog._field_edits["value"], "")
+    type_text(qtbot, dialog._field_edits["mpn"], "")
     wait_current(qtbot, dialog)
     strip = dialog._strip
     assert strip.objectName() == "installStrip"
     assert re.fullmatch(scoped, strip.styleSheet())
     assert AMBER_TINT.lower() in strip.styleSheet().lower()
 
-    type_text(qtbot, dialog._field_edits["value"], "10k")
+    type_text(qtbot, dialog._field_edits["mpn"], "CSD85301Q2-B")
     wait_current(qtbot, dialog)
     assert strip.text().startswith("✓ Ready to install")
     assert re.fullmatch(scoped, strip.styleSheet())
@@ -1977,18 +1976,19 @@ def test_updating_reason_replaces_the_others(qtbot, make_item_dialog, gates):
         return real_build_plan(candidate, options, layout, tools, **kwargs)
 
     dialog = ul_dialog(make_item_dialog, qtbot, build_plan=gated_build)
-    type_text(qtbot, dialog._field_edits["value"], "")
+    type_text(qtbot, dialog._field_edits["mpn"], "")
     wait_current(qtbot, dialog)
-    assert "Value is empty" in strip_links(dialog)
-    type_text(qtbot, dialog._field_edits["mpn"], "")  # a rebuild starts and is held
+    assert "MPN is empty - it names the 3D model file" in strip_links(dialog)
+    assert frame_blocked(dialog, "mpn")
+    type_text(qtbot, dialog._field_edits["mpn"], "X1")  # a rebuild starts and is held
     qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
     assert dialog._strip.text() == "Updating preview..."
     assert not dialog._install_btn.isEnabled()
     assert strip_links(dialog) == {}
-    assert frame_blocked(dialog, "value") and frame_blocked(dialog, "mpn")  # the frames follow the live text
+    assert not frame_blocked(dialog, "mpn")  # the frame follows the live text
     gates[0].set()
     wait_current(qtbot, dialog)
-    assert "MPN is empty - it names the 3D model file" in strip_links(dialog)
+    assert "MPN is empty - it names the 3D model file" not in strip_links(dialog)
 
 
 def test_build_failure_reason_and_retry(qtbot, make_item_dialog):
@@ -2020,17 +2020,17 @@ def test_build_failure_reason_and_retry(qtbot, make_item_dialog):
 def test_field_frames_reserve_their_border(qtbot, make_item_dialog):
     """The frame always holds its 2 px border, so turning the amber highlight on does not move anything."""
     dialog = ul_dialog(make_item_dialog, qtbot)
-    frame = dialog._field_frames["value"]
+    frame = dialog._field_frames["mpn"]
     assert frame.objectName() == "fieldFrame"
     assert "2px solid transparent" in frame.styleSheet()
-    assert dialog._field_edits["value"].parentWidget() is frame
+    assert dialog._field_edits["mpn"].parentWidget() is frame
     assert dialog._library_combo.parentWidget() is dialog._field_frames["library"]
     assert dialog._fp_name_edit.parentWidget() is dialog._field_frames["footprint_name"]
-    before = (frame.geometry(), dialog._field_edits["value"].geometry())
-    type_text(qtbot, dialog._field_edits["value"], "")
-    assert frame_blocked(dialog, "value")
+    before = (frame.geometry(), dialog._field_edits["mpn"].geometry())
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    assert frame_blocked(dialog, "mpn")
     qtbot.wait(20)
-    assert (frame.geometry(), dialog._field_edits["value"].geometry()) == before
+    assert (frame.geometry(), dialog._field_edits["mpn"].geometry()) == before
 
 
 def test_ctrl_return_and_no_default_buttons(qtbot, make_item_dialog):
@@ -3905,20 +3905,20 @@ def test_add_model_clash_listed_with_suffix(qtbot, make_item_dialog, tmp_path, m
 
 def test_add_model_keeps_edits(qtbot, make_item_dialog, recorded, tmp_path, monkeypatch):
     dialog = ul_dialog(make_item_dialog, qtbot)
-    type_text(qtbot, dialog._field_edits["value"], "MyValue")
+    type_text(qtbot, dialog._field_edits["manufacturer"], "MyMaker")
     type_text(qtbot, dialog._field_edits["description"], "My description")
     type_text(qtbot, dialog._fp_name_edit, "MYFP")
     type_text(qtbot, dialog._library_combo.lineEdit(), "Typed_Lib_X")
     wait_current(qtbot, dialog)
     texts = {
-        "value": dialog._field_edits["value"].text(),
+        "manufacturer": dialog._field_edits["manufacturer"].text(),
         "description": dialog._field_edits["description"].text(),
         "fp_name": dialog._fp_name_edit.text(),
         "library": dialog._library_combo.currentText(),
     }
     assert texts["library"] == "Typed_Lib_X"
     edited, fp_edited, resolutions = set(dialog._edited), dialog._fp_name_edited, dict(dialog._resolutions)
-    assert fp_edited and {"value", "description"} <= edited
+    assert fp_edited and {"manufacturer", "description"} <= edited
 
     calls: list[str] = []
     for name in ("_populate_items", "_reload_symbol_defaults", "_clear_items", "_clear_form", "_reset_fp_name"):
@@ -3932,7 +3932,7 @@ def test_add_model_keeps_edits(qtbot, make_item_dialog, recorded, tmp_path, monk
 
     attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "other.stp"))
     assert calls == []
-    assert dialog._field_edits["value"].text() == texts["value"]
+    assert dialog._field_edits["manufacturer"].text() == texts["manufacturer"]
     assert dialog._field_edits["description"].text() == texts["description"]
     assert dialog._fp_name_edit.text() == texts["fp_name"]
     assert dialog._library_combo.currentText() == texts["library"]
@@ -3940,7 +3940,7 @@ def test_add_model_keeps_edits(qtbot, make_item_dialog, recorded, tmp_path, monk
     assert dialog._fp_name_edited is fp_edited
     assert dialog._resolutions == resolutions
     last = recorded[-1]
-    assert last.value == "MyValue" and last.description == "My description"
+    assert last.manufacturer == "MyMaker" and last.description == "My description"
     assert dict(last.footprint_names) == {"DQK0006B": "MYFP"}
     assert last.library == "Typed_Lib_X"
     assert last.model == "other.stp"
@@ -4488,7 +4488,7 @@ def test_preview_column_drag_survives_rebuild(qtbot, make_item_dialog):
     assert dialog._gen > gen
     assert tree.columnWidth(0) == dragged
 
-    type_text(qtbot, dialog._field_edits["value"], "Changed value")
+    type_text(qtbot, dialog._field_edits["manufacturer"], "Changed maker")
     wait_current(qtbot, dialog)
     assert tree.columnWidth(0) == dragged
 

@@ -137,6 +137,7 @@ SNAPEDA_NAMES = [
 def _snapeda_changes():
     s = SNAPEDA_SYMBOL
     return [
+        FieldChange(s, "set", "Value", s, SNAPEDA_MPN, "follows_mpn"),
         FieldChange(s, "rename", "MF", "", "Manufacturer", "alias"),
         FieldChange(s, "drop", "Package", "None", "", "placeholder"),
         FieldChange(s, "drop", "Price", "None", "", "volatile"),
@@ -173,6 +174,7 @@ def test_field_change_rows(tmp_path):
         assert len(section.rows) == len(plan.field_changes)
         by_text = {row.text: row.detail for row in section.rows}
         assert by_text["Rename MF"] == "→ Manufacturer"
+        assert by_text["Set Value"] == f"{SNAPEDA_SYMBOL} → {SNAPEDA_MPN}: follows the MPN"
         assert by_text["Drop MANUFACTURER"] == "GCT → (removed): duplicate Manufacturer/MPN alias"
         assert by_text["Drop Package"] == "None → (removed): empty or placeholder value"
 
