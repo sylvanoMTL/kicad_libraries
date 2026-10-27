@@ -66,6 +66,7 @@ def make_plan(layout: RepoLayout, ops, *, symbol="P1", footprint="FP1", model="P
         symbol_names=(symbol,) if symbol else (),
         footprint_names=(footprint,) if footprint else (),
         linked_footprint=footprint,
+        footprint_library=FP_LIB if footprint else None,
         model_file=model,
         source_version=None,
         target_version=None,

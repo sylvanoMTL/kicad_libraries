@@ -1190,6 +1190,8 @@ def build_plan(
         footprint_names=final_fps,
         # A kept chosen symbol still has whatever Footprint field it had, so this install links nothing
         linked_footprint=None if states[-1].kind == "skip" else linked,
+        # Until footprints are shared the footprint library is the symbol library
+        footprint_library=None if states[-1].kind == "skip" else library,
         model_file=model_dec.name if model_dec is not None else None,
         source_version=source_version,
         target_version=target_version,
