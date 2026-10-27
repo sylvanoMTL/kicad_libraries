@@ -7,6 +7,7 @@ the repo's own Custom/.
 import pytest
 
 from customfixtures import (
+    ABSENT_LIBRARY,
     BATTERY_CHARGER,
     FORMAT_VERSIONS,
     SYNTHETIC_LIBRARIES,
@@ -137,6 +138,39 @@ def test_writes_nothing_outside_its_root(tmp_path):
     assert list(sibling.iterdir()) == []
     assert sorted(p.name for p in tmp_path.iterdir()) == ["repo", "sibling"]
     assert [p.name for p in root.iterdir()] == ["Custom"]
+
+
+def test_naming_v1_writes_exactly_the_v1_names(tmp_path):
+    layout = write_synthetic_custom(tmp_path / "repo", naming="v1")
+
+    assert sorted(p.stem for p in layout.symbols_dir.glob("*.kicad_sym")) == sorted(V1_LIBRARY_NAMES)
+    assert sorted(p.stem for p in layout.footprints_dir.glob("*.pretty")) == sorted(
+        lib.v1_name for lib in SYNTHETIC_LIBRARIES if lib.footprints
+    )
+
+
+def test_naming_atomic_writes_the_atomic_names(atomic_custom):
+    assert sorted(p.stem for p in atomic_custom.symbols_dir.glob("*.kicad_sym")) == sorted(
+        lib.name for lib in SYNTHETIC_LIBRARIES
+    )
+    assert not (atomic_custom.symbols_dir / f"{ABSENT_LIBRARY}.kicad_sym").exists()
+    for lib in SYNTHETIC_LIBRARIES:
+        pretty = atomic_custom.footprints_dir / f"{footprint_library_for(lib.name)}.pretty"
+        if lib.footprints:
+            written = {p.stem for p in pretty.glob("*.kicad_mod")}
+            assert set(lib.footprints) <= written, lib.name
+    with_footprints = {footprint_library_for(lib.name) for lib in SYNTHETIC_LIBRARIES if lib.footprints}
+    assert {p.stem for p in atomic_custom.footprints_dir.glob("*.pretty")} == with_footprints
+
+
+def test_naming_other_raises(tmp_path):
+    with pytest.raises(ValueError, match="v1.*atomic"):
+        write_synthetic_custom(tmp_path / "repo", naming="other")
+
+
+def test_atomic_custom_writes_nothing_outside_its_root(atomic_custom, tmp_path):
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["repo"]
+    assert [p.name for p in (tmp_path / "repo").iterdir()] == ["Custom"]
 
 
 def test_atomic_install_target_plans_through_footprint_library_for(atomic_custom, ul_package):
