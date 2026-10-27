@@ -138,6 +138,67 @@ def test_shipped_table_builds_and_every_name_maps_to_itself():
         assert index[manufacturers.fold(entry.name)] is entry
 
 
+# ── Datasheet domains (D-23, T-10-07) ────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("domain", "name"),
+    [
+        ("ti.com", "Texas Instruments"),
+        ("analog.com", "Analog Devices"),
+        ("maximintegrated.com", "Maxim Integrated"),
+        ("linear.com", "Linear Technology"),
+        ("tdk.com", "TDK"),
+        ("invensense.com", "InvenSense"),
+        ("murata.com", "Murata"),
+        ("gct.co", "Global Connector Technology"),
+        ("memsic.com", "Memsic"),
+        ("u-blox.com", "u-blox"),
+        ("abracon.com", "Abracon"),
+        ("recom-power.com", "RECOM"),
+    ],
+)
+def test_by_host_names_the_company_that_owns_the_domain(domain, name):
+    entry = manufacturers.by_host(domain)
+    assert entry is not None
+    assert entry.name == name
+
+
+def test_by_host_never_maps_an_acquired_brand_to_its_owner():
+    # Phase 9 D-08: Maxim Integrated stays Maxim Integrated, never Analog Devices
+    assert manufacturers.by_host("maximintegrated.com").name == "Maxim Integrated"
+    assert manufacturers.by_host("linear.com").name == "Linear Technology"
+
+
+def test_by_host_ignores_case_and_one_trailing_dot():
+    assert manufacturers.by_host("TI.COM").name == "Texas Instruments"
+    assert manufacturers.by_host("ti.com.").name == "Texas Instruments"
+
+
+@pytest.mark.parametrize("domain", ["example.com", "", "   ", ".", "digikey.com", "www.ti.com", "ti.com/x"])
+def test_by_host_gives_none_for_an_unknown_or_empty_domain(domain):
+    assert manufacturers.by_host(domain) is None
+
+
+def test_host_index_rejects_two_entries_that_share_a_domain():
+    clash = (Manufacturer("A", hosts=("a.com",)), Manufacturer("B", hosts=("A.com",)))
+    with pytest.raises(ValueError):
+        manufacturers._index_hosts(clash)
+
+
+def test_every_host_is_lowercase_holds_a_dot_and_no_slash():
+    for entry in manufacturers.MANUFACTURERS:
+        for host in entry.hosts:
+            assert host == host.casefold(), host
+            assert "." in host, host
+            assert "/" not in host, host
+
+
+def test_table_keeps_the_v1_token_fields_for_now():
+    assert manufacturers.lookup("TI").entry.token == "TI"
+    assert manufacturers.token_map()["maximintegrated"] == "ADI"
+
+
 def test_entry_names_are_non_empty_unique_and_carry_no_corporate_word():
     names = [entry.name for entry in manufacturers.MANUFACTURERS]
     assert all(names)
