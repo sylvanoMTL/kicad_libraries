@@ -159,7 +159,7 @@ def test_every_host_is_lowercase_holds_a_dot_and_no_slash():
 
 
 def test_the_v1_library_token_is_gone():
-    assert not hasattr(manufacturers, "token_map")
+    assert [n for n in dir(manufacturers) if "token" in n.casefold()] == []
     assert "token" not in {f.name for f in dataclasses.fields(Manufacturer)}
     assert not hasattr(manufacturers.lookup("TI").entry, "token")
 

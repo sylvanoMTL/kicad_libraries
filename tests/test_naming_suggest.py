@@ -1,4 +1,4 @@
-"""Fresh Custom/ listing and the manufacturer helpers the planner still uses (D-02, D-03, LIB-01).
+"""Fresh Custom/ listing and the datasheet-to-manufacturer helpers (D-03, D-23, LIB-01).
 
 The Atomic_ library suggestion itself is tested in test_suggest_atomic.py.
 """
@@ -13,7 +13,7 @@ from zipfixtures import (
     write_custom_layout,
 )
 
-from kicad_lib_manager.importer.candidate import ExistingLibrary, PartMeta
+from kicad_lib_manager.importer.candidate import ExistingLibrary
 from kicad_lib_manager.importer.layout import (
     RepoLayout,
     list_existing_libraries,
@@ -22,13 +22,11 @@ from kicad_lib_manager.importer.layout import (
     list_symbol_libs,
 )
 from kicad_lib_manager.importer.suggest import (
-    TokenChoice,
+    datasheet_host,
     is_aggregator_host,
-    manufacturer_choice,
-    manufacturer_token,
+    manufacturer_from_datasheet,
+    registered_domain,
 )
-
-PLACEHOLDER_MFR = TokenChoice("Manufacturer", "placeholder", False)
 
 
 def _current_layout(tmp_path: Path) -> RepoLayout:
@@ -98,85 +96,100 @@ def test_layout_model_files(tmp_path):
     assert list_model_files(layout) == ["a.step", "sub/x.step"]
 
 
-# -- Task 1: manufacturer chain (D-02) ----------------------------------------------------
+# -- datasheet host helpers (D-23) -----------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("value", "token"),
+    ("value", "host"),
     [
-        ("Texas Instruments", "TI"),
-        ("TEXAS INSTRUMENTS", "TI"),
-        ("texas instruments", "TI"),
-        ("Global Connector Technology", "GCT"),
-        ("GCT", "GCT"),
-        ("Memsic Inc.", "Memsic"),
-        ("U-BLOX", "uBlox"),
-        ("Analog Devices", "ADI"),
-        ("Murata Manufacturing Co., Ltd.", "Murata"),
+        ("https://www.ti.com/lit/ds/x.pdf", "www.ti.com"),
+        ("https://E2E.TI.COM:443/a", "e2e.ti.com"),
+        ("www.ti.com/lit/x", "www.ti.com"),
+        ("//www.ti.com/x", "www.ti.com"),
+        ("https://www.ti.com./x", "www.ti.com"),
+        ("", None),
+        ("   ", None),
+        ("~", None),
+        ("file:///C:/x.pdf", None),
+        ("http://[bad", None),
+        ("localhost", None),
     ],
 )
-def test_manufacturer_token_aliases(value, token):
-    assert manufacturer_token(value) == TokenChoice(token, "name_alias", True)
+def test_datasheet_host(value, host):
+    assert datasheet_host(value) == host
 
 
-def test_manufacturer_token_unmapped_and_empty():
-    assert manufacturer_token("Acme Widgets") == TokenChoice("Acme", "property", False)
-    assert manufacturer_token("W\u00fcrth Elektronik") == TokenChoice("Wurth", "property", False)
-    assert manufacturer_token("") == PLACEHOLDER_MFR
-    assert manufacturer_token("Inc.") == PLACEHOLDER_MFR
+@pytest.mark.parametrize(
+    ("host", "domain"),
+    [
+        ("www.ti.com", "ti.com"),
+        ("e2e.ti.com", "ti.com"),
+        ("invensense.tdk.com", "tdk.com"),
+        ("ti.com", "ti.com"),
+        ("www.murata.co.jp", "murata.co.jp"),
+        ("www.gct.co", "gct.co"),
+        ("www.example.co.uk", "example.co.uk"),
+    ],
+)
+def test_registered_domain(host, domain):
+    assert registered_domain(host) == domain
 
 
-def test_manufacturer_choice_order():
-    ti_sheet = "https://www.ti.com/lit/ds/x.pdf"
-    assert manufacturer_choice(PartMeta("X", manufacturer="Analog Devices", datasheet=ti_sheet)) == TokenChoice(
-        "ADI", "name_alias", True
-    )
-    # An unmapped property never beats a mapped host (mapped tokens are tried first)
-    assert manufacturer_choice(PartMeta("X", manufacturer="Texas Instr.", datasheet=ti_sheet)) == TokenChoice(
-        "TI", "host_table", True
-    )
-    assert manufacturer_choice(
-        PartMeta("X", manufacturer="Acme Widgets", datasheet="https://unknown.example/x.pdf")
-    ) == TokenChoice("Acme", "property", False)
-    assert manufacturer_choice(
-        PartMeta("X", datasheet="https://www.example-parts.com/ds.pdf")
-    ) == TokenChoice("Exampleparts", "host_guess", False)
+def test_is_aggregator_host():
+    assert is_aggregator_host("www.snapeda.com")
+    assert is_aggregator_host("www.mouser.co.uk")
+    assert is_aggregator_host("WWW.DIGIKEY.COM")
+    assert not is_aggregator_host("www.ti.com")
+    assert not is_aggregator_host("www.murata.co.jp")
+
+
+# -- the one datasheet-to-manufacturer path (D-23) -----------------------------------------------
 
 
 @pytest.mark.parametrize(
     ("datasheet", "expected"),
     [
-        ("https://www.ti.com/lit/x", TokenChoice("TI", "host_table", True)),
-        ("https://e2e.ti.com/x", TokenChoice("TI", "host_table", True)),
-        ("https://E2E.TI.COM:443/a", TokenChoice("TI", "host_table", True)),
-        ("https://invensense.tdk.com/x.pdf", TokenChoice("TDK", "host_table", True)),
-        ("http://www.gct.co/x", TokenChoice("GCT", "host_table", True)),
-        ("https://www.murata.co.jp/x", TokenChoice("Murata", "host_guess", False)),
-        ("www.ti.com/lit/x", TokenChoice("TI", "host_table", True)),
-        ("", PLACEHOLDER_MFR),
-        ("~", PLACEHOLDER_MFR),
-        ("file:///C:/x.pdf", PLACEHOLDER_MFR),
-        ("http://[bad", PLACEHOLDER_MFR),
+        ("https://www.ti.com/lit/ds/symlink/csd85301q2.pdf", ("Texas Instruments", None)),
+        ("https://e2e.ti.com/x", ("Texas Instruments", None)),
+        ("https://E2E.TI.COM:443/a", ("Texas Instruments", None)),
+        ("www.ti.com/lit/x", ("Texas Instruments", None)),
+        ("https://www.maximintegrated.com/en/products/x.pdf", ("Maxim Integrated", None)),
+        ("https://www.linear.com/docs/1234", ("Linear Technology", None)),
+        ("https://invensense.tdk.com/x.pdf", ("TDK", None)),
+        ("http://www.gct.co/x", ("Global Connector Technology", None)),
+        ("https://www.example-parts.com/ds.pdf", ("", None)),
+        ("https://www.digikey.com/en/products/x", ("", "www.digikey.com")),
+        ("https://www.snapeda.com/parts/x/datasheet", ("", "www.snapeda.com")),
+        ("~", ("", None)),
+        ("", ("", None)),
+        ("file:///C:/x.pdf", ("", None)),
+        ("http://[bad", ("", None)),
     ],
 )
-def test_manufacturer_hosts(datasheet, expected):
-    assert manufacturer_choice(PartMeta("X", datasheet=datasheet)) == expected
+def test_manufacturer_from_datasheet(datasheet, expected):
+    assert manufacturer_from_datasheet(datasheet) == expected
 
 
-def test_manufacturer_aggregator_ignored():
-    assert is_aggregator_host("www.snapeda.com")
-    assert is_aggregator_host("www.mouser.co.uk")
-    assert not is_aggregator_host("www.ti.com")
-    meta = PartMeta("X", reference="U", datasheet="https://www.snapeda.com/parts/x/datasheet")
-    assert manufacturer_choice(meta) == PLACEHOLDER_MFR
-    plain = PartMeta("X", reference="U", datasheet="https://www.ti.com/x")
-    assert manufacturer_choice(plain) == TokenChoice("TI", "host_table", True)
+def test_manufacturer_from_datasheet_keeps_an_acquired_brand_own_name():
+    # Maxim Integrated stays Maxim Integrated, never Analog Devices (D-08)
+    assert manufacturer_from_datasheet("https://www.maximintegrated.com/x.pdf")[0] == "Maxim Integrated"
+    assert manufacturer_from_datasheet("https://www.analog.com/x.pdf")[0] == "Analog Devices"
 
 
-# -- Phase 7: the RECOM alias (D-11) ------------------------------------------------------------------
+def test_manufacturer_from_datasheet_never_names_a_distributor_as_the_company():
+    # The aggregator host comes back so the caller can say why no manufacturer was filled in
+    for host in ("www.mouser.co.uk", "www.octopart.com", "componentsearchengine.com", "ultralibrarian.com"):
+        name, aggregator = manufacturer_from_datasheet(f"https://{host}/datasheet/x.pdf")
+        assert name == ""
+        assert aggregator == host
 
 
-def test_recom_aliases():
-    expected = TokenChoice("RECOM", "name_alias", True)
-    for value in ("RECOM", "RECOM Power", "Recom Power GmbH"):
-        assert manufacturer_token(value) == expected
+def test_manufacturer_from_datasheet_is_the_only_datasheet_to_manufacturer_path():
+    from kicad_lib_manager.importer import suggest
+
+    # No v1.0 library-token helper is left beside it (D-23)
+    left = [n for n in dir(suggest) if "token" in n.casefold() or "choice" in n.casefold()]
+    assert left == []
+    assert callable(suggest.manufacturer_from_datasheet)
+
+
