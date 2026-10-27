@@ -113,7 +113,7 @@ Plans:
   4. Install stays disabled while the incoming part fails the atomic check. Each failure is a clickable reason that jumps to its field. Value defaults to the MPN, and filling in Datasheet, Description or the 3D model in the preview clears the matching reason.
   5. The preview shows generated `ki_keywords` (function words, interfaces, package codes, manufacturer aliases, MPN variants) and a footprint description and tags (package, IPC name, vendor package code, pitch). All of them are editable, and the installed files carry exactly what the preview showed.
 
-**Plans:** 12/25 plans executed
+**Plans:** 13/25 plans executed
 
 Plans:
 **Wave 1**
@@ -139,7 +139,7 @@ Plans:
 - [x] 10-12-PLAN.md — Footprints into the shared Atomic_Footprints.pretty, no .pretty pairing (wave 5)
 
 **Wave 6** *(blocked on Wave 5 completion)*
-- [ ] 10-13-PLAN.md — One footprint per part: single choice and the Not used preview section (wave 6)
+- [x] 10-13-PLAN.md — One footprint per part: single choice and the Not used preview section (wave 6)
 
 **Wave 7** *(blocked on Wave 6 completion)*
 - [ ] 10-14-PLAN.md — Shared-library clash rules: token-stream reuse, <FP>_<MPN> rename, Overwrite names linking parts (wave 7)
@@ -231,7 +231,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 |-------|-----------|----------------|--------|-----------|
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
-| 10. Importer on the Atomic Scheme | v2.0 | 12/25 | In Progress | - |
+| 10. Importer on the Atomic Scheme | v2.0 | 13/25 | In Progress | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
