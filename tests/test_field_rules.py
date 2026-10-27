@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from installfixtures import vendor_footprint, vendor_symbol_lib
+from installfixtures import extends_pair, vendor_footprint, vendor_symbol_lib
 from PySide6.QtCore import QSettings, Qt
 from zipfixtures import (
     STEP_BYTES,
@@ -25,7 +25,7 @@ from kicad_lib_manager.importer import form
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
-from kicad_lib_manager.importer.plan import FieldChange, InstallOptions, ToolContext
+from kicad_lib_manager.importer.plan import FieldChange, InstallOptions, Resolution, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.importer.preview import preview_sections
 from kicad_lib_manager.kicad_files import find_property, find_symbol, parse_bytes
@@ -121,6 +121,70 @@ def test_field_defaults_value_falls_back_to_the_symbol_name(tmp_path):
     defaults = form.field_defaults(candidate, VENDOR)
     assert defaults.value == defaults.mpn == VENDOR
     assert _symbol_value(plan, VENDOR) == VENDOR
+
+
+# -- parents, typed MPNs, renames, and the removed override -------------------------------------------
+
+
+def test_each_symbol_of_an_extends_pair_follows_its_own_mpn(tmp_path):
+    pair = extends_pair().replace(b'"Value" "PARENT_X"', b'"Value" "10k"').replace(b'"Value" "CHILD_Y"', b'"Value" "20k"')
+    plan, _ = _plan(tmp_path, pair, symbol="CHILD_Y")
+    assert plan.symbol_names == ("PARENT_X", "CHILD_Y")
+    assert _sets(plan) == [
+        FieldChange("PARENT_X", "set", "Value", "10k", "PARENT_X", "follows_mpn"),
+        FieldChange("CHILD_Y", "set", "Value", "20k", "CHILD_Y", "follows_mpn"),
+    ]
+    for name in plan.symbol_names:
+        assert _symbol_value(plan, name) == _symbol_value(plan, name, "MPN") == name
+
+
+def test_a_typed_mpn_drives_the_value(tmp_path):
+    symbol = vendor_symbol_lib(VENDOR, value="10k", props={"MPN": "PART-1"})
+    plan, _ = _plan(tmp_path, symbol, mpn="NEW-1")
+    assert _symbol_value(plan, VENDOR, "MPN") == "NEW-1"
+    assert _symbol_value(plan, VENDOR) == "NEW-1"
+    assert _sets(plan) == [FieldChange(VENDOR, "set", "Value", "10k", "NEW-1", "follows_mpn")]
+
+
+def test_a_renamed_symbol_gets_its_mpn_not_the_retokened_value(tmp_path):
+    symbol = vendor_symbol_lib(VENDOR, value=VENDOR, props={"MPN": "PART-1"})
+    layout = _layout(tmp_path)
+    # The library already holds a different symbol of the same name, so the install must rename the incoming one
+    other = vendor_symbol_lib(VENDOR, props={"MPN": "OTHER-9"})
+    (layout.symbols_dir / f"{LIBRARY}.kicad_sym").write_bytes(other)
+    with _open_vendor(tmp_path, symbol) as candidate:
+        first = build_plan(candidate, InstallOptions(library=LIBRARY), layout, ToolContext())
+        conflict = next(c for c in first.conflicts if c.kind == "symbol")
+        options = InstallOptions(library=LIBRARY, resolutions={conflict.key: Resolution("rename", "PART_B")})
+        plan = build_plan(candidate, options, layout, ToolContext())
+        assert not plan.blocked, [i.text for i in plan.issues]
+    assert plan.symbol_name == "PART_B"
+    assert _symbol_value(plan, "PART_B") == "PART-1"
+    assert _symbol_value(plan, "PART_B", "MPN") == "PART-1"
+
+
+def test_a_value_already_equal_to_the_mpn_gets_no_set_change(tmp_path):
+    symbol = vendor_symbol_lib(VENDOR, value="PART-1", props={"MPN": "PART-1"})
+    plan, _ = _plan(tmp_path, symbol)
+    assert _symbol_value(plan, VENDOR) == "PART-1"
+    assert _sets(plan) == []
+
+
+def test_install_options_has_no_value_override():
+    with pytest.raises(TypeError):
+        InstallOptions(library=LIBRARY, value="x")  # type: ignore[call-arg]
+    with pytest.raises(ValueError):
+        InstallOptions(library=LIBRARY, cleared=frozenset({"value"}))
+
+
+def test_build_options_never_passes_a_value():
+    values = form.FormValues(
+        library=LIBRARY, symbol=None, footprint=None, model=None, no_model=False, footprint_name=None,
+        fields={"value": "typed", "mpn": "M-1"},
+    )
+    options = form.build_options(values, form.FieldDefaults(value="V", mpn="P"))
+    assert options.mpn == "M-1"
+    assert not hasattr(options, "value")
 
 
 # -- the dialog: Value is read-only and mirrors the MPN -----------------------------------------------
