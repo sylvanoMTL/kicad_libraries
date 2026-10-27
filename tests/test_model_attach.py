@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
+from installfixtures import ATOMIC_PROPS
 from vendorfixtures import (
     SNAPEDA_FOOTPRINT,
     SNAPEDA_MODEL_STEM,
@@ -219,7 +220,7 @@ def test_attach_duplicate_sha(tmp_path):
 
 
 def _install(tmp_path, candidate, layout):
-    options = InstallOptions(library=LIBRARY)
+    options = InstallOptions(library=LIBRARY, datasheet=ATOMIC_PROPS["Datasheet"])
     return build_plan(candidate, options, layout, ToolContext()), options
 
 

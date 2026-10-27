@@ -30,8 +30,9 @@ _MODERN_GENERATOR_VERSIONS = {20231120: "8.0", 20241209: "9.0"}
 # What a test part needs, beyond an MPN, a footprint, a Value that is the MPN and a 3D model, to pass the
 # atomic rule (D-21): the UL CSD sample carries no Description, so an install of it passes this one; a
 # synthetic vendor symbol carries ATOMIC_PROPS as its properties (Manufacturer is a table spelling, the
-# Datasheet is a ti.com link, which also agrees with the Manufacturer). vendor_symbol_lib has its own
-# datasheet argument, so it takes the Datasheet entry there and the rest as props: see atomic_symbol_lib.
+# Datasheet is a ti.com link, which also agrees with the Manufacturer). vendor_symbol_lib already defaults
+# its datasheet to a ti.com link, so it only needs the other entries as props; zipfixtures.symbol_lib and
+# extends_pair take the whole dict.
 UL_DESCRIPTION = "Dual N-channel MOSFET, 30 V"
 ATOMIC_PROPS = {
     "Manufacturer": "Texas Instruments",
@@ -332,11 +333,15 @@ def extends_pair(
     version: int = V6_VERSION,
     child_first: bool = False,
     eol: str = "\r\n",
+    props: dict[str, str] | None = None,
 ) -> bytes:
     """Build a .kicad_sym holding a parent symbol and a child that (extends "<parent>").
 
-    The child has its own properties and no sub-symbol: it draws through its parent.
+    The child has its own properties and no sub-symbol: it draws through its parent. props (for example
+    ATOMIC_PROPS) go on both symbols; a Datasheet entry replaces the parent's link and fills the child's.
     """
+    fields = dict(props or {})
+    datasheet = fields.pop("Datasheet", None)
     parent_lines = _v6_symbol(
         parent,
         units=1,
@@ -345,14 +350,16 @@ def extends_pair(
         keywords="",
         footprint_field="FP",
         fp_filters="FP",
-        datasheet="https://www.ti.com/lit/gpn/part",
-        props=None,
+        datasheet="https://www.ti.com/lit/gpn/part" if datasheet is None else datasheet,
+        props=fields,
     )
     child_lines = [f"  (symbol {_quote(child)} (extends {_quote(parent)})"]
     child_lines.extend(_v6_property("    ", 0, "Reference", "U", hide=False))
     child_lines.extend(_v6_property("    ", 1, "Value", child, hide=False))
     child_lines.extend(_v6_property("    ", 2, "Footprint", "", hide=True))
-    child_lines.extend(_v6_property("    ", 3, "Datasheet", "", hide=True))
+    child_lines.extend(_v6_property("    ", 3, "Datasheet", datasheet or "", hide=True))
+    for index, (key, text) in enumerate(fields.items(), start=4):
+        child_lines.extend(_v6_property("    ", index, key, text, hide=True))
     child_lines.append("  )")
     ordered = child_lines + parent_lines if child_first else parent_lines + child_lines
     return _v6_library(version, ordered, eol)

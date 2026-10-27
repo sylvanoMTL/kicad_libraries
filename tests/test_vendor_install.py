@@ -64,6 +64,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 LIBRARY = "Atomic_Connector"
 UL_LIBRARY = "Atomic_Battery_Management"
 SAMACSYS_LIBRARY = "Atomic_Converter_DCDC_Isolated"
+SNAPEDA_DATASHEET = inst.ATOMIC_PROPS["Datasheet"]
 
 
 def _snapeda_layout(tmp_path):
@@ -83,7 +84,11 @@ def _open_snapeda(tmp_path, **members_kwargs):
 
 
 def _plan_snapeda(candidate, layout, **options):
-    """Plan the candidate into the Atomic_Connector library with no external tools (ToolContext())."""
+    """Plan the candidate into the Atomic_Connector library with no external tools (ToolContext()).
+
+    The SnapEDA sample has no Datasheet, so the install carries one: the part then passes the atomic rule (D-21).
+    """
+    options.setdefault("datasheet", SNAPEDA_DATASHEET)
     chosen = InstallOptions(library=LIBRARY, **options)
     return build_plan(candidate, chosen, layout, ToolContext()), chosen
 
@@ -145,7 +150,7 @@ def _property_names(symbol):
 
 def test_snapeda_volatile_fields_dropped(tmp_path):
     layout = _snapeda_layout(tmp_path)
-    with _open_snapeda(tmp_path) as (package, candidate):
+    with _open_snapeda(tmp_path, with_model=True) as (package, candidate):
         assert candidate.field_rules == SNAPEDA_RULES
 
         plan, _ = _plan_snapeda(candidate, layout)
@@ -182,7 +187,7 @@ def test_generic_rules_for_other_vendors(ul_package, tmp_path):
 
     write_custom_layout(tmp_path / "repo", [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
     layout = RepoLayout.for_repo(tmp_path / "repo")
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), layout, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=inst.UL_DESCRIPTION), layout, ToolContext())
     assert not plan.blocked, [i.text for i in plan.issues]
     # No rename, drop or clean; the only change is the Manufacturer the UL datasheet link names (D-23)
     assert plan.field_changes == (
@@ -229,7 +234,7 @@ def _field_rows(sections):
 
 def test_field_changes_section(ul_package, tmp_path):
     layout = _snapeda_layout(tmp_path)
-    with _open_snapeda(tmp_path) as (package, candidate):
+    with _open_snapeda(tmp_path, with_model=True) as (package, candidate):
         plan, options = _plan_snapeda(candidate, layout)
         sections = preview_sections(plan, candidate, options)
         names = [s.name for s in sections]
@@ -245,7 +250,7 @@ def test_field_changes_section(ul_package, tmp_path):
 
     _, ul_candidate = ul_package
     write_custom_layout(tmp_path / "ul", [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
-    ul_options = InstallOptions(library=UL_LIBRARY)
+    ul_options = InstallOptions(library=UL_LIBRARY, description=inst.UL_DESCRIPTION)
     ul_plan = build_plan(ul_candidate, ul_options, RepoLayout.for_repo(tmp_path / "ul"), ToolContext())
     ul_section = _field_rows(preview_sections(ul_plan, ul_candidate, ul_options))
     assert [(row.text, row.detail) for row in ul_section.rows] == [
@@ -255,7 +260,7 @@ def test_field_changes_section(ul_package, tmp_path):
 
 def test_field_change_row_format(tmp_path):
     layout = _snapeda_layout(tmp_path)
-    with _open_snapeda(tmp_path) as (package, candidate):
+    with _open_snapeda(tmp_path, with_model=True) as (package, candidate):
         plan, options = _plan_snapeda(candidate, layout)
         note = "a" * 30 + "\n" + "b" * 10 + "\t" + "c" * 28
         assert len(note) == 70
@@ -292,6 +297,12 @@ class Case:
     symbol: str
     footprint: str
     model_file: str | None
+    # The SnapEDA sample has no Datasheet, so its install carries one (D-21)
+    datasheet: str | None = None
+
+
+def _case_options(case: Case) -> InstallOptions:
+    return InstallOptions(library=case.library, datasheet=case.datasheet)
 
 
 CASES = {
@@ -302,6 +313,7 @@ CASES = {
         SNAPEDA_SYMBOL,
         SNAPEDA_FOOTPRINT,
         None,
+        SNAPEDA_DATASHEET,
     ),
     "snapeda_with_model": Case(
         "SnapEDA",
@@ -310,6 +322,7 @@ CASES = {
         SNAPEDA_SYMBOL,
         SNAPEDA_FOOTPRINT,
         f"{SNAPEDA_MPN}.step",
+        SNAPEDA_DATASHEET,
     ),
     "samacsys": Case(
         "SamacSys",
@@ -321,6 +334,9 @@ CASES = {
     ),
 }
 by_case = pytest.mark.parametrize("case", CASES.values(), ids=list(CASES))
+# The cases whose part carries a 3D model; the part without one is only the subject of the tests that use by_case
+WITH_MODEL = {name: case for name, case in CASES.items() if case.model_file is not None}
+by_modelled_case = pytest.mark.parametrize("case", WITH_MODEL.values(), ids=list(WITH_MODEL))
 NO_CLI = ToolContext()
 
 
@@ -339,7 +355,7 @@ def _open_case(case, tmp_path):
 def _install_case(case, tmp_path, tools=NO_CLI):
     """Plan and apply the case; yield (layout, candidate, plan, result) with the package still open."""
     with _open_case(case, tmp_path) as (layout, candidate):
-        plan = build_plan(candidate, InstallOptions(library=case.library), layout, tools)
+        plan = build_plan(candidate, _case_options(case), layout, tools)
         assert not plan.blocked, [i.text for i in plan.issues]
         yield layout, candidate, plan, apply_plan(plan, backup_root=tmp_path / "bk")
 
@@ -390,7 +406,7 @@ def _values(symbol):
     return {p.name: p.value for p in list_properties(symbol.node)}
 
 
-@pytest.mark.parametrize("name", ["snapeda", "samacsys"])
+@pytest.mark.parametrize("name", ["snapeda_with_model", "samacsys"])
 def test_vendor_field_outcomes(name, tmp_path):
     case = CASES[name]
     with _install_case(case, tmp_path) as (layout, _, _, result):
@@ -398,7 +414,7 @@ def test_vendor_field_outcomes(name, tmp_path):
         values = _values(_installed_symbol(layout, case))
     # Value is the MPN, not the symbol name (D-22)
     assert values["Value"] == values["MPN"]
-    if name == "snapeda":
+    if case.vendor == "SnapEDA":
         assert values["Manufacturer"] == "Global Connector Technology" == SNAPEDA_MANUFACTURER
         assert values["MPN"] == "USBC4242-01-0099-A" == SNAPEDA_MPN
         assert values["Description"] == "USB Type-C receptacle, 16 pins" == SNAPEDA_DESCRIPTION
@@ -426,12 +442,12 @@ def test_vendor_field_outcomes(name, tmp_path):
         assert field not in values, field
 
 
-@by_case
+@by_modelled_case
 def test_vendor_reinstall_is_noop(case, tmp_path, snapshot):
     with _install_case(case, tmp_path) as (layout, candidate, _, result):
         assert result.ok, [i.text for i in result.issues]
         after_first = snapshot(layout.custom_dir)
-        again = build_plan(candidate, InstallOptions(library=case.library), layout, NO_CLI)
+        again = build_plan(candidate, _case_options(case), layout, NO_CLI)
         assert again.is_noop
         assert again.field_changes == ()
         assert again.conflicts == ()
@@ -440,10 +456,10 @@ def test_vendor_reinstall_is_noop(case, tmp_path, snapshot):
         assert snapshot(layout.custom_dir) == after_first
 
 
-@by_case
+@by_modelled_case
 def test_vendor_install_rolls_back_on_failed_write(case, tmp_path, snapshot, monkeypatch):
     with _open_case(case, tmp_path) as (layout, candidate):
-        plan = build_plan(candidate, InstallOptions(library=case.library), layout, NO_CLI)
+        plan = build_plan(candidate, _case_options(case), layout, NO_CLI)
         assert not plan.blocked, [i.text for i in plan.issues]
         last = len([op for op in plan.ops if op.kind != "mkdir"])
         assert last >= 2
@@ -471,7 +487,7 @@ def test_vendor_install_rolls_back_on_failed_write(case, tmp_path, snapshot, mon
 
 @pytest.mark.parametrize("vendor", ["SnapEDA", "SamacSys"])
 def test_vendor_commit_trailer(vendor, tmp_path):
-    case = CASES["snapeda" if vendor == "SnapEDA" else "samacsys"]
+    case = CASES["snapeda_with_model" if vendor == "SnapEDA" else "samacsys"]
     with _install_case(case, tmp_path) as (_, _, plan, result):
         assert result.ok, [i.text for i in result.issues]
         message = default_message(build_commit_plan(result, plan, vendor_label=plan.vendor))
@@ -495,7 +511,7 @@ def _load_issues(exe, layout, case):
 
 
 @pytest.mark.kicad_cli
-@by_case
+@by_modelled_case
 def test_vendor_installs_load_in_kicad(case, tmp_path, real_tools, kicad_cli_path):
     with _install_case(case, tmp_path, tools=real_tools) as (layout, _, _, result):
         assert result.ok, [i.text for i in result.issues]
