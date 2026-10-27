@@ -13,6 +13,7 @@ from zipfixtures import footprint_library_for
 
 from kicad_lib_manager.importer import stems
 from kicad_lib_manager.importer.applier import apply_plan
+from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.commit_plan import build_commit_plan, default_message
 from kicad_lib_manager.importer.plan import InstallOptions, Resolution, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
@@ -129,3 +130,65 @@ def test_tracer_existing_library_writes_into_the_existing_shared_folder(atomic_c
     assert not [op for op in plan.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
     assert ("footprint", shared / "DQK0006B.kicad_mod") in {(op.kind, op.path) for op in plan.ops}
     assert not plan.new_footprint_lib
+
+
+def test_a_case_twin_of_the_shared_library_refuses(atomic_custom, ul_package):
+    _, candidate = ul_package
+    twin = atomic_custom.footprints_dir / "atomic_footprints.pretty"
+    (atomic_custom.footprints_dir / "Atomic_Footprints.pretty").rename(atomic_custom.footprints_dir / "tmp_rename.pretty")
+    (atomic_custom.footprints_dir / "tmp_rename.pretty").rename(twin)
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY), atomic_custom, ToolContext())
+    assert plan.blocked and not plan.ops
+    codes = [i.code for i in plan.issues if i.severity is Severity.ERROR]
+    assert codes == ["install.library_case_clash"]
+    text = next(i.text for i in plan.issues if i.code == "install.library_case_clash")
+    assert text == (
+        "Custom/Footprints holds atomic_footprints.pretty, which differs from Atomic_Footprints only by letter case; "
+        "rename that folder to Atomic_Footprints"
+    )
+
+
+def test_a_missing_footprints_folder_names_the_shared_library(tmp_path, ul_package):
+    _, candidate = ul_package
+    layout = RepoLayout.for_repo(tmp_path)
+    layout.symbols_dir.mkdir(parents=True)
+    layout.models_dir.mkdir(parents=True)
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), layout, ToolContext())
+    assert plan.blocked and not plan.ops
+    error = next(i for i in plan.issues if i.code == "install.footprints_dir_missing")
+    assert error.text.startswith("Cannot create Atomic_Footprints: the Custom/Footprints folder is missing")
+
+
+def test_an_existing_shared_library_gives_no_mkdir(atomic_custom, ul_package):
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    assert not plan.blocked, plan.issues
+    assert not [op for op in plan.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (True, False)
+
+
+def test_a_second_new_library_reuses_the_folder_the_first_created(synthetic_custom, ul_package, tmp_path):
+    _, candidate = ul_package
+    first = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), synthetic_custom, ToolContext())
+    assert (first.new_symbol_lib, first.new_footprint_lib) == (True, True)
+    assert apply_plan(first, backup_root=tmp_path / "bk").ok
+    # Same footprint name again for another new library: the folder is shared, so the footprint is now identical
+    second = build_plan(candidate, InstallOptions(library="Atomic_Transistor_BJT"), synthetic_custom, ToolContext())
+    assert not [op for op in second.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
+    assert not second.blocked, second.issues
+    assert (second.new_symbol_lib, second.new_footprint_lib) == (True, False)
+    assert second.footprint_link == first.footprint_link
+
+
+def test_an_existing_symbol_library_without_a_footprint_folder_installs_with_one_mkdir(synthetic_custom, ul_package, tmp_path):
+    _, candidate = ul_package
+    # The v1 tree keeps per-library folders and has no Atomic_Footprints.pretty; add a symbol-only Atomic_ library
+    sym = synthetic_custom.symbols_dir
+    source = next(sym.glob("*.kicad_sym"))
+    (sym / f"{LIBRARY}.kicad_sym").write_bytes(source.read_bytes())
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY), synthetic_custom, ToolContext())
+    assert not plan.blocked, plan.issues
+    mkdirs = [op.path for op in plan.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
+    assert mkdirs == [synthetic_custom.footprints_dir / "Atomic_Footprints.pretty"]
+    assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, True)
+    assert not [i for i in plan.issues if i.severity is Severity.WARNING and "pair" in i.code]
