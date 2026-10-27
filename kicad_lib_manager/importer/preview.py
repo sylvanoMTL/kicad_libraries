@@ -256,6 +256,13 @@ _SET_REASON = {
     "follows_mpn": "follows the MPN",
     "canonical": "canonical spelling",
     "datasheet_host": "found from the datasheet link",
+    "generated": "generated",
+}
+# The names KiCad shows for the hidden ki_ properties, so a row never reads as a raw field name
+_FIELD_LABELS = {
+    "ki_keywords": "Keywords",
+    "ki_description": "Description",
+    "ki_fp_filters": "Footprint filters",
 }
 _SHOWN_LIMIT = 60
 _SHOWN_KEPT = 57
@@ -270,7 +277,8 @@ def _shown(value: str) -> str:
 
 
 def _field_changes_section(plan: InstallPlan) -> PreviewSection:
-    several = len({change.symbol for change in plan.field_changes}) > 1
+    # A footprint's text change names no symbol, so only the symbols' own changes decide whether rows are prefixed
+    several = len({change.symbol for change in plan.field_changes if change.scope == "symbol"}) > 1
     rows: list[PreviewRow] = []
     for change in plan.field_changes:
         if change.action == "drop":
@@ -287,8 +295,9 @@ def _field_changes_section(plan: InstallPlan) -> PreviewSection:
         else:
             label = "Rename"
             detail = f"→ {change.new}"
-        prefix = f"{change.symbol}: " if several else ""
-        rows.append(PreviewRow(text=f"{prefix}{label} {change.field}", detail=detail, kind="rewrite"))
+        prefix = f"{change.symbol}: " if several and change.scope == "symbol" else ""
+        shown_field = _FIELD_LABELS.get(change.field, change.field)
+        rows.append(PreviewRow(text=f"{prefix}{label} {shown_field}", detail=detail, kind="rewrite"))
     return PreviewSection("Field changes", tuple(rows))
 
 
