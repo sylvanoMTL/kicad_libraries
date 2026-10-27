@@ -17,9 +17,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-from zipfixtures import CURRENT_CUSTOM_FOOTPRINT_LIBS, CURRENT_CUSTOM_SYMBOL_LIBS, symbol_lib
+from zipfixtures import (
+    CURRENT_ATOMIC_SYMBOL_LIBS,
+    CURRENT_CUSTOM_FOOTPRINT_LIBS,
+    CURRENT_CUSTOM_SYMBOL_LIBS,
+    footprint_library_for,
+    symbol_lib,
+)
 
 from kicad_lib_manager.importer.commit_plan import CommitFile, CommitPlan
+
+# The Atomic_ install targets of the scratch Custom/, beside the v1 mirror of the live tree: the nine
+# Phase 13 libraries plus the second connector library the commit tests edit in place
+ATOMIC_COMMIT_SYMBOL_LIBS = (*CURRENT_ATOMIC_SYMBOL_LIBS, "Atomic_Connector_Audio")
+ATOMIC_COMMIT_FOOTPRINT_LIBS = tuple(dict.fromkeys(footprint_library_for(name) for name in ATOMIC_COMMIT_SYMBOL_LIBS))
 
 GIT = shutil.which("git")
 requires_git = pytest.mark.skipif(GIT is None, reason="git is not on PATH")
@@ -54,12 +65,12 @@ class GitRepos:
 
 
 def populate_custom(custom: Path) -> None:
-    """Write the current Custom/ library names: symbol libraries, footprint folders and an empty model folder."""
+    """Write the v1 Custom/ library names and the Atomic_ install targets: symbol libraries, footprint folders and an empty model folder."""
     (custom / "Symbols").mkdir(parents=True, exist_ok=True)
-    for name in CURRENT_CUSTOM_SYMBOL_LIBS:
+    for name in (*CURRENT_CUSTOM_SYMBOL_LIBS, *ATOMIC_COMMIT_SYMBOL_LIBS):
         (custom / "Symbols" / f"{name}.kicad_sym").write_bytes(symbol_lib((name,)))
     # git drops empty folders, and the planner refuses a Custom without Symbols/ and Footprints/
-    for name in CURRENT_CUSTOM_FOOTPRINT_LIBS:
+    for name in (*CURRENT_CUSTOM_FOOTPRINT_LIBS, *ATOMIC_COMMIT_FOOTPRINT_LIBS):
         pretty = custom / "Footprints" / f"{name}.pretty"
         pretty.mkdir(parents=True, exist_ok=True)
         (pretty / ".gitkeep").write_bytes(b"")
@@ -203,7 +214,7 @@ def import_files(
     repos: GitRepos,
     files: Mapping[str, bytes],
     *,
-    library: str = "IC_Battery_Charger_TI",
+    library: str = "Atomic_Battery_Management",
     symbol: str = "PART1",
     vendor: str = "Ultra Librarian",
     package: str = "ul_PART1.zip",
@@ -231,7 +242,7 @@ def import_files(
         library=library,
         new_library=new_library,
         symbol=symbol,
-        footprint=f"{library}:FP1",
+        footprint=f"{footprint_library_for(library)}:FP1",
         model=None,
         vendor=vendor,
         package=package,

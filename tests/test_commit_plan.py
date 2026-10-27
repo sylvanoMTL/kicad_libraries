@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from zipfixtures import footprint_library_for
 
 from kicad_lib_manager.importer import commit_plan
 from kicad_lib_manager.importer.applier import apply_plan
@@ -28,12 +29,13 @@ from kicad_lib_manager.importer.plan import (
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.models import Severity
 
-LIB = "IC_Battery_Charger_TI"
+LIB = "Atomic_Battery_Management"
+FP_LIB = footprint_library_for(LIB)
 TODAY = date(2026, 10, 22)
 UL_REL = [
     "Custom/3DModels/CSD85301Q2.stp",
-    "Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod",
-    "Custom/Symbols/IC_Battery_Charger_TI.kicad_sym",
+    f"Custom/Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod",
+    f"Custom/Symbols/{LIB}.kicad_sym",
 ]
 
 
@@ -87,7 +89,7 @@ class Install:
 
     def __init__(self, tmp_path: Path) -> None:
         self.layout = RepoLayout.for_repo(tmp_path / "repo")
-        self.pretty = self.layout.footprints_dir / f"{LIB}.pretty"
+        self.pretty = self.layout.footprints_dir / f"{FP_LIB}.pretty"
         self.old_symbols = b"(kicad_symbol_lib old)"
         self.symbols_data = b"(kicad_symbol_lib new)"
         self.footprint_data = b"(footprint FP1)"
@@ -129,7 +131,7 @@ def test_build_files_only_sorted(install):
 
     assert [f.display for f in cplan.files] == [
         "Custom/3DModels/P1.step",
-        f"Custom/Footprints/{LIB}.pretty/FP1.kicad_mod",
+        f"Custom/Footprints/{FP_LIB}.pretty/FP1.kicad_mod",
         f"Custom/Symbols/{LIB}.kicad_sym",
     ]
     assert not any(f.path.is_dir() for f in cplan.files)
@@ -208,9 +210,9 @@ def test_build_uses_disk_spelling(tmp_path):
     assert on_disk.exists()
 
 
-def test_build_from_real_ul_plan(synthetic_custom, ul_package, tmp_path):
+def test_build_from_real_ul_plan(atomic_custom, ul_package, tmp_path):
     package, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=LIB), synthetic_custom)
+    plan = build_plan(candidate, InstallOptions(library=LIB), atomic_custom)
     result = apply_plan(plan, backup_root=tmp_path / "backups")
     assert result.ok
 
@@ -233,7 +235,7 @@ def test_changed_since_install(install):
 
     assert commit_plan.changed_since_install(cplan) == (
         "Custom/3DModels/P1.step",
-        f"Custom/Footprints/{LIB}.pretty/FP1.kicad_mod",
+        f"Custom/Footprints/{FP_LIB}.pretty/FP1.kicad_mod",
     )
 
 
@@ -262,10 +264,10 @@ def test_default_message_layout(install):
     message = commit_plan.default_message(install.commit_plan())
 
     assert message == (
-        "Add P1 to IC_Battery_Charger_TI\n"
+        f"Add P1 to {LIB}\n"
         "\n"
         "Symbol: P1\n"
-        "Footprint: IC_Battery_Charger_TI:FP1\n"
+        f"Footprint: {FP_LIB}:FP1\n"
         "3D model: P1.step\n"
         "\n"
         "Import-Vendor: Ultra Librarian\n"

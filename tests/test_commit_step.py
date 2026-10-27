@@ -25,6 +25,7 @@ from gitfixtures import (
     start_merge_conflict,
     write_hook,
 )
+from zipfixtures import footprint_library_for
 
 from kicad_lib_manager import gitops
 from kicad_lib_manager.gitops import GitContext
@@ -32,9 +33,12 @@ from kicad_lib_manager.importer import commit_step
 from kicad_lib_manager.importer.commit_plan import default_message, subject_of
 from kicad_lib_manager.models import Severity
 
-FP_NEW = "Footprints/IC_Battery_Charger_TI.pretty/FP1.kicad_mod"
-SYM_FFC = "Symbols/Connector_FFC_GCT.kicad_sym"
-SYM_USB = "Symbols/Connector_USB_GCT.kicad_sym"
+LIB = "Atomic_Battery_Management"
+FFC_LIB = "Atomic_Connector_Audio"
+USB_LIB = "Atomic_Connector"
+FP_NEW = f"Footprints/{footprint_library_for(LIB)}.pretty/FP1.kicad_mod"
+SYM_FFC = f"Symbols/{FFC_LIB}.kicad_sym"
+SYM_USB = f"Symbols/{USB_LIB}.kicad_sym"
 STALE_REASON = (
     "Custom's local main is behind origin/main and does not contain the checked-out commit {short}. "
     "Update local main first, then commit the imported files by hand. Nothing was switched or committed."
@@ -468,7 +472,7 @@ def test_probe_and_commit_in_linked_worktree(tmp_path):
     assert busy.state == "unavailable" and busy.reason == "a merge is in progress in Custom"
     merge_head.unlink()
 
-    outcome = commit_step.run_commit(plan, "Add FP1 to IC_Battery_Charger_TI", True, git=_ctx())
+    outcome = commit_step.run_commit(plan, f"Add FP1 to {LIB}", True, git=_ctx())
 
     assert outcome.committed and outcome.parent_commit is not None, outcome.issues
     assert outcome.parent_branch == "feature/x"
@@ -637,7 +641,7 @@ def test_unavailable_probe_leaves_defaults(tmp_path):
 # -- refusals before any git write, and clean failures (D-03, D-06, D-11, D-16) -----------------------
 
 HOOK_REJECT = "#!/bin/sh\necho 'hook says no'\necho 'on stderr' >&2\nexit 1\n"
-MESSAGE = "Add FP1 to IC_Battery_Charger_TI"
+MESSAGE = f"Add FP1 to {LIB}"
 
 
 def _subcommands(calls):
@@ -1077,7 +1081,7 @@ def test_pre_import_diff_head_vs_backup(tmp_path):
     (repos.custom / SYM_FFC).write_bytes(first + b" ; edited before the import\n" + rest)
     backup = tmp_path / "backup"
     backup.mkdir()
-    (backup / "Connector_FFC_GCT.kicad_sym_backup_1").write_bytes((repos.custom / SYM_FFC).read_bytes())
+    (backup / f"{FFC_LIB}.kicad_sym_backup_1").write_bytes((repos.custom / SYM_FFC).read_bytes())
     plan = import_files(repos, {SYM_FFC: (repos.custom / SYM_FFC).read_bytes() + b"; imported\n"})
     plan = dataclasses.replace(plan, backup_dir=backup)
 
