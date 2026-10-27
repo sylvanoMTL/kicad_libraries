@@ -7,9 +7,10 @@ never a raw KiCad field name. A Datasheet value is judged as a string and is nev
 
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
+from types import MappingProxyType
 
 from . import kicad_files, manufacturers
 from .importer import fieldrules
@@ -38,6 +39,7 @@ _NO_KICAD_MODELS = "Could not check the 3D model: KiCad's 3D model folder was no
 _UNREADABLE_FOOTPRINT = "Could not check the 3D model: the footprint could not be read"
 _VARIABLE_PATH_RE = re.compile(r"\$\{[^}]+\}[/\\]")
 _MIB = 1024 * 1024
+_NO_PLANNED_FOOTPRINTS: Mapping[str, tuple[str, bytes]] = MappingProxyType({})
 
 
 def is_atomic(nickname: str) -> bool:
@@ -371,11 +373,22 @@ def _listing(cache: dict[Path, frozenset[str]], folder: Path) -> frozenset[str]:
     return names
 
 
-def repo_context(repo_root: Path, fp_libs: list[FootprintLibrary], kicad_fp_dir: Path | None) -> AtomicContext:
+def repo_context(
+    repo_root: Path,
+    fp_libs: list[FootprintLibrary],
+    kicad_fp_dir: Path | None,
+    *,
+    planned_footprints: Mapping[str, tuple[str, bytes]] = _NO_PLANNED_FOOTPRINTS,
+    planned_models: Collection[str] = (),
+) -> AtomicContext:
     """Build the context for the repo: its footprint libraries (any source) and KiCad's installed footprints.
 
     Names are matched against exact directory listings before any path is built, so a wrong-case
     name fails on Windows too and untrusted text never forms a path.
+
+    An install that has not written yet passes what it is about to write: planned_footprints maps a
+    Library:Footprint link to (repo-relative path, file bytes) and planned_models holds the exact model
+    file names it will add to Custom/3DModels. A planned link or model counts only on an exact match.
     """
     listings: dict[Path, frozenset[str]] = {}
     repo_libs: dict[str, list[FootprintLibrary]] = {}
@@ -391,6 +404,9 @@ def repo_context(repo_root: Path, fp_libs: list[FootprintLibrary], kicad_fp_dir:
         library, colon, footprint = text.partition(":")
         if not colon or not library or not footprint:
             return failed(text, "", "", f'Footprint "{text}" does not name a library (expected Library:Footprint)')
+        planned = planned_footprints.get(text)
+        if planned is not None:
+            return FootprintTarget(text, library, footprint, repo_root / planned[0], planned[0], None)
         # Each candidate is (folder of the library, repo-relative path of that folder or None for KiCad)
         candidates: list[tuple[Path, str | None]] = [(repo_root / lib.rel_path, lib.rel_path) for lib in repo_libs.get(library, [])]
         if kicad_fp_dir is not None and f"{library}.pretty" in _listing(listings, kicad_fp_dir):
@@ -406,6 +422,7 @@ def repo_context(repo_root: Path, fp_libs: list[FootprintLibrary], kicad_fp_dir:
         rel = f"{folder_rel}/{file_name}" if folder_rel is not None else None
         return FootprintTarget(text, library, footprint, folder / file_name, rel, None)
 
+    planned_bytes = {repo_root / rel: data for rel, data in planned_footprints.values()}
     custom_names: list[frozenset[str]] = []
     verdicts: dict[Path, list[str]] = {}
 
@@ -418,7 +435,7 @@ def repo_context(repo_root: Path, fp_libs: list[FootprintLibrary], kicad_fp_dir:
                 found = frozenset(p.relative_to(model_dir).as_posix() for p in model_dir.rglob("*") if p.is_file())
             except OSError:
                 found = frozenset()
-            custom_names.append(found)
+            custom_names.append(found | frozenset(planned_models))
         return custom_names[0]
 
     def in_kicad_models(rel: str) -> str | None:
@@ -462,12 +479,17 @@ def repo_context(repo_root: Path, fp_libs: list[FootprintLibrary], kicad_fp_dir:
         return None
 
     def footprint_model_problems(path: Path) -> list[str]:
-        try:
-            if path.stat().st_size > MAX_KICAD_TEXT_BYTES:
+        data = planned_bytes.get(path)
+        if data is not None:
+            if len(data) > MAX_KICAD_TEXT_BYTES:
                 return [_UNREADABLE_FOOTPRINT]
-            data = path.read_bytes()
-        except OSError:
-            return [_UNREADABLE_FOOTPRINT]
+        else:
+            try:
+                if path.stat().st_size > MAX_KICAD_TEXT_BYTES:
+                    return [_UNREADABLE_FOOTPRINT]
+                data = path.read_bytes()
+            except OSError:
+                return [_UNREADABLE_FOOTPRINT]
         loaded = kicad_files.parse_bytes(data, path.name, max_nodes=MAX_KICAD_TEXT_NODES)
         named = None if isinstance(loaded, Issue) else kicad_files.footprint_name(loaded.root)
         if named is None:
