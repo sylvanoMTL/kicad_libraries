@@ -916,7 +916,8 @@ def build_plan(
     cleared_manufacturer = options.manufacturer == ""
     inferred_manufacturer = False
     if not manufacturer and not cleared_manufacturer:
-        datasheet = options.datasheet if options.datasheet is not None else meta.datasheet
+        # A typed link decides; a cleared one still leaves the vendor's link to name the company
+        datasheet = options.datasheet or meta.datasheet
         found, aggregator = manufacturer_from_datasheet(datasheet)
         if found:
             manufacturer = found

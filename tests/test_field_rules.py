@@ -367,6 +367,12 @@ def test_a_typed_datasheet_decides_where_the_manufacturer_is_found(tmp_path):
     assert "naming.aggregator_host" not in _codes(plan)
 
 
+def test_a_cleared_datasheet_still_lets_the_vendor_link_name_the_manufacturer(tmp_path):
+    plan, _ = _plan_for(tmp_path, "https://www.ti.com/x", datasheet="", cleared=frozenset({"datasheet"}))
+    assert _symbol_value(plan, VENDOR, "Datasheet") == ""
+    assert _symbol_manufacturer(plan) == "Texas Instruments"
+
+
 def test_a_renamed_alias_is_one_rename_and_one_canonical_set(tmp_path):
     plan, candidate = _plan_for(tmp_path, "https://www.digikey.com/x", props={"MF": "RECOM Power"})
     assert _symbol_manufacturer(plan) == "RECOM"
