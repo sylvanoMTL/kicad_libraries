@@ -47,7 +47,7 @@ from ..kicad_files import (
     unit_library_text,
 )
 from ..models import Issue, Severity
-from ..sexpr import Edit, Node, apply_edits, parse, token_stream
+from ..sexpr import Edit, Node, apply_edits, parse, quote, token_stream
 from . import kicad_cli
 from . import package as _package
 from . import stems
@@ -457,6 +457,38 @@ def _same_footprint(planned: bytes, existing: Path, digest: str) -> bool:
     return token_stream(then.root) == token_stream(now.root)
 
 
+def _linking_symbols(layout: RepoLayout, link: str, *, skip: tuple[str, str]) -> list[str]:
+    """`<symbol> (<library>)` for every Custom/ symbol whose Footprint field is exactly link, except skip = (library, symbol) (D-19).
+
+    A bytes prefilter rejects every library that never mentions the quoted link; only the rest are parsed, under the
+    usual size and node caps. A library that cannot be read is skipped.
+    """
+    needle = quote(link).encode("utf-8")
+    cap = _package.MAX_KICAD_TEXT_BYTES
+    found: list[str] = []
+    try:
+        paths = sorted(p for p in layout.symbols_dir.iterdir() if p.name.casefold().endswith(".kicad_sym") and p.is_file())
+    except OSError:
+        return found
+    for path in paths:
+        try:
+            with open(path, "rb") as handle:
+                data = handle.read(cap + 1)
+            if len(data) > cap or needle not in data:
+                continue
+            loaded = parse_bytes(data, path.name, max_nodes=_package.MAX_KICAD_TEXT_NODES)
+        except (OSError, MemoryError):
+            continue
+        if isinstance(loaded, Issue):
+            continue
+        for ref in find_symbols(loaded.root):
+            prop = find_property(ref.node, "Footprint")
+            if prop is None or prop.value != link or (path.stem, ref.name) == skip:
+                continue
+            found.append(f"{ref.name} ({path.stem})")
+    return found
+
+
 def _suggest_footprint_rename(default: str, mpn: str, taken: Collection[str]) -> str:
     """<FP>_<MPN> for a footprint that clashes with a different one; the next free <FP>_<MPN>_<n> when that is taken (D-19)."""
     if not mpn:
@@ -505,6 +537,8 @@ class _FileSpec:
     make_op: Callable[[str, Path | None, str | None], FileOp]  # (name, existing file, its sha256) -> the write
     sanitise: Callable[[str], NameResult]
     suggest: Callable[[], str]
+    # The other parts that use the existing file, for the conflict text
+    linked_by: Callable[[], list[str]] | None = None
 
 
 @dataclass(frozen=True)
@@ -569,6 +603,9 @@ def _decide_file(spec: _FileSpec, key: str, resolution: Resolution | None) -> _D
         if hit != wanted
         else f"{spec.where} already holds a different {hit}"
     )
+    users = spec.linked_by() if spec.linked_by is not None else []
+    if users:
+        text += f"; it is linked by {len(users)} other {'part' if len(users) == 1 else 'parts'}: {_name_list(users)}"
     conflict = Conflict(key=key, kind=spec.kind, name=spec.default, existing=text, suggested_name=spec.suggest())
     if resolution is None:
         return _Decision(spec.default, conflict=conflict)
@@ -1017,6 +1054,16 @@ def build_plan(
             ))
         return fsutil.encode_source(apply_edits(vendor_fp.source.text, fp_edits), vendor_fp.source.bom), notes
 
+    linking: dict[str, list[str]] = {}
+
+    def linking_parts(name: str) -> list[str]:
+        """The other Custom/ parts whose Footprint field links name in the shared library, looked up once per name."""
+        if name not in linking:
+            linking[name] = _linking_symbols(
+                layout, f"{shared}:{name}", skip=(library, new_names.get(sym_item.name, sym_item.name))
+            )
+        return linking[name]
+
     def footprint_spec(index: int) -> _FileSpec:
         default = fp_names[index]
 
@@ -1041,6 +1088,7 @@ def build_plan(
             make_op=make_fp_op,
             sanitise=sanitize_name,
             suggest=lambda: _suggest_footprint_rename(default, final_mpn, [*fp_taken, *fp_names]),
+            linked_by=lambda: linking_parts(default),
         )
 
     fp_decisions = [
@@ -1059,6 +1107,15 @@ def build_plan(
                 "install.footprint_reused",
                 f"{decision.name} already in {stems.SHARED_FOOTPRINT_LIBRARY} is the same footprint; it is reused and not written",
             ))
+        chosen = decision.conflict.resolution if decision.conflict is not None else None
+        if chosen is not None and chosen.action == "overwrite":
+            users = linking_parts(decision.conflict.name)
+            if users:
+                issues.append(Issue(
+                    Severity.WARNING,
+                    "install.footprint_shared",
+                    f"Overwriting {decision.conflict.name} in {shared} also changes it for {_name_list(users)}",
+                ))
     if fp_decisions[0].kept and model_dec is not None:
         # The kept footprint does not link the incoming model, so copying it would leave a stray file (D-09)
         issues.append(Issue(
