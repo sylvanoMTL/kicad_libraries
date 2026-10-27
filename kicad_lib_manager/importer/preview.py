@@ -240,7 +240,9 @@ def _rewrites_section(plan: InstallPlan, candidate: ImportCandidate, options: In
         old_model = linked.model_paths[0] if linked is not None and linked.model_paths else ""
         rows.append(row("Model", old_model, f"{MODEL_DIR_VAR}/{plan.model_file}"))
     if plan.linked_footprint is not None:
-        rows.append(row("Footprint Filter", meta.fp_filters if meta else "", " ".join(plan.footprint_names)))
+        # An official footprint installs none, and the filter is its own name
+        filters = " ".join(plan.footprint_names) or plan.linked_footprint or ""
+        rows.append(row("Footprint Filter", meta.fp_filters if meta else "", filters))
     return PreviewSection("Path rewrites", tuple(rows))
 
 
@@ -305,13 +307,23 @@ def _field_changes_section(plan: InstallPlan) -> PreviewSection:
 
 
 def _unused_section(plan: InstallPlan) -> PreviewSection:
-    """D-14: the footprints the package holds that this part does not use; none is written."""
+    """D-14, D-17: the vendor footprints and 3D models the package holds that this part does not use; none is written."""
+    # With an official footprint no vendor footprint is installed at all; otherwise only the part's one footprint is
+    footprint_detail = (
+        "footprint, not installed: an official KiCad footprint is used"
+        if plan.footprint_target == "official"
+        else "footprint, not installed: one footprint per part"
+    )
     rows = [
-        PreviewRow(
-            text=name, detail="footprint, not installed: one footprint per part", tone="muted", kind="unused",
-        )
+        PreviewRow(text=name, detail=footprint_detail, tone="muted", kind="unused")
         for name in plan.unused_footprints
     ]
+    rows.extend(
+        PreviewRow(
+            text=name, detail="3D model, not installed: KiCad's own 3D model is used", tone="muted", kind="unused",
+        )
+        for name in plan.unused_models
+    )
     return PreviewSection("Not used", tuple(rows))
 
 

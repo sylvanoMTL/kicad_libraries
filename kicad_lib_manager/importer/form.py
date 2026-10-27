@@ -74,6 +74,9 @@ class FormValues:
     resolutions: Mapping[str, Resolution] = field(default_factory=dict)
     texts: Mapping[str, str] = field(default_factory=dict)
     related_stems: tuple[str, ...] = ()
+    # D-16: "shared" installs the vendor footprint, "official" links official_footprint (a KiCad Library:Footprint)
+    footprint_target: str = "shared"
+    official_footprint: str | None = None
 
 
 # A new library creates only its .kicad_sym: every part uses the shared footprint library (D-12, D-15)
@@ -96,7 +99,7 @@ class Reason:
     """One reason Install is off, and the control that fixes it.
 
     target is "plan" (no control), "library", "footprint_name", "mpn", "manufacturer", "datasheet", "description",
-    "footprints" (the footprint choice), "model" (the Add 3D model... button), "model_rejected" (the Remove button
+    "footprints" (the footprint choice), "official_footprint" (the official footprint picker), "model" (the Add 3D model... button), "model_rejected" (the Remove button
     of a rejected 3D model source), "conflict:{key}" or "rename:{key}".
     """
 
@@ -193,7 +196,7 @@ def _atomic_sentence(rule: str, text: str) -> str:
             return sentence
     label = _RULE_LABELS.get(rule, rule)
     if rule == "model_3d":
-        return f"{label}: {_plain(text).rstrip('.')}. Use Add 3D model..."
+        return f"{label}: {_plain(text).rstrip('.')}. Use Add 3D model... or an official KiCad footprint"
     return f"{label}: {_plain(text)}"
 
 
@@ -247,6 +250,8 @@ def _issue_target(issue: Issue) -> str:
             return "mpn"
     if code == "install.choice_required" and "footprints" in text:
         return "footprints"
+    if code.startswith("install.official_"):
+        return "official_footprint"
     return "plan"
 
 
@@ -288,6 +293,9 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
                 continue
             if issue.code.startswith(_ATOMIC_PREFIX):
                 reasons.append(atomic_reason(issue))
+            elif issue.code == "install.official_missing":
+                # A request, not a failure: it reads as the plain sentence and points at the picker
+                reasons.append(Reason(issue.text, "official_footprint"))
             else:
                 reasons.append(Reason(f"Error: {issue.text}", _issue_target(issue)))
     if status.model_error.strip():
@@ -398,6 +406,8 @@ def build_options(values: FormValues, defaults: FieldDefaults, linked_vendor: st
         resolutions=dict(values.resolutions),
         cleared=frozenset(cleared),
         related_stems=tuple(values.related_stems),
+        footprint_target=values.footprint_target,
+        official_footprint=values.official_footprint,
         **{name: values.texts[name] for name in TEXT_NAMES if name in values.texts},
         **texts,
     )

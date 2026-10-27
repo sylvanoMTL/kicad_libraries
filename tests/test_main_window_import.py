@@ -997,3 +997,21 @@ def test_hint_names_both_libraries_when_neither_is_in_the_tables(qtbot, make_win
     qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
 
     assert f"{LIB} and {SHARED_FP} are not in the library tables. Press Generate Tables to add them." in log_text(w)
+
+
+def test_tables_an_official_link_into_a_new_symbol_library_adds_only_the_symbol_entry(qtbot, make_window, tmp_path):
+    # The part is linked to KiCad's own Package_TO_SOT_SMD, so nothing of Custom/Footprints is written or listed (D-16)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo, shared_listed=False)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    plan = stub_plan(
+        repo, NEW_LIB, new_symbol_lib=True, new_footprint_lib=False, footprint_library="Package_TO_SOT_SMD", pretty=SHARED_FP
+    )
+    w._on_import_installed(install_result(), plan)
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert (repo / "sym-lib-table").read_bytes() == old_sym[:-2] + _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8") + b")\n"
+    assert (repo / "fp-lib-table").read_bytes() == old_fp
+    assert f"Added {NEW_LIB} to sym-lib-table" in log_text(w)

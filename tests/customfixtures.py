@@ -381,10 +381,13 @@ def _write_dup_footprint(footprints_dir: Path) -> None:
     (pretty / f"{ATOMIC_DUP_FOOTPRINT}.kicad_mod").write_bytes(vendor_footprint(ATOMIC_DUP_FOOTPRINT, models=(model,)))
 
 
+OFFICIAL_PADS = ("1", "2", "3", "4", "5")
+
+
 def write_fake_kicad(root: Path) -> tuple[Path, Path]:
     """Write a stand-in KiCad install under root/kicad and return (footprints dir, 3dmodels dir).
 
-    It holds one stock footprint, Package_TO_SOT_SMD:SOT-23-5, and the model that footprint links,
+    It holds one stock footprint, Package_TO_SOT_SMD:SOT-23-5 with its five pads, and the model that footprint links,
     laid out like the real share/kicad folders (3dmodels next to footprints).
     """
     footprints = root / "kicad" / "footprints"
@@ -394,7 +397,7 @@ def write_fake_kicad(root: Path) -> tuple[Path, Path]:
     pretty.mkdir(parents=True, exist_ok=True)
     shapes.mkdir(parents=True, exist_ok=True)
     link = f"${{KICAD10_3DMODEL_DIR}}/{OFFICIAL_MODEL}"
-    (pretty / f"{OFFICIAL_FOOTPRINT}.kicad_mod").write_bytes(vendor_footprint(OFFICIAL_FOOTPRINT, model=link))
+    (pretty / f"{OFFICIAL_FOOTPRINT}.kicad_mod").write_bytes(vendor_footprint(OFFICIAL_FOOTPRINT, pads=OFFICIAL_PADS, model=link))
     (shapes / f"{OFFICIAL_FOOTPRINT}.step").write_bytes(STEP_BYTES)
     return footprints, models
 
