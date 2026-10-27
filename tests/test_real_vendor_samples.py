@@ -14,7 +14,14 @@ from pathlib import Path
 
 import pytest
 from gitfixtures import GIT, requires_git
-from zipfixtures import CURRENT_CUSTOM_FOOTPRINT_LIBS, CURRENT_CUSTOM_SYMBOL_LIBS, write_custom_layout
+from zipfixtures import (
+    CURRENT_ATOMIC_FOOTPRINT_LIBS,
+    CURRENT_ATOMIC_SYMBOL_LIBS,
+    CURRENT_CUSTOM_FOOTPRINT_LIBS,
+    CURRENT_CUSTOM_SYMBOL_LIBS,
+    footprint_library_for,
+    write_custom_layout,
+)
 
 from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.adapters.base import attach_models
@@ -34,6 +41,9 @@ SAMPLES = REPO_ROOT / "downloaded_examples"
 REAL_SNAPEDA = SAMPLES / "USB4145-03-0170-C_REVA2.zip"
 REAL_SAMACSYS = SAMPLES / "LIB_RS3-1212S_H3.zip"
 REAL_SNAPEDA_MODEL = SAMPLES / "194150990-659-usb4145-03-0170-c.zip"
+# Install targets, both entries of CURRENT_ATOMIC_SYMBOL_LIBS (D-08); the suggestion tests below stay on the v1 names
+SNAPEDA_LIBRARY = "Atomic_Connector"
+SAMACSYS_LIBRARY = "Atomic_Converter_DCDC_Isolated"
 
 _SNAPEDA_SKIP = "downloaded_examples/USB4145-03-0170-C_REVA2.zip not present (licence-restricted SnapEDA sample, kept local)"
 requires_snapeda = pytest.mark.skipif(not REAL_SNAPEDA.exists(), reason=_SNAPEDA_SKIP)
@@ -170,7 +180,7 @@ def test_real_samacsys_suggestion(staging_root):
 @contextmanager
 def _installed(zip_path, library, tmp_path, tools=NO_CLI):
     """Install a real zip into a synthetic Custom/ built under tmp_path; yield (layout, plan, result)."""
-    write_custom_layout(tmp_path / "repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    write_custom_layout(tmp_path / "repo", CURRENT_ATOMIC_SYMBOL_LIBS, CURRENT_ATOMIC_FOOTPRINT_LIBS)
     layout = RepoLayout.for_repo(tmp_path / "repo")
     with open_package(zip_path, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
@@ -194,12 +204,12 @@ def _errors(issues):
 
 @requires_snapeda
 def test_real_snapeda_installs(staging_root, tmp_path):
-    library = "Connector_USB_GCT"
+    library = SNAPEDA_LIBRARY
     with _installed(REAL_SNAPEDA, library, tmp_path) as (layout, plan, result):
         assert result.ok, [i.text for i in result.issues]
         issues = [*plan.issues, *result.issues]
         values = _symbol_values(layout, library, "USB4145-03-0170-C_REVA2")
-    assert values["Footprint"] == "Connector_USB_GCT:GCT_USB4145-03-0170-C_REVA2"
+    assert values["Footprint"] == f"{footprint_library_for(library)}:GCT_USB4145-03-0170-C_REVA2"
     assert values["Value"] == "USB4145-03-0170-C_REVA2"
     assert values["Manufacturer"] == "Global Connector Technology"
     assert values["MPN"] == "USB4145-03-0170-C"
@@ -238,8 +248,8 @@ def test_real_snapeda_model_zip_opens(staging_root):
 @requires_snapeda
 @requires_snapeda_model
 def test_real_snapeda_installs_with_separate_model(staging_root, tmp_path):
-    library = "Connector_USB_GCT"
-    write_custom_layout(tmp_path / "repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    library = SNAPEDA_LIBRARY
+    write_custom_layout(tmp_path / "repo", CURRENT_ATOMIC_SYMBOL_LIBS, CURRENT_ATOMIC_FOOTPRINT_LIBS)
     layout = RepoLayout.for_repo(tmp_path / "repo")
     # Both packages stay open until apply_plan has returned: the plan reads the staged model from the second one.
     with (
@@ -256,7 +266,7 @@ def test_real_snapeda_installs_with_separate_model(staging_root, tmp_path):
         assert result.ok, [i.text for i in result.issues]
         issues = [*plan.issues, *result.issues]
         values = _symbol_values(layout, library, "USB4145-03-0170-C_REVA2")
-        installed = layout.footprints_dir / f"{library}.pretty" / "GCT_USB4145-03-0170-C_REVA2.kicad_mod"
+        installed = layout.footprints_dir / f"{footprint_library_for(library)}.pretty" / "GCT_USB4145-03-0170-C_REVA2.kicad_mod"
         footprint = load(installed)
         model_file = layout.models_dir / "USB4145-03-0170-C.stp"
         model_size = model_file.stat().st_size
@@ -269,21 +279,21 @@ def test_real_snapeda_installs_with_separate_model(staging_root, tmp_path):
     assert [m.path for m in find_models(footprint_name(footprint.root).node)] == [
         f"{MODEL_DIR_VAR}/USB4145-03-0170-C.stp"
     ]
-    assert values["Footprint"] == "Connector_USB_GCT:GCT_USB4145-03-0170-C_REVA2"
+    assert values["Footprint"] == f"{footprint_library_for(library)}:GCT_USB4145-03-0170-C_REVA2"
     assert not _errors(issues)
 
 
 @requires_samacsys
 def test_real_samacsys_installs(staging_root, tmp_path):
-    library = "PowerSupply_DCDC_RECOM"
+    library = SAMACSYS_LIBRARY
     with _installed(REAL_SAMACSYS, library, tmp_path) as (layout, plan, result):
         assert result.ok, [i.text for i in result.issues]
         issues = [*plan.issues, *result.issues]
         values = _symbol_values(layout, library, "RS3-1212S_H3")
-        footprint = load(layout.footprints_dir / f"{library}.pretty" / "RS3.kicad_mod")
+        footprint = load(layout.footprints_dir / f"{footprint_library_for(library)}.pretty" / "RS3.kicad_mod")
         assert (layout.models_dir / "RS3-1212S_H3.stp").is_file()
     assert [m.path for m in find_models(footprint_name(footprint.root).node)] == [f"{MODEL_DIR_VAR}/RS3-1212S_H3.stp"]
-    assert values["Footprint"] == f"{library}:RS3"
+    assert values["Footprint"] == f"{footprint_library_for(library)}:RS3"
     assert values["Manufacturer"] == "RECOM Power"
     assert values["MPN"] == "RS3-1212S/H3"
     assert "Mouser Part Number" in values
@@ -297,9 +307,9 @@ def test_real_samacsys_installs(staging_root, tmp_path):
     ("zip_path", "library", "footprint"),
     [
         pytest.param(
-            REAL_SNAPEDA, "Connector_USB_GCT", "GCT_USB4145-03-0170-C_REVA2", id="snapeda", marks=requires_snapeda
+            REAL_SNAPEDA, SNAPEDA_LIBRARY, "GCT_USB4145-03-0170-C_REVA2", id="snapeda", marks=requires_snapeda
         ),
-        pytest.param(REAL_SAMACSYS, "PowerSupply_DCDC_RECOM", "RS3", id="samacsys", marks=requires_samacsys),
+        pytest.param(REAL_SAMACSYS, SAMACSYS_LIBRARY, "RS3", id="samacsys", marks=requires_samacsys),
     ],
 )
 def test_real_vendor_installs_load_in_kicad(
@@ -307,7 +317,8 @@ def test_real_vendor_installs_load_in_kicad(
 ):
     with _installed(zip_path, library, tmp_path, tools=real_tools) as (layout, _, result):
         assert result.ok, [i.text for i in result.issues]
-        fp_bytes = (layout.footprints_dir / f"{library}.pretty" / f"{footprint}.kicad_mod").read_bytes()
+        fp_path = layout.footprints_dir / f"{footprint_library_for(library)}.pretty" / f"{footprint}.kicad_mod"
+        fp_bytes = fp_path.read_bytes()
         symbol_lib = (layout.symbols_dir / f"{library}.kicad_sym").read_bytes()
         issues = kicad_cli.load_gate(
             kicad_cli_path, library=library, symbol_lib=symbol_lib, footprints=[(footprint, fp_bytes)]

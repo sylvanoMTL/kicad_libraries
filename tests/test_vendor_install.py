@@ -26,7 +26,14 @@ from vendorfixtures import (
     samacsys_zip,
     snapeda_zip,
 )
-from zipfixtures import CURRENT_CUSTOM_FOOTPRINT_LIBS, CURRENT_CUSTOM_SYMBOL_LIBS, write_custom_layout
+from zipfixtures import (
+    CURRENT_ATOMIC_FOOTPRINT_LIBS,
+    CURRENT_ATOMIC_SYMBOL_LIBS,
+    CURRENT_CUSTOM_FOOTPRINT_LIBS,
+    CURRENT_CUSTOM_SYMBOL_LIBS,
+    footprint_library_for,
+    write_custom_layout,
+)
 
 from kicad_lib_manager import fsutil
 from kicad_lib_manager.importer import kicad_cli
@@ -56,12 +63,15 @@ from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.sexpr import apply_edits
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-LIBRARY = "Connector_USB_GCT"
+# Install targets (D-08): the SnapEDA USB connector, the UL battery part and the SamacSys converter
+LIBRARY = "Atomic_Connector"
+UL_LIBRARY = "Atomic_Battery_Management"
+SAMACSYS_LIBRARY = "Atomic_Converter_DCDC_Isolated"
 
 
 def _snapeda_layout(tmp_path):
-    """A synthetic Custom/ holding the current library names, built under tmp_path only (D-03)."""
-    write_custom_layout(tmp_path / "repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    """A synthetic Custom/ holding the Atomic_ install targets, built under tmp_path only (D-03)."""
+    write_custom_layout(tmp_path / "repo", CURRENT_ATOMIC_SYMBOL_LIBS, CURRENT_ATOMIC_FOOTPRINT_LIBS)
     return RepoLayout.for_repo(tmp_path / "repo")
 
 
@@ -76,7 +86,7 @@ def _open_snapeda(tmp_path, **members_kwargs):
 
 
 def _plan_snapeda(candidate, layout, **options):
-    """Plan the candidate into Connector_USB_GCT with no external tools (ToolContext())."""
+    """Plan the candidate into the Atomic_Connector library with no external tools (ToolContext())."""
     chosen = InstallOptions(library=LIBRARY, **options)
     return build_plan(candidate, chosen, layout, ToolContext()), chosen
 
@@ -107,7 +117,7 @@ def test_tracer_snapeda_end_to_end(tmp_path):
         assert sections[0].name == "Files"
 
         symbol = _symbol_in(_op(plan, "symbol_lib").data)
-        assert find_property(symbol.node, "Footprint").value == f"{LIBRARY}:{SNAPEDA_FOOTPRINT}"
+        assert find_property(symbol.node, "Footprint").value == f"{footprint_library_for(LIBRARY)}:{SNAPEDA_FOOTPRINT}"
         assert find_property(symbol.node, "Manufacturer").value == SNAPEDA_MANUFACTURER
         assert find_property(symbol.node, "MPN").value == SNAPEDA_MPN
         assert find_property(symbol.node, "SnapEDA_Link") is not None
@@ -119,7 +129,9 @@ def test_tracer_snapeda_end_to_end(tmp_path):
 
         installed = layout.symbols_dir / f"{LIBRARY}.kicad_sym"
         assert installed.read_bytes() == _op(plan, "symbol_lib").data
-        assert (layout.footprints_dir / f"{LIBRARY}.pretty" / f"{SNAPEDA_FOOTPRINT}.kicad_mod").is_file()
+        assert (
+            layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty" / f"{SNAPEDA_FOOTPRINT}.kicad_mod"
+        ).is_file()
 
         message = default_message(build_commit_plan(result, plan, vendor_label=plan.vendor))
         assert "Import-Vendor: SnapEDA" in message.splitlines()
@@ -171,9 +183,9 @@ def test_generic_rules_for_other_vendors(ul_package, tmp_path):
     assert GENERIC_RULES.manufacturer_aliases == ("Manufacturer", "MF", "MANUFACTURER", "Manufacturer_Name")
     assert GENERIC_RULES.mpn_aliases == ("MPN", "MP", "Manufacturer_Part_Number", "MANUFACTURER_PART_NUMBER")
 
-    write_custom_layout(tmp_path / "repo", ["IC_Battery_Charger_TI"], ["IC_Battery_Charger_TI"])
+    write_custom_layout(tmp_path / "repo", [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
     layout = RepoLayout.for_repo(tmp_path / "repo")
-    plan = build_plan(candidate, InstallOptions(library="IC_Battery_Charger_TI"), layout, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), layout, ToolContext())
     assert not plan.blocked, [i.text for i in plan.issues]
     assert plan.field_changes == ()
 
@@ -232,8 +244,8 @@ def test_field_changes_section(ul_package, tmp_path):
         assert all(row.kind == "rewrite" and row.tone == "default" for row in section.rows)
 
     _, ul_candidate = ul_package
-    write_custom_layout(tmp_path / "ul", ["IC_Battery_Charger_TI"], ["IC_Battery_Charger_TI"])
-    ul_options = InstallOptions(library="IC_Battery_Charger_TI")
+    write_custom_layout(tmp_path / "ul", [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
+    ul_options = InstallOptions(library=UL_LIBRARY)
     ul_plan = build_plan(ul_candidate, ul_options, RepoLayout.for_repo(tmp_path / "ul"), ToolContext())
     assert _field_rows(preview_sections(ul_plan, ul_candidate, ul_options)) is None
 
@@ -299,7 +311,7 @@ CASES = {
     "samacsys": Case(
         "SamacSys",
         lambda tmp: samacsys_zip(tmp / "src" / SAMACSYS_ZIP_NAME),
-        "PowerSupply_DCDC_RECOM",
+        SAMACSYS_LIBRARY,
         SAMACSYS_PART,
         SAMACSYS_FOOTPRINT,
         "PSU7-0505S_Q1.stp",
@@ -335,7 +347,7 @@ def _installed_symbol(layout, case):
 
 
 def _installed_footprint(layout, case):
-    path = layout.footprints_dir / f"{case.library}.pretty" / f"{case.footprint}.kicad_mod"
+    path = layout.footprints_dir / f"{footprint_library_for(case.library)}.pretty" / f"{case.footprint}.kicad_mod"
     return path, footprint_name(load(path).root)
 
 
@@ -352,7 +364,7 @@ def test_vendor_install_links_like_ul(case, tmp_path):
         assert "verify.pin_pad_mismatch" not in [i.code for i in issues]
 
         symbol = _installed_symbol(layout, case)
-        assert find_property(symbol.node, "Footprint").value == f"{case.library}:{case.footprint}"
+        assert find_property(symbol.node, "Footprint").value == f"{footprint_library_for(case.library)}:{case.footprint}"
 
         _, footprint = _installed_footprint(layout, case)
         models = [m.path for m in find_models(footprint.node)]
@@ -461,13 +473,15 @@ def test_vendor_commit_trailer(vendor, tmp_path):
 
 
 def test_vendor_suggestion_snapeda(tmp_path):
+    # The suggestion stays on the v1 names of the live tree until plan 10-15, so this scans the v1 mirror
+    v1_usb = next(name for name in CURRENT_CUSTOM_SYMBOL_LIBS if name.startswith("Connector_USB"))
     existing = [
         ExistingLibrary(name, name in CURRENT_CUSTOM_SYMBOL_LIBS, name in CURRENT_CUSTOM_FOOTPRINT_LIBS)
         for name in CURRENT_CUSTOM_SYMBOL_LIBS
     ]
     with _open_case(CASES["snapeda"], tmp_path) as (_, candidate):
         suggestion = suggest_library(candidate.symbols[0].meta, existing)
-    assert suggestion.name == LIBRARY
+    assert suggestion.name == v1_usb
 
 
 def _load_issues(exe, layout, case):
