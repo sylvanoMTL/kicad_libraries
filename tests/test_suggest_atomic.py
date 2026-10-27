@@ -201,6 +201,20 @@ def test_existing_libraries_keeps_the_names_that_pass_the_rule_sorted():
     assert existing_libraries(names) == ["Atomic_Battery_Management", "Atomic_Sensor_Motion"]
 
 
+@pytest.mark.parametrize("meta", _ODD_METAS, ids=range(len(_ODD_METAS)))
+def test_the_wording_never_names_a_raw_field(meta, tmp_path):
+    from kicad_lib_manager.importer.suggest import NO_STOCK_TEXT
+    from kicad_lib_manager.widgets import import_dialog
+
+    symbols_dir, _ = write_stock_sample(tmp_path)
+    texts = [NO_STOCK_TEXT, import_dialog._LIBRARY_PLACEHOLDER]
+    for stock in (None, stock_index(symbols_dir)):
+        suggestion = suggest_library(meta, stock=stock)
+        texts += [suggestion_text(suggestion), suggestion.reason, *(i.text for i in suggestion.issues)]
+    for text in texts:
+        assert "ki_" not in text.casefold()
+
+
 def test_suggestion_text_without_alternatives_ends_with_a_period():
     suggestion = LibrarySuggestion("Atomic_Diode", "own", "Suggested from 2 similar parts in your Atomic_Diode", (), (), ())
 

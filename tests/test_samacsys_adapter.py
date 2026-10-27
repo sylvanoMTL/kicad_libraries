@@ -34,7 +34,7 @@ from kicad_lib_manager.importer.adapters.base import PartHints
 from kicad_lib_manager.importer.adapters.samacsys import SAMACSYS_RULES, SamacSysAdapter, parse_part_info, part_hints
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.form import field_defaults
-from kicad_lib_manager.importer.layout import RepoLayout, list_existing_libraries
+from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import Package, open_package
 from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
@@ -222,15 +222,14 @@ def _layout(root, symbol_libs=CURRENT_CUSTOM_SYMBOL_LIBS, footprint_libs=CURRENT
 
 
 def test_samacsys_suggestion(tmp_path):
-    existing = list_existing_libraries(_layout(tmp_path))
     with _open_full(tmp_path) as package:
         candidate, _ = detect_candidate(package)
     assert candidate is not None
-    suggestion = suggest_library(candidate.symbols[0].meta, existing)
-    assert suggestion.name == "PowerSupply_SubCategory_RECOM"
-    assert suggestion.placeholders == ("SubCategory",)
-    assert suggestion.type.source == "part_info"
-    assert suggestion.manufacturer.token == "RECOM"
+    suggestion = suggest_library(candidate.symbols[0].meta, stock=None)
+    # The vendor category and the description place the part; the manufacturer never enters the name
+    assert suggestion.name == "Atomic_Converter_DCDC_Isolated"
+    assert suggestion.source == "category"
+    assert suggestion.reason == "Suggested from the vendor category Power Supply and the description"
 
 
 def test_part_info_fills_missing_fields(tmp_path):

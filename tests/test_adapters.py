@@ -15,7 +15,7 @@ from kicad_lib_manager.importer.adapters.snapeda import SnapEDAAdapter
 from kicad_lib_manager.importer.adapters.ultralibrarian import UltraLibrarianAdapter
 from kicad_lib_manager.importer.detect import ADAPTERS, detect_candidate
 from kicad_lib_manager.importer.package import Package, PackageFile, open_package
-from kicad_lib_manager.importer.suggest import TokenChoice, placeholder_tokens, suggest_library
+from kicad_lib_manager.importer.suggest import suggest_library
 from kicad_lib_manager.models import Severity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -142,26 +142,13 @@ def test_ultra_suggestion():
     with open_package(UL_ZIP, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
         meta = candidate.symbols[0].meta
-    suggestion = suggest_library(meta)
-    assert suggestion.name == "IC_SubCategory_TI"
-    assert suggestion.confidence == "low"
-    assert suggestion.placeholders == ("SubCategory",)
-    assert suggestion.type == TokenChoice("IC", "reference", True)
-    assert suggestion.manufacturer == TokenChoice("TI", "host_table", True)
-    assert suggestion.subcategory.source == "placeholder"
+    suggestion = suggest_library(meta, stock=None)
+    # No sibling in KiCad and no category: the owner picks the library (D-05)
+    assert suggestion.name == ""
+    assert suggestion.source == "ask"
+    assert suggestion.reason == ""
     assert suggestion.alternatives == ()
-    assert suggestion.matches_existing is False
-    codes = {(i.severity, i.code) for i in suggestion.issues}
-    assert (Severity.WARNING, "naming.low_confidence") in codes
-    assert (Severity.WARNING, "naming.placeholder") in codes
-
-
-def test_ultra_placeholder_tokens():
-    assert placeholder_tokens("IC_SubCategory_TI") == ["SubCategory"]
-    assert placeholder_tokens("Type_SubCategory_Manufacturer") == ["Type", "SubCategory", "Manufacturer"]
-    assert placeholder_tokens("Transistor_MOSFET_TI") == []
-    assert placeholder_tokens("IC_subcategory_TI") == ["SubCategory"]
-    assert placeholder_tokens("Connector_USB_TypeC_GCT") == []
+    assert [(i.severity, i.code) for i in suggestion.issues] == [(Severity.INFO, "naming.no_stock_libraries")]
 
 
 # -- plan 03-04 task 1: content checks, versions, all items (D-13, D-18) ----------
