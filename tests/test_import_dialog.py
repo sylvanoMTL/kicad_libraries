@@ -1607,9 +1607,11 @@ import re  # noqa: E402
 
 from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 
+from kicad_lib_manager.importer.stems import name_verdict  # noqa: E402
 from kicad_lib_manager.widgets.theme import AMBER_TINT, LINK, SP_SM  # noqa: E402
 
-PLACEHOLDER_REASON = "Library name still contains a placeholder (SubCategory). Pick an existing library or type a real name."
+# The UL sample's suggestion is a v1 name until plan 10-15 gives it the Atomic_ scheme: the form refuses it with the name rule's reason
+V1_NAME_REASON = name_verdict("IC_SubCategory_TI").reason
 
 
 def strip_links(dialog: ImportDialog) -> dict[str, str]:
@@ -1632,13 +1634,13 @@ def with_issues(*issues):
     return build
 
 
-def test_placeholder_blocks_install(qtbot, make_item_dialog):
-    """Phase 3 D-04: the UL sample opens blocked on its placeholder library name until a real one is picked."""
+def test_refused_suggestion_blocks_install(qtbot, make_item_dialog):
+    """D-08: the UL sample opens blocked on its v1 library name until an Atomic_ name is picked."""
     dialog = make_item_dialog(UL_ZIP, show=True)
     wait_current(qtbot, dialog)
     assert "SubCategory" in dialog._library_combo.currentText()
     assert not dialog._install_btn.isEnabled()
-    assert PLACEHOLDER_REASON in strip_links(dialog)
+    assert V1_NAME_REASON in strip_links(dialog)
     assert dialog._strip.text().startswith("⚠ Install is blocked: ")
     assert frame_blocked(dialog, "library")
     # the planner's own refusal is not repeated as a second reason
@@ -1652,21 +1654,24 @@ def test_placeholder_blocks_install(qtbot, make_item_dialog):
 
 
 def test_empty_library_name_blocks(qtbot, make_item_dialog):
-    """UI E6/empty: an empty name shows the amber frame and 'Library name is empty'."""
+    """UI E6/empty: an empty name shows the amber frame and 'Pick or type a library name'."""
     dialog = ul_dialog(make_item_dialog, qtbot)
     type_text(qtbot, dialog._library_combo.lineEdit(), "")
     assert frame_blocked(dialog, "library")  # from the first keystroke, while the rebuild waits
     wait_current(qtbot, dialog)
-    assert "Library name is empty" in strip_links(dialog)
+    assert "Pick or type a library name" in strip_links(dialog)
     assert not any(text.startswith("Error:") for text in strip_links(dialog))
     assert frame_blocked(dialog, "library")
     assert not dialog._install_btn.isEnabled()
 
 
-def test_case_twin_and_invalid_name_show_the_plan_issue(qtbot, make_item_dialog):
-    """UI E6/error: a case twin and a name sanitize_name changes show the plan's Issue and the amber frame."""
+def test_case_twin_and_invalid_name_show_the_plan_issue(qtbot, make_item_dialog, item_layout):
+    """UI E6/error: an allowed name with a case twin on disk shows the plan's Issue; a refused name shows the name rule's reason."""
+    from zipfixtures import symbol_lib
+
+    (item_layout.symbols_dir / "atomic_audio.kicad_sym").write_bytes(symbol_lib(("atomic_audio",)))
     dialog = ul_dialog(make_item_dialog, qtbot)
-    type_text(qtbot, dialog._library_combo.lineEdit(), "ic_battery_charger_ti")
+    type_text(qtbot, dialog._library_combo.lineEdit(), "Atomic_Audio")
     wait_current(qtbot, dialog)
     codes = [i.code for i in dialog._plan.issues]
     assert "install.library_case_clash" in codes
@@ -1681,7 +1686,10 @@ def test_case_twin_and_invalid_name_show_the_plan_issue(qtbot, make_item_dialog)
     type_text(qtbot, dialog._library_combo.lineEdit(), "IC New TI")
     wait_current(qtbot, dialog)
     assert "install.invalid_library" in [i.code for i in dialog._plan.issues]
-    assert any(text.startswith("Error:") and "not a valid library name" in text for text in strip_links(dialog))
+    links = strip_links(dialog)
+    assert name_verdict("IC New TI").reason in links
+    # the planner's own refusal says the same thing and is not listed a second time
+    assert not any(text.startswith("Error:") for text in links)
     assert frame_blocked(dialog, "library")
 
 
@@ -1734,7 +1742,7 @@ def test_strip_link_focuses_library_and_footprint_list(qtbot, make_item_dialog, 
     set_library(dialog, "IC_SubCategory_TI")
     wait_current(qtbot, dialog)
     dialog._fp_name_edit.setFocus()
-    dialog._strip.linkActivated.emit(strip_links(dialog)[PLACEHOLDER_REASON])
+    dialog._strip.linkActivated.emit(strip_links(dialog)[V1_NAME_REASON])
     assert dialog.focusWidget() is dialog._library_combo  # its line edit takes the cursor through the focus proxy
 
 
@@ -3690,7 +3698,7 @@ def test_add_model_tracer_snapeda_end_to_end(qtbot, make_item_dialog, item_layou
     from kicad_lib_manager.importer.plan import MODEL_DIR_VAR
     from kicad_lib_manager.kicad_files import find_models, footprint_name, load
 
-    dialog = make_item_dialog(snapeda_zip(tmp_path / "src" / f"{SNAPEDA_SYMBOL}.zip"), show=True)
+    dialog = make_item_dialog(snapeda_zip(tmp_path / "src" / f"{SNAPEDA_SYMBOL}.zip"), show=True, suggest_library=_good_suggestion)
     wait_current(qtbot, dialog)
     assert dialog._model_label.full_text() == "No 3D model in this package"
     assert dialog._add_model_btn.text() == "Add 3D model..."
@@ -4359,7 +4367,7 @@ def test_preview_columns_fit_at_900_and_1400(qtbot, make_item_dialog, tmp_path):
 
     from kicad_lib_manager.widgets.preview_tree import MIN_COLUMN_WIDTH
 
-    dialog = make_item_dialog(snapeda_zip(tmp_path / "src" / f"{SNAPEDA_SYMBOL}.zip"), show=True)
+    dialog = make_item_dialog(snapeda_zip(tmp_path / "src" / f"{SNAPEDA_SYMBOL}.zip"), show=True, suggest_library=_good_suggestion)
     wait_current(qtbot, dialog)
     assert "Field changes" in [s.name for s in dialog._preview.sections]
     tree = dialog._preview
