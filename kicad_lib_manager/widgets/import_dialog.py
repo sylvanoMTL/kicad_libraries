@@ -24,7 +24,7 @@ from PySide6.QtGui import (
     QCloseEvent, QColor, QFont, QKeyEvent, QKeySequence, QPalette, QResizeEvent, QShortcut, QShowEvent,
 )
 from PySide6.QtWidgets import (
-    QAbstractItemView, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
+    QAbstractItemView, QComboBox, QCompleter, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListView, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar, QPushButton,
     QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout, QWidget,
 )
@@ -42,14 +42,16 @@ from ..importer.downloads import age_text, newest_zip
 from ..importer.form import (
     FIELD_LABELS, FIELD_NAMES, UPDATING_REASON, FieldDefaults, FormStatus, FormValues, Reason,
     blocking_reasons, build_options, carry_resolutions, field_defaults, kind_label, library_badge,
-    library_tokens, noop_text, ready_text,
+    noop_text, ready_text,
 )
-from ..importer.layout import RepoLayout, list_existing_libraries
+from ..importer.layout import RepoLayout, list_symbol_libs
 from ..importer.package import Package, open_model_source, open_package
 from ..importer.plan import Conflict, InstallOptions, InstallPlan, InstallResult, Resolution, ToolContext
 from ..importer.planner import build_plan, detect_tools
 from ..importer.preview import file_counts, preview_sections
-from ..importer.suggest import LibrarySuggestion, suggest_library
+from ..importer.siblings import own_index, stock_index
+from ..importer.stems import ATOMIC_PREFIX, allowed_stems, name_verdict
+from ..importer.suggest import LibrarySuggestion, existing_libraries, suggest_library, suggestion_text
 from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
@@ -74,9 +76,8 @@ ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button wit
 REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
 _BLANK_FIELD_HINT = "Empty - the field will be written blank"
 _NO_FOOTPRINT_FIELD = "(none)"
-_TOKEN_HINT = "Amber parts are guesses or placeholders. Pick an existing library or type a real name."
+_LIBRARY_PLACEHOLDER = "Pick a library, or type Atomic_ and a KiCad library name"
 _BUSY_DELAY_MS = 150  # the busy strip shows only if a rebuild takes longer than this (no flicker)
-_ZWSP = "​"  # lets a long library name wrap after each "_"
 _FAILURE_LINES = 6  # reason lines shown in the failure banner before its body scrolls
 _FAILED_RESTORED = "Install failed. Every file was restored."
 _FAILED_NOT_RESTORED = "Install failed and some files could not be restored."
@@ -214,7 +215,9 @@ class ImportCore:
     build_plan: Callable = build_plan
     apply_plan: Callable = apply_plan
     kicad_running: Callable = kicad_running
-    list_existing_libraries: Callable = list_existing_libraries
+    list_symbol_libs: Callable = list_symbol_libs
+    own_index: Callable = own_index
+    stock_index: Callable = stock_index
     suggest_library: Callable = suggest_library
     downloads_dir: Callable = default_downloads_dir
     op_content: Callable = op_content
@@ -292,6 +295,7 @@ class ImportDialog(QDialog):
         self._tools: ToolContext | None = None
         self._suggestion: LibrarySuggestion | None = None
         self._existing: tuple = ()
+        self._note_for = ""  # the corrected name the spelling note is about; "" when the note is hidden
 
         # Rebuild coordinator (PREV-07): serialised builds, the latest request wins. A one-off build
         # (the incoming side of a conflict, D-08) shares the queue: never two build_plan calls at once.
@@ -793,23 +797,31 @@ class ImportDialog(QDialog):
         return row
 
     def _build_library_section(self, left_lay: QVBoxLayout):
-        """The editable library combo with its existing/new badge, the token line and the amber hint (D-11)."""
+        """The editable library combo with its existing/new badge and the spelling note (D-05, D-11, D-12)."""
         combo = QComboBox()
         combo.setEditable(True)
         combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        # The typed name is used exactly as typed: inline completion would change its letter case,
-        # and a case twin of an existing library has to stay visible as such
-        combo.setCompleter(None)
+        # Typing filters the list by substring, ignoring case. The popup only offers names; the typed text
+        # stays as typed until editing finishes, when a wrong letter case is corrected (D-11)
+        completer = QCompleter(combo.model(), combo)
+        completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
+        combo.setCompleter(completer)
         combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         combo.setMinimumContentsLength(12)
         combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         combo.setAccessibleName("Target library")
         # Picking from the list rebuilds at once; typing waits for the quiet period (D-06). Not
-        # currentTextChanged for the rebuild: that fires on every keystroke of a typed name
+        # currentTextChanged for the rebuild: that fires on every keystroke of a typed name. A pick from
+        # the completer popup is connected as well, because the combo may not report it (RESEARCH A10)
         combo.textActivated.connect(self._on_library_activated)
+        completer.activated[str].connect(self._on_library_activated)
         line = combo.lineEdit()
+        line.setPlaceholderText(_LIBRARY_PLACEHOLDER)
         line.textEdited.connect(self._on_library_text_edited)
         line.textChanged.connect(self._refresh_library_labels)
+        line.editingFinished.connect(self._on_library_editing_finished)
         self._library_combo = combo
 
         row = QHBoxLayout()
@@ -825,23 +837,14 @@ class ImportDialog(QDialog):
         row.addWidget(self._library_badge)
         left_lay.addLayout(row)
 
-        # Rich text, but only the spans this dialog writes (every token is html.escape()d); no links
-        self._token_line = QLabel()
-        self._token_line.setTextFormat(Qt.TextFormat.RichText)
-        self._token_line.setTextInteractionFlags(Qt.TextInteractionFlag.NoTextInteraction)
-        self._token_line.setFont(QFont(MONO_FAMILY, MONO_PT))
-        self._token_line.setWordWrap(True)
-        # Ignored: a long name wraps at its underscores instead of widening the pane
-        self._token_line.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        self._token_line.setAccessibleName("Library name parts")
-        self._token_line.hide()
-        left_lay.addWidget(self._token_line)
-        self._token_hint = QLabel(_TOKEN_HINT)
-        self._token_hint.setTextFormat(Qt.TextFormat.PlainText)
-        self._token_hint.setWordWrap(True)
-        self._token_hint.setStyleSheet(f"color: {MUTED};")
-        self._token_hint.hide()
-        left_lay.addWidget(self._token_hint)
+        # Plain text under the field: "Spelling corrected to <name>" (D-11)
+        self._library_note = QLabel()
+        self._library_note.setTextFormat(Qt.TextFormat.PlainText)
+        self._library_note.setWordWrap(True)
+        self._library_note.setStyleSheet(f"color: {MUTED};")
+        self._library_note.setAccessibleName("Library note")
+        self._library_note.hide()
+        left_lay.addWidget(self._library_note)
 
     def _build_footprint_section(self, left_lay: QVBoxLayout):
         """The footprint name (D-14, PREV-02): pre-filled with the linked footprint's sanitised vendor name."""
@@ -1044,9 +1047,17 @@ class ImportDialog(QDialog):
                 existing: tuple = ()
                 if candidate is not None:
                     tools = core.detect_tools(fp_dir)
-                    existing = tuple(core.list_existing_libraries(layout))
+                    allowed = tools.allowed_stems or None
+                    existing = tuple(existing_libraries(core.list_symbol_libs(layout), allowed))
                     if candidate.symbols:
-                        suggestion = core.suggest_library(candidate.symbols[0].meta, existing)
+                        # The sibling indexes are built here, never on the GUI thread (T-10-21)
+                        own = core.own_index(layout.symbols_dir, allowed)
+                        stock = None
+                        if tools.kicad_symbols_dir is not None:
+                            stock = core.stock_index(tools.kicad_symbols_dir, progress)
+                        suggestion = core.suggest_library(
+                            candidate.symbols[0].meta, own=own, stock=stock, allowed=allowed
+                        )
             except BaseException:
                 package.close()
                 raise
@@ -1114,6 +1125,8 @@ class ImportDialog(QDialog):
         self._suggestion = outcome.suggestion
         self._existing = outcome.existing
         self.setWindowTitle(f"Import Part - {package.source.name}")
+        if outcome.suggestion is not None and outcome.suggestion.issues:
+            self.issues_logged.emit(list(outcome.suggestion.issues))
         self._package_label.setText(f"Package: {package.source.name}")
         self._vendor_label.setText(vendor_label(candidate.vendor))
         self._fill_library_combo()
@@ -1149,29 +1162,36 @@ class ImportDialog(QDialog):
         self._stack.setCurrentWidget(self._start_page)
         self._browse_btn.setFocus()
 
+    def _allowed(self) -> frozenset[str] | None:
+        """The stems the open tools allow, or None for the built-in snapshot."""
+        return (self._tools.allowed_stems or None) if self._tools is not None else None
+
     def _fill_library_combo(self):
-        """Pre-fill with the suggestion; the list holds the ranked alternatives, a separator, then every library (D-11)."""
+        """Pre-fill with the suggestion; the list holds the owner's Atomic_ libraries, a divider, then every allowed name (D-12, D-13)."""
         suggestion = self._suggestion
         combo = self._library_combo
-        alternatives = [a.name for a in suggestion.alternatives]
-        existing = [lib.name for lib in self._existing]
+        existing = [str(name) for name in self._existing]
+        listed = set(existing)
+        stems = self._allowed() or allowed_stems()
+        others = sorted((ATOMIC_PREFIX + stem for stem in stems if ATOMIC_PREFIX + stem not in listed), key=str.casefold)
         combo.blockSignals(True)
         try:
             combo.clear()
-            combo.addItems(alternatives)
-            if alternatives and existing:
-                combo.insertSeparator(combo.count())
             combo.addItems(existing)
+            if existing and others:
+                combo.insertSeparator(combo.count())
+            combo.addItems(others)
             combo.setCurrentIndex(-1)
-            combo.setEditText(suggestion.name)
+            combo.setEditText(suggestion.name if suggestion is not None else "")
         finally:
             combo.blockSignals(False)
         # The popup shows every full name even when the closed combo is narrower
         combo.view().setMinimumWidth(combo.view().sizeHintForColumn(0) + 32)
+        self._hide_library_note()
         self._refresh_library_labels()
 
     def _clear_library_section(self):
-        """Forget the library list, the typed name and the badge, token line and hint (a new or discarded package)."""
+        """Forget the library list, the typed name, the badge and the note (a new or discarded package)."""
         self._existing = ()
         combo = self._library_combo
         combo.blockSignals(True)
@@ -1180,15 +1200,23 @@ class ImportDialog(QDialog):
             combo.setEditText("")
         finally:
             combo.blockSignals(False)
+        self._hide_library_note()
         self._refresh_library_labels()
 
-    def _refresh_library_labels(self, _text: str = ""):
-        """Badge, token line and hint follow the typed name against the library list, at every keystroke.
+    def _hide_library_note(self):
+        self._note_for = ""
+        self._library_note.hide()
+        self._library_note.setText("")
 
-        The badge reads "existing" or "new - creates .kicad_sym + .pretty" (form.library_badge).
+    def _refresh_library_labels(self, _text: str = ""):
+        """Badge, note and tooltip follow the typed name against the library list, at every keystroke.
+
+        The badge reads "existing", "new - creates .kicad_sym" or nothing for a name the rule refuses
+        (form.library_badge). The tooltip holds the reason for the suggestion while the field still
+        holds the suggested name (D-06); it is html-escaped text, never raw (T-10-20).
         """
         name = self._library_combo.currentText()
-        badge = library_badge(name, [lib.name for lib in self._existing])
+        badge = library_badge(name, self._existing, self._allowed())
         self._library_badge.setVisible(bool(badge))
         self._library_badge.setText(badge)
         if badge == "existing":
@@ -1197,17 +1225,24 @@ class ImportDialog(QDialog):
             self._library_badge.setStyleSheet(
                 f"border: 1px solid {BORDER}; padding: 4px 8px; font-weight: bold;"
             )
-        tokens = library_tokens(name, self._suggestion)
-        parts = [
-            f'<span style="color:{AMBER};font-weight:bold">{html.escape(token)}</span>'
-            if amber
-            else html.escape(token)
-            for token, amber in tokens
-        ]
-        self._token_line.setText(f"_{_ZWSP}".join(parts))
-        self._token_line.setToolTip(name)
-        self._token_line.setVisible(bool(tokens))
-        self._token_hint.setVisible(any(amber for _, amber in tokens))
+        suggestion = self._suggestion
+        tip = suggestion_text(suggestion) if suggestion is not None and suggestion.name == name and name else ""
+        self._library_combo.setToolTip(f"<p>{html.escape(tip)}</p>" if tip else "")
+        if self._note_for and name != self._note_for:
+            self._hide_library_note()
+
+    def _correct_library_spelling(self) -> bool:
+        """Set the official spelling when the text differs from an allowed name only by letter case (D-11)."""
+        text = self._library_combo.currentText()
+        verdict = name_verdict(text, self._allowed())
+        if verdict.ok or not verdict.note or verdict.name == text:
+            return False
+        self._library_combo.setEditText(verdict.name)
+        self._refresh_library_labels()
+        self._note_for = verdict.name
+        self._library_note.setText(verdict.note)
+        self._library_note.show()
+        return True
 
     # -- the rebuild coordinator (PREV-07, D-06) -------------------------------
 
@@ -1993,11 +2028,18 @@ class ImportDialog(QDialog):
 
     def _on_library_activated(self, _text: str = ""):
         """A library picked from the list: no quiet period, the pending typing timer is superseded."""
+        self._correct_library_spelling()
         self._refresh_library_labels()
         self._request_rebuild()
 
+    def _on_library_editing_finished(self):
+        """Editing the library name ended: a wrong letter case becomes the official spelling and the plan follows (D-11)."""
+        if self._candidate is not None and self._correct_library_spelling():
+            self._request_rebuild()
+
     def _on_library_text_edited(self, _text: str):
         """User typing in the library name (textEdited): the labels already follow; the rebuild waits 300 ms."""
+        self._hide_library_note()
         if self._candidate is not None:
             self._mark_dirty()
 

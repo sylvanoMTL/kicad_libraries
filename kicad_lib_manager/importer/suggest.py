@@ -1,90 +1,27 @@
-"""Suggest a <Type>_<SubCategory>_<Manufacturer> library name for a part (D-01, D-02, D-03, D-04).
+"""Suggest the Atomic_ library for a part: own siblings, KiCad's siblings, the category map, else ask (LIB-04, D-01 to D-07).
 
-The suggestion is only an overridable default: the user-chosen library name is a plain
-string, and every helper here that Phases 4 and 5 call on it takes a plain string.
+The suggestion is only an overridable default and it is always "" or Atomic_ plus an allowed KiCad
+library stem, never a manufacturer (D-01). The user-chosen library name is a plain string that
+build_plan judges again with stems.name_verdict.
 
-D-04 contract: Phases 4 and 5 must refuse to install while placeholder_tokens(name) is
-non-empty for the chosen library name.
+The manufacturer helpers at the end (TokenChoice, manufacturer_token, manufacturer_choice and the host
+tables) stay for the planner and the form, which still infer a Manufacturer field from them.
 """
 
 import re
 import unicodedata
-from collections.abc import Sequence
+from collections.abc import Iterable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from ..manufacturers import CORPORATE_WORDS, token_map
 from ..models import Issue, Severity
-from .candidate import ExistingLibrary, PartMeta
-from .naming import case_clash, sanitize_name
+from .candidate import PartMeta
+from .categories import classify
+from .siblings import EMPTY_INDEX, SiblingIndex, SiblingPick, pick
+from .stems import ATOMIC_PREFIX, allowed_stems, name_verdict
 
-PLACEHOLDER_TOKENS = ("Type", "SubCategory", "Manufacturer")
 MAX_ALTERNATIVES = 5
-
-REFERENCE_TYPE = {
-    "U": "IC",
-    "IC": "IC",
-    "Q": "Transistor",
-    "J": "Connector",
-    "P": "Connector",
-    "CN": "Connector",
-    "Y": "Oscillator",
-    "X": "Oscillator",
-    "XTAL": "Oscillator",
-    "C": "Capacitor",
-    "L": "Inductor",
-    "FB": "Ferrite",
-    "D": "Diode",
-    "LED": "LED",
-    "R": "Resistor",
-    "F": "Fuse",
-    "SW": "Switch",
-    "S": "Switch",
-    "K": "Relay",
-    "TP": "TestPoint",
-    "BT": "Battery",
-    "B": "Battery",
-    "PS": "PowerSupply",
-}
-
-# Vendor part categories (SamacSys PartCategory) by their casefolded letters and digits. Only "Power
-# Supply" is observed in a real download; the other keys are assumed SamacSys wording and simply fall
-# through to the Reference map when wrong. An unmapped category is never used as a token (D-11).
-PART_CATEGORY_TYPE = {
-    "powersupply": "PowerSupply",
-    "integratedcircuit": "IC",
-    "integratedcircuits": "IC",
-    "ic": "IC",
-    "connector": "Connector",
-    "connectors": "Connector",
-    "capacitor": "Capacitor",
-    "capacitors": "Capacitor",
-    "resistor": "Resistor",
-    "resistors": "Resistor",
-    "inductor": "Inductor",
-    "inductors": "Inductor",
-    "ferrite": "Ferrite",
-    "ferritebead": "Ferrite",
-    "ferritebeads": "Ferrite",
-    "diode": "Diode",
-    "diodes": "Diode",
-    "transistor": "Transistor",
-    "transistors": "Transistor",
-    "led": "LED",
-    "leds": "LED",
-    "crystal": "Oscillator",
-    "crystals": "Oscillator",
-    "oscillator": "Oscillator",
-    "oscillators": "Oscillator",
-    "fuse": "Fuse",
-    "fuses": "Fuse",
-    "switch": "Switch",
-    "switches": "Switch",
-    "relay": "Relay",
-    "relays": "Relay",
-    "battery": "Battery",
-    "batteries": "Battery",
-}
 
 HOST_TOKENS = {
     "ti.com": "TI",
@@ -134,24 +71,22 @@ class TokenChoice:
 
 
 @dataclass(frozen=True)
-class RankedLibrary:
+class Alternative:
+    """Another library that holds similar parts, as Atomic_<stem> with the number of parts found there."""
+
     name: str
-    score: int
-    shared_tokens: tuple[str, ...]
-    has_symbols: bool
-    has_footprints: bool
+    count: int
 
 
 @dataclass(frozen=True)
 class LibrarySuggestion:
+    """The suggested library: name is "" or Atomic_<allowed stem>; source is "own", "stock", "category" or "ask"."""
+
     name: str
-    type: TokenChoice
-    subcategory: TokenChoice
-    manufacturer: TokenChoice
-    confidence: str
-    placeholders: tuple[str, ...]
-    matches_existing: bool
-    alternatives: tuple[RankedLibrary, ...]
+    source: str
+    reason: str
+    alternatives: tuple[Alternative, ...]
+    related_stems: tuple[str, ...]
     issues: tuple[Issue, ...]
 
 
@@ -178,19 +113,6 @@ def registered_domain(host: str) -> str:
     if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _SLD_LABELS:
         return ".".join(labels[-3:])
     return ".".join(labels[-2:])
-
-
-def type_choice(reference: str, category: str = "") -> TokenChoice:
-    """Map a vendor part category, else the leading letters of a reference designator, to a library Type token."""
-    mapped = PART_CATEGORY_TYPE.get(re.sub(r"[^a-z0-9]", "", category.casefold()))
-    if mapped is not None:
-        return TokenChoice(mapped, "part_info", True)
-    match = re.match(r"[A-Za-z]+", reference.strip())
-    if match is not None:
-        found = REFERENCE_TYPE.get(match.group(0).upper())
-        if found is not None:
-            return TokenChoice(found, "reference", True)
-    return TokenChoice("Type", "placeholder", False)
 
 
 def is_aggregator_host(host: str) -> bool:
@@ -234,146 +156,99 @@ def manufacturer_choice(meta: PartMeta) -> TokenChoice:
     return TokenChoice("Manufacturer", "placeholder", False)
 
 
-def placeholder_tokens(name: str) -> list[str]:
-    """Return the placeholder tokens still present in a library name.
+# -- the Atomic_ suggestion (LIB-04) ---------------------------------------------------------------
 
-    A token matches only as a whole "_"-separated part, case-insensitively. It works on any
-    user-edited string. D-04 contract: Phases 4 and 5 must refuse to install while this list
-    is non-empty for the chosen library name.
+NO_STOCK_TEXT = "KiCad's symbol libraries were not found, so similar KiCad parts were not looked up"
+
+
+def _alternatives(found: SiblingPick | None, chosen: str | None, stems: frozenset[str]) -> tuple[Alternative, ...]:
+    """The other counted stems of a pick that are allowed, as Atomic_<stem>, largest first."""
+    if found is None:
+        return ()
+    others = [
+        Alternative(ATOMIC_PREFIX + stem, count)
+        for stem, count in found.counts
+        if stem != chosen and stem in stems
+    ]
+    return tuple(others[:MAX_ALTERNATIVES])
+
+
+def _related(chosen: str | None, alternatives: Iterable[Alternative], runner_up: Iterable[str]) -> tuple[str, ...]:
+    """The chosen stem, the alternatives' stems, then the category runner-ups, without repeats."""
+    stems = [chosen] if chosen else []
+    stems.extend(a.name[len(ATOMIC_PREFIX) :] for a in alternatives)
+    stems.extend(runner_up)
+    return tuple(dict.fromkeys(stems))
+
+
+def suggest_library(meta: PartMeta, *, own: SiblingIndex = EMPTY_INDEX, stock: SiblingIndex | None = None, allowed: frozenset[str] | None = None) -> LibrarySuggestion:
+    """Suggest an Atomic_ library: the owner's siblings, then KiCad's, then the category map, else ask (D-01).
+
+    stock None means KiCad's symbol libraries were not found: that step is skipped with one INFO line
+    and the other two still run (D-07). A name that cannot be placed stays "" so the owner decides (D-05).
     """
-    parts = {part.casefold() for part in name.split("_")}
-    return [token for token in PLACEHOLDER_TOKENS if token.casefold() in parts]
-
-
-def _part_tokens(meta: PartMeta) -> set[str]:
-    """Return the whole lower-case words of the description, keywords and value (D-01)."""
-    # Existing descriptions hold literal backslash-n escapes and runs of blanks
-    text = " ".join((meta.description, meta.keywords, meta.value)).replace("\\n", " ")
-    text = unicodedata.normalize("NFKD", text)
-    text = "".join(c for c in text if not unicodedata.combining(c)).casefold()
-    return {token for token in re.split(r"[^a-z0-9]+", text) if token}
-
-
-def _parse_library(name: str) -> tuple[str, tuple[str, ...], str] | None:
-    """Split a library name into (type, middle tokens, manufacturer); None when it has fewer than three."""
-    tokens = name.split("_")
-    if len(tokens) < 3 or not all(tokens):
-        return None
-    return tokens[0], tuple(tokens[1:-1]), tokens[-1]
-
-
-def _subcategory(
-    type_: TokenChoice, part_tokens: set[str], existing: Sequence[ExistingLibrary]
-) -> tuple[TokenChoice, TokenChoice]:
-    """Return the (possibly updated) Type and the SubCategory choice from the existing vocabulary (D-01).
-
-    A library matches only when every one of its middle tokens is a whole word of the part
-    text; the match with the most middle tokens wins, ties broken by casefolded name. When the
-    Type came from the Reference prefix or the part category only libraries of that Type count. Spelling rule: the
-    SubCategory copies the matched library's middle tokens verbatim, so adding to an existing
-    library reuses its exact text; Type and Manufacturer are never re-spelled from the library
-    and keep their canonical tokens. An existing ic_battery_charger_ti therefore gives
-    IC_battery_charger_TI, which naming.case_clash reports and matches_existing never counts
-    as equal (D-16). When the Type was a placeholder it takes the library's own spelling,
-    not confident.
-    """
-    matches = []
-    for lib in existing:
-        parsed = _parse_library(lib.name)
-        if parsed is None:
-            continue
-        lib_type, middle, _ = parsed
-        if type_.source in ("reference", "part_info") and lib_type.casefold() != type_.token.casefold():
-            continue
-        if all(token.casefold() in part_tokens for token in middle):
-            matches.append((-len(middle), lib.name.casefold(), lib.name, lib_type, middle))
-    if not matches:
-        return type_, TokenChoice("SubCategory", "placeholder", False)
-    _, _, _, lib_type, middle = min(matches)
-    if type_.source == "placeholder":
-        type_ = TokenChoice(lib_type, "vocab", False)
-    return type_, TokenChoice("_".join(middle), "vocab", True)
-
-
-def _rank(
-    type_: TokenChoice,
-    manufacturer: TokenChoice,
-    part_tokens: set[str],
-    existing: Sequence[ExistingLibrary],
-) -> tuple[RankedLibrary, ...]:
-    """Rank existing libraries by 3 x same manufacturer + 2 x same Type + shared middle tokens (D-03)."""
-    ranked = []
-    for lib in existing:
-        parsed = _parse_library(lib.name)
-        if parsed is None:
-            continue
-        lib_type, middle, lib_mfr = parsed
-        type_eq = type_.source != "placeholder" and lib_type.casefold() == type_.token.casefold()
-        mfr_eq = manufacturer.source != "placeholder" and lib_mfr.casefold() == manufacturer.token.casefold()
-        shared = [token for token in middle if token.casefold() in part_tokens]
-        score = 3 * mfr_eq + 2 * type_eq + len(shared)
-        if score <= 0:
-            continue
-        tokens = ((lib_type,) if type_eq else ()) + tuple(shared) + ((lib_mfr,) if mfr_eq else ())
-        ranked.append(RankedLibrary(lib.name, score, tokens, lib.has_symbols, lib.has_footprints))
-    ranked.sort(key=lambda r: (-r.score, r.name.casefold(), r.name))
-    return tuple(ranked[:MAX_ALTERNATIVES])
-
-
-def suggest_library(meta: PartMeta, existing: Sequence[ExistingLibrary] = ()) -> LibrarySuggestion:
-    """Suggest a library name for a part; unknown tokens stay as placeholders the user must edit.
-
-    The primary name is built from the part alone plus the existing vocabulary; ranked
-    alternatives are only offered beside it and never replace it.
-    """
-    part_tokens = _part_tokens(meta)
-    type_, subcategory = _subcategory(type_choice(meta.reference, meta.category), part_tokens, existing)
-    manufacturer = manufacturer_choice(meta)
-    cleaned = sanitize_name("_".join((type_.token, subcategory.token, manufacturer.token)))
-    name = cleaned.sanitized
-    placeholders = tuple(placeholder_tokens(name))
-    choices = (type_, subcategory, manufacturer)
-    confidence = "high" if all(c.confident for c in choices) else "low"
-    existing_names = [lib.name for lib in existing]
+    stems = allowed_stems() if allowed is None else allowed
+    part = meta.mpn or meta.symbol_name
     issues: list[Issue] = []
-    host = datasheet_host(meta.datasheet)
-    if host is not None and is_aggregator_host(host):
-        issues.append(
-            Issue(
-                Severity.INFO,
-                "naming.aggregator_host",
-                f"Datasheet host {host} is a distributor or library site; "
-                "it was not used as the manufacturer",
-            )
+    last: SiblingPick | None = None
+
+    def decided(found: SiblingPick) -> bool:
+        return found.stem is not None and found.stem in stems
+
+    found = pick(own, part)
+    if found.counts:
+        last = found
+    if decided(found):
+        count = found.counts[0][1]
+        reason = f"Suggested from {count} similar parts in your {ATOMIC_PREFIX}{found.stem}"
+        alternatives = _alternatives(found, found.stem, stems)
+        return LibrarySuggestion(
+            ATOMIC_PREFIX + str(found.stem), "own", reason, alternatives,
+            _related(found.stem, alternatives, ()), tuple(issues),
         )
-    issues.extend(cleaned.issues)
-    issues.extend(case_clash(name, existing_names))
-    if confidence == "low":
-        unsure = ", ".join(f"{c.token} ({c.source})" for c in choices if not c.confident)
-        issues.append(
-            Issue(
-                Severity.WARNING,
-                "naming.low_confidence",
-                f"Library name {name} is a low-confidence guess; check {unsure}",
+
+    if stock is None:
+        issues.append(Issue(Severity.INFO, "naming.no_stock_libraries", NO_STOCK_TEXT))
+    else:
+        found = pick(stock, part)
+        if found.counts:
+            last = found
+        if decided(found):
+            count = found.counts[0][1]
+            reason = f"Suggested from {count} similar parts in KiCad's {found.stem}"
+            alternatives = _alternatives(found, found.stem, stems)
+            return LibrarySuggestion(
+                ATOMIC_PREFIX + str(found.stem), "stock", reason, alternatives,
+                _related(found.stem, alternatives, ()), tuple(issues),
             )
+
+    match = classify(meta, stems)
+    if match.stem is not None:
+        alternatives = _alternatives(last, match.stem, stems)
+        return LibrarySuggestion(
+            ATOMIC_PREFIX + match.stem, "category", f"Suggested from {match.detail}", alternatives,
+            _related(match.stem, alternatives, match.runner_up), tuple(issues),
         )
-    if placeholders:
-        issues.append(
-            Issue(
-                Severity.WARNING,
-                "naming.placeholder",
-                f"Library name {name} still contains placeholder token(s) {', '.join(placeholders)}; "
-                "edit it before installing",
-            )
-        )
-    return LibrarySuggestion(
-        name=name,
-        type=type_,
-        subcategory=subcategory,
-        manufacturer=manufacturer,
-        confidence=confidence,
-        placeholders=placeholders,
-        matches_existing=name in existing_names,
-        alternatives=_rank(type_, manufacturer, part_tokens, existing),
-        issues=tuple(issues),
+
+    alternatives = _alternatives(last, None, stems)
+    return LibrarySuggestion("", "ask", "", alternatives, _related(None, alternatives, match.runner_up), tuple(issues))
+
+
+def suggestion_text(suggestion: LibrarySuggestion) -> str:
+    """The reason for the tooltip: why the library was suggested, and the other libraries that hold similar parts."""
+    others = ", ".join(
+        f"{a.name[len(ATOMIC_PREFIX) :] if a.name.startswith(ATOMIC_PREFIX) else a.name} ({a.count})"
+        for a in suggestion.alternatives
     )
+    if suggestion.reason and others:
+        return f"{suggestion.reason}. Other matches: {others}."
+    if suggestion.reason:
+        return f"{suggestion.reason}."
+    if others:
+        return f"Similar parts were found in several libraries: {others}."
+    return ""
+
+
+def existing_libraries(names: Iterable[str], allowed: frozenset[str] | None = None) -> list[str]:
+    """The names that pass the name rule, sorted ignoring letter case (D-12); v1 and hand-made names drop out."""
+    return sorted((n for n in names if name_verdict(n, allowed).ok), key=lambda n: (n.casefold(), n))
