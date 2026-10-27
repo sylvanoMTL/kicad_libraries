@@ -69,8 +69,6 @@ _ISSUE_LIST_MAX_HEIGHT = 160
 _NOTHING_FOUND = "No KiCad symbol or footprint was found in this package."
 _CLOSING_REFUSED = "Pick another file."
 _CLOSING_EMPTY = "Check that you downloaded the KiCad format, then pick another file."
-_CHECKLIST_ROWS = 6  # footprint rows shown before the list scrolls
-_LINKED_SUFFIX = "  (linked)"
 _NO_MODEL = "No model"
 ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
 REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
@@ -312,10 +310,8 @@ class ImportDialog(QDialog):
         # Left-pane choices (plan 05-07). The item controls exist only for the package that is open.
         self._symbol_combo: QComboBox | None = None
         self._symbol_label: _OfferLabel | None = None
-        self._fp_list: QListWidget | None = None
         self._fp_combo: QComboBox | None = None
         self._fp_label: _OfferLabel | None = None
-        self._make_linked_btn: QPushButton | None = None
         self._model_combo: QComboBox | None = None
         self._model_label: _OfferLabel | None = None
         # Add 3D model... (G-07-2): second-source packages stay open until Change..., a new open or close,
@@ -1288,11 +1284,11 @@ class ImportDialog(QDialog):
     def _clear_items(self):
         self._symbol_combo = self._model_combo = None
         self._symbol_label = self._fp_label = self._model_label = None
-        self._fp_list = self._make_linked_btn = self._fp_combo = None
+        self._fp_combo = None
         self._add_model_btn = self._model_slot = self._model_note = None
         self._remove_model_btn = None
         self._model_rejection = None
-        # The checklist and its frame are deleted with their row
+        # The footprint combo and its frame are deleted with their row
         self._field_frames.pop("footprints", None)
         self._reason_targets.pop("footprints", None)
         self._reason_targets.pop("model", None)
@@ -1349,7 +1345,7 @@ class ImportDialog(QDialog):
         return combo
 
     def _populate_items(self):
-        """Build the Items controls for the open package: one item is a label, several a combo or checklist."""
+        """Build the Items controls for the open package: one item is a label, several a combo."""
         candidate = self._candidate
         self._clear_items()
         form = self._items_form
@@ -1418,7 +1414,7 @@ class ImportDialog(QDialog):
 
     def _build_model_row(self) -> QWidget:
         """The 3D model row: the label or combo, then the Add 3D model... button (G-07-2)."""
-        # The button sits under the label or combo, like Make linked: beside it, the row would not fit a narrow pane
+        # The button sits under the label or combo: beside it, the row would not fit a narrow pane
         host = QWidget()
         lay = QVBoxLayout(host)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -1527,97 +1523,6 @@ class ImportDialog(QDialog):
             chain += [self._field_edits[name], self._field_restore[name]]
         for first, second in zip(chain, chain[1:]):
             QWidget.setTabOrder(first, second)
-
-    def _build_footprint_list(self, names: list[str]) -> QWidget:
-        host = QWidget()
-        lay = QVBoxLayout(host)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(4)
-        lst = QListWidget()
-        lst.setAccessibleName("Footprints")
-        lst.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        lst.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
-        lst.setTextElideMode(Qt.TextElideMode.ElideMiddle)
-        lst.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        for name in names:
-            item = QListWidgetItem(name)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Checked)
-            item.setData(Qt.ItemDataRole.UserRole, name)
-            item.setToolTip(name)
-            lst.addItem(item)
-        # At most six rows tall, then the list scrolls vertically
-        row = lst.sizeHintForRow(0)
-        lst.setFixedHeight(row * min(len(names), _CHECKLIST_ROWS) + 2 * lst.frameWidth())
-        lay.addWidget(self._framed(lst, "footprints"))
-        button = QPushButton("Make linked")
-        button.setAutoDefault(False)
-        button.setDefault(False)
-        button.setEnabled(False)
-        button.clicked.connect(self._on_make_linked)
-        lay.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
-        lst.itemChanged.connect(self._on_footprint_item_changed)
-        lst.currentRowChanged.connect(self._update_make_linked)
-        self._fp_list = lst
-        self._make_linked_btn = button
-        return host
-
-    def _checked_footprints(self) -> list[str]:
-        lst = self._fp_list
-        return [
-            lst.item(i).data(Qt.ItemDataRole.UserRole)
-            for i in range(lst.count())
-            if lst.item(i).checkState() == Qt.CheckState.Checked
-        ]
-
-    def _render_footprint_list(self):
-        """Mark the linked row: bold with the suffix. Programmatic, so item signals are blocked."""
-        lst = self._fp_list
-        if lst is None:
-            return
-        lst.blockSignals(True)
-        try:
-            for i in range(lst.count()):
-                item = lst.item(i)
-                name = item.data(Qt.ItemDataRole.UserRole)
-                linked = name == self._linked_fp and item.checkState() == Qt.CheckState.Checked
-                item.setText(name + (_LINKED_SUFFIX if linked else ""))
-                font = item.font()
-                font.setBold(linked)
-                item.setFont(font)
-        finally:
-            lst.blockSignals(False)
-        self._update_make_linked()
-
-    def _update_make_linked(self, _row: int = -1):
-        lst, button = self._fp_list, self._make_linked_btn
-        if lst is None or button is None:
-            return
-        item = lst.currentItem()
-        button.setEnabled(
-            item is not None
-            and item.checkState() == Qt.CheckState.Checked
-            and item.data(Qt.ItemDataRole.UserRole) != self._linked_fp
-        )
-
-    def _on_footprint_item_changed(self, _item: QListWidgetItem):
-        if self._candidate is None or self._fp_list is None:
-            return
-        # Unchecking the linked row hands "linked" to the first row still checked
-        checked = self._checked_footprints()
-        if self._linked_fp not in checked:
-            self._set_linked(checked[0] if checked else None)
-        self._render_footprint_list()
-        self._request_rebuild()
-
-    def _on_make_linked(self):
-        lst = self._fp_list
-        item = lst.currentItem() if lst is not None else None
-        if item is None or item.checkState() != Qt.CheckState.Checked:
-            return
-        self._set_linked(item.data(Qt.ItemDataRole.UserRole))
-        self._render_footprint_list()
-        self._request_rebuild()
 
     def _set_linked(self, name: str | None):
         """Change which footprint is linked; its name field starts again from that footprint's default (D-14b)."""
@@ -2240,15 +2145,12 @@ class ImportDialog(QDialog):
         """The controls as blocking_reasons reads them. "Updating" means a rebuild is dirty, running, queued or lost."""
         plan = self._plan
         current = plan is not None and self._plan_gen == self._gen
-        several = self._fp_list is not None
         return FormStatus(
             updating=self._updating() or (not current and not self._build_failed),
             build_failed=self._build_failed,
             library=self._library_combo.currentText(),
             value_text=self._field_edits["value"].text(),
             mpn_text=self._field_edits["mpn"].text(),
-            several_footprints=several,
-            footprints_checked=len(self._checked_footprints()) if several else 0,
             resolutions=dict(self._resolutions),
             model_error=self._model_rejection.issue.text if self._model_rejection is not None else "",
             allowed=self._tools.allowed_stems if self._tools is not None else frozenset(),

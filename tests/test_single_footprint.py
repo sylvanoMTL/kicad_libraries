@@ -16,6 +16,7 @@ from test_import_dialog import (
     no_git_probe,
     recording_build,
     set_library,
+    type_text,
     wait_current,
 )
 from zipfixtures import STEP_BYTES, footprint, footprint_library_for, make_zip, symbol_lib, write_custom_layout
@@ -23,6 +24,7 @@ from zipfixtures import STEP_BYTES, footprint, footprint_library_for, make_zip, 
 from kicad_lib_manager import settings
 from kicad_lib_manager.importer.applier import apply_plan
 from kicad_lib_manager.importer.detect import detect_candidate
+from kicad_lib_manager.importer.form import FormStatus, blocking_reasons
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
 from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
@@ -169,3 +171,44 @@ def test_dialog_combo_lists_the_footprints_and_choosing_one_links_it(qtbot, make
     assert recorded[-1].footprint == "F3"
     assert dialog._fp_field.text() == f"{SHARED}:F3"
     assert dialog._plan.unused_footprints == ("F1", "F2")
+
+
+def test_dialog_footprint_combo_sits_between_symbol_and_model_in_the_tab_chain(qtbot, make_dialog, tmp_path):
+    dialog = make_dialog(multi_zip(tmp_path))
+    wait_current(qtbot, dialog)
+    assert dialog._symbol_combo is not None and dialog._model_combo is not None
+    assert dialog._symbol_combo.nextInFocusChain() is dialog._fp_combo
+    assert dialog._fp_combo.nextInFocusChain() is dialog._model_combo
+
+
+def test_dialog_footprint_name_follows_the_choice_and_an_edit_survives_a_rebuild(qtbot, make_dialog, recorded, tmp_path):
+    dialog = make_dialog(multi_zip(tmp_path))
+    wait_current(qtbot, dialog)
+    assert dialog._fp_name_edit.text() == "F1"
+
+    type_text(qtbot, dialog._fp_name_edit, "MyFootprint")
+    wait_current(qtbot, dialog)
+    assert dict(recorded[-1].footprint_names) == {"F1": "MyFootprint"}
+
+    # a rebuild of the same choice keeps what was typed
+    dialog._request_rebuild()
+    wait_current(qtbot, dialog)
+    assert dialog._fp_name_edit.text() == "MyFootprint"
+    assert dict(recorded[-1].footprint_names) == {"F1": "MyFootprint"}
+
+    # another footprint starts again from its own vendor name
+    dialog._fp_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    assert dialog._fp_name_edit.text() == "F2"
+    assert recorded[-1].footprint == "F2"
+    assert dict(recorded[-1].footprint_names) == {}
+
+
+def test_dialog_has_no_footprint_checklist_and_no_select_one_reason(qtbot, make_dialog, tmp_path):
+    dialog = make_dialog(multi_zip(tmp_path))
+    wait_current(qtbot, dialog)
+    assert not hasattr(dialog, "_fp_list") and not hasattr(dialog, "_make_linked_btn")
+    assert "several_footprints" not in FormStatus.__dataclass_fields__
+    assert "footprints_checked" not in FormStatus.__dataclass_fields__
+    reasons = blocking_reasons(dialog._form_status(), dialog._plan)
+    assert all("at least one footprint" not in reason.text for reason in reasons)

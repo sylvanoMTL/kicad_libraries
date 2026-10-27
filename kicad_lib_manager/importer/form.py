@@ -79,7 +79,7 @@ def kind_label(kind: str) -> str:
 class Reason:
     """One reason Install is off, and the control that fixes it.
 
-    target is "plan" (no control), "library", "footprint_name", "value", "mpn", "footprints", "model"
+    target is "plan" (no control), "library", "footprint_name", "value", "mpn", "footprints" (the footprint choice), "model"
     (the 3D model row), "conflict:{key}" or "rename:{key}".
     """
 
@@ -96,8 +96,6 @@ class FormStatus:
     library: str
     value_text: str
     mpn_text: str
-    several_footprints: bool
-    footprints_checked: int
     resolutions: Mapping[str, Resolution]
     model_error: str = ""  # the ERROR text of a rejected 3D model source; empty when none is held
     allowed: frozenset[str] = frozenset()  # allowed KiCad library stems; empty means the built-in snapshot
@@ -137,9 +135,9 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
     """Every reason Install is off, in the UI-SPEC order, without repeating one a form reason already gives.
 
     Order: Updating (alone, the others could be stale); the build failure or the plan's ERROR Issues;
-    a rejected 3D model source; the library name; Value and MPN; the footprint selection; unresolved conflicts in plan order;
+    a rejected 3D model source; the library name; Value and MPN; unresolved conflicts in plan order;
     empty rename names. A plan ERROR is dropped when the form reason beside it says the same thing
-    (refused library name, empty Value or MPN, no footprint checked, empty rename).
+    (refused library name, empty Value or MPN, empty rename).
     """
     if status.updating:
         return [Reason(UPDATING_REASON, "plan")]
@@ -147,7 +145,6 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
     verdict = name_verdict(library, status.allowed or None)
     value_blank = not status.value_text.strip()
     mpn_blank = not status.mpn_text.strip()
-    no_footprint = status.several_footprints and status.footprints_checked == 0
     # A failed build leaves the previous plan on screen; what it said could be stale
     plan = None if status.build_failed else plan
     renames = _blank_renames(status, plan)
@@ -158,8 +155,6 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
             return not verdict.ok
         if code == "install.empty_required":
             return mpn_blank if text.startswith("MPN") else value_blank
-        if code == "install.choice_required":
-            return no_footprint and "footprints" in text
         if code == "install.bad_rename":
             return any(text.startswith(f"{c.key}:") for c in renames)
         return False
@@ -179,8 +174,6 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
         reasons.append(Reason("Value is empty", "value"))
     if mpn_blank:
         reasons.append(Reason("MPN is empty - it names the 3D model file", "mpn"))
-    if no_footprint:
-        reasons.append(Reason("Select at least one footprint", "footprints"))
     if plan is not None:
         skipped = {c.key for c in renames}  # a Rename was chosen: it needs a name, not a choice
         for conflict in plan.unresolved_conflicts:
