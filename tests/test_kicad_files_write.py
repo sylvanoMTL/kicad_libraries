@@ -1,14 +1,17 @@
 """Write-side helpers of kicad_files: every KiCad change is one exact span edit (INST-01, INST-02, INST-03, INST-05)."""
 
 import re
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from kicad_lib_manager import kicad_files as kf
+from kicad_lib_manager.importer.kicad_cli import load_gate
 from kicad_lib_manager.kicad_files import LoadedFile, find_symbol, find_symbols, parse_bytes
 from kicad_lib_manager.sexpr import Edit, apply_edits, unquote
 from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
+from zipfixtures import UL_FOOTPRINT_MEMBER, UL_ZIP
 
 V6 = 20211014
 V8 = 20231120
@@ -704,3 +707,128 @@ def test_model_insert_without_trailing_newline_keeps_the_ending():
     assert not out.endswith("\n")
     paths = [m.path for m in kf.find_models(kf.footprint_name(_reparse(out).root).node)]
     assert paths == ["${CUSTOM_3DMODEL_DIR}/FIX_NO_EOL.step", MODEL_PATH]
+
+
+# -- footprint descr and tags (FLD-03) -----------------------------------------
+
+
+def _text_edits(loaded: LoadedFile, descr: str, tags: str) -> list[Edit]:
+    node = kf.footprint_name(loaded.root).node
+    text, eol = loaded.source.text, loaded.source.eol
+    return [
+        kf.footprint_text_edit(text, node, "descr", descr, eol),
+        kf.footprint_text_edit(text, node, "tags", tags, eol),
+    ]
+
+
+@pytest.mark.kicad_cli
+def test_real_cli_loads_the_ul_footprint_with_inserted_descr_and_tags(kicad_cli_path):
+    with zipfile.ZipFile(UL_ZIP) as zf:
+        loaded = _load(zf.read(UL_FOOTPRINT_MEMBER))
+    out = _apply(loaded, _text_edits(loaded, "WSON-6 2.1x2.1 mm, 0.65 mm pitch, TI DQK0006B", "WSON-6 DQK0006B"))
+    issues = load_gate(
+        kicad_cli_path, library="L", symbol_lib=None, footprints=[("DQK0006B", out.encode("utf-8"))]
+    )
+    assert issues == []
+
+
+LEGACY_MODULE = (
+    '(module "RS3" (layer F.Cu) (tedit 5B3A9C3C)\n'
+    "  (fp_text reference REF** (at 0 0) (layer F.SilkS) (effects (font (size 1 1) (thickness 0.15))))\n"
+    "  (fp_text value RS3 (at 0 2) (layer F.Fab) (effects (font (size 1 1) (thickness 0.15))))\n"
+    "  (pad 1 thru_hole circle (at 0 0) (size 1.6 1.6) (drill 0.8) (layers *.Cu *.Mask))\n"
+    ")\n"
+)
+
+
+def _text_of(text: str, key: str) -> str:
+    node = kf.footprint_name(_reparse(text).root).node
+    token = kf.footprint_text_node(node, key)
+    assert token is not None
+    return unquote(token.text)
+
+
+def test_text_insert_goes_after_the_layer_child_on_its_own_line():
+    loaded = _load(vendor_footprint("FP"))
+    out = _apply(loaded, _text_edits(loaded, "A part", "tag1 tag2"))
+    assert out == loaded.source.text.replace(
+        '  (layer "F.Cu")\r\n', '  (layer "F.Cu")\r\n  (descr "A part")\r\n  (tags "tag1 tag2")\r\n'
+    )
+    assert _text_of(out, "descr") == "A part"
+    assert _text_of(out, "tags") == "tag1 tag2"
+
+
+def test_text_insert_keeps_a_crlf_file_all_crlf():
+    loaded = _load(vendor_footprint("FP", eol="\r\n"))
+    out = _apply(loaded, _text_edits(loaded, "A part", "tag"))
+    assert out.count("\r\n") == out.count("\n")
+
+
+def test_text_insert_keeps_a_tab_indent_and_lf():
+    text = '(footprint "FP"\n\t(layer "F.Cu")\n\t(attr smd)\n)\n'
+    loaded = _load(text.encode("utf-8"))
+    out = _apply(loaded, _text_edits(loaded, "d", "t"))
+    assert out == '(footprint "FP"\n\t(layer "F.Cu")\n\t(descr "d")\n\t(tags "t")\n\t(attr smd)\n)\n'
+
+
+def test_text_insert_on_a_legacy_module_root_stays_on_the_layer_line():
+    loaded = _load(LEGACY_MODULE.encode("utf-8"))
+    out = _apply(loaded, _text_edits(loaded, "d", "t"))
+    assert out.startswith('(module "RS3" (layer F.Cu) (descr "d") (tags "t") (tedit 5B3A9C3C)\n')
+    assert out.endswith(LEGACY_MODULE.split("\n", 1)[1])
+    assert _text_of(out, "descr") == "d"
+
+
+def test_text_replace_changes_only_the_value_token():
+    text = '(footprint "FP"\n  (layer "F.Cu")\n  (descr "old")\n  (tags "x y")\n)\n'
+    loaded = _load(text.encode("utf-8"))
+    out = _apply(loaded, _text_edits(loaded, "new words", "x y z"))
+    assert out == text.replace('"old"', '"new words"').replace('"x y"', '"x y z"')
+
+
+def test_text_replace_takes_a_bare_atom_value():
+    text = '(footprint "FP"\n  (layer "F.Cu")\n  (tags old)\n)\n'
+    loaded = _load(text.encode("utf-8"))
+    node = kf.footprint_name(loaded.root).node
+    out = _apply(loaded, [kf.footprint_text_edit(loaded.source.text, node, "tags", "new", "\n")])
+    assert out == text.replace("old", '"new"')
+
+
+def test_text_with_a_quote_and_a_newline_round_trips():
+    value = 'say "hi"\nback\\slash'
+    loaded = _load(vendor_footprint("FP"))
+    out = _apply(loaded, _text_edits(loaded, value, value))
+    assert _text_of(out, "descr") == value
+    assert _text_of(out, "tags") == value
+    assert out.count("\n") == loaded.source.text.count("\n") + 2
+
+
+def test_text_node_without_a_value_is_replaced_whole():
+    text = '(footprint "FP"\n  (layer "F.Cu")\n  (descr)\n)\n'
+    loaded = _load(text.encode("utf-8"))
+    node = kf.footprint_name(loaded.root).node
+    assert kf.footprint_text_node(node, "descr") is None
+    out = _apply(loaded, [kf.footprint_text_edit(loaded.source.text, node, "descr", "d", "\n")])
+    assert out == text.replace("(descr)", '(descr "d")')
+
+
+def test_text_insert_without_a_layer_child_goes_after_the_name():
+    text = '(footprint "FP"\n  (attr smd)\n)\n'
+    loaded = _load(text.encode("utf-8"))
+    node = kf.footprint_name(loaded.root).node
+    out = _apply(loaded, [kf.footprint_text_edit(loaded.source.text, node, "descr", "d", "\n")])
+    assert out == '(footprint "FP" (descr "d")\n  (attr smd)\n)\n'
+
+
+def test_text_node_ignores_a_nested_descr():
+    text = '(footprint "FP"\n  (layer "F.Cu")\n  (model "x" (descr "deep"))\n)\n'
+    node = kf.footprint_name(_load(text.encode("utf-8")).root).node
+    assert kf.footprint_text_node(node, "descr") is None
+
+
+@pytest.mark.kicad_cli
+def test_real_cli_loads_the_legacy_module_with_inserted_descr_and_tags(kicad_cli_path):
+    loaded = _load(LEGACY_MODULE.encode("utf-8"))
+    out = _apply(loaded, _text_edits(loaded, "WSON-6 2x2 mm", "WSON-6 RS3"))
+    issues = load_gate(kicad_cli_path, library="L", symbol_lib=None, footprints=[("RS3", out.encode("utf-8"))])
+    assert issues == []

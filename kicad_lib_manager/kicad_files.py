@@ -237,6 +237,45 @@ def model_insert_edit(text: str, footprint_node: Node, model_path: str, eol: str
     return Edit(anchor.end, anchor.end, eol + indent + eol.join(lines))
 
 
+def _text_child(footprint_node: Node, key: str) -> Node | None:
+    """Return the first direct (key ...) child of a footprint, with or without a value."""
+    return next((c for c in footprint_node.children if c.head == key), None)
+
+
+def footprint_text_node(footprint_node: Node, key: str) -> Node | None:
+    """Return the value token of a direct (descr ...) or (tags ...) child of a footprint, or None."""
+    child = _text_child(footprint_node, key)
+    if child is None or len(child.children) < 2 or not _is_token(child.children[1]):
+        return None
+    return child.children[1]
+
+
+def footprint_text_edit(text: str, footprint_node: Node, key: str, value: str, eol: str) -> Edit:
+    """Return the edit that sets a footprint's (descr ...) or (tags ...) text.
+
+    An existing node has only its value token replaced. Otherwise the node is inserted right after the
+    footprint's direct (layer ...) child (after the name token when there is none): on a new line with
+    that child's indent when the child starts its own line, else after one space. Both the footprint
+    root and the legacy module root take it.
+    """
+    token = footprint_text_node(footprint_node, key)
+    if token is not None:
+        return Edit(token.start, token.end, quote(value))
+    node_text = f"({key} {quote(value)})"
+    existing = _text_child(footprint_node, key)
+    if existing is not None:
+        # A (key) with no usable value is replaced whole, so the file never holds two of them
+        return Edit(existing.start, existing.end, node_text)
+    anchor = next((c for c in footprint_node.children if c.head == "layer"), None)
+    if anchor is None:
+        anchor = footprint_node.children[1] if len(footprint_node.children) >= 2 else footprint_node.children[0]
+    indent = _line_indent(text, anchor.start)
+    line_start = text.rfind("\n", 0, anchor.start) + 1
+    if text[line_start:anchor.start].strip() == "":
+        return Edit(anchor.end, anchor.end, eol + indent + node_text)
+    return Edit(anchor.end, anchor.end, " " + node_text)
+
+
 def set_property_edit(prop: PropertyRef, value: str) -> Edit:
     """Return the edit that replaces only the property's value token."""
     return Edit(prop.value_node.start, prop.value_node.end, quote(value))
