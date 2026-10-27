@@ -384,7 +384,7 @@ def test_gate_checks_staging_copies_outside_the_repo():
     fake = FakeCli()
     issues = load_gate(
         EXE,
-        library="IC_Test_TI",
+        library="Atomic_Analog",
         symbol_lib=SYM.encode("utf-8"),
         footprints=[("FP_A", FP_A), ("FP_B", FP_B)],
         runner=fake,
@@ -392,9 +392,9 @@ def test_gate_checks_staging_copies_outside_the_repo():
     assert issues == []
     sym_call, fp_call = fake.calls
     assert sym_call[1:5] == ["sym", "upgrade", "--force", "-o"]
-    assert Path(sym_call[-1]).name == "IC_Test_TI.kicad_sym"
+    assert Path(sym_call[-1]).name == "Atomic_Analog.kicad_sym"
     assert Path(sym_call[5]).parent == Path(sym_call[-1]).parent
-    assert fake.inputs[0] == {"IC_Test_TI.kicad_sym": SYM.encode("utf-8")}
+    assert fake.inputs[0] == {"Atomic_Analog.kicad_sym": SYM.encode("utf-8")}
     assert fp_call[1:5] == ["fp", "upgrade", "--force", "-o"]
     assert Path(fp_call[-1]).name == "stage.pretty"
     assert fake.inputs[1] == {"FP_A.kicad_mod": FP_A, "FP_B.kicad_mod": FP_B}
@@ -424,11 +424,11 @@ def test_gate_with_nothing_to_check_runs_nothing():
 
 def test_gate_symbol_failure_names_library_and_quotes_cli():
     fake = FakeCli({"sym upgrade": "reject"})
-    issues = load_gate(EXE, library="IC_Test_TI", symbol_lib=SYM.encode(), footprints=(), runner=fake)
+    issues = load_gate(EXE, library="Atomic_Analog", symbol_lib=SYM.encode(), footprints=(), runner=fake)
     assert len(issues) == 1
     assert issues[0].severity is Severity.ERROR
     assert issues[0].code == "install.cli_gate_failed"
-    assert "the merged symbol library IC_Test_TI.kicad_sym" in issues[0].text
+    assert "the merged symbol library Atomic_Analog.kicad_sym" in issues[0].text
     assert "Unable to load library" in issues[0].text
 
 
@@ -589,7 +589,7 @@ def test_real_cli_upgrades_ul_symbol_deterministically(kicad_cli_path):
 def test_real_cli_gate_accepts_ul_symbol_and_footprint(kicad_cli_path):
     issues = load_gate(
         kicad_cli_path,
-        library="IC_Test_TI",
+        library="Atomic_Analog",
         symbol_lib=_ul_member(UL_SYMBOL_MEMBER),
         footprints=[("DQK0006B", _ul_member(UL_FOOTPRINT_MEMBER))],
     )
@@ -602,7 +602,7 @@ def test_real_cli_gate_rejects_sub_symbols_left_with_the_old_name(kicad_cli_path
     assert '(symbol "CSD85301Q2_1_1"' in text
     half = text.replace('(symbol "CSD85301Q2"', '(symbol "RENAMED_PART"', 1)
     issues = load_gate(
-        kicad_cli_path, library="IC_Test_TI", symbol_lib=half.encode("utf-8"), footprints=()
+        kicad_cli_path, library="Atomic_Analog", symbol_lib=half.encode("utf-8"), footprints=()
     )
     assert [i.code for i in issues] == ["install.cli_gate_failed"]
     assert "Unable to load library" in issues[0].text
