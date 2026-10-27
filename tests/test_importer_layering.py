@@ -43,7 +43,15 @@ ALLOWED: dict[str, set[str]] = {
     "importer.naming": {"models"},
     "importer.layout": {"models", "importer.candidate"},
     # manufacturers is the canonical manufacturer table (plan 09-01)
-    "importer.suggest": {"models", "manufacturers", "importer.candidate", "importer.naming"},
+    "importer.suggest": {
+        "models",
+        "manufacturers",
+        "importer.candidate",
+        "importer.naming",
+        "importer.stems",
+        "importer.siblings",
+        "importer.categories",
+    },
     "importer.adapters.base": {
         "models",
         "fsutil",
@@ -87,7 +95,7 @@ ALLOWED: dict[str, set[str]] = {
     },
     # Phase 4 install modules. importer.kicad_cli is a forward registration (plan 04-03 creates it);
     # layering_errors only checks modules found on disk, so an unused key raises no error
-    "importer.plan": {"models", "importer.package", "importer.layout"},
+    "importer.plan": {"models", "importer.package", "importer.layout", "importer.stems"},
     "importer.kicad_cli": {"models", "kicad_files"},
     "importer.verify": {"models", "fsutil", "kicad_files", "sexpr", "importer.plan", "importer.layout"},
     "importer.planner": {
@@ -105,6 +113,14 @@ ALLOWED: dict[str, set[str]] = {
         "importer.kicad_cli",
         "importer.verify",
         "importer.fieldrules",
+        "manufacturers",
+        "atomic_check",
+        "importer.stems",
+        "importer.categories",
+        "importer.keywords",
+        "importer.footprint_text",
+        "importer.footprint_index",
+        "importer.incoming",
     },
     "importer.applier": {
         "models",
@@ -123,11 +139,14 @@ ALLOWED: dict[str, set[str]] = {
     "importer.form": {
         "models",
         "kicad_files",
+        "manufacturers",
+        "atomic_check",
         "importer.plan",
         "importer.candidate",
         "importer.suggest",
         "importer.naming",
         "importer.fieldrules",
+        "importer.stems",
     },
     "importer.content": {"models", "fsutil", "importer.plan"},
     "importer.downloads": set(),
@@ -136,6 +155,16 @@ ALLOWED: dict[str, set[str]] = {
     # pre_import_diff in plan 06-07.
     "importer.commit_plan": {"models", "importer.plan"},
     "importer.commit_step": {"models", "gitops", "importer.plan", "importer.commit_plan", "importer.content"},
+    # Phase 10 forward registrations (plan 10-01 owns this file; the plans that create these modules
+    # add nothing here). importer.stems is created by plan 10-01 and is the one name rule of the Atomic_
+    # scheme; it reads the atomic prefix from atomic_check. The others are created by later Phase 10 plans.
+    "importer.stems": {"atomic_check"},
+    "importer.siblings": {"models", "importer.stems"},
+    "importer.footprint_index": {"models", "kicad_files", "importer.package", "importer.verify"},
+    "importer.categories": {"importer.candidate", "importer.stems"},
+    "importer.keywords": {"manufacturers"},
+    "importer.footprint_text": {"kicad_files", "sexpr"},
+    "importer.incoming": {"models", "kicad_files", "atomic_check"},
 }
 
 CORE_MODULES = (
