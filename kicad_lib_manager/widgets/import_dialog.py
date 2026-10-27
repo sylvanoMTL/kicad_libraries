@@ -1345,6 +1345,8 @@ class ImportDialog(QDialog):
         self._field_frames.pop("footprints", None)
         self._reason_targets.pop("footprints", None)
         self._reason_targets.pop("model", None)
+        self._reason_targets.pop("model_rejected", None)
+        self._field_frames.pop("model", None)
         self._extends_note = None
         self._linked_fp = None
         while self._items_form.rowCount():
@@ -1482,7 +1484,8 @@ class ImportDialog(QDialog):
         button.setDefault(False)
         button.clicked.connect(self._on_add_model)
         button.setEnabled(not self._model_busy())
-        lay.addWidget(button, alignment=Qt.AlignmentFlag.AlignLeft)
+        # Framed so a missing model turns the visible button amber and a click on the reason lands on it (D-25)
+        lay.addWidget(self._framed(button, "model"), alignment=Qt.AlignmentFlag.AlignLeft)
         self._add_model_btn = button
         # Why the last attach found nothing (or that it is still reading). File names and Issue texts come
         # from the downloaded source, so the label never reads them as markup (T-07-30)
@@ -1504,7 +1507,7 @@ class ImportDialog(QDialog):
         remove.hide()
         lay.addWidget(remove, alignment=Qt.AlignmentFlag.AlignLeft)
         self._remove_model_btn = remove
-        self._reason_targets["model"] = remove
+        self._reason_targets["model_rejected"] = remove
         return host
 
     def _set_model_note(self, text: str, *, tone: str):
@@ -2240,6 +2243,9 @@ class ImportDialog(QDialog):
             resolutions=dict(self._resolutions),
             model_error=self._model_rejection.issue.text if self._model_rejection is not None else "",
             allowed=self._tools.allowed_stems if self._tools is not None else frozenset(),
+            datasheet_text=self._field_edits["datasheet"].text(),
+            description_text=self._field_edits["description"].text(),
+            manufacturer_text=self._field_edits["manufacturer"].text(),
         )
 
     def _set_strip(self, text: str, *, rich: bool = False, style: str = "", tooltip: str = ""):
