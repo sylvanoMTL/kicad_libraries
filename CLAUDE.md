@@ -51,12 +51,13 @@ Symbol and footprint folder names must match (e.g., `Connector_USB_GCT.kicad_sym
 ```
 
 ### GUI Behavior
-- **Startup**: auto-detects KiCad installation for default footprint cross-referencing. If not found, prompts the user to select the footprints folder.
+- **Startup**: auto-detects KiCad installation for default footprint cross-referencing. If not found, prompts the user to select the footprints folder. The last scan is shown instantly when no library file changed since it was saved; otherwise the full scan runs and the log says why. Rescan always runs the full scan.
 - **Two columns**: Symbols (left) and Footprints (right), grouped by source (Custom, WurthElektronik).
 - **Footprint selection is driven by symbols**: checking/unchecking a symbol auto-selects/deselects its linked footprints. Sync is scoped per source — changing Custom symbols only affects Custom footprints.
 - **Select All / Deselect All**: applies to all symbols, then recalculates footprints via the filter.
 - **Warnings**: orange text for symbols with missing footprint references. Cross-references check both the repo and KiCad's default libraries.
-- **Right-click**: Expand All / Collapse All context menu on both trees.
+- **Right-click**: Expand All / Collapse All context menu on both trees. Right-clicking a library row also offers **Rescan this library**, which re-reads just that library (and, for a footprint library, the Atomic_ symbol libraries that link to it) and keeps the check boxes.
+- **Saved scan**: stored in `%APPDATA%/KiCadExtLibManager/scan_cache/` (one file per repository folder, beside `settings.ini`, never inside the repo). Safe to delete; the next start then runs the full scan.
 
 ### Menu Shortcuts
 - `Ctrl+G` — Generate Tables

@@ -4,11 +4,12 @@ import os
 import re
 import stat
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
 from . import fsutil, kicad_files
-from .atomic_check import check_libraries
+from .atomic_check import check_libraries, summary_line
 from .changes import mark_changes
 from .kicad_process import kicad_running
 from .models import (
@@ -479,10 +480,9 @@ def _custom_model_names(root: Path) -> set[str]:
     }
 
 
-def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[Issue]:
-    """Check footprint model paths: Custom/ must use ${CUSTOM_3DMODEL_DIR} and point at a real file."""
-    custom_names = _custom_model_names(root)
-    mod_files = _collect_files(root, "*.kicad_mod")
+def _check_model_files(root: Path, mod_files: list[Path], custom_names: set[str],
+                       progress: Callable | None = None) -> list[Issue]:
+    """The 3D model path lines for the given footprint files."""
     issues = []
     for i, mod_file in enumerate(mod_files):
         if progress:
@@ -523,6 +523,13 @@ def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[I
     return issues
 
 
+def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[Issue]:
+    """Check footprint model paths: Custom/ must use ${CUSTOM_3DMODEL_DIR} and point at a real file."""
+    return _check_model_files(
+        root, _collect_files(root, "*.kicad_mod"), _custom_model_names(root), progress
+    )
+
+
 def scan_all(repo_root: Path, progress: Callable | None = None,
              kicad_fp_dir: Path | None = None) -> ScanResult:
     if progress:
@@ -554,4 +561,235 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
         symbol_libs=sym_libs,
         footprint_libs=fp_libs,
         issues=issues,
+    )
+
+
+# ── Rescan one library ───────────────────────────────────────────────
+
+_MODEL_CODES = frozenset({"scan.unreadable", "scan.model_var", "scan.model_missing", "scan.model_absolute"})
+_GLOBAL_CODES = frozenset({"scan.nickname_collision", "scan.footprint_lib_missing", "atomic.summary"})
+_CHANGE_CODES = frozenset({
+    "scan.symbol_new", "scan.symbol_changed", "scan.footprint_new", "scan.footprint_changed",
+    "scan.changes_skipped",
+})
+# The start of the per-file skip line of changes.py; a test pins it against changes.py
+_SKIP_FOR = "Change highlight skipped for "
+
+_KIND_SYMBOL = "symbol"
+_KIND_FOOTPRINT = "footprint"
+
+
+@dataclass
+class LibraryRescan:
+    """The merged result of rescanning one library.
+
+    issues are that library's own lines (for the one-line warning count); rechecked names the
+    Atomic_ symbol libraries that were read again because they link to a rescanned footprint library.
+    """
+    result: ScanResult
+    issues: list[Issue]
+    rechecked: list[str]
+
+
+def _full_needed(text: str) -> Issue:
+    return Issue(Severity.INFO, "rescan.full_needed", text)
+
+
+def _refresh_symbol_library(repo_root: Path, merged: ScanResult, index: int,
+                            kicad_fp_dir: Path | None) -> tuple[SymbolLibrary, list[Issue]]:
+    """Read one symbol library again in place; returns it and its own lines (never the atomic summary)."""
+    old = merged.symbol_libs[index]
+    fresh = SymbolLibrary(
+        nickname=old.nickname,
+        rel_path=old.rel_path,
+        source=old.source,
+        footprint_refs=_parse_footprint_refs(repo_root / old.rel_path),
+        selected=old.selected,
+    )
+    lines = [
+        issue for issue in check_libraries(repo_root, [fresh], merged.footprint_libs, kicad_fp_dir)
+        if issue.code != "atomic.summary"
+    ]
+    lines.extend(mark_changes(repo_root, [fresh], []))
+    merged.symbol_libs[index] = fresh
+    return fresh, lines
+
+
+def _owns_symbol_issue(lib: SymbolLibrary, issue: Issue) -> bool:
+    nickname = lib.nickname
+    if issue.code.startswith("atomic.") and issue.code != "atomic.summary":
+        return issue.text.startswith((f"{nickname} / ", f"{nickname}: "))
+    if issue.code in ("scan.symbol_new", "scan.symbol_changed"):
+        return issue.text.startswith(f"Symbol {nickname} / ")
+    if issue.code == "scan.changes_skipped":
+        return issue.text.startswith(f"{_SKIP_FOR}{Path(lib.rel_path).name}: ")
+    return False
+
+
+def _skip_line_file(issue: Issue) -> str | None:
+    """The file name of a per-file change skip line, else None."""
+    if issue.code != "scan.changes_skipped" or not issue.text.startswith(_SKIP_FOR):
+        return None
+    name, colon, _ = issue.text[len(_SKIP_FOR):].partition(": ")
+    return name if colon else None
+
+
+def _rank(issue: Issue) -> int:
+    """scan_all's order: 3D path lines, atomic lines, the atomic summary, then change lines."""
+    if issue.code in _MODEL_CODES:
+        return 0
+    if issue.code == "atomic.summary":
+        return 2
+    if issue.code.startswith("atomic."):
+        return 1
+    if issue.code in _CHANGE_CODES:
+        return 3
+    return 4
+
+
+def rescan_library(
+    repo_root: Path,
+    previous: ScanResult,
+    kind: str,
+    rel_path: str,
+    kicad_fp_dir: Path | None = None,
+) -> LibraryRescan | Issue:
+    """Read one library again and merge it into a copy of the last scan.
+
+    kind is "symbol" or "footprint". The result has the libraries and lines a full scan would give
+    (line order within a kind of line may differ). A footprint library also re-checks the Atomic_
+    symbol libraries that link to it, because their footprint and 3D model verdicts read its files.
+    previous is never mutated; the selected flags of the result are a snapshot the GUI re-applies.
+
+    Returns a rescan.full_needed Issue instead when only a full scan is right: the library is not
+    in the last scan, was deleted or renamed, shares its nickname with another library, or its
+    change lines cannot be told apart from another library's.
+    """
+    repo_root = Path(repo_root)
+    merged = copy.deepcopy(previous)
+    if kicad_fp_dir is None:
+        kicad_fp_dir = find_kicad_footprint_dir()
+
+    if kind == _KIND_SYMBOL:
+        libs = merged.symbol_libs
+    elif kind == _KIND_FOOTPRINT:
+        libs = merged.footprint_libs
+    else:
+        libs = []
+    index = next((i for i, lib in enumerate(libs) if lib.rel_path == rel_path), None)
+    if index is None:
+        return _full_needed(f"{rel_path} is not in the last scan; running a full rescan instead.")
+    target = libs[index]
+    on_disk = (repo_root / rel_path).is_file() if kind == _KIND_SYMBOL else (repo_root / rel_path).is_dir()
+    if not on_disk:
+        return _full_needed(
+            f"{target.nickname} is no longer at {rel_path} (deleted or renamed); running a full rescan instead."
+        )
+    if target.collision_peers:
+        return _full_needed(
+            f"{target.nickname} shares its name with another library; running a full rescan instead."
+        )
+
+    # The Atomic_ symbol libraries whose Footprint links name a rescanned footprint library
+    recheck = [
+        i for i, lib in enumerate(merged.symbol_libs)
+        if kind == _KIND_FOOTPRINT and lib.atomic
+        and any(ref.library_name == target.nickname for ref in lib.footprint_refs)
+    ]
+    for i in recheck:
+        lib = merged.symbol_libs[i]
+        if lib.collision_peers:
+            return _full_needed(
+                f"{lib.nickname} shares its name with another library; running a full rescan instead."
+            )
+        if not (repo_root / lib.rel_path).is_file():
+            return _full_needed(
+                f"{lib.nickname} is no longer at {lib.rel_path} (deleted or renamed); "
+                "running a full rescan instead."
+            )
+
+    refreshed_symbols: list[SymbolLibrary] = []
+    refreshed_footprint: FootprintLibrary | None = None
+    if kind == _KIND_SYMBOL:
+        fresh, own_lines = _refresh_symbol_library(repo_root, merged, index, kicad_fp_dir)
+        refreshed_symbols.append(fresh)
+        fresh_lines = list(own_lines)
+    else:
+        refreshed_footprint = FootprintLibrary(
+            nickname=target.nickname, rel_path=target.rel_path, source=target.source,
+            selected=target.selected,
+        )
+        merged.footprint_libs[index] = refreshed_footprint
+        own_lines = _check_model_files(
+            repo_root, sorted((repo_root / rel_path).rglob("*.kicad_mod")), _custom_model_names(repo_root)
+        )
+        own_lines.extend(mark_changes(repo_root, [], [refreshed_footprint]))
+        fresh_lines = list(own_lines)
+        for i in recheck:
+            fresh, extra = _refresh_symbol_library(repo_root, merged, i, kicad_fp_dir)
+            refreshed_symbols.append(fresh)
+            fresh_lines.extend(extra)
+
+    other_custom_folders = [
+        repo_root / lib.rel_path for lib in merged.footprint_libs
+        if lib.source == "Custom" and lib.rel_path != rel_path
+    ]
+
+    def footprint_owns(issue: Issue) -> bool | Issue:
+        """True when the old line belongs to the rescanned footprint library; an Issue when it is ambiguous."""
+        if issue.code in _MODEL_CODES:
+            return issue.text.startswith(f"[{rel_path}/")
+        if issue.code in ("scan.footprint_new", "scan.footprint_changed"):
+            return issue.text.startswith(f"Footprint {target.nickname} / ")
+        name = _skip_line_file(issue)
+        if name is None or not name.lower().endswith(".kicad_mod"):
+            return False
+        if not any((folder / name).exists() for folder in other_custom_folders):
+            return True
+        if (repo_root / rel_path / name).exists():
+            return _full_needed(
+                f"The change check for {name} cannot be matched to one library; "
+                "running a full rescan instead."
+            )
+        return False
+
+    kept: list[Issue] = []
+    for issue in previous.issues:
+        if issue.code in _GLOBAL_CODES:
+            continue
+        if any(_owns_symbol_issue(lib, issue) for lib in refreshed_symbols):
+            continue
+        if refreshed_footprint is not None:
+            verdict = footprint_owns(issue)
+            if isinstance(verdict, Issue):
+                return verdict
+            if verdict:
+                continue
+        kept.append(issue)
+
+    # A line about the whole change check (no file name) is kept once, not added again
+    for issue in fresh_lines:
+        if issue.code == "scan.changes_skipped" and _skip_line_file(issue) is None and issue in kept:
+            continue
+        kept.append(issue)
+
+    collisions = find_nickname_collisions(merged.symbol_libs, merged.footprint_libs)
+    cross = cross_reference(merged.symbol_libs, merged.footprint_libs, kicad_fp_dir)
+    summary = summary_line(merged.symbol_libs)
+    if summary is not None:
+        kept.append(summary)
+    kept.sort(key=_rank)
+    merged.issues = collisions + cross + kept
+
+    # The line about the whole change check belongs to no library
+    own_lines = [
+        issue for issue in own_lines
+        if issue.code != "scan.changes_skipped" or _skip_line_file(issue) is not None
+    ]
+    if kind == _KIND_SYMBOL:
+        own_lines.extend(issue for issue in cross if issue.text.startswith(f"[{target.nickname}] "))
+    return LibraryRescan(
+        result=merged,
+        issues=own_lines,
+        rechecked=[lib.nickname for lib in refreshed_symbols if lib.rel_path != rel_path],
     )

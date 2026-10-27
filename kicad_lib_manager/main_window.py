@@ -9,8 +9,11 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
+from . import scan_cache
 from .importer.layout import RepoLayout
-from .library_scanner import scan_all, find_kicad_footprint_dir, sync_kicad_path_vars
+from .library_scanner import (
+    LibraryRescan, find_kicad_footprint_dir, rescan_library, scan_all, sync_kicad_path_vars,
+)
 from .table_generator import (
     add_library_entries, write_tables, restore_backup_pair, table_info, TableInfo,
 )
@@ -18,7 +21,7 @@ from .models import Issue, ScanResult, Severity
 from .settings import (
     load_kicad_fp_dir, save_kicad_fp_dir,
     load_dest_history, add_dest_to_history,
-    load_window_geometry, save_window_geometry,
+    load_window_geometry, save_window_geometry, scan_cache_file,
 )
 from .widgets.library_table import LibraryTableWidget
 from .widgets.log_panel import LogPanel
@@ -66,11 +69,15 @@ class ScanWorker(QThread):
     progress = Signal(str, int)  # message, percentage
     finished = Signal(object)    # ScanResult
     error = Signal(str)
+    note = Signal(object)        # Issue about the saved scan
 
-    def __init__(self, repo_root: Path, kicad_fp_dir: Path | None = None):
+    def __init__(self, repo_root: Path, kicad_fp_dir: Path | None = None, *,
+                 cache_file: Path | None = None, reuse_cache: bool = False):
         super().__init__()
         self._repo_root = repo_root
         self._kicad_fp_dir = kicad_fp_dir
+        self._cache_file = cache_file
+        self._reuse_cache = reuse_cache
 
     def run(self):
         try:
@@ -78,9 +85,99 @@ class ScanWorker(QThread):
                 pct = int(current / max(total, 1) * 100)
                 self.progress.emit(msg, pct)
 
+            fingerprint = None
+            if self._cache_file is not None:
+                # Cache problems never stop the scan: this is the thread boundary (O-04)
+                if self._reuse_cache:
+                    self.progress.emit("Checking for library changes...", 0)
+                    try:
+                        check = scan_cache.load_fresh(
+                            self._cache_file, self._repo_root, self._kicad_fp_dir
+                        )
+                    except Exception:
+                        check = scan_cache.CacheCheck(None, Issue(
+                            Severity.INFO, "cache.unreadable",
+                            "The saved scan could not be read; scanning the whole repository.",
+                        ))
+                    self.note.emit(check.note)
+                    if check.result is not None:
+                        self.finished.emit(check.result)
+                        return
+                    fingerprint = check.fingerprint
+                # Taken before scan_all reads any file, so an edit during the scan shows as stale
+                if fingerprint is None:
+                    try:
+                        fingerprint = scan_cache.fingerprint(self._repo_root, self._kicad_fp_dir)
+                    except Exception:
+                        fingerprint = None
+
             result = scan_all(self._repo_root, progress=on_progress,
                               kicad_fp_dir=self._kicad_fp_dir)
+
+            if self._cache_file is not None:
+                # Before finished: the GUI has not yet touched the selected flags
+                try:
+                    failure = scan_cache.save(
+                        self._cache_file, self._repo_root, self._kicad_fp_dir, fingerprint, result
+                    )
+                except Exception as e:
+                    failure = Issue(
+                        Severity.WARNING, "cache.save_failed",
+                        f"Could not save this scan for the next start: {e}",
+                    )
+                if failure is not None:
+                    self.note.emit(failure)
             self.finished.emit(result)
+        except Exception as e:
+            self.error.emit(str(e))
+
+
+class LibraryRescanWorker(QThread):
+    """Rescan one library off the GUI thread and refresh its part of the saved scan (O-07 to O-09)."""
+    finished = Signal(object)  # LibraryRescan, or None when only a full scan is right
+    note = Signal(object)      # Issue to log
+    error = Signal(str)
+
+    def __init__(self, repo_root: Path, kicad_fp_dir: Path | None, previous: ScanResult,
+                 kind: str, rel_path: str, *, cache_file: Path | None = None):
+        super().__init__()
+        self._repo_root = repo_root
+        self._kicad_fp_dir = kicad_fp_dir
+        self._previous = previous
+        self._kind = kind
+        self._rel_path = rel_path
+        self._cache_file = cache_file
+
+    def run(self):
+        try:
+            entries = None
+            if self._cache_file is not None:
+                # Stats first, before the library is read, so an edit during the rescan shows as stale
+                try:
+                    entries = scan_cache.library_entries(self._repo_root, self._kind, self._rel_path)
+                except Exception:
+                    entries = None
+            outcome = rescan_library(
+                self._repo_root, self._previous, self._kind, self._rel_path, self._kicad_fp_dir
+            )
+            if isinstance(outcome, Issue):
+                self.note.emit(outcome)
+                self.finished.emit(None)
+                return
+            if self._cache_file is not None:
+                try:
+                    failure = scan_cache.update_library(
+                        self._cache_file, self._repo_root, self._kicad_fp_dir, outcome.result,
+                        self._kind, self._rel_path, entries,
+                    )
+                except Exception:
+                    failure = Issue(
+                        Severity.INFO, "cache.not_updated",
+                        "The saved scan was not updated, so the next start scans the whole repository.",
+                    )
+                if failure is not None:
+                    self.note.emit(failure)
+            self.finished.emit(outcome)
         except Exception as e:
             self.error.emit(str(e))
 
@@ -97,7 +194,9 @@ class MainWindow(QMainWindow):
             self.restoreGeometry(geometry)
 
         self._scan_result: ScanResult | None = None
-        self._worker: ScanWorker | None = None
+        self._worker: QThread | None = None
+        # (kind, nickname) of the library rescan in flight, for its one log line
+        self._rescan_label: tuple[str, str] | None = None
         # Armed once here; _finish_scan consumes it after the first scan ends,
         # however that scan ended. Only that scan pre-selects from the tables.
         self._startup_pending = True
@@ -114,7 +213,8 @@ class MainWindow(QMainWindow):
         # Detect KiCad installation, then start scan
         self._detect_kicad()
         self._log_existing_tables(Path(self._dest_combo.currentText()))
-        self._start_scan()
+        # Reuse the saved scan when no library file changed (O-01)
+        self._start_scan(reuse_cache=True)
 
     def _build_menu(self):
         menubar = self.menuBar()
@@ -252,6 +352,7 @@ class MainWindow(QMainWindow):
         # Library tree
         self._tree = LibraryTableWidget()
         self._tree.symbol_activated.connect(self._on_symbol_activated)
+        self._tree.library_rescan_requested.connect(self._on_library_rescan_requested)
         layout.addWidget(self._tree, stretch=1)
 
         # Log panel
@@ -338,12 +439,15 @@ class MainWindow(QMainWindow):
             self._act_check_atomic,
         ):
             control.setEnabled(not running)
+        self._tree.set_library_rescan_enabled(not running)
 
-    def _start_scan(self, show_progress: bool = True):
+    def _start_scan(self, show_progress: bool = True, reuse_cache: bool = False):
         """Start a scan; every scan request must go through here.
 
         show_progress=False runs the scan quietly (no QProgressDialog); only the
         post-install rescan uses it, so the trees update behind the import dialog.
+        reuse_cache=True (app start only) shows the saved scan when no library file
+        changed; every other scan is a full scan, and every full scan saves its result.
 
         Refuses while a worker exists, because a disabled control does not stop a
         programmatic caller (the post-import rescan included). The guard keys on
@@ -372,10 +476,18 @@ class MainWindow(QMainWindow):
         if self._pending_post_install is not None:
             self._pending_post_install.scan_started = True
 
-        self._log.log("Scanning repository...", "info")
+        self._log.log(
+            "Checking for library changes since the saved scan..." if reuse_cache
+            else "Scanning repository...",
+            "info",
+        )
 
-        self._worker = ScanWorker(REPO_ROOT, self._kicad_fp_dir)
+        self._worker = ScanWorker(
+            REPO_ROOT, self._kicad_fp_dir,
+            cache_file=scan_cache_file(REPO_ROOT), reuse_cache=reuse_cache,
+        )
         self._worker.progress.connect(self._on_scan_progress)
+        self._worker.note.connect(self._log.log_issue)
         self._worker.finished.connect(self._on_scan_finished)
         self._worker.error.connect(self._on_scan_error)
         self._worker.start()
@@ -384,6 +496,63 @@ class MainWindow(QMainWindow):
         if self._progress is not None:
             self._progress.setLabelText(message)
             self._progress.setValue(min(percentage, 99))
+
+    def _on_library_rescan_requested(self, kind: str, rel_path: str):
+        """Rescan one library from the right-click menu; same busy guard as _start_scan (O-09)."""
+        if self._worker is not None:
+            self._log.log("A scan is already running; request ignored.", "info")
+            return
+        if self._scan_result is None:
+            self._log.log("No scan result yet; rescan first.", "info")
+            return
+        libs = self._scan_result.symbol_libs if kind == "symbol" else self._scan_result.footprint_libs
+        nickname = next((lib.nickname for lib in libs if lib.rel_path == rel_path), rel_path)
+        self._set_scan_running(True)
+        self._progress = None
+        self._rescan_label = (kind, nickname)
+        self.statusBar().showMessage(f"Rescanning {nickname}...")
+
+        self._worker = LibraryRescanWorker(
+            REPO_ROOT, self._kicad_fp_dir, self._scan_result, kind, rel_path,
+            cache_file=scan_cache_file(REPO_ROOT),
+        )
+        self._worker.note.connect(self._log.log_issue)
+        self._worker.finished.connect(self._on_library_rescanned)
+        self._worker.error.connect(self._on_scan_error)
+        self._worker.start()
+
+    def _on_library_rescanned(self, outcome: LibraryRescan | None):
+        try:
+            self.statusBar().clearMessage()
+            if outcome is not None:
+                # The live check boxes win over the worker's snapshot of them (O-08)
+                self._copy_selection(self._scan_result, outcome.result)
+                self._log_issues(self._trim_collided_selection(outcome.result))
+                self._scan_result = outcome.result
+                self._tree.populate(outcome.result)
+                self._log_library_rescanned(outcome)
+        finally:
+            self._finish_scan()
+            if outcome is None and self._worker is None:
+                # Only a full scan is right here (O-10); the reason was logged already
+                self._start_scan()
+
+    def _log_library_rescanned(self, outcome: LibraryRescan):
+        kind, nickname = self._rescan_label or ("symbol", "library")
+        text = f"Rescanned {kind} library {nickname}"
+        count = len(outcome.rechecked)
+        if count:
+            text += (
+                f" (and re-checked {count} linked atomic symbol "
+                f"{'library' if count == 1 else 'libraries'})"
+            )
+        warnings = sum(
+            1 for issue in outcome.issues if issue.severity in (Severity.WARNING, Severity.ERROR)
+        )
+        if warnings == 0:
+            self._log.log(f"{text}: no warnings", "success")
+        else:
+            self._log.log(f"{text}: {warnings} warning{'' if warnings == 1 else 's'}", "warning")
 
     def _finish_scan(self):
         """Release the worker and re-enable the controls; always runs after a scan."""
@@ -438,11 +607,11 @@ class MainWindow(QMainWindow):
         finally:
             self._finish_scan()
 
-    def _reapply_selection(self, previous: ScanResult | None, result: ScanResult):
-        """Carry the user's selection over to a fresh scan, keyed by rel_path.
+    @staticmethod
+    def _copy_selection(previous: ScanResult | None, result: ScanResult) -> set[str]:
+        """Copy the selected flags of previous onto result by rel_path; return the rel_paths that vanished.
 
-        New libraries start unchecked and vanished ones drop out. Without a
-        previous result (rescan after a failed startup scan) nothing is kept.
+        New libraries start unchecked. Without a previous result nothing is kept.
         """
         keep_sym: set[str] = set()
         keep_fp: set[str] = set()
@@ -455,12 +624,20 @@ class MainWindow(QMainWindow):
         for lib in result.footprint_libs:
             lib.selected = lib.rel_path in keep_fp
 
-        kept = _selected_count(result)
-        self._log.log(f"Kept {kept} selections after rescan", "info")
-        missing = (
+        return (
             (keep_sym - {lib.rel_path for lib in result.symbol_libs})
             | (keep_fp - {lib.rel_path for lib in result.footprint_libs})
         )
+
+    def _reapply_selection(self, previous: ScanResult | None, result: ScanResult):
+        """Carry the user's selection over to a fresh scan, keyed by rel_path.
+
+        New libraries start unchecked and vanished ones drop out. Without a
+        previous result (rescan after a failed startup scan) nothing is kept.
+        """
+        missing = self._copy_selection(previous, result)
+        kept = _selected_count(result)
+        self._log.log(f"Kept {kept} selections after rescan", "info")
         if missing:
             self._log.log(
                 f"Dropped {len(missing)} selections for libraries no longer found: "

@@ -733,3 +733,50 @@ def test_reveal_makes_rows_current_and_visible(qtbot, scan):
     w.reveal("missing", None)
     w.reveal(None, "missing")
     w.reveal(None, None)
+
+
+# ── Rescan this library (quick 261027-gg7) ────────────────────────────────
+
+def _menu_texts(menu):
+    return [a.text() for a in menu.actions() if not a.isSeparator()]
+
+
+def test_library_row_menu_offers_rescan_and_emits_kind_and_path(widget, qtbot):
+    for tree, item, kind, rel_path in (
+        (widget._sym_tree, _sym_item(widget, SYM_C), "symbol", SYM_C),
+        (widget._fp_tree, _fp_item(widget, FP_W), "footprint", FP_W),
+    ):
+        menu = widget._build_context_menu(tree, item)
+        assert _menu_texts(menu) == ["Expand All", "Collapse All", "Rescan this library"]
+        action = menu.actions()[-1]
+        assert action.isEnabled()
+        with qtbot.waitSignal(widget.library_rescan_requested) as blocker:
+            action.trigger()
+        assert blocker.args == [kind, rel_path]
+
+
+def test_other_rows_and_empty_spots_have_no_rescan_entry(qtbot):
+    from kicad_lib_manager.models import SymbolEntry
+
+    scan = ScanResult(
+        symbol_libs=[SymbolLibrary("Sym_C", SYM_C, "Custom", symbols=[SymbolEntry("PART", status="new")])],
+        footprint_libs=[FootprintLibrary("FP_C", FP_C, "Custom")],
+    )
+    w = _make_widget(qtbot, scan)
+    group = w._sym_tree.topLevelItem(0)
+    child = _sym_item(w, SYM_C).child(0)
+    assert child is not None
+
+    for item in (group, child, None):
+        menu = w._build_context_menu(w._sym_tree, item)
+        assert _menu_texts(menu) == ["Expand All", "Collapse All"]
+
+
+def test_rescan_entry_is_disabled_while_a_scan_runs(widget):
+    widget.set_library_rescan_enabled(False)
+    action = widget._build_context_menu(widget._sym_tree, _sym_item(widget, SYM_C)).actions()[-1]
+    assert action.text() == "Rescan this library"
+    assert not action.isEnabled()
+
+    widget.set_library_rescan_enabled(True)
+    assert widget._build_context_menu(widget._sym_tree, _sym_item(widget, SYM_C)).actions()[-1].isEnabled()
