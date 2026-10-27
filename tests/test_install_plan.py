@@ -1470,17 +1470,17 @@ def test_conflict_suggested_names(tmp_path):
     plan = _plan(tmp_path, layout, ToolContext())
     assert {c.kind: c.suggested_name for c in plan.conflicts} == {
         "symbol": "PART_2",
-        "footprint": "FP_2",
+        "footprint": "FP_PART",
         "model": "PART_2.step",
     }
     # Taken names are skipped: symbols compare exactly, files compare ignoring case
     layout = _clashing_layout(tmp_path / "taken", extra_names=("PART_2", "part_3"))
-    _put_footprint(layout, "fp_2.kicad_mod")
+    _put_footprint(layout, "fp_part.kicad_mod")
     _put_model(layout, "PART_2.STEP")
     plan = _plan(tmp_path / "taken", layout, ToolContext())
     assert {c.kind: c.suggested_name for c in plan.conflicts} == {
         "symbol": "PART_3",
-        "footprint": "FP_3",
+        "footprint": "FP_PART_2",
         "model": "PART_3.step",
     }
 
@@ -1637,8 +1637,8 @@ def test_resolution_rename_footprint_uses_the_suggestion(tmp_path):
     layout = _clashing_layout(tmp_path, symbol=False, model=False)
     plan = _plan(tmp_path, layout, ToolContext(), options=_with({FP_KEY: _res("rename")}))
     assert not plan.blocked, plan.issues
-    assert plan.footprint_names == ("FP_2",)
-    assert _value_of(plan, "Footprint") == f"{footprint_library_for(LIBRARY)}:FP_2"
+    assert plan.footprint_names == ("FP_PART",)
+    assert _value_of(plan, "Footprint") == f"{footprint_library_for(LIBRARY)}:FP_PART"
 
 
 def test_resolution_rename_model_flows(tmp_path):

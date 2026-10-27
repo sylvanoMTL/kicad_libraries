@@ -2094,7 +2094,7 @@ def test_conflict_rename_field_and_empty_reason(qtbot, make_item_dialog, item_la
     row._rename_btn.click()
     wait_current(qtbot, dialog)
     suggested = dialog._plan.conflicts[0].suggested_name
-    assert suggested == "DQK0006B_2"
+    assert suggested == "DQK0006B_CSD85301Q2"
     assert row._rename_edit.isVisible() and row._rename_edit.text() == suggested
     assert row._rename_edit.minimumWidth() >= 160
     assert row._hint_label.text() == f"Rename - install as {suggested} and leave the existing footprint untouched"
