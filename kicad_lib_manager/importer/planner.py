@@ -47,7 +47,7 @@ from ..kicad_files import (
     unit_library_text,
 )
 from ..models import Issue, Severity
-from ..sexpr import Edit, Node, apply_edits, parse
+from ..sexpr import Edit, Node, apply_edits, parse, token_stream
 from . import kicad_cli
 from . import package as _package
 from . import stems
@@ -438,6 +438,35 @@ def suggest_free_name(base: str, taken: Collection[str], *, suffix: str = "", ca
     return candidate
 
 
+def _same_footprint(planned: bytes, existing: Path, digest: str) -> bool:
+    """True when the planned footprint equals the file on disk: the same bytes, or the same tokens in another layout (D-19)."""
+    if hashlib.sha256(planned).hexdigest() == digest:
+        return True
+    cap = _package.MAX_KICAD_TEXT_BYTES
+    try:
+        with open(existing, "rb") as handle:
+            data = handle.read(cap + 1)
+        if len(data) > cap:
+            return False
+        then = parse_bytes(data, existing.name, max_nodes=_package.MAX_KICAD_TEXT_NODES)
+        now = parse_bytes(planned, existing.name, max_nodes=_package.MAX_KICAD_TEXT_NODES)
+    except (OSError, MemoryError):
+        return False
+    if isinstance(then, Issue) or isinstance(now, Issue):
+        return False
+    return token_stream(then.root) == token_stream(now.root)
+
+
+def _suggest_footprint_rename(default: str, mpn: str, taken: Collection[str]) -> str:
+    """<FP>_<MPN> for a footprint that clashes with a different one; the next free <FP>_<MPN>_<n> when that is taken (D-19)."""
+    if not mpn:
+        return suggest_free_name(default, taken, casefold=True)
+    base = sanitize_name(f"{default}_{mpn}").sanitized
+    if base.casefold() not in {name.casefold() for name in taken}:
+        return base
+    return suggest_free_name(base, taken, casefold=True)
+
+
 def _digest(path: Path) -> str | None:
     """SHA-256 of a file read in chunks; None when it cannot be read."""
     digest = hashlib.sha256()
@@ -472,7 +501,7 @@ class _FileSpec:
     default: str  # the name the plan would use; every conflict key is built from it
     file_of: Callable[[str], str]  # name -> file name
     identity_of: Callable[[str], str]  # file name -> name
-    same: Callable[[str, str], bool]  # (name, sha256 of the existing file) -> planned content equals it
+    same: Callable[[str, Path, str], bool]  # (name, existing file, its sha256) -> planned content equals it
     make_op: Callable[[str, Path | None, str | None], FileOp]  # (name, existing file, its sha256) -> the write
     sanitise: Callable[[str], NameResult]
     suggest: Callable[[], str]
@@ -487,6 +516,7 @@ class _Decision:
     conflict: Conflict | None = None
     issues: tuple[Issue, ...] = ()
     kept: bool = False  # skip: the existing file is used as it is
+    reused: bool = False  # the planned content is already in the folder, so nothing is written
 
 
 def _find_hit(spec: _FileSpec, wanted: str) -> str | None:
@@ -513,9 +543,9 @@ def _rename_file(spec: _FileSpec, conflict: Conflict, resolution: Resolution) ->
     digest = _digest(spec.folder / hit)
     if digest is None:
         return _Decision(name, conflict=conflict, issues=(_err("install.target_unreadable", f"Could not read {hit} in {spec.where}"),))
-    if hit == wanted and spec.same(name, digest):
+    if hit == wanted and spec.same(name, spec.folder / hit, digest):
         # Repeating the same rename finds the earlier result already in place
-        return _Decision(name, conflict=conflict, issues=tuple(notes))
+        return _Decision(name, conflict=conflict, issues=tuple(notes), reused=True)
     return _Decision(name, conflict=conflict, issues=(
         *notes,
         _err("install.bad_rename", f"{conflict.key}: {spec.where} already holds {hit}, so {wanted} is not free; enter another name"),
@@ -532,8 +562,8 @@ def _decide_file(spec: _FileSpec, key: str, resolution: Resolution | None) -> _D
     digest = _digest(existing)
     if digest is None:
         return _Decision(spec.default, issues=(_err("install.target_unreadable", f"Could not read {hit} in {spec.where}"),))
-    if hit == wanted and spec.same(spec.default, digest):
-        return _Decision(spec.default)
+    if hit == wanted and spec.same(spec.default, existing, digest):
+        return _Decision(spec.default, reused=True)
     text = (
         f"{spec.where} already holds {hit}, which differs from {wanted} only by letter case"
         if hit != wanted
@@ -938,7 +968,7 @@ def build_plan(
                 default=model_file,
                 file_of=lambda name: name,
                 identity_of=lambda name: name,
-                same=lambda name, digest: digest == model_item_file.sha256,
+                same=lambda name, path, digest: digest == model_item_file.sha256,
                 make_op=make_model_op,
                 sanitise=model_sanitise,
                 suggest=lambda: suggest_free_name(model_stem, model_files, suffix=model_suffix, casefold=True),
@@ -1007,10 +1037,10 @@ def build_plan(
             default=default,
             file_of=lambda name: f"{name}{_FOOTPRINT_SUFFIX}",
             identity_of=lambda name: name[: -len(_FOOTPRINT_SUFFIX)],
-            same=lambda name, digest: hashlib.sha256(render_fp(index, name)[0]).hexdigest() == digest,
+            same=lambda name, path, digest: _same_footprint(render_fp(index, name)[0], path, digest),
             make_op=make_fp_op,
             sanitise=sanitize_name,
-            suggest=lambda: suggest_free_name(default, [*fp_taken, *fp_names], casefold=True),
+            suggest=lambda: _suggest_footprint_rename(default, final_mpn, [*fp_taken, *fp_names]),
         )
 
     fp_decisions = [
@@ -1023,6 +1053,12 @@ def build_plan(
     ]
     for decision in fp_decisions:
         issues.extend(decision.issues)
+        if decision.reused:
+            issues.append(Issue(
+                Severity.INFO,
+                "install.footprint_reused",
+                f"{decision.name} already in {stems.SHARED_FOOTPRINT_LIBRARY} is the same footprint; it is reused and not written",
+            ))
     if fp_decisions[0].kept and model_dec is not None:
         # The kept footprint does not link the incoming model, so copying it would leave a stray file (D-09)
         issues.append(Issue(
