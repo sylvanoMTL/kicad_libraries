@@ -4,17 +4,16 @@ The suggestion is only an overridable default and it is always "" or Atomic_ plu
 library stem, never a manufacturer (D-01). The user-chosen library name is a plain string that
 build_plan judges again with stems.name_verdict.
 
-The manufacturer helpers at the end (TokenChoice, manufacturer_token, manufacturer_choice and the host
-tables) stay for the planner and the form, which still infer a Manufacturer field from them.
+The datasheet helpers (datasheet_host, registered_domain, is_aggregator_host and
+manufacturer_from_datasheet) are the one way a datasheet link is turned into a manufacturer; the planner
+and the form call manufacturer_from_datasheet (D-23).
 """
 
-import re
-import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from ..manufacturers import CORPORATE_WORDS, by_host, token_map
+from ..manufacturers import by_host
 from ..models import Issue, Severity
 from .candidate import PartMeta
 from .categories import classify
@@ -23,26 +22,8 @@ from .stems import ATOMIC_PREFIX, allowed_stems, name_verdict
 
 MAX_ALTERNATIVES = 5
 
-HOST_TOKENS = {
-    "ti.com": "TI",
-    "analog.com": "ADI",
-    "murata.com": "Murata",
-    "tdk.com": "TDK",
-    "gct.co": "GCT",
-    "memsic.com": "Memsic",
-    "u-blox.com": "uBlox",
-    "abracon.com": "Abracon",
-    "invensense.com": "TDK",
-    "maximintegrated.com": "ADI",
-    "linear.com": "ADI",
-}
-
 _SLD_LABELS = {"co", "com", "org", "net", "ac", "gov", "edu"}
 
-# Folded manufacturer name (casefold, letters and digits only) to library token, derived from the
-# canonical manufacturer table so the two lists cannot drift (D-09)
-MANUFACTURER_ALIASES = token_map()
-_CORPORATE_WORDS = CORPORATE_WORDS
 # Distributor and library sites: registrable label (first label of the registered domain), any TLD
 AGGREGATOR_DOMAINS = frozenset(
     {
@@ -60,14 +41,6 @@ AGGREGATOR_DOMAINS = frozenset(
         "alldatasheet",
     }
 )
-
-
-@dataclass(frozen=True)
-class TokenChoice:
-    token: str
-    # part_info | reference | vocab | property | name_alias | host_table | host_guess | placeholder
-    source: str
-    confident: bool
 
 
 @dataclass(frozen=True)
@@ -133,42 +106,6 @@ def manufacturer_from_datasheet(datasheet: str) -> tuple[str, str | None]:
         return "", host
     entry = by_host(registered_domain(host.casefold()))
     return (entry.name if entry is not None else ""), None
-
-
-def manufacturer_token(value: str) -> TokenChoice:
-    """Map a manufacturer property value to a token: a known name is confident, the first word is a guess."""
-    folded = unicodedata.normalize("NFKD", value)
-    folded = "".join(c for c in folded if not unicodedata.combining(c)).casefold()
-    words = [w for w in re.findall(r"[a-z0-9]+", folded) if w not in _CORPORATE_WORDS]
-    if not words:
-        return TokenChoice("Manufacturer", "placeholder", False)
-    alias = MANUFACTURER_ALIASES.get("".join(words))
-    if alias is not None:
-        return TokenChoice(alias, "name_alias", True)
-    return TokenChoice(words[0][0].upper() + words[0][1:], "property", False)
-
-
-def manufacturer_choice(meta: PartMeta) -> TokenChoice:
-    """Pick the manufacturer token: mapped name, mapped host, unmapped name, host guess, placeholder (D-02)."""
-    named = manufacturer_token(meta.manufacturer)
-    if named.source == "name_alias":
-        return named
-    host = datasheet_host(meta.datasheet)
-    domain = None
-    if host is not None and not is_aggregator_host(host):
-        domain = registered_domain(host.casefold())
-    if domain is not None:
-        token = HOST_TOKENS.get(domain)
-        if token is not None:
-            return TokenChoice(token, "host_table", True)
-    if named.source == "property":
-        return named
-    if domain is not None:
-        # Hyphens and any other non-alphanumerics go, so the guess stays one name token
-        label = re.sub(r"[^a-z0-9]", "", domain.split(".")[0])
-        if label:
-            return TokenChoice(label.capitalize(), "host_guess", False)
-    return TokenChoice("Manufacturer", "placeholder", False)
 
 
 # -- the Atomic_ suggestion (LIB-04) ---------------------------------------------------------------
