@@ -1,47 +1,11 @@
-"""Canonical manufacturer table: folding, lookup, uniqueness and the derived importer token map (FLD-02, D-07..D-10)."""
+"""Canonical manufacturer table: folding, lookup, canonical spelling, datasheet domains and uniqueness (FLD-02, D-07..D-10, D-23)."""
+
+import dataclasses
 
 import pytest
 
 from kicad_lib_manager import manufacturers
-from kicad_lib_manager.importer.suggest import MANUFACTURER_ALIASES, manufacturer_token
 from kicad_lib_manager.manufacturers import Manufacturer
-
-# The v1.0 literal mapping from importer.suggest, copied so the derived map is pinned against it (D-09)
-V1_ALIASES = {
-    "texasinstruments": "TI",
-    "ti": "TI",
-    "analogdevices": "ADI",
-    "adi": "ADI",
-    "maximintegrated": "ADI",
-    "maxim": "ADI",
-    "lineartechnology": "ADI",
-    "linear": "ADI",
-    "tdk": "TDK",
-    "invensense": "TDK",
-    "tdkinvensense": "TDK",
-    "murata": "Murata",
-    "muratamanufacturing": "Murata",
-    "gct": "GCT",
-    "globalconnectortechnology": "GCT",
-    "memsic": "Memsic",
-    "ublox": "uBlox",
-    "abracon": "Abracon",
-    "recom": "RECOM",
-    "recompower": "RECOM",
-}
-
-
-def test_suggest_aliases_are_derived_from_the_table():
-    assert MANUFACTURER_ALIASES == manufacturers.token_map()
-    for key, token in V1_ALIASES.items():
-        assert MANUFACTURER_ALIASES[key] == token
-
-
-def test_manufacturer_token_reads_the_table():
-    for value, token in (("Memsic Inc.", "Memsic"), ("U-BLOX", "uBlox"), ("RECOM Power", "RECOM")):
-        choice = manufacturer_token(value)
-        assert choice.token == token
-        assert choice.source == "name_alias"
 
 
 # ── Folding (FLD-02, D-10) ───────────────────────────────────────────────────
@@ -194,9 +158,31 @@ def test_every_host_is_lowercase_holds_a_dot_and_no_slash():
             assert "/" not in host, host
 
 
-def test_table_keeps_the_v1_token_fields_for_now():
-    assert manufacturers.lookup("TI").entry.token == "TI"
-    assert manufacturers.token_map()["maximintegrated"] == "ADI"
+def test_the_v1_library_token_is_gone():
+    assert [n for n in dir(manufacturers) if "token" in n.casefold()] == []
+    assert "token" not in {f.name for f in dataclasses.fields(Manufacturer)}
+    assert not hasattr(manufacturers.lookup("TI").entry, "token")
+
+
+# ── Canonical spelling (D-23) ────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("TI", "Texas Instruments"),
+        ("texas instruments", "Texas Instruments"),
+        ("GCT", "Global Connector Technology"),
+        ("U-BLOX", "u-blox"),
+        ("Maxim", "Maxim Integrated"),
+        ("Texas Instruments", "Texas Instruments"),
+        ("Hirose", "Hirose"),
+        ("  Hirose Electric ", "  Hirose Electric "),
+        ("", ""),
+    ],
+)
+def test_canonical_gives_the_table_name_or_the_value_unchanged(value, expected):
+    assert manufacturers.canonical(value) == expected
 
 
 def test_entry_names_are_non_empty_unique_and_carry_no_corporate_word():

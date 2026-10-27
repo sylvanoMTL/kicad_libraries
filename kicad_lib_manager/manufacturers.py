@@ -17,12 +17,10 @@ CORPORATE_WORDS = frozenset(
 
 @dataclass(frozen=True)
 class Manufacturer:
-    """One company: canonical name, other spellings, v1.0 library token, optional owner and datasheet domains."""
+    """One company: canonical name, other spellings, optional owner and datasheet domains."""
 
     name: str
     aliases: tuple[str, ...] = ()
-    # Short library token kept only for importer.suggest until Phase 10 drops it (LIB-04)
-    token: str = ""
     # Informational (Phase 10 keywords); never changes the Manufacturer field (D-08)
     owner: str | None = None
     # Registered datasheet domains of the company, lowercase; aggregator sites are never listed (D-23)
@@ -38,28 +36,32 @@ class ManufacturerMatch:
 
 
 MANUFACTURERS: tuple[Manufacturer, ...] = (
-    Manufacturer("Texas Instruments", ("TI",), "TI", hosts=("ti.com",)),
-    Manufacturer("Analog Devices", ("ADI",), "ADI", hosts=("analog.com",)),
+    Manufacturer("Texas Instruments", aliases=("TI",), hosts=("ti.com",)),
+    Manufacturer("Analog Devices", aliases=("ADI",), hosts=("analog.com",)),
     Manufacturer(
         "Maxim Integrated",
-        ("Maxim", "Maxim Integrated Products"),
-        "ADI",
-        "Analog Devices",
+        aliases=("Maxim", "Maxim Integrated Products"),
+        owner="Analog Devices",
         hosts=("maximintegrated.com",),
     ),
     Manufacturer(
-        "Linear Technology", ("Linear", "Linear Tech"), "ADI", "Analog Devices", hosts=("linear.com",)
+        "Linear Technology",
+        aliases=("Linear", "Linear Tech"),
+        owner="Analog Devices",
+        hosts=("linear.com",),
     ),
-    Manufacturer("TDK", (), "TDK", hosts=("tdk.com",)),
-    Manufacturer("InvenSense", ("TDK InvenSense",), "TDK", "TDK", hosts=("invensense.com",)),
+    Manufacturer("TDK", hosts=("tdk.com",)),
+    Manufacturer("InvenSense", aliases=("TDK InvenSense",), owner="TDK", hosts=("invensense.com",)),
     Manufacturer(
-        "Murata", ("Murata Manufacturing", "Murata Electronics"), "Murata", hosts=("murata.com",)
+        "Murata", aliases=("Murata Manufacturing", "Murata Electronics"), hosts=("murata.com",)
     ),
-    Manufacturer("Global Connector Technology", ("GCT",), "GCT", hosts=("gct.co",)),
-    Manufacturer("Memsic", ("Memsic Inc.",), "Memsic", hosts=("memsic.com",)),
-    Manufacturer("u-blox", ("U-BLOX", "uBlox", "u-blox AG"), "uBlox", hosts=("u-blox.com",)),
-    Manufacturer("Abracon", ("Abracon LLC",), "Abracon", hosts=("abracon.com",)),
-    Manufacturer("RECOM", ("RECOM Power", "RECOM Power GmbH"), "RECOM", hosts=("recom-power.com",)),
+    Manufacturer("Global Connector Technology", aliases=("GCT",), hosts=("gct.co",)),
+    Manufacturer("Memsic", aliases=("Memsic Inc.",), hosts=("memsic.com",)),
+    Manufacturer("u-blox", aliases=("U-BLOX", "uBlox", "u-blox AG"), hosts=("u-blox.com",)),
+    Manufacturer("Abracon", aliases=("Abracon LLC",), hosts=("abracon.com",)),
+    Manufacturer(
+        "RECOM", aliases=("RECOM Power", "RECOM Power GmbH"), hosts=("recom-power.com",)
+    ),
 )
 
 
@@ -131,8 +133,3 @@ def by_host(domain: str) -> Manufacturer | None:
     if key.endswith("."):
         key = key[:-1]
     return _BY_HOST.get(key)
-
-
-def token_map() -> dict[str, str]:
-    """Return folded name and aliases of every entry with a library token, mapped to that token."""
-    return {key: entry.token for key, entry in _BY_FOLDED.items() if entry.token}
