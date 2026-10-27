@@ -18,15 +18,24 @@ import pytest
 from installfixtures import V10_VERSION, _tree, _v10_pin, _v10_property, target_lib, vendor_footprint
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR
-from zipfixtures import STEP_BYTES, _quote
+from zipfixtures import STEP_BYTES, _quote, footprint_library_for
 
-# Today's v1 library names (D-02). IC_MOSFET_Dual_TI is the one a new-library test creates.
-BATTERY_CHARGER = "IC_Battery_Charger_TI"
-IMU = "IC_IMU_TDK"
-MAGNETOMETER = "IC_Magnetometer_Memsic"
-POWER_MOSFET = "IC_PowerManagementMosfet_TI"
-WIRELESS = "IC_Wireless_BLE_uBlox"
-ABSENT_LIBRARY = "IC_MOSFET_Dual_TI"
+# The Atomic_ install targets of the synthetic Custom/ (D-08). Atomic_Transistor_FET is the one a
+# new-library test creates. Each library keeps its v1 name in SyntheticLibrary.v1_name: the default
+# tree models the live Custom/, which keeps v1 names until Phase 13 (D-13).
+BATTERY_CHARGER = "Atomic_Battery_Management"
+IMU = "Atomic_Sensor_Motion"
+MAGNETOMETER = "Atomic_Sensor_Magnetic"
+POWER_MOSFET = "Atomic_Power_Management"
+WIRELESS = "Atomic_RF_Module"
+ABSENT_LIBRARY = "Atomic_Transistor_FET"
+# Today's v1 names of the same libraries; V1_ABSENT_LIBRARY is the one a v1 new-library test creates
+V1_BATTERY_CHARGER = "IC_Battery_Charger_TI"
+V1_IMU = "IC_IMU_TDK"
+V1_MAGNETOMETER = "IC_Magnetometer_Memsic"
+V1_POWER_MOSFET = "IC_PowerManagementMosfet_TI"
+V1_WIRELESS = "IC_Wireless_BLE_uBlox"
+V1_ABSENT_LIBRARY = "IC_MOSFET_Dual_TI"
 UL_PART_TOKENS = ("CSD85301Q2", "DQK0006B", "DLV0006A")
 
 # One library per symbol format version the real Custom/ holds
@@ -37,10 +46,12 @@ FORMAT_VERSIONS = (20211014, 20231120, 20241209, 20251024)
 class SyntheticLibrary:
     """One library of the synthetic Custom/; an empty footprints tuple means no .pretty folder.
 
+    name is the Atomic_ install target, v1_name the name the live tree holds today.
     Footprint i links models[i] when that index exists.
     """
 
     name: str
+    v1_name: str
     version: int
     symbols: tuple[str, ...]
     footprints: tuple[str, ...]
@@ -51,30 +62,40 @@ class SyntheticLibrary:
 SYNTHETIC_LIBRARIES = (
     SyntheticLibrary(
         BATTERY_CHARGER,
+        V1_BATTERY_CHARGER,
         20211014,
         ("BQ25180YBGR", "BQ24072RGTR"),
         ("BGA8N40P2X4", "QFN-16_RGT"),
         ("BQ25180YBGR.step",),
     ),
-    SyntheticLibrary(IMU, 20231120, ("ICM-42688-P",), (), ()),
+    SyntheticLibrary(IMU, V1_IMU, 20231120, ("ICM-42688-P",), (), ()),
     SyntheticLibrary(
-        MAGNETOMETER, 20241209, ("MMC5983MA",), ("LGA-16_MMC5983MA",), ("MMC5983MA.step",)
+        MAGNETOMETER, V1_MAGNETOMETER, 20241209, ("MMC5983MA",), ("LGA-16_MMC5983MA",), ("MMC5983MA.step",)
     ),
     SyntheticLibrary(
-        POWER_MOSFET, 20241209, ("TPS22918DBVR",), ("SOT-23-6_DBV",), ("TPS22918DBVR.step",)
+        POWER_MOSFET, V1_POWER_MOSFET, 20241209, ("TPS22918DBVR",), ("SOT-23-6_DBV",), ("TPS22918DBVR.step",)
     ),
     SyntheticLibrary(
         WIRELESS,
+        V1_WIRELESS,
         20251024,
         ("NORA-W106-00B", "NORA-W106-10B"),
         ("NORA-W1",),
         ("NORA-W106-00B.step",),
     ),
 )
+V1_LIBRARY_NAMES = tuple(lib.v1_name for lib in SYNTHETIC_LIBRARIES)
 
 
-def write_synthetic_custom(root: Path) -> RepoLayout:
-    """Write the SYNTHETIC_LIBRARIES under root/Custom and return the layout over root."""
+def write_synthetic_custom(root: Path, *, naming: str = "v1") -> RepoLayout:
+    """Write the SYNTHETIC_LIBRARIES under root/Custom and return the layout over root.
+
+    naming="v1" writes every library under its v1 name with its own .pretty folder (the live
+    tree today). naming="atomic" writes the symbol files under the Atomic_ names and every
+    footprint into the folder footprint_library_for gives for its library.
+    """
+    if naming not in ("v1", "atomic"):
+        raise ValueError(f"naming must be 'v1' or 'atomic', not {naming!r}")
     custom = root / "Custom"
     symbols_dir = custom / "Symbols"
     footprints_dir = custom / "Footprints"
@@ -82,9 +103,11 @@ def write_synthetic_custom(root: Path) -> RepoLayout:
     for folder in (symbols_dir, footprints_dir, models_dir):
         folder.mkdir(parents=True, exist_ok=True)
     for lib in SYNTHETIC_LIBRARIES:
-        (symbols_dir / f"{lib.name}.kicad_sym").write_bytes(target_lib(lib.version, lib.symbols))
+        symbol_name = lib.v1_name if naming == "v1" else lib.name
+        footprint_name = lib.v1_name if naming == "v1" else footprint_library_for(lib.name)
+        (symbols_dir / f"{symbol_name}.kicad_sym").write_bytes(target_lib(lib.version, lib.symbols))
         if lib.footprints:
-            pretty = footprints_dir / f"{lib.name}.pretty"
+            pretty = footprints_dir / f"{footprint_name}.pretty"
             pretty.mkdir(parents=True, exist_ok=True)
             for index, footprint in enumerate(lib.footprints):
                 model = f"{MODEL_DIR_VAR}/{lib.models[index]}" if index < len(lib.models) else None

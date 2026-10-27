@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 from clifixtures import KICAD_GENERATOR_VERSION, KICAD_SYMBOL_FORMAT
-from customfixtures import POWER_MOSFET, WIRELESS, write_synthetic_custom
+from customfixtures import V1_POWER_MOSFET, V1_WIRELESS, write_synthetic_custom
 from installfixtures import vendor_footprint, vendor_symbol_lib
 from zipfixtures import UL_FOOTPRINT_MEMBER, UL_MODEL_MEMBER, UL_SYMBOL_MEMBER, make_zip, unpack_sample
 
@@ -462,12 +462,12 @@ def _scenario_same_version(candidate, layout, tmp_path, tools):
 
 
 def _scenario_newer_target(candidate, layout, tmp_path, tools):
-    plan, result = _install(candidate, layout, tmp_path, library=WIRELESS, tools=tools)
+    plan, result = _install(candidate, layout, tmp_path, library=V1_WIRELESS, tools=tools)
     assert plan.normalised is True and plan.target_version == KICAD_SYMBOL_FORMAT
     assert not [c for c in _codes(plan.issues) if c.startswith("install.version")]
-    block = layout.symbols_dir.joinpath(f"{WIRELESS}.kicad_sym").read_text(encoding="utf-8")
+    block = layout.symbols_dir.joinpath(f"{V1_WIRELESS}.kicad_sym").read_text(encoding="utf-8")
     assert "(id " not in block[block.index(f'(symbol "{SYMBOL}"') :]
-    return result, WIRELESS
+    return result, V1_WIRELESS
 
 
 def _scenario_target_not_cli_format(candidate, layout, tmp_path, tools):
@@ -514,9 +514,9 @@ def _scenario_incoming_newer(candidate, layout, tmp_path, tools):
 
 def _scenario_target_20241209_as_is(candidate, layout, tmp_path, tools):
     """VER-01 (backlog 999.1): a 20241209 target on KiCad 10 takes the D-01 as-is-with-warning row."""
-    sym_path = layout.symbols_dir / f"{POWER_MOSFET}.kicad_sym"
+    sym_path = layout.symbols_dir / f"{V1_POWER_MOSFET}.kicad_sym"
     original = sym_path.read_bytes()
-    plan, result = _install(candidate, layout, tmp_path, library=POWER_MOSFET, tools=tools)
+    plan, result = _install(candidate, layout, tmp_path, library=V1_POWER_MOSFET, tools=tools)
     assert plan.normalised is False and plan.target_version == 20241209
 
     mismatch = [i for i in plan.issues if i.code == "install.version_mismatch"]
@@ -531,8 +531,8 @@ def _scenario_target_20241209_as_is(candidate, layout, tmp_path, tools):
     assert b"(version 20241209)" in _header(written)
     # The vendor text is spliced unchanged, not run through kicad-cli (which would drop the ids)
     assert b"(id " in written[written.index(f'(symbol "{SYMBOL}"'.encode()) :]
-    assert _written_gate_issues(tools.kicad_cli, layout, POWER_MOSFET) == []
-    return result, POWER_MOSFET
+    assert _written_gate_issues(tools.kicad_cli, layout, V1_POWER_MOSFET) == []
+    return result, V1_POWER_MOSFET
 
 
 _SCENARIOS = {
@@ -562,7 +562,7 @@ def test_cli_version_scenarios(scenario, synthetic_custom, ul_package, tmp_path,
 def test_cli_second_install_is_noop(synthetic_custom, ul_package, tmp_path, real_tools, snapshot):
     _, candidate = ul_package
     layout = synthetic_custom
-    library = WIRELESS
+    library = V1_WIRELESS
     plan, result = _install(candidate, layout, tmp_path, library=library, tools=real_tools)
     assert result.ok and plan.normalised, result.issues
     after_first = snapshot(layout.custom_dir)
@@ -592,11 +592,11 @@ def test_uat_scratch_install(ul_package, real_tools):
 
     layout = write_synthetic_custom(uat)
     assert layout.custom_dir.resolve().is_relative_to(uat)
-    sym_path = layout.symbols_dir / f"{POWER_MOSFET}.kicad_sym"
+    sym_path = layout.symbols_dir / f"{V1_POWER_MOSFET}.kicad_sym"
     assert b"CSD85301Q2" not in sym_path.read_bytes()
     original_header = _header(sym_path.read_bytes())
     _, candidate = ul_package
-    plan, result = _install(candidate, layout, uat, library=POWER_MOSFET, tools=real_tools)
+    plan, result = _install(candidate, layout, uat, library=V1_POWER_MOSFET, tools=real_tools)
     assert result.ok, result.issues
     mismatch = [i for i in result.issues if i.code == "install.version_mismatch"]
     assert len(mismatch) == 1 and mismatch[0].severity is Severity.WARNING, result.issues
@@ -604,7 +604,7 @@ def test_uat_scratch_install(ul_package, real_tools):
     assert b"(version 20241209)" in written_header and written_header == original_header
 
     print(f"\nUAT scratch library:   {sym_path}")
-    print(f"UAT scratch footprint: {layout.footprints_dir / (POWER_MOSFET + '.pretty') / 'DQK0006B.kicad_mod'}")
+    print(f"UAT scratch footprint: {layout.footprints_dir / (V1_POWER_MOSFET + '.pretty') / 'DQK0006B.kicad_mod'}")
     print(f"UAT scratch model:     {layout.models_dir / (SYMBOL + '.stp')}")
-    print(f"UAT scratch pretty:    {layout.footprints_dir / (POWER_MOSFET + '.pretty')}")
+    print(f"UAT scratch pretty:    {layout.footprints_dir / (V1_POWER_MOSFET + '.pretty')}")
     print(f"UAT scratch 3D folder: {layout.models_dir}")
