@@ -917,11 +917,18 @@ def build_plan(
     inferred_manufacturer = False
     if not manufacturer and not cleared_manufacturer:
         datasheet = options.datasheet if options.datasheet is not None else meta.datasheet
-        found, _aggregator = manufacturer_from_datasheet(datasheet)
+        found, aggregator = manufacturer_from_datasheet(datasheet)
         if found:
             manufacturer = found
             inferred_manufacturer = True
         else:
+            if aggregator is not None:
+                issues.append(Issue(
+                    Severity.INFO,
+                    "naming.aggregator_host",
+                    f"The datasheet link points to {aggregator}, a distributor or library site, "
+                    "so it was not used to find the manufacturer",
+                ))
             issues.append(Issue(Severity.WARNING, "install.manufacturer_missing", "No manufacturer was found; the Manufacturer property is empty"))
     base_fields = _Fields(
         footprint="",
