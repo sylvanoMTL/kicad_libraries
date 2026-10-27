@@ -7,7 +7,7 @@ Every check re-reads its files; nothing is taken from the bytes the plan carries
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from pathlib import Path
 
 from ..kicad_files import (
@@ -22,6 +22,7 @@ from ..models import Issue, Severity
 from ..sexpr import Node, quote, unquote
 from .layout import RepoLayout
 from .plan import MODEL_DIR_VAR, InstallPlan, ToolContext
+from .stems import SHARED_FOOTPRINT_LIBRARY
 
 _DIGITS = re.compile(r"(\d+)")
 _WURTH_PREFIX = "WurthElektronik:"
@@ -61,11 +62,18 @@ def _linked_footprint(plan: InstallPlan, library: LoadedFile) -> tuple[LoadedFil
         return None, [_err("verify.link_unresolved", f"The Footprint field of {plan.symbol_name} is {value!r}, expected {expected!r}")]
     lib, _, name = value.partition(":")
     pretty = f"{lib}.pretty"
-    if pretty not in _listing(plan.layout.footprints_dir):
-        return None, [_err("verify.link_unresolved", f"{value} points to {pretty}, which is not in Custom/Footprints")]
-    pretty_dir = plan.layout.footprints_dir / pretty
-    if f"{name}.kicad_mod" not in _listing(pretty_dir):
-        return None, [_err("verify.link_unresolved", f"{value} points to {name}.kicad_mod, which is not in {pretty}")]
+    if plan.footprint_library != SHARED_FOOTPRINT_LIBRARY:
+        # D-16: an official link points into KiCad's own footprints; the exact-case listing is the only proof
+        official = plan.tools.kicad_footprints_dir
+        if official is None or pretty not in _listing(official) or f"{name}.kicad_mod" not in _listing(official / pretty):
+            return None, [_err("verify.link_unresolved", f"{value} is not in KiCad's footprints")]
+        pretty_dir = official / pretty
+    else:
+        if pretty not in _listing(plan.layout.footprints_dir):
+            return None, [_err("verify.link_unresolved", f"{value} points to {pretty}, which is not in Custom/Footprints")]
+        pretty_dir = plan.layout.footprints_dir / pretty
+        if f"{name}.kicad_mod" not in _listing(pretty_dir):
+            return None, [_err("verify.link_unresolved", f"{value} points to {name}.kicad_mod, which is not in {pretty}")]
     loaded = load(pretty_dir / f"{name}.kicad_mod")
     if isinstance(loaded, Issue):
         return None, [_err("verify.parse_failed", loaded.text)]
@@ -203,10 +211,15 @@ def _natural(value: str) -> list[tuple[int, int, str]]:
     return [(0, int(p), "") if p.isdigit() else (1, 0, p) for p in _DIGITS.split(value) if p]
 
 
+def natural_order(numbers: Iterable[str]) -> list[str]:
+    """The pin or pad numbers in natural order: 2 before 10, A2 before A10."""
+    return sorted(numbers, key=_natural)
+
+
 def pin_pad_issues(symbol_name: str, footprint: str, pins: set[str], pads: set[str]) -> list[Issue]:
     """One WARNING when the symbol's pin numbers and the footprint's pad numbers differ in either direction."""
-    no_pad = sorted(pins - pads, key=_natural)
-    no_pin = sorted(pads - pins, key=_natural)
+    no_pad = natural_order(pins - pads)
+    no_pin = natural_order(pads - pins)
     if not no_pad and not no_pin:
         return []
     parts = []

@@ -56,8 +56,8 @@ from . import package as _package
 from . import stems
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
 from .fieldrules import DESCRIPTION_FIELDS, FieldRules, clean_description, is_placeholder, is_protected, is_volatile
-from .footprint_index import build_index, footprint_texts, rank
-from .footprint_text import describe, footprint_facts, generated_tags, vendor_texts
+from .footprint_index import build_index, footprint_texts, pad_numbers, rank
+from .footprint_text import FootprintFacts, describe, footprint_facts, generated_tags, package_family, vendor_texts
 from .incoming import incoming_context, incoming_issues
 from .keywords import generate_keywords, manufacturer_words, merge_words
 from .layout import RepoLayout, list_footprint_libs, list_model_files, list_symbol_libs
@@ -76,6 +76,7 @@ from .plan import (
     ToolContext,
 )
 from .suggest import manufacturer_from_datasheet
+from .verify import footprint_pad_numbers, natural_order, pin_pad_issues, symbol_pin_numbers
 
 _LISTED_NAMES = 20
 # An official footprint supplies the package family only when its name holds the vendor code's leading letters (rank scores 30)
@@ -743,8 +744,19 @@ def _select(
         names = _name_list([s.name for s in candidate.symbols])
         problems.append(_err("install.choice_required", f"The package holds several symbols; choose one of: {names}"))
 
+    official = options.footprint_target == "official"
     footprints: list[FootprintItem] = []
-    if not candidate.footprints:
+    if official:
+        # D-16: no vendor footprint is installed; the one the part names (or the only one) is kept only for the pad check
+        if options.footprint is not None:
+            found = next((f for f in candidate.footprints if f.name == options.footprint), None)
+            if found is None:
+                problems.append(_err("install.unknown_item", f"The package has no footprint named {options.footprint}"))
+            else:
+                footprints.append(found)
+        elif len(candidate.footprints) == 1:
+            footprints = [candidate.footprints[0]]
+    elif not candidate.footprints:
         problems.append(_err("install.no_footprint", "The package holds no footprint to install"))
     elif options.footprint is not None:
         found = next((f for f in candidate.footprints if f.name == options.footprint), None)
@@ -759,7 +771,8 @@ def _select(
         problems.append(_err("install.choice_required", f"The package holds several footprints; choose from: {names}"))
 
     model: ModelItem | None = None
-    if options.no_model:
+    if official or options.no_model:
+        # D-17: an official footprint brings KiCad's own 3D model, so a vendor model is never chosen
         pass
     elif options.model is not None:
         model = next((m for m in candidate.models if m.filename == options.model), None)
@@ -832,6 +845,7 @@ def build_plan(
             progress(message, current, 5)
 
     library = options.library
+    is_official = options.footprint_target == "official"
     # D-08, D-11, D-13: only Atomic_ plus an allowed KiCad library name is installed into, whatever the caller passes
     verdict = stems.name_verdict(library, tools.allowed_stems or None)
     if not verdict.ok:
@@ -848,7 +862,7 @@ def build_plan(
     # D-15: every footprint goes into the one shared library, so a folder that differs from it only by case would split it on Linux
     shared = stems.SHARED_FOOTPRINT_LIBRARY
     shared_twins = [name for name in pretty_libs if name != shared and name.casefold() == shared.casefold()]
-    if shared_twins:
+    if shared_twins and not is_official:
         return refuse(_err(
             "install.library_case_clash",
             f"Custom/Footprints holds {shared_twins[0]}.pretty, which differs from {shared} only by letter case; rename that folder to {shared}",
@@ -856,10 +870,24 @@ def build_plan(
     # D-13: MPN can be cleared by the caller but never installed empty (MPN names the 3D model file)
     if options.mpn == "":
         return refuse(_err("install.empty_required", "MPN cannot be empty: it names the 3D model file; enter a part number"))
+    # D-16: an official footprint is accepted only when KiCad's own folder lists both halves of the link with this exact spelling
+    official_link = ""
+    official_name = ""
+    if is_official:
+        if tools.kicad_footprints_dir is None:
+            return refuse(_err("install.official_unavailable", "KiCad's footprints were not found, so an official footprint cannot be used"))
+        official_link = (options.official_footprint or "").strip()
+        if not official_link:
+            return refuse(_err("install.official_missing", "Pick an official KiCad footprint"))
+        official_index = build_index(tools.kicad_footprints_dir)
+        if not official_index.contains(official_link):
+            return refuse(_err("install.official_unknown", f"{official_link} is not one of KiCad's installed footprints"))
+        official_name = official_link.partition(":")[2]
     # WR-02: creating a library needs its Custom folder; say so before anything is read or written
     for exists, folder, code, created in (
         (library in sym_libs, layout.symbols_dir, "install.symbols_dir_missing", library),
-        (shared in pretty_libs, layout.footprints_dir, "install.footprints_dir_missing", shared),
+        # An official footprint writes nothing into the shared library, so its folder is not needed
+        (shared in pretty_libs or is_official, layout.footprints_dir, "install.footprints_dir_missing", shared),
     ):
         if not exists and not folder.is_dir():
             try:
@@ -876,11 +904,22 @@ def build_plan(
     if isinstance(vendor_sym, Issue):
         return refuse(vendor_sym)
     vendor_fps: list[LoadedFile] = []
+    # D-18: the pad numbers and name of the vendor footprint an official one is compared with
+    vendor_pads: set[str] | None = None
+    vendor_fp_name = fp_items[0].name if is_official and fp_items else ""
     for fp_item in fp_items:
         loaded_fp = _parse_vendor(fp_item.file)
+        if is_official:
+            # Nothing of the vendor footprint is written, so a file that cannot be read only skips the pad check
+            vendor_fp_ref = None if isinstance(loaded_fp, Issue) else footprint_name(loaded_fp.root)
+            if vendor_fp_ref is not None:
+                vendor_pads = footprint_pad_numbers(vendor_fp_ref.node)
+            continue
         if isinstance(loaded_fp, Issue):
             return refuse(loaded_fp)
         vendor_fps.append(loaded_fp)
+    if is_official:
+        fp_items = []
 
     step("Reading the target library", 2)
     sym_path = layout.symbols_dir / f"{library}.kicad_sym"
@@ -1005,22 +1044,40 @@ def build_plan(
 
     # D-26, D-28: what the linked vendor footprint is, from its own geometry and text and, for the family, the
     # official KiCad footprint named after the vendor package code. The manufacturer is spelled as it is written.
-    code = fp_items[0].name
     final_manufacturer = canonical(manufacturer) if manufacturer and not is_placeholder(manufacturer) else ""
-    official: list[str] = []
-    if tools.kicad_footprints_dir is not None:
-        footprint_index = build_index(tools.kicad_footprints_dir)
-        best = rank(footprint_index, package_code=code, limit=1)
-        if best and best[0].score >= _MIN_FAMILY_SCORE:
-            official = [*footprint_texts(footprint_index, best[0].link), best[0].link.partition(":")[2]]
     maker_words = manufacturer_words(final_manufacturer)
-    facts = footprint_facts(fp_refs[0].node, code=code, maker=maker_words[0] if maker_words else "", texts=official)
-    vendor_fp_texts = [vendor_texts(ref.node) for ref in fp_refs]
-    # D-28, D-29: the sentence is always the generated one, the tags are the vendor's with the generated ones after
-    generated_description = describe(facts)
-    generated_fp_tags = merge_words(vendor_fp_texts[0][1], generated_tags(facts))
-    written_description = options.fp_description if options.fp_description is not None else generated_description
-    written_fp_tags = options.fp_tags if options.fp_tags is not None else generated_fp_tags
+    if is_official:
+        # D-29: an official footprint is never edited, so it gets no description and no tags; its own name and text
+        # still name the package family for the symbol's keywords
+        code = official_name
+        facts = FootprintFacts(
+            pads=0,
+            pitch=None,
+            body=None,
+            family=package_family([*footprint_texts(official_index, official_link), official_name]),
+            code=code,
+            maker="",
+        )
+        vendor_fp_texts: list[tuple[str, str]] = []
+        generated_description = ""
+        generated_fp_tags = ""
+        written_description = ""
+        written_fp_tags = ""
+    else:
+        code = fp_items[0].name
+        official_texts: list[str] = []
+        if tools.kicad_footprints_dir is not None:
+            footprint_index = build_index(tools.kicad_footprints_dir)
+            best = rank(footprint_index, package_code=code, limit=1)
+            if best and best[0].score >= _MIN_FAMILY_SCORE:
+                official_texts = [*footprint_texts(footprint_index, best[0].link), best[0].link.partition(":")[2]]
+        facts = footprint_facts(fp_refs[0].node, code=code, maker=maker_words[0] if maker_words else "", texts=official_texts)
+        vendor_fp_texts = [vendor_texts(ref.node) for ref in fp_refs]
+        # D-28, D-29: the sentence is always the generated one, the tags are the vendor's with the generated ones after
+        generated_description = describe(facts)
+        generated_fp_tags = merge_words(vendor_fp_texts[0][1], generated_tags(facts))
+        written_description = options.fp_description if options.fp_description is not None else generated_description
+        written_fp_tags = options.fp_tags if options.fp_tags is not None else generated_fp_tags
     package_words = [word for word in (facts.family, code) if word]
     related = [stem for stem in options.related_stems if stems.ATOMIC_PREFIX + stem != library]
 
@@ -1077,7 +1134,10 @@ def build_plan(
         renders[memo] = _Rendered(edited, blocks, final_mpn, all_changes, keyword_texts)
         return renders[memo]
 
-    first = render_symbols(new_names, f"{stems.SHARED_FOOTPRINT_LIBRARY}:{fp_names[0]}", " ".join(fp_names))
+    if is_official:
+        first = render_symbols(new_names, official_link, official_name)
+    else:
+        first = render_symbols(new_names, f"{stems.SHARED_FOOTPRINT_LIBRARY}:{fp_names[0]}", " ".join(fp_names))
     if isinstance(first, Issue):
         return refuse(first)
     final_mpn = first.final_mpn
@@ -1089,7 +1149,7 @@ def build_plan(
         if any(i.code == "naming.empty" for i in named.issues):
             return refuse(_err("install.invalid_name", f"The part number {final_mpn!r} has no usable characters for a 3D model file name; enter another"))
         model_file = named.sanitized
-    elif candidate.models and options.no_model:
+    elif candidate.models and options.no_model and not is_official:
         listed = _name_list([m.filename for m in candidate.models])
         issues.append(Issue(Severity.INFO, "install.model_declined", f"The 3D model {listed} is not installed because it was declined"))
     # A part without a 3D model is stopped by the atomic gate below (D-24), so it needs no warning of its own
@@ -1259,7 +1319,7 @@ def build_plan(
                     "install.footprint_shared",
                     f"Overwriting {decision.conflict.name} in {shared} also changes it for {_name_list(users)}",
                 ))
-    if fp_decisions[0].kept and model_dec is not None:
+    if fp_decisions and fp_decisions[0].kept and model_dec is not None:
         # The kept footprint does not link the incoming model, so copying it would leave a stray file (D-09)
         issues.append(Issue(
             Severity.INFO,
@@ -1272,14 +1332,17 @@ def build_plan(
     final_fps = tuple(d.name for d in fp_decisions)
     if len({name.casefold() for name in final_fps}) != len(final_fps):
         issues.append(_err("install.duplicate_name", f"Two chosen footprints would both end up under one name: {_name_list(list(final_fps))}"))
-    linked = final_fps[0]
     for index, decision in enumerate(fp_decisions):
         if not decision.kept:
             issues.extend(render_fp(index, decision.name)[1])
 
     # The symbol is judged last: its Footprint field and filters carry the footprint names that survived
-    link = f"{stems.SHARED_FOOTPRINT_LIBRARY}:{linked}"
-    filters = " ".join(final_fps)
+    if is_official:
+        linked, link, filters = official_name, official_link, official_name
+    else:
+        linked = final_fps[0]
+        link = f"{stems.SHARED_FOOTPRINT_LIBRARY}:{linked}"
+        filters = " ".join(final_fps)
     existing_syms = {} if target is None else {ref.name: ref for ref in find_symbols(target.root)}
 
     def plain(text: str) -> str:
@@ -1396,8 +1459,8 @@ def build_plan(
     written = [state.final for state in states if state.kind in ("new", "overwrite", "open")]
     if written:
         planned_footprints: dict[str, tuple[str, bytes]] = {}
-        first_fp = fp_decisions[0]
-        if will_write(first_fp):
+        first_fp = fp_decisions[0] if fp_decisions else None
+        if first_fp is not None and will_write(first_fp):
             fp_path = first_fp.op.path if first_fp.op is not None else pretty / f"{first_fp.name}{_FOOTPRINT_SUFFIX}"
             fp_data = first_fp.op.data if first_fp.op is not None else render_fp(0, first_fp.name)[0]
             planned_footprints[link] = (fp_path.relative_to(layout.repo_root).as_posix(), fp_data or b"")
@@ -1413,8 +1476,28 @@ def build_plan(
             edited.root, written, rel_path=sym_path.relative_to(layout.repo_root).as_posix(), ctx=gate_context
         ))
 
+    if is_official and states[-1].kind != "skip":
+        # D-18: a difference between the pads is a warning, never a block
+        symbol_final = final_symbols[-1]
+        official_pads = pad_numbers(official_index, official_link)
+        if official_pads is not None:
+            issues.extend(pin_pad_issues(symbol_final, official_link, symbol_pin_numbers(edited.root, symbol_final), official_pads))
+            if vendor_pads is not None and vendor_pads != official_pads:
+                parts = []
+                lacking = natural_order(vendor_pads - official_pads)
+                added = natural_order(official_pads - vendor_pads)
+                if lacking:
+                    parts.append(f"missing {', '.join(lacking)}")
+                if added:
+                    parts.append(f"extra {', '.join(added)}")
+                issues.append(Issue(
+                    Severity.WARNING,
+                    "install.pad_mismatch",
+                    f"{official_link} has different pads from the vendor footprint {vendor_fp_name}: {'; '.join(parts)}",
+                ))
+
     ops: list[FileOp] = []
-    if not pretty_exists:
+    if not pretty_exists and not is_official:
         ops.append(FileOp("mkdir", pretty))
     if model_dec is not None and model_dec.op is not None:
         if not layout.models_dir.is_dir():
@@ -1452,12 +1535,16 @@ def build_plan(
         tools=tools,
         library=library,
         new_symbol_lib=not sym_exists,
-        new_footprint_lib=not pretty_exists,
+        new_footprint_lib=not pretty_exists and not is_official,
         symbol_names=final_symbols,
         footprint_names=final_fps,
         # A kept chosen symbol still has whatever Footprint field it had, so this install links nothing
         linked_footprint=None if states[-1].kind == "skip" else linked,
-        footprint_library=None if states[-1].kind == "skip" else stems.SHARED_FOOTPRINT_LIBRARY,
+        footprint_library=(
+            None
+            if states[-1].kind == "skip"
+            else official_link.partition(":")[0] if is_official else stems.SHARED_FOOTPRINT_LIBRARY
+        ),
         model_file=model_dec.name if model_dec is not None else None,
         source_version=source_version,
         target_version=target_version,
@@ -1468,6 +1555,8 @@ def build_plan(
         issues=tuple(issues),
         field_changes=(*(c for c in changes if c.symbol in pending), *footprint_changes),
         unused_footprints=tuple(f.name for f in candidate.footprints if f not in fp_items),
+        unused_models=tuple(m.filename for m in candidate.models) if is_official else (),
+        footprint_target=options.footprint_target,
         generated_text=PartText(rendered.keywords[0], generated_description, generated_fp_tags),
         part_text=PartText(rendered.keywords[1], written_description, written_fp_tags),
     )

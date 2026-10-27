@@ -22,7 +22,7 @@ from kicad_lib_manager.widgets.import_dialog import ImportDialog
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UL_ZIP = REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip"
 LIBRARY = "Atomic_Battery_Management"
-NO_MODEL = "3D model: the footprint has no 3D model. Use Add 3D model..."
+NO_MODEL = "3D model: the footprint has no 3D model. Use Add 3D model... or an official KiCad footprint"
 
 
 @pytest.fixture(autouse=True)
@@ -91,7 +91,7 @@ def test_clicking_the_description_reason_focuses_the_field_and_typing_lifts_the_
         (
             "model_3d",
             '3D model "x.step" is not in Custom/3DModels (names are case-sensitive)',
-            '3D model: 3D model "x.step" is not in Custom/3DModels (names are case-sensitive). Use Add 3D model...',
+            '3D model: 3D model "x.step" is not in Custom/3DModels (names are case-sensitive). Use Add 3D model... or an official KiCad footprint',
             "model",
         ),
         ("footprint", "no footprint", "Footprint: no footprint", "footprint_name"),

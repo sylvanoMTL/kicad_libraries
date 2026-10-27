@@ -40,6 +40,7 @@ class Resolution:
 
 
 _TEXT_OVERRIDES = ("datasheet", "description", "manufacturer", "mpn")
+FOOTPRINT_TARGETS = ("shared", "official")
 
 
 @dataclass(frozen=True)
@@ -89,8 +90,14 @@ class InstallOptions:
     fp_tags: str | None = None
     # Stems of the libraries the suggestion ranked below the chosen one; their words join the keywords (D-26)
     related_stems: tuple[str, ...] = ()
+    # D-16, D-17: "shared" installs the vendor footprint into the shared library; "official" links one of KiCad's own
+    # footprints instead (official_footprint is its Library:Footprint link) and installs no footprint and no 3D model
+    footprint_target: str = "shared"
+    official_footprint: str | None = None
 
     def __post_init__(self) -> None:
+        if self.footprint_target not in FOOTPRINT_TARGETS:
+            raise ValueError(f"footprint_target must be one of {', '.join(FOOTPRINT_TARGETS)}, not {self.footprint_target!r}")
         object.__setattr__(self, "cleared", frozenset(self.cleared))
         object.__setattr__(self, "related_stems", tuple(self.related_stems))
         unknown = self.cleared.difference(_TEXT_OVERRIDES)
@@ -191,6 +198,10 @@ class InstallPlan:
     footprint_library: str | None = None
     # D-14: vendor footprints the package holds that this part does not use; none of them is written
     unused_footprints: tuple[str, ...] = ()
+    # D-17: vendor 3D model files the package holds that this install does not copy (an official footprint brings KiCad's own)
+    unused_models: tuple[str, ...] = ()
+    # "official" when the part links one of KiCad's own footprints (InstallOptions.footprint_target)
+    footprint_target: str = "shared"
     generated_text: PartText = PartText()
     part_text: PartText = PartText()
 
