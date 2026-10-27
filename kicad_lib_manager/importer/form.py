@@ -14,6 +14,7 @@ from ..models import Issue, Severity
 from .candidate import ImportCandidate
 from .fieldrules import clean_description
 from .plan import Conflict, InstallOptions, InstallPlan, Resolution
+from .stems import name_verdict
 from .suggest import LibrarySuggestion, manufacturer_choice, placeholder_tokens
 
 # The five symbol fields the dialog lets the user edit; the names are the InstallOptions text overrides
@@ -99,6 +100,7 @@ class FormStatus:
     footprints_checked: int
     resolutions: Mapping[str, Resolution]
     model_error: str = ""  # the ERROR text of a rejected 3D model source; empty when none is held
+    allowed: frozenset[str] = frozenset()  # allowed KiCad library stems; empty means the built-in snapshot
 
 
 def _blank_renames(status: FormStatus, plan: InstallPlan | None) -> list[Conflict]:
@@ -116,7 +118,7 @@ def _blank_renames(status: FormStatus, plan: InstallPlan | None) -> list[Conflic
 def _issue_target(issue: Issue) -> str:
     """The control a plan ERROR is about; "plan" when it is about no single control."""
     code, text = issue.code, issue.text
-    if code in ("install.placeholder_library", "install.invalid_library", "install.library_case_clash"):
+    if code in ("install.invalid_library", "install.library_case_clash"):
         return "library"
     if code == "install.empty_required":
         return "mpn" if text.startswith("MPN") else "value"
@@ -137,12 +139,12 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
     Order: Updating (alone, the others could be stale); the build failure or the plan's ERROR Issues;
     a rejected 3D model source; the library name; Value and MPN; the footprint selection; unresolved conflicts in plan order;
     empty rename names. A plan ERROR is dropped when the form reason beside it says the same thing
-    (placeholder library, empty library name, empty Value or MPN, no footprint checked, empty rename).
+    (refused library name, empty Value or MPN, no footprint checked, empty rename).
     """
     if status.updating:
         return [Reason(UPDATING_REASON, "plan")]
     library = status.library.strip()
-    placeholders = placeholder_tokens(library)
+    verdict = name_verdict(library, status.allowed or None)
     value_blank = not status.value_text.strip()
     mpn_blank = not status.mpn_text.strip()
     no_footprint = status.several_footprints and status.footprints_checked == 0
@@ -152,10 +154,8 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
 
     def explained(issue: Issue) -> bool:
         code, text = issue.code, issue.text
-        if code == "install.placeholder_library":
-            return bool(placeholders)
         if code == "install.invalid_library":
-            return not library
+            return not verdict.ok
         if code == "install.empty_required":
             return mpn_blank if text.startswith("MPN") else value_blank
         if code == "install.choice_required":
@@ -173,14 +173,8 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
                 reasons.append(Reason(f"Error: {issue.text}", _issue_target(issue)))
     if status.model_error.strip():
         reasons.append(Reason(f"Error: {status.model_error}", "model"))
-    if not library:
-        reasons.append(Reason("Library name is empty", "library"))
-    elif placeholders:
-        reasons.append(Reason(
-            f"Library name still contains a placeholder ({', '.join(placeholders)}). "
-            "Pick an existing library or type a real name.",
-            "library",
-        ))
+    if not verdict.ok:
+        reasons.append(Reason(verdict.reason, "library"))
     if value_blank:
         reasons.append(Reason("Value is empty", "value"))
     if mpn_blank:

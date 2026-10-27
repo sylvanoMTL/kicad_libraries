@@ -25,6 +25,9 @@ class ToolContext:
     cli_timeout: float = 60.0
     kicad_symbols_dir: Path | None = None
     extra_symbol_dirs: tuple[Path, ...] = ()
+    kicad_footprints_dir: Path | None = None
+    # Stems of the KiCad symbol libraries a part may use; empty means the built-in KiCad 10 snapshot (D-07)
+    allowed_stems: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
