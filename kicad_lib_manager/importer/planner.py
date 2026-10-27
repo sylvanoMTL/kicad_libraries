@@ -50,6 +50,7 @@ from ..models import Issue, Severity
 from ..sexpr import Edit, Node, apply_edits, parse
 from . import kicad_cli
 from . import package as _package
+from . import stems
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
 from .fieldrules import DESCRIPTION_FIELDS, FieldRules, clean_description, is_placeholder, is_protected, is_volatile
 from .layout import RepoLayout, list_footprint_libs, list_model_files, list_symbol_libs
@@ -66,7 +67,7 @@ from .plan import (
     Resolution,
     ToolContext,
 )
-from .suggest import manufacturer_choice, placeholder_tokens
+from .suggest import manufacturer_choice
 
 _LISTED_NAMES = 20
 
@@ -288,11 +289,14 @@ def detect_tools(
     explicit_cli: Path | None = None,
     runner: Callable | None = None,
 ) -> ToolContext:
-    """Find kicad-cli and KiCad's stock symbols folder from the footprints folder the app detected."""
+    """Find kicad-cli, KiCad's stock symbols folder and the library names it allows, from the footprints folder the app detected."""
+    symbols_dir = kicad_cli.stock_symbols_dir(kicad_fp_dir)
     return ToolContext(
         kicad_cli=kicad_cli.locate_kicad_cli(explicit_cli, kicad_fp_dir),
         cli_runner=runner,
-        kicad_symbols_dir=kicad_cli.stock_symbols_dir(kicad_fp_dir),
+        kicad_symbols_dir=symbols_dir,
+        kicad_footprints_dir=kicad_fp_dir if kicad_fp_dir is not None and kicad_fp_dir.is_dir() else None,
+        allowed_stems=stems.allowed_stems(stems.installed_stems(symbols_dir)),
     )
 
 
@@ -665,17 +669,10 @@ def build_plan(
             progress(message, current, 5)
 
     library = options.library
-    # Phase 3 D-04: a library name that still holds a placeholder token is never installed into
-    tokens = placeholder_tokens(library)
-    if tokens:
-        return refuse(_err(
-            "install.placeholder_library",
-            f"Library name {library} still contains the placeholder token(s) {', '.join(tokens)}; edit it before installing",
-        ))
-    clean = sanitize_name(library).sanitized
-    if not library or clean != library:
-        hint = "enter a library name such as Type_SubCategory_Manufacturer" if not library else f"use {clean!r}"
-        return refuse(_err("install.invalid_library", f"{library!r} is not a valid library name; {hint}"))
+    # D-08, D-11, D-13: only Atomic_ plus an allowed KiCad library name is installed into, whatever the caller passes
+    verdict = stems.name_verdict(library, tools.allowed_stems or None)
+    if not verdict.ok:
+        return refuse(_err("install.invalid_library", verdict.reason))
     # D-10: a name that differs from a library on disk only by letter case is a second library on Linux and the same one on Windows
     sym_libs = list_symbol_libs(layout)
     pretty_libs = list_footprint_libs(layout)

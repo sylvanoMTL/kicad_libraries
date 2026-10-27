@@ -362,6 +362,7 @@ def test_cli_runs_once_across_rebuilds(eq_layout):
 from kicad_lib_manager.importer.form import FormStatus, Reason, blocking_reasons, noop_text, ready_text  # noqa: E402
 from kicad_lib_manager.importer.plan import Conflict, InstallPlan  # noqa: E402
 from kicad_lib_manager.importer.preview import FileCounts  # noqa: E402
+from kicad_lib_manager.importer.stems import name_verdict  # noqa: E402
 from kicad_lib_manager.models import Issue, Severity  # noqa: E402
 
 ERR = Severity.ERROR
@@ -436,7 +437,7 @@ def test_blocking_reasons_order():
     ]
     # the library and MPN reasons sit between the plan Issues and the footprint check
     reasons = blocking_reasons(status(library="", mpn_text="  "), None)
-    assert pairs(reasons) == [("Library name is empty", "library"), ("MPN is empty - it names the 3D model file", "mpn")]
+    assert pairs(reasons) == [("Pick or type a library name", "library"), ("MPN is empty - it names the 3D model file", "mpn")]
     assert blocking_reasons(status(), fake_plan()) == []
     assert blocking_reasons(status(), None) == []
 
@@ -480,14 +481,18 @@ def test_blocking_reasons_dedup():
     """A plan ERROR that a form reason already explains is not repeated (D-09)."""
     conflict = Conflict("footprint:F1", "footprint", "F1", "Lib.pretty")
     cases = [
-        # placeholder library
+        # a v1 library name: the verdict reason is the only line
         (
             status(library="IC_SubCategory_TI"),
-            Issue(ERR, "install.placeholder_library", "Library name IC_SubCategory_TI still contains the placeholder token(s) SubCategory"),
-            [("Library name still contains a placeholder (SubCategory). Pick an existing library or type a real name.", "library")],
+            Issue(ERR, "install.invalid_library", name_verdict("IC_SubCategory_TI").reason),
+            [(name_verdict("IC_SubCategory_TI").reason, "library")],
         ),
         # empty library name
-        (status(library=""), Issue(ERR, "install.invalid_library", "'' is not a valid library name"), [("Library name is empty", "library")]),
+        (
+            status(library=""),
+            Issue(ERR, "install.invalid_library", name_verdict("").reason),
+            [("Pick or type a library name", "library")],
+        ),
         # empty Value and empty MPN
         (status(value_text=""), Issue(ERR, "install.empty_required", "Value cannot be empty; enter a value"), [("Value is empty", "value")]),
         (
@@ -526,17 +531,18 @@ def test_blocking_reasons_issue_targets_link_the_control():
     assert pairs(blocking_reasons(status(), fake_plan(issues=(clash,)))) == [("Error: " + clash.text, "library")]
     bad_name = Issue(ERR, "install.invalid_name", "The footprint name '' has no usable characters; enter another name")
     assert pairs(blocking_reasons(status(), fake_plan(issues=(bad_name,)))) == [("Error: " + bad_name.text, "footprint_name")]
-    invalid = Issue(ERR, "install.invalid_library", "'IC x' is not a valid library name; use 'IC_x'")
-    assert pairs(blocking_reasons(status(library="IC x"), fake_plan(issues=(invalid,)))) == [("Error: " + invalid.text, "library")]
+    # a plan ERROR about a name the form accepts is not explained by the form, so it stays and links the library field
+    invalid = Issue(ERR, "install.invalid_library", "The library name was refused")
+    assert pairs(blocking_reasons(status(), fake_plan(issues=(invalid,)))) == [("Error: " + invalid.text, "library")]
 
 
-def test_blocking_reasons_placeholder_text():
+def test_blocking_reasons_library_verdict_text():
     reasons = blocking_reasons(status(library="IC_SubCategory_TI"), None)
-    assert pairs(reasons) == [
-        ("Library name still contains a placeholder (SubCategory). Pick an existing library or type a real name.", "library")
-    ]
-    two = blocking_reasons(status(library="Type_SubCategory_TI"), None)
-    assert two[0].text.startswith("Library name still contains a placeholder (Type, SubCategory).")
+    assert pairs(reasons) == [(name_verdict("IC_SubCategory_TI").reason, "library")]
+    assert "Atomic_" in reasons[0].text
+    two = blocking_reasons(status(library="Transistor_FET"), None)
+    assert pairs(two) == [(name_verdict("Transistor_FET").reason, "library")]
+    assert "Atomic_Transistor_FET" in two[0].text
 
 
 def test_blocking_reasons_empty_rename():

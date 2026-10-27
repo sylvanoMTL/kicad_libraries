@@ -30,6 +30,7 @@ from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.package import open_package
 from kicad_lib_manager.importer.plan import FieldChange, InstallOptions, Rename, Resolution, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
+from kicad_lib_manager.importer.stems import name_verdict
 from kicad_lib_manager.importer.verify import verify_install
 from kicad_lib_manager.kicad_files import (
     extends_name,
@@ -97,27 +98,27 @@ def _members(symbols=("PART",), footprints=("FP",), models=()):
     return members
 
 
-# -- Phase 3 D-04: placeholder library names are refused ------------------------
+# -- D-08, D-13: a refused library name is blocked before anything is read -------
 
 
-def test_placeholder_library_blocked_and_nothing_written(synthetic_custom, ul_package, snapshot):
+def test_refused_library_blocked_and_nothing_written(synthetic_custom, ul_package, snapshot):
     _, candidate = ul_package
     before = snapshot(synthetic_custom.custom_dir)
     plan = build_plan(candidate, InstallOptions(library="IC_SubCategory_TI"), synthetic_custom)
     assert plan.blocked
     assert not plan.ops
-    assert "install.placeholder_library" in _codes(plan)
-    assert "SubCategory" in _error(plan, "install.placeholder_library").text
+    assert _codes(plan) == ["install.invalid_library"]
+    assert _error(plan, "install.invalid_library").text == name_verdict("IC_SubCategory_TI").reason
     result = apply_plan(plan)
     assert not result.ok
     assert snapshot(synthetic_custom.custom_dir) == before
 
 
-def test_placeholder_check_runs_before_the_target_is_read(layout, tmp_path):
-    # The library does not exist, yet the placeholder is what gets reported
+def test_name_check_runs_before_the_target_is_read(layout, tmp_path):
+    # The library does not exist, yet the refused name is what gets reported
     with _open(tmp_path, _members()) as (_, candidate):
         plan = build_plan(candidate, InstallOptions(library="Type_SubCategory_Manufacturer"), layout)
-    assert _codes(plan) == ["install.placeholder_library"]
+    assert _codes(plan) == ["install.invalid_library"]
 
 
 # -- D-17: one symbol, one or more footprints, zero or one model ---------------
@@ -768,30 +769,39 @@ def test_library_pair_completed_sym_missing(tmp_path):
 
 @pytest.mark.parametrize(
     "symbol_libs, footprint_libs",
-    [((LIBRARY,), (LIBRARY,)), ((LIBRARY,), ()), ((), (LIBRARY,))],
+    [((LIBRARY.lower(),), (LIBRARY.lower(),)), ((LIBRARY.lower(),), ()), ((), (LIBRARY.lower(),))],
     ids=["pair", "symbols-only", "footprints-only"],
 )
 def test_library_case_clash(tmp_path, snapshot, symbol_libs, footprint_libs):
+    # A lower-case twin on disk; the allowed name is passed exactly
     layout = _pair_layout(tmp_path, symbol_libs, footprint_libs)
     before = snapshot(layout.custom_dir)
-    twin = LIBRARY.lower()
-    plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=twin))
+    plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY))
     assert plan.blocked and not plan.ops
     assert _codes(plan) == ["install.library_case_clash"]
-    assert LIBRARY in _error(plan, "install.library_case_clash").text
+    assert LIBRARY.lower() in _error(plan, "install.library_case_clash").text
     assert snapshot(layout.custom_dir) == before
 
 
-@pytest.mark.parametrize("name, suggestion", [("IC/Bad_TI", "IC_Bad_TI"), ("IC Bad TI", "IC_Bad_TI"), ("", None)])
-def test_library_invalid_name(tmp_path, snapshot, name, suggestion):
+@pytest.mark.parametrize("name", ["IC/Bad_TI", "IC Bad TI", "", "Atomic_Not A Library"])
+def test_library_invalid_name(tmp_path, snapshot, name):
     layout = _pair_layout(tmp_path)
     before = snapshot(layout.custom_dir)
     plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=name))
     assert plan.blocked and not plan.ops
     assert _codes(plan) == ["install.invalid_library"]
-    if suggestion is not None:
-        assert suggestion in _error(plan, "install.invalid_library").text
+    assert _error(plan, "install.invalid_library").text == name_verdict(name).reason
     assert apply_plan(plan).ok is False
+    assert snapshot(layout.custom_dir) == before
+
+
+def test_library_case_variant_is_refused_naming_the_official_spelling(tmp_path, snapshot):
+    layout = _pair_layout(tmp_path)
+    before = snapshot(layout.custom_dir)
+    plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY.lower()))
+    assert plan.blocked and not plan.ops
+    assert _codes(plan) == ["install.invalid_library"]
+    assert LIBRARY in _error(plan, "install.invalid_library").text
     assert snapshot(layout.custom_dir) == before
 
 

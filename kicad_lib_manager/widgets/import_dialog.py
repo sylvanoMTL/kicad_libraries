@@ -2242,6 +2242,7 @@ class ImportDialog(QDialog):
             footprints_checked=len(self._checked_footprints()) if several else 0,
             resolutions=dict(self._resolutions),
             model_error=self._model_rejection.issue.text if self._model_rejection is not None else "",
+            allowed=self._tools.allowed_stems if self._tools is not None else frozenset(),
         )
 
     def _set_strip(self, text: str, *, rich: bool = False, style: str = "", tooltip: str = ""):
