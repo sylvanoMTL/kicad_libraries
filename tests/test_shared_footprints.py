@@ -6,6 +6,7 @@ and the footprint_library_for helper, never against the symbol library name dire
 """
 
 import dataclasses
+import re
 from datetime import date
 
 from customfixtures import ABSENT_LIBRARY, BATTERY_CHARGER
@@ -192,3 +193,58 @@ def test_an_existing_symbol_library_without_a_footprint_folder_installs_with_one
     assert mkdirs == [synthetic_custom.footprints_dir / "Atomic_Footprints.pretty"]
     assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, True)
     assert not [i for i in plan.issues if i.severity is Severity.WARNING and "pair" in i.code]
+
+
+# D-19: the clash rules of the shared footprint library
+
+SHARED = "Atomic_Footprints"
+
+
+def _install_first(atomic_custom, candidate, tmp_path, library=ABSENT_LIBRARY):
+    plan = build_plan(candidate, InstallOptions(library=library), atomic_custom, ToolContext())
+    assert not plan.blocked, plan.issues
+    assert apply_plan(plan, backup_root=tmp_path / "bk").ok
+    return atomic_custom.footprints_dir / f"{SHARED}.pretty" / f"{FOOTPRINT}.kicad_mod"
+
+
+def _reformat(path):
+    """The same footprint with LF line endings and a tab for each two-space indent."""
+    text = path.read_bytes().decode("utf-8")
+    lines = text.replace("\r\n", "\n").split("\n")
+    changed = "\n".join(re.sub(r"^((?:  )+)", lambda m: "\t" * (len(m.group(1)) // 2), line) for line in lines)
+    assert changed != text
+    path.write_bytes(changed.encode("utf-8"))
+
+
+def _change_a_pad(path):
+    text = path.read_text(encoding="utf-8")
+    changed = text.replace("(size ", "(size 9 ", 1)
+    assert changed != text
+    path.write_bytes(changed.encode("utf-8"))
+
+
+def test_tracer_the_same_footprint_in_another_format_is_reused(atomic_custom, ul_package, tmp_path):
+    _, candidate = ul_package
+    installed = _install_first(atomic_custom, candidate, tmp_path)
+    _reformat(installed)
+
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    assert not plan.blocked, plan.issues
+    assert not [op for op in plan.ops if op.kind == "footprint"]
+    assert not [c for c in plan.conflicts if c.kind == "footprint"]
+    reused = [i for i in plan.issues if i.code == "install.footprint_reused"]
+    assert [i.severity for i in reused] == [Severity.INFO]
+    assert reused[0].text == f"{FOOTPRINT} already in {SHARED} is the same footprint; it is reused and not written"
+    assert plan.footprint_link == f"{SHARED}:{FOOTPRINT}"
+
+
+def test_tracer_a_different_footprint_offers_the_part_number_as_its_new_name(atomic_custom, ul_package, tmp_path):
+    _, candidate = ul_package
+    installed = _install_first(atomic_custom, candidate, tmp_path)
+    _change_a_pad(installed)
+
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    conflicts = [c for c in plan.conflicts if c.kind == "footprint"]
+    assert len(conflicts) == 1
+    assert conflicts[0].suggested_name == f"{FOOTPRINT}_{SYMBOL}"
+    assert not [i for i in plan.issues if i.code == "install.footprint_reused"]
