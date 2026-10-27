@@ -13,6 +13,7 @@ import pytest
 from PySide6.QtCore import QMimeData, QPoint, QPointF, QSettings, Qt, QUrl
 from PySide6.QtGui import QCloseEvent, QDragEnterEvent, QDropEvent, QKeySequence
 from PySide6.QtWidgets import QMessageBox
+from zipfixtures import footprint_library_for
 
 from kicad_lib_manager import library_scanner, main_window, settings
 from kicad_lib_manager.importer.layout import RepoLayout
@@ -23,16 +24,22 @@ from kicad_lib_manager.models import (
 from kicad_lib_manager.widgets import theme
 from kicad_lib_manager.widgets.import_dialog import ImportDialog
 
-LIB = "IC_Battery_Charger_TI"
+LIB = "Atomic_Battery_Management"
+FP_LIB = footprint_library_for(LIB)
 SYM_REL = f"Custom/Symbols/{LIB}.kicad_sym"
-FP_REL = f"Custom/Footprints/{LIB}.pretty"
-USB_SYM_REL = "Custom/Symbols/Connector_USB_GCT.kicad_sym"
-USB_FP_REL = "Custom/Footprints/Connector_USB_GCT.pretty"
-FFC_SYM_REL = "Custom/Symbols/Connector_FFC_GCT.kicad_sym"
-FFC_FP_REL = "Custom/Footprints/Connector_FFC_GCT.pretty"
-NEW_LIB = "IC_New_TI"
+FP_REL = f"Custom/Footprints/{FP_LIB}.pretty"
+USB_LIB = "Atomic_Connector"
+USB_FP_LIB = footprint_library_for(USB_LIB)
+USB_SYM_REL = f"Custom/Symbols/{USB_LIB}.kicad_sym"
+USB_FP_REL = f"Custom/Footprints/{USB_FP_LIB}.pretty"
+FFC_LIB = "Atomic_Connector_Audio"
+FFC_FP_LIB = footprint_library_for(FFC_LIB)
+FFC_SYM_REL = f"Custom/Symbols/{FFC_LIB}.kicad_sym"
+FFC_FP_REL = f"Custom/Footprints/{FFC_FP_LIB}.pretty"
+NEW_LIB = "Atomic_Sensor_Temperature"
+NEW_FP_LIB = footprint_library_for(NEW_LIB)
 NEW_SYM_REL = f"Custom/Symbols/{NEW_LIB}.kicad_sym"
-NEW_FP_REL = f"Custom/Footprints/{NEW_LIB}.pretty"
+NEW_FP_REL = f"Custom/Footprints/{NEW_FP_LIB}.pretty"
 
 
 @pytest.fixture(autouse=True)
@@ -108,20 +115,20 @@ def make_window(qtbot, monkeypatch, tmp_path):
 
 def scan_with(*, selected_usb=False, with_installed=True, peer=None, selected_peer=False,
               lib=LIB, with_ffc=False) -> ScanResult:
-    """A scan holding Connector_USB_GCT and (optionally) the installed library, with an optional same-nickname peer."""
-    symbols = [SymbolLibrary("Connector_USB_GCT", USB_SYM_REL, "Custom")]
-    footprints = [FootprintLibrary("Connector_USB_GCT", USB_FP_REL, "Custom")]
+    """A scan holding the USB connector library and (optionally) the installed library, with an optional same-nickname peer."""
+    symbols = [SymbolLibrary(USB_LIB, USB_SYM_REL, "Custom")]
+    footprints = [FootprintLibrary(USB_FP_LIB, USB_FP_REL, "Custom")]
     if with_ffc:
-        symbols.append(SymbolLibrary("Connector_FFC_GCT", FFC_SYM_REL, "Custom"))
-        footprints.append(FootprintLibrary("Connector_FFC_GCT", FFC_FP_REL, "Custom"))
+        symbols.append(SymbolLibrary(FFC_LIB, FFC_SYM_REL, "Custom"))
+        footprints.append(FootprintLibrary(FFC_FP_LIB, FFC_FP_REL, "Custom"))
     if with_installed:
         sym = SymbolLibrary(lib, f"Custom/Symbols/{lib}.kicad_sym", "Custom")
-        fp = FootprintLibrary(lib, f"Custom/Footprints/{lib}.pretty", "Custom")
+        fp = FootprintLibrary(footprint_library_for(lib), f"Custom/Footprints/{footprint_library_for(lib)}.pretty", "Custom")
         symbols.append(sym)
         footprints.append(fp)
         if peer is not None:
             peer_sym = SymbolLibrary(LIB, f"{peer}/Symbols/{LIB}.kicad_sym", peer)
-            peer_fp = FootprintLibrary(LIB, f"{peer}/Footprints/{LIB}.pretty", peer)
+            peer_fp = FootprintLibrary(FP_LIB, f"{peer}/Footprints/{FP_LIB}.pretty", peer)
             sym.collision_peers = [peer_sym.rel_path]
             fp.collision_peers = [peer_fp.rel_path]
             peer_sym.collision_peers = [sym.rel_path]
@@ -140,7 +147,7 @@ def stub_plan(repo: Path, library: str = LIB, new_library: bool = False):
         library=library,
         new_library=new_library,
         symbol_lib_path=layout.symbols_dir / f"{library}.kicad_sym",
-        pretty_path=layout.footprints_dir / f"{library}.pretty",
+        pretty_path=layout.footprints_dir / f"{footprint_library_for(library)}.pretty",
         layout=layout,
     )
 
@@ -186,7 +193,7 @@ def test_post_install_select_checks_installed_library(qtbot, make_window):
     first = scan_with(selected_usb=True)
     second = scan_with()
     w = make_window([first, second])
-    # the user keeps Connector_USB_GCT checked in the GUI
+    # the user keeps the USB connector library checked in the GUI
     for lib in (*w._scan_result.symbol_libs, *w._scan_result.footprint_libs):
         lib.selected = lib.rel_path in (USB_SYM_REL, USB_FP_REL)
     before = len(make_window.calls)
@@ -244,7 +251,7 @@ def test_post_install_select_unchecks_peer(qtbot, make_window):
 
     result = w._scan_result
     peer_sym = f"{peer}/Symbols/{LIB}.kicad_sym"
-    peer_fp = f"{peer}/Footprints/{LIB}.pretty"
+    peer_fp = f"{peer}/Footprints/{FP_LIB}.pretty"
     assert selected(result, SYM_REL)
     assert selected(result, FP_REL)
     assert not selected(result, peer_sym)
@@ -314,8 +321,8 @@ def write_tables_in(repo: Path, sym_entries: str, fp_entries: str) -> tuple[byte
 def usb_tables(repo: Path, extra_sym: str = "", extra_fp: str = "") -> tuple[bytes, bytes]:
     return write_tables_in(
         repo,
-        EXT_SYM + _managed("Connector_USB_GCT", USB_SYM_REL) + extra_sym,
-        EXT_FP + _managed("Connector_USB_GCT", USB_FP_REL) + extra_fp,
+        EXT_SYM + _managed(USB_LIB, USB_SYM_REL) + extra_sym,
+        EXT_FP + _managed(USB_FP_LIB, USB_FP_REL) + extra_fp,
     )
 
 
@@ -324,7 +331,7 @@ def log_text(w) -> str:
 
 
 def deselect_all_but_ffc(w):
-    """The user's ungenerated selection: only Connector_FFC_GCT is checked."""
+    """The user's ungenerated selection: only the audio connector library is checked."""
     for lib in (*w._scan_result.symbol_libs, *w._scan_result.footprint_libs):
         lib.selected = lib.rel_path in (FFC_SYM_REL, FFC_FP_REL)
 
@@ -343,17 +350,17 @@ def test_tables_new_library_add_only(qtbot, make_window, tmp_path):
     qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
 
     sym_line = _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8")
-    fp_line = _managed(NEW_LIB, NEW_FP_REL).encode("utf-8")
+    fp_line = _managed(NEW_FP_LIB, NEW_FP_REL).encode("utf-8")
     sym_new = (repo / "sym-lib-table").read_bytes()
     fp_new = (repo / "fp-lib-table").read_bytes()
     assert sym_new == old_sym[:-2] + sym_line + b")\n"
     assert fp_new == old_fp[:-2] + fp_line + b")\n"
-    assert b"Connector_FFC_GCT" not in sym_new and b"Connector_FFC_GCT" not in fp_new
+    assert FFC_LIB.encode() not in sym_new and FFC_FP_LIB.encode() not in fp_new
     assert make_window.config_file.read_text(encoding="utf-8") != config_before
     assert "KICAD_LIB_GITHUB" in make_window.config_file.read_text(encoding="utf-8")
     # the post-install path asks through the same helper as Generate
     assert len(make_window.questions) == 1
-    assert "Added IC_New_TI to sym-lib-table and fp-lib-table" in log_text(w)
+    assert f"Added {NEW_LIB} to sym-lib-table and fp-lib-table" in log_text(w)
     assert w._pending_post_install is None
     # the ungenerated selection is still only in the GUI
     assert selected(w._scan_result, FFC_SYM_REL)
@@ -374,7 +381,7 @@ def test_tables_new_library_declined_keeps_kicad_config(qtbot, make_window, tmp_
     qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
 
     sym_line = _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8")
-    fp_line = _managed(NEW_LIB, NEW_FP_REL).encode("utf-8")
+    fp_line = _managed(NEW_FP_LIB, NEW_FP_REL).encode("utf-8")
     assert (repo / "sym-lib-table").read_bytes() == old_sym[:-2] + sym_line + b")\n"
     assert (repo / "fp-lib-table").read_bytes() == old_fp[:-2] + fp_line + b")\n"
     assert make_window.config_file.read_bytes() == config_before
@@ -404,7 +411,7 @@ def test_tables_existing_library_listed_no_warning(qtbot, make_window, tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
     old_sym, old_fp = usb_tables(
-        repo, _managed(LIB, SYM_REL), _managed(LIB, FP_REL),
+        repo, _managed(LIB, SYM_REL), _managed(FP_LIB, FP_REL),
     )
     w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
 
@@ -437,7 +444,7 @@ def test_tables_written_even_when_rescan_fails(qtbot, make_window, tmp_path):
         old_sym[:-2] + _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8") + b")\n"
     )
     assert (repo / "fp-lib-table").read_bytes() == (
-        old_fp[:-2] + _managed(NEW_LIB, NEW_FP_REL).encode("utf-8") + b")\n"
+        old_fp[:-2] + _managed(NEW_FP_LIB, NEW_FP_REL).encode("utf-8") + b")\n"
     )
     assert w._scan_result is before
     assert selected(w._scan_result, FFC_SYM_REL)
@@ -759,7 +766,7 @@ def test_status_rows_existing_library_hint(qtbot, make_window, tmp_path):
 def test_status_rows_existing_library_listed_has_no_hint(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    usb_tables(repo, _managed(LIB, SYM_REL), _managed(LIB, FP_REL))
+    usb_tables(repo, _managed(LIB, SYM_REL), _managed(FP_LIB, FP_REL))
     w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
 
     dialog, _ = run_install(qtbot, w, repo, LIB, False)
@@ -771,7 +778,7 @@ def test_status_rows_existing_library_listed_has_no_hint(qtbot, make_window, tmp
 def test_status_rows_new_library_already_listed(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
-    usb_tables(repo, _managed(NEW_LIB, NEW_SYM_REL), _managed(NEW_LIB, NEW_FP_REL))
+    usb_tables(repo, _managed(NEW_LIB, NEW_SYM_REL), _managed(NEW_FP_LIB, NEW_FP_REL))
     w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
 
     dialog, _ = run_install(qtbot, w, repo, NEW_LIB, True)

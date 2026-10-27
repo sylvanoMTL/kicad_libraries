@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSettings
+from zipfixtures import footprint_library_for
 
 from kicad_lib_manager import settings
 from kicad_lib_manager.importer.package import open_package as real_open_package
@@ -24,7 +25,10 @@ from kicad_lib_manager.widgets.import_dialog import ImportCore, ImportDialog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UL_ZIP = REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip"
-LIB = "IC_Battery_Charger_TI"
+LIB = "Atomic_Battery_Management"
+FP_LIB = footprint_library_for(LIB)
+# New-library targets: Atomic_ names that no layout of this file holds
+NEW_A, NEW_B, NEW_C = "Atomic_Sensor_Temperature", "Atomic_Sensor_Pressure", "Atomic_Sensor_Humidity"
 
 
 @pytest.fixture(autouse=True)
@@ -60,11 +64,11 @@ def core_with(**changes) -> ImportCore:
 
 
 @pytest.fixture
-def make_dialog(qtbot, synthetic_custom, tmp_path, gates):
+def make_dialog(qtbot, atomic_custom, tmp_path, gates):
     def make(core: ImportCore | None = None, open_now: bool = True, show: bool = False) -> ImportDialog:
         dialog = ImportDialog(
-            synthetic_custom.repo_root,
-            synthetic_custom,
+            atomic_custom.repo_root,
+            atomic_custom,
             core=core or core_with(),
             backup_root=tmp_path / "backups",
         )
@@ -96,7 +100,7 @@ def files_rows(dialog: ImportDialog) -> tuple[str, list[str]]:
     return top.text(0), [top.child(i).text(0) for i in range(top.childCount())]
 
 
-def test_tracer_ul_import_end_to_end(qtbot, make_dialog, synthetic_custom):
+def test_tracer_ul_import_end_to_end(qtbot, make_dialog, atomic_custom):
     dialog = make_dialog()
     assert not dialog._install_btn.isEnabled()
     wait_plan(qtbot, dialog)
@@ -107,8 +111,8 @@ def test_tracer_ul_import_end_to_end(qtbot, make_dialog, synthetic_custom):
     assert title == "Files (3)"
     assert rows == [
         "+ Custom/3DModels/CSD85301Q2.stp",
-        "+ Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod",
-        "~ Custom/Symbols/IC_Battery_Charger_TI.kicad_sym",
+        f"+ Custom/Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod",
+        f"~ Custom/Symbols/{LIB}.kicad_sym",
     ]
     assert dialog._strip.text().startswith("✓ Ready to install: 2 new, 1 modified, 0 unchanged files")
 
@@ -118,26 +122,26 @@ def test_tracer_ul_import_end_to_end(qtbot, make_dialog, synthetic_custom):
     assert result.ok
     assert plan is dialog._plan
     assert dialog._stack.currentWidget() is dialog._result_page
-    assert dialog._result_view._banner.text() == "✓ Installed CSD85301Q2 into IC_Battery_Charger_TI"
+    assert dialog._result_view._banner.text() == f"✓ Installed CSD85301Q2 into {LIB}"
     assert dialog.result is result
     files = dialog._result_view._files_list
     listed = [files.item(i).text() for i in range(files.count())]
     assert "Custom/3DModels/CSD85301Q2.stp" in listed
-    pretty = synthetic_custom.footprints_dir / f"{LIB}.pretty"
+    pretty = atomic_custom.footprints_dir / f"{FP_LIB}.pretty"
     assert (pretty / "DQK0006B.kicad_mod").is_file()
-    assert (synthetic_custom.models_dir / "CSD85301Q2.stp").is_file()
+    assert (atomic_custom.models_dir / "CSD85301Q2.stp").is_file()
 
 
-def test_tracer_nothing_written_before_install(qtbot, make_dialog, synthetic_custom, snapshot):
-    before = snapshot(synthetic_custom.repo_root)
+def test_tracer_nothing_written_before_install(qtbot, make_dialog, atomic_custom, snapshot):
+    before = snapshot(atomic_custom.repo_root)
     dialog = make_dialog()
     wait_plan(qtbot, dialog)
-    assert snapshot(synthetic_custom.repo_root) == before
-    for name in ("A_x_TI", "B_x_TI"):
+    assert snapshot(atomic_custom.repo_root) == before
+    for name in (NEW_A, NEW_B):
         set_library(dialog, name)
         qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
         assert dialog._plan.library == name
-    assert snapshot(synthetic_custom.repo_root) == before
+    assert snapshot(atomic_custom.repo_root) == before
 
 
 def test_supersede_discards_stale_result(qtbot, make_dialog, gates):
@@ -153,7 +157,7 @@ def test_supersede_discards_stale_result(qtbot, make_dialog, gates):
     dialog = make_dialog(core_with(build_plan=gated_build))
     qtbot.waitUntil(lambda: len(calls) == 1, timeout=30000)
     first = calls[0]
-    for name in ("A_x_TI", "B_x_TI", "C_x_TI"):
+    for name in (NEW_A, NEW_B, NEW_C):
         set_library(dialog, name, activate=False)
         dialog._request_rebuild()
     gates[0].set()
@@ -164,8 +168,8 @@ def test_supersede_discards_stale_result(qtbot, make_dialog, gates):
     assert not dialog._install_btn.isEnabled()
     gates[1].set()
     wait_plan(qtbot, dialog)
-    assert calls == [first, "C_x_TI"]
-    assert dialog._plan.library == "C_x_TI"
+    assert calls == [first, NEW_C]
+    assert dialog._plan.library == NEW_C
     assert dialog._install_btn.isEnabled()
 
 
@@ -178,7 +182,7 @@ def test_install_uses_latest_plan_object(qtbot, make_dialog):
 
     dialog = make_dialog(core_with(apply_plan=recording_apply))
     wait_plan(qtbot, dialog)
-    for name in ("A_x_TI", "B_x_TI"):
+    for name in (NEW_A, NEW_B):
         set_library(dialog, name)
         wait_plan(qtbot, dialog)
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
@@ -186,7 +190,7 @@ def test_install_uses_latest_plan_object(qtbot, make_dialog):
         dialog._install_btn.click()
     assert len(recorded) == 1
     assert recorded[0] is dialog._plan
-    assert recorded[0].library == "B_x_TI"
+    assert recorded[0].library == NEW_B
 
 
 def _good_suggestion(meta, existing=()):
@@ -354,7 +358,7 @@ def test_refused_package_stays_on_start_and_logs(qtbot, make_dialog, tmp_path):
     assert dialog._plan is None
 
 
-def test_preview_sections_follow_plan_ops(ul_package, synthetic_custom):
+def test_preview_sections_follow_plan_ops(ul_package, atomic_custom):
     from kicad_lib_manager.importer.plan import InstallOptions
 
     package, candidate = ul_package
@@ -364,13 +368,13 @@ def test_preview_sections_follow_plan_ops(ul_package, synthetic_custom):
         footprints=tuple(f.name for f in candidate.footprints),
         model=candidate.models[0].filename,
     )
-    plan = real_build_plan(candidate, options, synthetic_custom)
+    plan = real_build_plan(candidate, options, atomic_custom)
     files = preview_sections(plan, candidate, options)[0]  # plan 05-06 added the other sections after Files
     assert files.title == "Files (3)"
     assert [r.text for r in files.rows] == [
         "+ Custom/3DModels/CSD85301Q2.stp",
-        "+ Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod",
-        "~ Custom/Symbols/IC_Battery_Charger_TI.kicad_sym",
+        f"+ Custom/Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod",
+        f"~ Custom/Symbols/{LIB}.kicad_sym",
     ]
     assert files.rows[0].detail.startswith("new, ") and files.rows[0].detail.endswith(" KiB")
     assert [r.detail for r in files.rows[1:]] == ["new", "modified"]
@@ -378,9 +382,9 @@ def test_preview_sections_follow_plan_ops(ul_package, synthetic_custom):
     counts = file_counts(plan, candidate, options)
     assert (counts.new, counts.modified, counts.unchanged) == (2, 1, 0)
 
-    fresh = real_build_plan(candidate, replace(options, library="A_x_TI"), synthetic_custom)
+    fresh = real_build_plan(candidate, replace(options, library=NEW_A), atomic_custom)
     fresh_files = preview_sections(fresh, candidate, options)[0]
-    assert fresh_files.rows[0].text == "+ Custom/Footprints/A_x_TI.pretty/"
+    assert fresh_files.rows[0].text == f"+ Custom/Footprints/{footprint_library_for(NEW_A)}.pretty/"
     assert file_counts(fresh, candidate, options).new == 3
 
 
@@ -793,9 +797,22 @@ _DATASHEET = {"Datasheet": "https://example.com/part"}
 
 @pytest.fixture
 def item_layout(tmp_path):
-    from zipfixtures import CURRENT_CUSTOM_FOOTPRINT_LIBS, CURRENT_CUSTOM_SYMBOL_LIBS, write_custom_layout
+    from zipfixtures import (
+        CURRENT_ATOMIC_SYMBOL_LIBS,
+        CURRENT_CUSTOM_FOOTPRINT_LIBS,
+        CURRENT_CUSTOM_SYMBOL_LIBS,
+        write_custom_layout,
+    )
 
-    repo = write_custom_layout(tmp_path / "item_repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    # the Atomic_ install targets (every library a test below names) beside the v1 mirror of the live tree;
+    # the motion sensor has a symbol library and no footprint library, as its v1 twin has
+    atomic = (*CURRENT_ATOMIC_SYMBOL_LIBS, "Atomic_Connector_Audio", "Atomic_Sensor_Energy", "Atomic_Power_Supervisor")
+    atomic_footprints = [footprint_library_for(name) for name in atomic if name != "Atomic_Sensor_Motion"]
+    repo = write_custom_layout(
+        tmp_path / "item_repo",
+        (*CURRENT_CUSTOM_SYMBOL_LIBS, *atomic),
+        (*CURRENT_CUSTOM_FOOTPRINT_LIBS, *atomic_footprints),
+    )
     return RepoLayout.for_repo(repo)
 
 
@@ -1131,7 +1148,7 @@ def test_footprint_field_follows_library_and_name(qtbot, make_item_dialog, recor
 
     set_library(dialog, LIB)
     wait_current(qtbot, dialog)
-    assert dialog._fp_field.text() == f"{LIB}:DQK0006B"
+    assert dialog._fp_field.text() == f"{FP_LIB}:DQK0006B"
     assert MUTED.lower() not in dialog._fp_field.styleSheet().lower()
     assert dialog._install_btn.isEnabled()
 
@@ -1141,17 +1158,17 @@ def test_footprint_field_follows_library_and_name(qtbot, make_item_dialog, recor
     assert not dialog._install_btn.isEnabled()
     qtbot.waitUntil(lambda: dialog._building is not None, timeout=30000)
     # the rebuild is running: the field keeps the previous plan's value and Install stays off
-    assert dialog._fp_field.text() == f"{LIB}:DQK0006B"
+    assert dialog._fp_field.text() == f"{FP_LIB}:DQK0006B"
     assert not dialog._install_btn.isEnabled()
     gate.set()
     wait_current(qtbot, dialog)
     assert dialog._plan.footprint_names == ("DQK_0006B",)
-    assert dialog._fp_field.text() == f"{LIB}:DQK_0006B"
+    assert dialog._fp_field.text() == f"{FP_LIB}:DQK_0006B"
     assert dialog._fp_name_edit.text() == "DQK/0006B"  # the box keeps what was typed
 
-    set_library(dialog, "IC_IMU_TDK")
+    set_library(dialog, "Atomic_Sensor_Motion")
     wait_current(qtbot, dialog)
-    assert dialog._fp_field.text() == "IC_IMU_TDK:DQK_0006B"
+    assert dialog._fp_field.text() == f"{footprint_library_for('Atomic_Sensor_Motion')}:DQK_0006B"
 
 
 def test_footprint_field_none_when_unlinked(qtbot, make_item_dialog):
@@ -1251,7 +1268,7 @@ def test_fields_reset_on_symbol_change_kept_on_library_change(qtbot, make_item_d
     wait_current(qtbot, dialog)
     assert dialog._edited == {"manufacturer"}
 
-    set_library(dialog, "IC_IMU_TDK")
+    set_library(dialog, "Atomic_Sensor_Motion")
     wait_current(qtbot, dialog)
     assert dialog._field_edits["manufacturer"].text() == "Acme"  # a library change keeps every edit
     assert dialog._edited == {"manufacturer"}
@@ -1374,16 +1391,16 @@ def test_footprint_field_and_filters_follow_checked_order(qtbot, make_item_dialo
         symbol = find_symbol(parse_bytes(op.data, "lib").root, dialog._plan.symbol_name)
         return find_property(symbol.node, "ki_fp_filters").value
 
-    assert dialog._fp_field.text() == f"{LIB}:F1"
+    assert dialog._fp_field.text() == f"{FP_LIB}:F1"
     assert filters() == "F1 F2 F3"
     dialog._fp_list.setCurrentRow(2)
     dialog._make_linked_btn.click()
     wait_current(qtbot, dialog)
-    assert dialog._fp_field.text() == f"{LIB}:F3"
+    assert dialog._fp_field.text() == f"{FP_LIB}:F3"
     assert filters() == "F3 F1 F2"
     dialog._fp_list.item(1).setCheckState(Qt.CheckState.Unchecked)  # F2 out
     wait_current(qtbot, dialog)
-    assert dialog._fp_field.text() == f"{LIB}:F3"
+    assert dialog._fp_field.text() == f"{FP_LIB}:F3"
     assert filters() == "F3 F1"
 
 
@@ -1459,12 +1476,12 @@ def test_library_typing_debounced_pick_immediate(qtbot, make_item_dialog, record
     edit = dialog._library_combo.lineEdit()
     before = len(recorded)
 
-    type_text(qtbot, edit, "IC_Typed_TI")  # several textEdited events within a few milliseconds
+    type_text(qtbot, edit, "Atomic_Sensor_Current")  # several textEdited events within a few milliseconds
     assert dialog._dirty and dialog._debounce.isActive()
     assert len(recorded) == before
     assert not dialog._install_btn.isEnabled()
     qtbot.waitUntil(lambda: len(recorded) == before + 1, timeout=30000)
-    assert recorded[-1].library == "IC_Typed_TI"
+    assert recorded[-1].library == "Atomic_Sensor_Current"
     wait_current(qtbot, dialog)
     qtbot.wait(450)
     assert len(recorded) == before + 1  # one rebuild for the whole word
@@ -1472,11 +1489,11 @@ def test_library_typing_debounced_pick_immediate(qtbot, make_item_dialog, record
     # picking from the list builds at once and cancels a pending timer
     type_text(qtbot, edit, "X")
     assert dialog._debounce.isActive()
-    dialog._library_combo.setEditText("IC_Battery_Charger_TI")
-    dialog._library_combo.textActivated.emit("IC_Battery_Charger_TI")
+    dialog._library_combo.setEditText(LIB)
+    dialog._library_combo.textActivated.emit(LIB)
     assert not dialog._debounce.isActive() and not dialog._dirty
     qtbot.waitUntil(lambda: len(recorded) == before + 2, timeout=30000)
-    assert recorded[-1].library == "IC_Battery_Charger_TI"
+    assert recorded[-1].library == LIB
     wait_current(qtbot, dialog)
     qtbot.wait(450)
     assert len(recorded) == before + 2
@@ -1997,12 +2014,12 @@ def test_one_build_at_a_time(qtbot, make_item_dialog, gates):
     dialog = ul_dialog(make_item_dialog, qtbot, build_plan=counting_build)
     dialog._request_rebuild()
     qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
-    for name in ("A_x_TI", "B_x_TI", "C_x_TI"):
+    for name in (NEW_A, NEW_B, NEW_C):
         set_library(dialog, name)
     gates[0].set()
     wait_current(qtbot, dialog)
     assert running["max"] == 1
-    assert dialog._plan.library == "C_x_TI"
+    assert dialog._plan.library == NEW_C
 
 
 # -- plan 05-10 Task 1: one conflict row per conflict (PREV-05, D-12, D-14a) --------------------------
@@ -2012,9 +2029,9 @@ from PySide6.QtGui import QAction  # noqa: E402
 from kicad_lib_manager.importer.plan import Conflict, Resolution  # noqa: E402
 from kicad_lib_manager.widgets.theme import ACCENT  # noqa: E402
 
-OTHER_LIB = "IC_Battery_Fuel_Gauge_ADI"
+OTHER_LIB = "Atomic_Sensor_Energy"
 SYMBOL_KEY = f"symbol:{LIB}:CSD85301Q2"
-FP_KEY = f"footprint:{LIB}:dqk0006b"
+FP_KEY = f"footprint:{FP_LIB}:dqk0006b"
 MODEL_KEY = "model:csd85301q2.stp"
 NEEDS_CHOICE = "Needs a choice"
 
@@ -2026,7 +2043,7 @@ def write_clashes(layout, *, symbol=False, footprint=True, model=True, lower_fp=
 
     if footprint:
         name = "dqk0006b.kicad_mod" if lower_fp else "DQK0006B.kicad_mod"
-        (layout.footprints_dir / f"{library}.pretty" / name).write_bytes(fp_bytes("DQK0006B", model="other.step"))
+        (layout.footprints_dir / f"{footprint_library_for(library)}.pretty" / name).write_bytes(fp_bytes("DQK0006B", model="other.step"))
     if model:
         (layout.models_dir / "CSD85301Q2.stp").write_bytes(STEP_BYTES + b"\n")
     if symbol:
@@ -2141,7 +2158,7 @@ def test_conflict_choice_carried_by_key(qtbot, make_item_dialog, item_layout):
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
 
     # another library has the same clash, but its key is another item
-    other_key = f"footprint:{OTHER_LIB}:dqk0006b"
+    other_key = f"footprint:{footprint_library_for(OTHER_LIB)}:dqk0006b"
     set_library(dialog, OTHER_LIB)
     wait_current(qtbot, dialog)
     assert set(dialog._conflict_rows) == {other_key}
@@ -2278,7 +2295,7 @@ def test_conflicts_overflow_geometry(qtbot, make_item_dialog, item_layout, tmp_p
     members += [("a.step", STEP_BYTES)]
     package = make_zip(tmp_path / "six.zip", members)
     for i in (1, 2, 3):
-        (item_layout.footprints_dir / f"{LIB}.pretty" / f"F{i}.kicad_mod").write_bytes(fp_bytes(f"F{i}", model="other.step"))
+        (item_layout.footprints_dir / f"{FP_LIB}.pretty" / f"F{i}.kicad_mod").write_bytes(fp_bytes(f"F{i}", model="other.step"))
     dialog = make_item_dialog(package, show=True, suggest_library=_good_suggestion)
     dialog.resize(900, 600)
     wait_current(qtbot, dialog)
@@ -2309,7 +2326,7 @@ from kicad_lib_manager.importer.content import op_content as real_op_content  # 
 from kicad_lib_manager.importer.content import unchanged_content as real_unchanged_content  # noqa: E402
 from kicad_lib_manager.widgets.content_view import ContentViewDialog  # noqa: E402
 
-FP_PATH = "Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod"
+FP_PATH = f"Custom/Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod"
 
 
 def preview_row(dialog: ImportDialog, section: str, ends_with: str):
@@ -2344,7 +2361,7 @@ def test_content_view_new_footprint_row(qtbot, make_item_dialog):
 def test_content_view_modified_library_diff(qtbot, make_item_dialog):
     dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
     wait_current(qtbot, dialog)
-    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "IC_Battery_Charger_TI.kicad_sym"))
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", f"{LIB}.kicad_sym"))
     view = wait_view(qtbot, dialog)
     assert view._content.kind == "diff"
     assert view.windowTitle().endswith(" - changes")
@@ -2442,7 +2459,7 @@ def test_conflict_view_model_and_symbol(qtbot, make_item_dialog, item_layout):
     qtbot.waitUntil(lambda: not open_views(dialog), timeout=5000)
     dialog._conflict_rows[SYMBOL_KEY].activated.emit(SYMBOL_KEY)
     symbol_view = wait_view(qtbot, dialog)
-    assert symbol_view.windowTitle() == "Custom/Symbols/IC_Battery_Charger_TI.kicad_sym - existing vs incoming"
+    assert symbol_view.windowTitle() == f"Custom/Symbols/{LIB}.kicad_sym - existing vs incoming"
     assert symbol_view._content.kind == "diff"
 
 
@@ -2761,8 +2778,8 @@ KICAD_NOTICE = f"KiCad is running. Reopen KiCad's Symbol and Footprint editors t
 PACKAGE_ROOT = REPO_ROOT / "kicad_lib_manager"
 UL_REL = [
     "Custom/3DModels/CSD85301Q2.stp",
-    "Custom/Footprints/IC_Battery_Charger_TI.pretty/DQK0006B.kicad_mod",
-    "Custom/Symbols/IC_Battery_Charger_TI.kicad_sym",
+    f"Custom/Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod",
+    f"Custom/Symbols/{LIB}.kicad_sym",
 ]
 
 
@@ -2807,7 +2824,7 @@ def test_result_view_success_ul(qtbot, make_install_dialog):
     view = dialog._result_view
 
     assert dialog._stack.currentWidget() is view is dialog._result_page
-    assert view._banner.text() == "✓ Installed CSD85301Q2 into IC_Battery_Charger_TI"
+    assert view._banner.text() == f"✓ Installed CSD85301Q2 into {LIB}"
     assert view._banner.font().bold() and view._banner.font().pointSize() == 12
     assert SUCCESS.lower() in view._banner.styleSheet().lower()
     assert view._files_heading.text() == "Files written (3)"
@@ -3119,7 +3136,7 @@ def test_tracer_commit_end_to_end(qtbot, tmp_path):
     assert panel._branch_label.text() == "Custom branch: main"
     assert panel_files(panel) == UL_REL
     lines = panel.message().splitlines()
-    assert lines[0] == "Add CSD85301Q2 to IC_Battery_Charger_TI"
+    assert lines[0] == f"Add CSD85301Q2 to {LIB}"
     assert "Import-Vendor: Ultra Librarian" in lines
     assert "Import-Package: ul_CSD85301Q2.zip" in lines
     assert f"Import-Date: {date.today().isoformat()}" in lines
@@ -3355,7 +3372,7 @@ def test_commit_unavailable_logged_once(qtbot, make_install_dialog):
     found = logged_codes(logged, "commit.unavailable")
     assert [(i.severity, i.text) for i in found] == [(Severity.WARNING, "Commit unavailable: git was not found on PATH")]
     view = dialog._result_view
-    assert view._banner.text() == "✓ Installed CSD85301Q2 into IC_Battery_Charger_TI"
+    assert view._banner.text() == f"✓ Installed CSD85301Q2 into {LIB}"
     assert view._files_heading.text() == "Files written (3)"
     assert logged_codes(logged, "commit.not_committed") == []  # nothing closed yet
 
@@ -3482,7 +3499,7 @@ def test_no_commit_step_for_noop_plan(qtbot, make_install_dialog, tmp_path):
 
 
 def test_dirty_file_double_click_opens_diff(qtbot, make_install_dialog):
-    rel = "Symbols/IC_Battery_Charger_TI.kicad_sym"
+    rel = f"Symbols/{LIB}.kicad_sym"
     title = f"Custom/{rel} - HEAD vs before this import"
     main_thread = threading.get_ident()
     seen: list[tuple] = []
@@ -3702,7 +3719,7 @@ def test_add_model_tracer_snapeda_end_to_end(qtbot, make_item_dialog, item_layou
     for suffix in ("*.step", "*.stp", "*.wrl", "*.zip"):
         assert suffix in filters[-1]
 
-    set_library(dialog, "Connector_USB_GCT")
+    set_library(dialog, "Atomic_Connector")
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
     staging = dialog._model_packages[-1].staging_dir
     assert staging is not None and staging.is_dir()
@@ -3710,7 +3727,7 @@ def test_add_model_tracer_snapeda_end_to_end(qtbot, make_item_dialog, item_layou
         dialog._install_btn.click()
     assert dialog.result.ok
     assert (item_layout.models_dir / f"{SNAPEDA_MPN}.stp").read_bytes() == STEP_BYTES
-    installed = item_layout.footprints_dir / "Connector_USB_GCT.pretty" / f"{SNAPEDA_FOOTPRINT}.kicad_mod"
+    installed = item_layout.footprints_dir / f"{footprint_library_for('Atomic_Connector')}.pretty" / f"{SNAPEDA_FOOTPRINT}.kicad_mod"
     loaded = load(installed)
     ref = footprint_name(loaded.root)
     assert ref is not None
