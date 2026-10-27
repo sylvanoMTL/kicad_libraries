@@ -397,3 +397,26 @@ def test_cli_loads_the_generated_text(atomic_custom, ul_package, tmp_path, real_
         kicad_cli_path, library=LIBRARY, symbol_lib=symbol_lib, footprints=[(FOOTPRINT, footprint_data)]
     )
     assert [i for i in issues if i.severity is Severity.ERROR] == [], issues
+
+
+def test_text_rows_fit_the_left_pane_and_are_named(qtbot, make_dialog):
+    from PySide6.QtCore import QPoint
+
+    dialog = make_dialog()
+    dialog.show()
+    dialog.resize(900, 600)
+    wait_current(qtbot, dialog)
+    scroll = dialog._left_scroll
+    left = scroll.widget()
+    assert not scroll.horizontalScrollBar().isVisible()
+    assert left.width() <= scroll.viewport().width()
+    labels = {"keywords": "Keywords", "fp_description": "Footprint description", "fp_tags": "Footprint tags"}
+    for name, label in labels.items():
+        edit, button = dialog._text_edits[name], dialog._text_regenerate[name]
+        assert edit.accessibleName() == label
+        assert button.accessibleName() == f"Regenerate {label}"
+        assert (button.width(), button.height()) == (24, 24)
+        assert "ki_" not in edit.toolTip() + button.toolTip()
+        # a line edit never overlaps its button, and both stay inside the pane
+        assert edit.mapTo(left, QPoint(edit.width(), 0)).x() <= button.mapTo(left, QPoint(0, 0)).x()
+        assert button.mapTo(left, QPoint(button.width(), 0)).x() <= scroll.viewport().width()

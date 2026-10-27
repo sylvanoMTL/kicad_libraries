@@ -75,6 +75,7 @@ _NO_MODEL = "No model"
 ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
 REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
 _BLANK_FIELD_HINT = "Empty - the field will be written blank"
+_REGENERATE = "Regenerate"
 _TEXT_TIPS = {
     "keywords": "Words KiCad's symbol chooser searches. The vendor's words come first, then the generated ones.",
     "fp_description": "The sentence KiCad shows for the footprint. It replaces the vendor's.",
@@ -948,11 +949,10 @@ class ImportDialog(QDialog):
             edit.setMinimumHeight(28)
             edit.setToolTip(_TEXT_TIPS[name])
             edit.textEdited.connect(lambda text, n=name: self._on_text_edited(n, text))
-            regenerate = QToolButton()
-            regenerate.setText("Regenerate")
-            regenerate.setAccessibleName(f"Regenerate {label}")
-            regenerate.setToolTip(f"Write the generated {label.lower()} again")
-            regenerate.setEnabled(False)
+            # The same 24 px glyph button as the restore buttons: a word would widen the left pane past its viewport
+            regenerate = self._restore_button(f"{_REGENERATE} {label}")
+            regenerate.setText("↻")
+            regenerate.setToolTip(f"{_REGENERATE}: write the generated {label.lower()} again")
             regenerate.clicked.connect(lambda _checked=False, n=name: self._regenerate_text(n))
             row_lay.addWidget(self._framed(edit, name), 1)
             row_lay.addWidget(regenerate)
