@@ -246,11 +246,12 @@ def test_part_info_fills_missing_fields(tmp_path):
         assert not isinstance(loaded, Issue)
         installed = find_symbol(loaded.root, SAMACSYS_PART)
         assert installed is not None
-        assert find_property(installed.node, "Manufacturer").value == SAMACSYS_MANUFACTURER
+        # part_info.txt says "RECOM Power"; the symbol is written in the canonical spelling (D-23)
+        assert find_property(installed.node, "Manufacturer").value == "RECOM"
         assert find_property(installed.node, "MPN").value == SAMACSYS_MPN
         assert plan.model_file == f"{SAMACSYS_PART}.stp"
         defaults = field_defaults(candidate, SAMACSYS_PART)
-        assert (defaults.manufacturer, defaults.mpn) == (SAMACSYS_MANUFACTURER, SAMACSYS_MPN)
+        assert (defaults.manufacturer, defaults.mpn) == ("RECOM", SAMACSYS_MPN)
 
 
 def test_symbol_fields_win_over_part_info(tmp_path):

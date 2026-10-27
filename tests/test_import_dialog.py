@@ -1066,7 +1066,7 @@ UL_DEFAULTS = {
     "value": "CSD85301Q2",
     "datasheet": "https://www.ti.com/lit/gpn/csd85301q2",
     "description": "",
-    "manufacturer": "TI",
+    "manufacturer": "Texas Instruments",
     "mpn": "CSD85301Q2",
 }
 
@@ -1192,7 +1192,7 @@ def test_fields_start_with_what_the_plan_writes(qtbot, make_item_dialog):
     assert dialog._symbol_name_label.full_text() == "CSD85301Q2"
     for name in FIELD_KEYS:
         assert not dialog._field_restore[name].isEnabled()
-    assert dialog._defaults.manufacturer == "TI"
+    assert dialog._defaults.manufacturer == "Texas Instruments"
 
 
 def test_fields_symbol_label_shows_rename(qtbot, make_item_dialog, tmp_path):

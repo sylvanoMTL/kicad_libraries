@@ -73,7 +73,7 @@ def test_a_kept_symbol_links_no_footprint(atomic_custom, ul_package, tmp_path):
     # Make the installed symbol differ from the incoming one, so the same name is a real conflict
     sym_path = atomic_custom.symbols_dir / f"{LIBRARY}.kicad_sym"
     text = sym_path.read_text(encoding="utf-8")
-    changed = text.replace('"Manufacturer" "TI"', '"Manufacturer" "Texas Instruments"')
+    changed = text.replace('"Manufacturer" "Texas Instruments"', '"Manufacturer" "Other Maker"')
     assert changed != text
     sym_path.write_text(changed, encoding="utf-8")
 

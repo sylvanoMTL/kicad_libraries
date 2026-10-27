@@ -165,13 +165,13 @@ def test_field_defaults_equivalence(case, eq_layout, tmp_path):
             value="CSD85301Q2",
             datasheet="https://www.ti.com/lit/gpn/csd85301q2",
             description="",
-            manufacturer="TI",
+            manufacturer="Texas Instruments",
             mpn="CSD85301Q2",
         )
     if case == "aliases":
         assert (defaults.manufacturer, defaults.mpn, defaults.description) == ("Acme Corp", "ACME-123", "A test part")
     if case == "inferred":
-        assert defaults.manufacturer == "TI"
+        assert defaults.manufacturer == "Texas Instruments"
     if case == "renamed":
         assert (defaults.value, defaults.mpn) == ("PART/1", "PART/1")
     if case == "snapeda":
@@ -183,7 +183,7 @@ def test_field_defaults_equivalence(case, eq_layout, tmp_path):
             mpn=SNAPEDA_MPN,
         )
     if case == "placeholder_mf":
-        assert defaults.manufacturer == "TI"
+        assert defaults.manufacturer == "Texas Instruments"
 
 
 def test_field_defaults_value_is_the_mpn_whatever_the_final_name(tmp_path):

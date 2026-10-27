@@ -323,7 +323,7 @@ def test_blank_option_keeps_ul_vendor_values(atomic_custom, ul_package, blank):
         "Value": "CSD85301Q2",
         "Datasheet": "https://www.ti.com/lit/gpn/csd85301q2",
         "MPN": "CSD85301Q2",
-        "Manufacturer": "TI",
+        "Manufacturer": "Texas Instruments",
     }
     assert find_property(symbol.node, "ki_description") is None
     assert find_property(symbol.node, "Description") is None
@@ -912,7 +912,7 @@ def test_fields_added_hidden_20211014(tmp_path, ul_package):
     plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, ToolContext())
     assert not plan.blocked, plan.issues
     loaded, symbol = _symbol_in(plan, "CSD85301Q2")
-    assert (_value_of(plan, "Manufacturer", "CSD85301Q2"), _value_of(plan, "MPN", "CSD85301Q2")) == ("TI", "CSD85301Q2")
+    assert (_value_of(plan, "Manufacturer", "CSD85301Q2"), _value_of(plan, "MPN", "CSD85301Q2")) == ("Texas Instruments", "CSD85301Q2")
     ids = {}
     for name in ("Manufacturer", "MPN"):
         text = _property_text(loaded, symbol, name)
@@ -931,7 +931,7 @@ def test_fields_added_hidden_20241209(tmp_path):
     )
     assert not plan.blocked, plan.issues
     loaded, symbol = _symbol_in(plan)
-    assert (_value_of(plan, "Manufacturer"), _value_of(plan, "MPN")) == ("TI", VENDOR)
+    assert (_value_of(plan, "Manufacturer"), _value_of(plan, "MPN")) == ("Texas Instruments", VENDOR)
     for name in ("Manufacturer", "MPN"):
         text = _property_text(loaded, symbol, name)
         assert "(hide yes)" in text and "(id " not in text, text
@@ -1124,7 +1124,7 @@ def test_unit_fields_on_every_symbol(tmp_path):
     for name in (PARENT, CHILD):
         assert _value_of(plan, "Footprint", name) == f"{footprint_library_for(LIBRARY)}:FP"
         assert _value_of(plan, "ki_fp_filters", name) == "FP"
-        assert _value_of(plan, "Manufacturer", name) == "TI"
+        assert _value_of(plan, "Manufacturer", name) == "Texas Instruments"
     # The caller's part number belongs to the chosen symbol; its parent keeps its own name
     assert _value_of(plan, "MPN", CHILD) == "CHILD-MPN"
     assert _value_of(plan, "MPN", PARENT) == PARENT

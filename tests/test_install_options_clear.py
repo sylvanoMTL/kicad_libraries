@@ -68,20 +68,20 @@ def test_cleared_datasheet_writes_empty_property(ul_layout, ul_package):
     assert _prop(plan, "Datasheet") == ""
     assert _prop(plan, "Value") == "CSD85301Q2"
     assert _prop(plan, "MPN") == "CSD85301Q2"
-    assert _prop(plan, "Manufacturer") == "TI"
+    assert _prop(plan, "Manufacturer") == "Texas Instruments"
     assert plan.model_file == "CSD85301Q2.stp"
 
 
 def test_cleared_manufacturer_skips_inference(ul_layout, ul_package):
     _, candidate = ul_package
     unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY), ul_layout)
-    assert _prop(unset, "Manufacturer") == "TI"
+    assert _prop(unset, "Manufacturer") == "Texas Instruments"
     plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({"manufacturer"})), ul_layout)
     assert not plan.blocked, plan.issues
     assert _prop(plan, "Manufacturer") == ""
     assert "install.manufacturer_missing" not in [i.code for i in plan.issues]
     sym_op = next(op for op in plan.ops if op.kind == "symbol_lib")
-    assert b'"TI"' not in sym_op.data
+    assert b'"Texas Instruments"' not in sym_op.data
 
 
 def test_cleared_description_creates_empty_property(ul_layout, ul_package):

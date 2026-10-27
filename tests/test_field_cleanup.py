@@ -252,7 +252,7 @@ def test_placeholder_alias_is_absent(tmp_path):
     plan, candidate = _plan_vendor(tmp_path, {"MF": "N/A"})
     assert not plan.blocked, [i.text for i in plan.issues]
     assert candidate.symbols[0].meta.manufacturer == ""
-    assert _value_of(plan, "Manufacturer") == "TI"
+    assert _value_of(plan, "Manufacturer") == "Texas Instruments"
     assert "install.manufacturer_missing" not in [i.code for i in plan.issues]
 
     second = tmp_path / "second"
