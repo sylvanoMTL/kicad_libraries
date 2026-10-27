@@ -283,3 +283,95 @@ def test_dialog_shows_the_canonical_manufacturer(qtbot, atomic_custom, tmp_path)
     symbol = vendor_symbol_lib(VENDOR, props={"Manufacturer": "TI"})
     dialog = _open_dialog(qtbot, atomic_custom, tmp_path, symbol)
     assert dialog._field_edits["manufacturer"].text() == "Texas Instruments"
+
+
+def _plan_for(tmp_path, link, props=None, **options):
+    """Plan a vendor symbol whose datasheet link is `link`."""
+    symbol = vendor_symbol_lib(VENDOR, datasheet=link, props=props)
+    return _plan(tmp_path, symbol, **options)
+
+
+def _codes(plan):
+    return [issue.code for issue in plan.issues]
+
+
+@pytest.mark.parametrize(
+    ("datasheet", "name"),
+    [
+        ("https://www.ti.com/lit/gpn/part", "Texas Instruments"),
+        ("https://www.maximintegrated.com/x.pdf", "Maxim Integrated"),
+        ("https://www.analog.com/x", "Analog Devices"),
+    ],
+)
+def test_the_datasheet_link_names_the_manufacturer(tmp_path, datasheet, name):
+    plan, candidate = _plan_for(tmp_path, datasheet)
+    assert _symbol_manufacturer(plan) == name
+    assert _sets(plan, "Manufacturer") == [FieldChange(VENDOR, "set", "Manufacturer", "", name, "datasheet_host")]
+    assert "install.manufacturer_missing" not in _codes(plan)
+    assert form.field_defaults(candidate, VENDOR).manufacturer == name
+    section = next(s for s in preview_sections(plan, candidate, InstallOptions(library=LIBRARY)) if s.name == "Field changes")
+    assert {row.text: row.detail for row in section.rows}["Set Manufacturer"] == f"(empty) → {name}: found from the datasheet link"
+
+
+def test_a_distributor_link_is_never_used(tmp_path):
+    plan, candidate = _plan_for(tmp_path, "https://www.digikey.com/x.pdf")
+    assert _symbol_manufacturer(plan) == ""
+    assert _sets(plan, "Manufacturer") == []
+    aggregator = [i for i in plan.issues if i.code == "naming.aggregator_host"]
+    assert len(aggregator) == 1
+    assert aggregator[0].severity.value == "info"
+    assert "www.digikey.com" in aggregator[0].text
+    assert "install.manufacturer_missing" in _codes(plan)
+    assert form.field_defaults(candidate, VENDOR).manufacturer == ""
+
+
+def test_an_unlisted_domain_infers_nothing_and_says_nothing_about_a_distributor(tmp_path):
+    plan, candidate = _plan_for(tmp_path, "https://www.example-widgets.com/x.pdf")
+    assert _symbol_manufacturer(plan) == ""
+    assert "naming.aggregator_host" not in _codes(plan)
+    assert "install.manufacturer_missing" in _codes(plan)
+    assert form.field_defaults(candidate, VENDOR).manufacturer == ""
+
+
+def test_a_name_that_is_not_in_the_table_is_kept_as_typed(tmp_path):
+    plan, candidate = _plan_for(tmp_path, "https://www.ti.com/x", props={"Manufacturer": "Acme Widgets"})
+    assert _symbol_manufacturer(plan) == "Acme Widgets"
+    assert _sets(plan, "Manufacturer") == []
+    assert form.field_defaults(candidate, VENDOR).manufacturer == "Acme Widgets"
+
+
+def test_a_typed_manufacturer_is_canonical_too(tmp_path):
+    plan, _ = _plan_for(tmp_path, "https://www.ti.com/x", props={"Manufacturer": "Acme Widgets"}, manufacturer="ADI")
+    assert _symbol_manufacturer(plan) == "Analog Devices"
+    assert _sets(plan, "Manufacturer") == [FieldChange(VENDOR, "set", "Manufacturer", "ADI", "Analog Devices", "canonical")]
+
+
+def test_a_cleared_manufacturer_is_written_empty_without_inference_or_warning(tmp_path):
+    plan, _ = _plan_for(tmp_path, "https://www.ti.com/x", manufacturer="", cleared=frozenset({"manufacturer"}))
+    assert _symbol_manufacturer(plan) == ""
+    assert _sets(plan, "Manufacturer") == []
+    assert "install.manufacturer_missing" not in _codes(plan)
+    assert "naming.aggregator_host" not in _codes(plan)
+
+
+def test_a_cleared_manufacturer_on_a_distributor_link_says_nothing(tmp_path):
+    plan, _ = _plan_for(tmp_path, "https://www.digikey.com/x", manufacturer="", cleared=frozenset({"manufacturer"}))
+    assert _symbol_manufacturer(plan) == ""
+    assert "naming.aggregator_host" not in _codes(plan)
+    assert "install.manufacturer_missing" not in _codes(plan)
+
+
+def test_a_typed_datasheet_decides_where_the_manufacturer_is_found(tmp_path):
+    plan, _ = _plan_for(tmp_path, "https://www.digikey.com/x", datasheet="https://www.analog.com/y")
+    assert _symbol_manufacturer(plan) == "Analog Devices"
+    assert "naming.aggregator_host" not in _codes(plan)
+
+
+def test_a_renamed_alias_is_one_rename_and_one_canonical_set(tmp_path):
+    plan, candidate = _plan_for(tmp_path, "https://www.digikey.com/x", props={"MF": "RECOM Power"})
+    assert _symbol_manufacturer(plan) == "RECOM"
+    assert [(c.action, c.field, c.old, c.new) for c in plan.field_changes if c.field in ("MF", "Manufacturer")] == [
+        ("rename", "MF", "", "Manufacturer"),
+        ("set", "Manufacturer", "RECOM Power", "RECOM"),
+    ]
+    assert form.field_defaults(candidate, VENDOR).manufacturer == "RECOM"
