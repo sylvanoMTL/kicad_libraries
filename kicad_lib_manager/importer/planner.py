@@ -9,6 +9,7 @@ import os
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
+from typing import NamedTuple
 
 from .. import fsutil
 from ..kicad_files import (
@@ -25,6 +26,7 @@ from ..kicad_files import (
     find_symbols,
     footprint_name,
     footprint_name_edit,
+    footprint_text_edit,
     footprint_value_edits,
     hidden_template,
     list_properties,
@@ -54,7 +56,10 @@ from . import package as _package
 from . import stems
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
 from .fieldrules import DESCRIPTION_FIELDS, FieldRules, clean_description, is_placeholder, is_protected, is_volatile
+from .footprint_index import build_index, footprint_texts, rank
+from .footprint_text import describe, footprint_facts, generated_tags, vendor_texts
 from .incoming import incoming_context, incoming_issues
+from .keywords import generate_keywords, manufacturer_words, merge_words
 from .layout import RepoLayout, list_footprint_libs, list_model_files, list_symbol_libs
 from .naming import MAX_NAME_LEN, NameResult, case_clash, sanitize_filename, sanitize_name
 from .package import PackageFile
@@ -65,6 +70,7 @@ from .plan import (
     FileOp,
     InstallOptions,
     InstallPlan,
+    PartText,
     Rename,
     Resolution,
     ToolContext,
@@ -72,6 +78,8 @@ from .plan import (
 from .suggest import manufacturer_from_datasheet
 
 _LISTED_NAMES = 20
+# An official footprint supplies the package family only when its name holds the vendor code's leading letters (rank scores 30)
+_MIN_FAMILY_SCORE = 30
 
 
 def _err(code: str, text: str) -> Issue:
@@ -130,12 +138,18 @@ class _Fields:
     description: str | None = None
     # MPN used when the symbol carries no value of its own and the caller typed none; "" means the symbol name
     mpn_default: str = ""
+    # The chosen symbol's keywords (D-26, D-27): the caller's text written exactly, or the generated words that follow
+    # the vendor's own; keyword_source(final description, final MPN, final name) gives those words. None leaves the
+    # vendor keywords as they are.
+    keywords: str | None = None
+    keyword_source: Callable[[str, str, str], Sequence[str]] | None = None
 
 
 def _edit_symbol(
     work: LoadedFile, ref: SymbolRef, new_name: str, fields: _Fields, version: int | None, rules: FieldRules
-) -> tuple[list[Edit], str, list[FieldChange]]:
-    """The span edits that turn one vendor symbol into its installed form, the MPN it ends up with, and the field changes.
+) -> tuple[list[Edit], str, list[FieldChange], tuple[str, str] | None]:
+    """The span edits that turn one vendor symbol into its installed form, the MPN it ends up with, the field changes
+    and, for a symbol given keywords, (the keywords the generators make, the keywords written).
 
     Every property receives at most one edit, computed from its final value. New properties are
     hidden copies of an existing hidden one in the style of `version`. Properties the rules call
@@ -248,7 +262,7 @@ def _edit_symbol(
     put("Value", mpn)
     if value is not None and value.value != mpn:
         positioned.append((value.node.start, FieldChange(new_name, "set", "Value", value.value, mpn, "follows_mpn")))
-    if new_name != ref.name:
+    if new_name != ref.name and fields.keyword_source is None:
         retoken("ki_keywords")
     if fields.datasheet is not None:
         put("Datasheet", fields.datasheet)
@@ -266,6 +280,9 @@ def _edit_symbol(
             positioned.append(
                 (found.node.start, FieldChange(new_name, "clean", found.name, found.value, cleaned, "whitespace"))
             )
+    keywords: tuple[str, str] | None = None
+    if fields.keyword_source is not None:
+        keywords = _put_keywords(node, ref.name, new_name, fields, fields.keyword_source, mpn, put, positioned)
     for prop in list_properties(node):
         if prop.node.start in handled or is_protected(prop.name):
             continue
@@ -282,7 +299,43 @@ def _edit_symbol(
         # Zero-width inserts at one position keep their list order
         edits.append(property_insert_edit(text, node, block, eol))
     changes = [change for _, change in sorted(positioned, key=lambda item: item[0])]
-    return edits, mpn, changes
+    return edits, mpn, changes, keywords
+
+
+def _put_keywords(
+    node: Node,
+    old_name: str,
+    new_name: str,
+    fields: _Fields,
+    source: Callable[[str, str, str], Sequence[str]],
+    mpn: str,
+    put: Callable[[str, str], None],
+    positioned: list[tuple[int, FieldChange]],
+) -> tuple[str, str]:
+    """Write the chosen symbol's ki_keywords: the caller's text, else the vendor words then the generated ones (D-27).
+
+    Returns (the text the generators make, the text written) and records the change as a "generated" set.
+    """
+    description = fields.description
+    if description is None:
+        description = next(
+            (
+                cleaned
+                for name in DESCRIPTION_FIELDS
+                if (found := find_property(node, name)) is not None and (cleaned := clean_description(found.value))
+            ),
+            "",
+        )
+    found = find_property(node, "ki_keywords")
+    old = found.value if found is not None else ""
+    vendor = replace_exact_tokens(old, old_name, new_name)
+    generated = merge_words(vendor, source(description, mpn, new_name))
+    written = fields.keywords if fields.keywords is not None else generated
+    put("ki_keywords", written)
+    if written != old:
+        at = found.node.start if found is not None else node.end
+        positioned.append((at, FieldChange(new_name, "set", "ki_keywords", old, written, "generated")))
+    return generated, written
 
 
 def _unit_text(vendor: LoadedFile, unit: list[SymbolRef]) -> str:
@@ -331,6 +384,17 @@ def detect_tools(
         kicad_footprints_dir=kicad_fp_dir if kicad_fp_dir is not None and kicad_fp_dir.is_dir() else None,
         allowed_stems=stems.allowed_stems(stems.installed_stems(symbols_dir)),
     )
+
+
+class _Rendered(NamedTuple):
+    """The unit edited under one set of final names: the text, the block per final name, the chosen symbol's final MPN,
+    the field changes and (generated keywords, written keywords) of the chosen symbol."""
+
+    edited: LoadedFile
+    blocks: dict[str, str]
+    final_mpn: str
+    changes: list[FieldChange]
+    keywords: tuple[str, str]
 
 
 @dataclass(frozen=True)
@@ -938,12 +1002,44 @@ def build_plan(
         manufacturer_forced=options.manufacturer is not None,
         manufacturer_inferred=inferred_manufacturer,
     )
-    renders: dict[tuple, tuple[LoadedFile, dict[str, str], str, list[FieldChange]] | Issue] = {}
 
-    def render_symbols(
-        names: dict[str, str], link: str, filters: str
-    ) -> tuple[LoadedFile, dict[str, str], str, list[FieldChange]] | Issue:
-        """The unit edited under the given final names and footprint link: (text, block per final name, final MPN, field changes)."""
+    # D-26, D-28: what the linked vendor footprint is, from its own geometry and text and, for the family, the
+    # official KiCad footprint named after the vendor package code. The manufacturer is spelled as it is written.
+    code = fp_items[0].name
+    final_manufacturer = canonical(manufacturer) if manufacturer and not is_placeholder(manufacturer) else ""
+    official: list[str] = []
+    if tools.kicad_footprints_dir is not None:
+        footprint_index = build_index(tools.kicad_footprints_dir)
+        best = rank(footprint_index, package_code=code, limit=1)
+        if best and best[0].score >= _MIN_FAMILY_SCORE:
+            official = [*footprint_texts(footprint_index, best[0].link), best[0].link.partition(":")[2]]
+    maker_words = manufacturer_words(final_manufacturer)
+    facts = footprint_facts(fp_refs[0].node, code=code, maker=maker_words[0] if maker_words else "", texts=official)
+    vendor_fp_texts = [vendor_texts(ref.node) for ref in fp_refs]
+    # D-28, D-29: the sentence is always the generated one, the tags are the vendor's with the generated ones after
+    generated_description = describe(facts)
+    generated_fp_tags = merge_words(vendor_fp_texts[0][1], generated_tags(facts))
+    written_description = options.fp_description if options.fp_description is not None else generated_description
+    written_fp_tags = options.fp_tags if options.fp_tags is not None else generated_fp_tags
+    package_words = [word for word in (facts.family, code) if word]
+    related = [stem for stem in options.related_stems if stems.ATOMIC_PREFIX + stem != library]
+
+    def keyword_words(description: str, mpn: str, symbol_name: str) -> list[str]:
+        return generate_keywords(
+            library=library,
+            description=description,
+            category=meta.category,
+            package_words=package_words,
+            manufacturer=final_manufacturer,
+            mpn=mpn,
+            symbol_name=symbol_name,
+            related=related,
+        )
+
+    renders: dict[tuple, _Rendered | Issue] = {}
+
+    def render_symbols(names: dict[str, str], link: str, filters: str) -> _Rendered | Issue:
+        """The unit edited under the given final names and footprint link."""
         memo = (tuple(names.items()), link, filters)
         if memo in renders:
             return renders[memo]
@@ -954,13 +1050,16 @@ def build_plan(
             datasheet=options.datasheet,
             description=options.description,
             mpn_default=meta.mpn,
+            keywords=options.keywords,
+            keyword_source=keyword_words,
         )
         all_edits: list[Edit] = []
         all_changes: list[FieldChange] = []
         final_mpn = ""
+        keyword_texts = ("", "")
         for ref in work_unit:
             is_chosen = ref is work_unit[-1]
-            symbol_edits, mpn, symbol_changes = _edit_symbol(
+            symbol_edits, mpn, symbol_changes, texts = _edit_symbol(
                 work, ref, names[ref.name], chosen_fields if is_chosen else fields, style, candidate.field_rules
             )
             all_edits.extend(symbol_edits)
@@ -968,19 +1067,20 @@ def build_plan(
             all_edits.extend(rename_symbol_edits(work.root, ref.name, names[ref.name]))
             if is_chosen:
                 final_mpn = mpn
+                keyword_texts = texts or keyword_texts
         edited = _loaded_text(apply_edits(work.source.text, all_edits), work.source.bom, "the edited symbol", "install.source_unreadable")
         if isinstance(edited, Issue):
             renders[memo] = edited
             return edited
         placed = {ref.name: ref for ref in find_symbols(edited.root)}
         blocks = {name: edited.source.text[placed[name].node.start:placed[name].node.end] for name in names.values()}
-        renders[memo] = (edited, blocks, final_mpn, all_changes)
+        renders[memo] = _Rendered(edited, blocks, final_mpn, all_changes, keyword_texts)
         return renders[memo]
 
     first = render_symbols(new_names, f"{stems.SHARED_FOOTPRINT_LIBRARY}:{fp_names[0]}", " ".join(fp_names))
     if isinstance(first, Issue):
         return refuse(first)
-    final_mpn = first[2]
+    final_mpn = first.final_mpn
 
     model_file: str | None = None
     if model_item is not None:
@@ -1051,11 +1151,21 @@ def build_plan(
     pretty_files = _footprint_files(pretty)
     fp_taken = [name[: -len(_FOOTPRINT_SUFFIX)] for name in pretty_files]
 
-    def render_fp(index: int, name: str) -> tuple[bytes, list[Issue]]:
-        """The vendor footprint under a final name; the first footprint carries the model link."""
+    def render_fp(index: int, name: str) -> tuple[bytes, list[Issue], list[FieldChange]]:
+        """The vendor footprint under a final name, with the changes it makes to its text; the first footprint carries the model link and the generated text."""
         fp_ref, vendor_fp = fp_refs[index], vendor_fps[index]
         notes: list[Issue] = []
+        changes: list[FieldChange] = []
         fp_edits = [footprint_name_edit(fp_ref, name), *footprint_value_edits(fp_ref.node, name)]
+        if index == 0:
+            old_description, old_tags = vendor_fp_texts[0]
+            for key, label, old, new in (
+                ("descr", "Footprint description", old_description, written_description),
+                ("tags", "Footprint tags", old_tags, written_fp_tags),
+            ):
+                if new != old:
+                    fp_edits.append(footprint_text_edit(vendor_fp.source.text, fp_ref.node, key, new, vendor_fp.source.eol))
+                    changes.append(FieldChange(name, "set", label, old, new, "generated", scope="footprint"))
         existing = find_models(fp_ref.node)
         # The model belongs to the linked (first) footprint
         if model_link is not None and index == 0:
@@ -1085,7 +1195,7 @@ def build_plan(
                 "install.embedded_files",
                 f"{name} contains embedded files; they are kept exactly as they are",
             ))
-        return fsutil.encode_source(apply_edits(vendor_fp.source.text, fp_edits), vendor_fp.source.bom), notes
+        return fsutil.encode_source(apply_edits(vendor_fp.source.text, fp_edits), vendor_fp.source.bom), notes, changes
 
     linking: dict[str, list[str]] = {}
 
@@ -1184,7 +1294,7 @@ def build_plan(
         rendered = render_symbols(names, link, filters)
         if isinstance(rendered, Issue):
             return refuse(rendered)
-        edited, blocks, _mpn, changes = rendered
+        edited, blocks, _mpn, changes, _keywords = rendered
         sym_notes: list[Issue] = []
         states: list[_SymState] = []
         again = False
@@ -1278,13 +1388,13 @@ def build_plan(
     if model_dec is not None and model_dec.conflict is not None:
         conflicts.append(model_dec.conflict)
 
+    def will_write(decision: _Decision) -> bool:
+        """The decision writes its file, or is still open so the planned file is the one being judged."""
+        return decision.op is not None or (decision.conflict is not None and decision.conflict.resolution is None)
+
     # D-21: the part as it would be installed must pass the atomic rule; only what is planned or already on disk counts
     written = [state.final for state in states if state.kind in ("new", "overwrite", "open")]
     if written:
-        def will_write(decision: _Decision) -> bool:
-            """The decision writes its file, or is still open so the planned file is the one being judged."""
-            return decision.op is not None or (decision.conflict is not None and decision.conflict.resolution is None)
-
         planned_footprints: dict[str, tuple[str, bytes]] = {}
         first_fp = fp_decisions[0]
         if will_write(first_fp):
@@ -1328,6 +1438,13 @@ def build_plan(
     )
     # A kept or identical symbol is not written, so it lists no field change
     pending = {state.final for state in states if state.kind in ("new", "overwrite", "open")}
+    # The footprint's text changes are listed only for a footprint that is written, after the symbol's
+    footprint_changes = [
+        change
+        for index, decision in enumerate(fp_decisions)
+        if will_write(decision)
+        for change in render_fp(index, decision.name)[2]
+    ]
     return InstallPlan(
         vendor=candidate.vendor,
         source=candidate.source,
@@ -1349,6 +1466,8 @@ def build_plan(
         conflicts=tuple(conflicts),
         renames=(*sym_renames, *fp_renames, *model_renames),
         issues=tuple(issues),
-        field_changes=tuple(c for c in changes if c.symbol in pending),
+        field_changes=(*(c for c in changes if c.symbol in pending), *footprint_changes),
         unused_footprints=tuple(f.name for f in candidate.footprints if f not in fp_items),
+        generated_text=PartText(rendered.keywords[0], generated_description, generated_fp_tags),
+        part_text=PartText(rendered.keywords[1], written_description, written_fp_tags),
     )

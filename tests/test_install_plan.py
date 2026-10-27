@@ -1024,8 +1024,9 @@ def test_rename_sanitised_symbol(tmp_path):
     assert subs == ["PART_X_1_1", "PART_X_2_1"]
     assert find_symbol(loaded.root, "PART/X") is None
     assert _value_of(plan, "Value", "PART_X") == "PART/X"  # Value is the MPN (the vendor name), not the retokened name
-    # Only a token equal to the old name changes: PART/XY is a different word
-    assert _value_of(plan, "ki_keywords", "PART_X") == "PART_X PART/XY power"
+    # Only a token equal to the old name changes: PART/XY is a different word. The generated words follow the
+    # vendor's (plan 10-23): the library stem, the footprint code, the manufacturer's words and the MPN
+    assert _value_of(plan, "ki_keywords", "PART_X") == "PART_X PART/XY power Analog FP TI Texas PART/X"
     assert _value_of(plan, "MPN", "PART_X") == "PART/X"
     assert plan.model_file == "PART_X.step"
 

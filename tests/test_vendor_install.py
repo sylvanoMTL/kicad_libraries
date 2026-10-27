@@ -189,9 +189,22 @@ def test_generic_rules_for_other_vendors(ul_package, tmp_path):
     layout = RepoLayout.for_repo(tmp_path / "repo")
     plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=inst.UL_DESCRIPTION), layout, ToolContext())
     assert not plan.blocked, [i.text for i in plan.issues]
-    # No rename, drop or clean; the only change is the Manufacturer the UL datasheet link names (D-23)
+    # No rename, drop or clean. The symbol gains the Manufacturer its datasheet link names (D-23) and generated
+    # keywords after its vendor word; the footprint gains a generated sentence and tags after its vendor tag (plan 10-23)
     assert plan.field_changes == (
+        FieldChange(
+            "CSD85301Q2", "set", "ki_keywords", "CSD85301Q2",
+            "CSD85301Q2 Battery Management MOSFET N-channel DQK0006B TI Texas", "generated",
+        ),
         FieldChange("CSD85301Q2", "set", "Manufacturer", "", "Texas Instruments", "datasheet_host"),
+        FieldChange(
+            "DQK0006B", "set", "Footprint description", "", "2.1x2.1 mm, 0.65 mm pitch, TI DQK0006B", "generated",
+            scope="footprint",
+        ),
+        FieldChange(
+            "DQK0006B", "set", "Footprint tags", "CSD85301Q2 ", "CSD85301Q2 DQK0006B P0.65mm", "generated",
+            scope="footprint",
+        ),
     )
 
 
@@ -254,7 +267,13 @@ def test_field_changes_section(ul_package, tmp_path):
     ul_plan = build_plan(ul_candidate, ul_options, RepoLayout.for_repo(tmp_path / "ul"), ToolContext())
     ul_section = _field_rows(preview_sections(ul_plan, ul_candidate, ul_options))
     assert [(row.text, row.detail) for row in ul_section.rows] == [
-        ("Set Manufacturer", "(empty) → Texas Instruments: found from the datasheet link")
+        (
+            "Set Keywords",
+            "CSD85301Q2 → CSD85301Q2 Battery Management MOSFET N-channel DQK0006B T...: generated",
+        ),
+        ("Set Manufacturer", "(empty) → Texas Instruments: found from the datasheet link"),
+        ("Set Footprint description", "(empty) → 2.1x2.1 mm, 0.65 mm pitch, TI DQK0006B: generated"),
+        ("Set Footprint tags", "CSD85301Q2  → CSD85301Q2 DQK0006B P0.65mm: generated"),
     ]
 
 
