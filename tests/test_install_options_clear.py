@@ -3,7 +3,8 @@
 import dataclasses
 
 import pytest
-from zipfixtures import write_custom_layout
+from customfixtures import BATTERY_CHARGER
+from zipfixtures import footprint_library_for, write_custom_layout
 
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.plan import InstallOptions
@@ -11,13 +12,13 @@ from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.kicad_files import find_property, find_symbol, parse_bytes
 from kicad_lib_manager.models import Severity
 
-UL_LIBRARY = "IC_Battery_Charger_TI"
+UL_LIBRARY = BATTERY_CHARGER
 
 
 @pytest.fixture
 def ul_layout(tmp_path):
     """A synthetic Custom/ holding the UL target pair, so these tests never depend on the Custom submodule."""
-    write_custom_layout(tmp_path, [UL_LIBRARY], [UL_LIBRARY])
+    write_custom_layout(tmp_path, [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
     return RepoLayout.for_repo(tmp_path)
 
 

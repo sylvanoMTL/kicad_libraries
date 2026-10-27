@@ -1,6 +1,6 @@
 """apply_plan as a transaction: preconditions, the kicad-cli load gate, backups, rollback and the fault matrix (Phase 4, plan 07).
 
-Plans come from build_plan over the synthetic_custom / ul_package fixtures (an isolated Custom/ built in code),
+Plans come from build_plan over the atomic_custom / ul_package fixtures (an isolated Custom/ built in code),
 or are built by hand over a synthetic Custom/ tree. Nothing here writes the real Custom/ folder or
 the owner's app-data backup folder: every install gets backup_root under tmp_path.
 """
@@ -15,9 +15,10 @@ import time
 from pathlib import Path
 
 import pytest
+from customfixtures import BATTERY_CHARGER
 from fakecli import FakeCli
 from installfixtures import V6_VERSION, target_lib, vendor_footprint, vendor_symbol_lib
-from zipfixtures import STEP_BYTES, write_custom_layout
+from zipfixtures import STEP_BYTES, footprint_library_for, write_custom_layout
 
 from kicad_lib_manager import fsutil
 from kicad_lib_manager.importer import applier
@@ -27,8 +28,8 @@ from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, FileOp, InstallOption
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.models import Issue, Severity
 
-UL_LIBRARY = "IC_Battery_Charger_TI"
-LIB = "IC_Test_TI"
+UL_LIBRARY = BATTERY_CHARGER
+LIB = "Atomic_Analog"
 EXE = Path("kicad-cli-for-tests.exe")
 
 
@@ -49,9 +50,9 @@ def _with_cli(plan: InstallPlan, fake: FakeCli) -> InstallPlan:
     return dataclasses.replace(plan, tools=ToolContext(kicad_cli=EXE, cli_runner=fake))
 
 
-def _ul_plan(synthetic_custom, ul_package) -> InstallPlan:
+def _ul_plan(atomic_custom, ul_package) -> InstallPlan:
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), atomic_custom)
     assert not plan.blocked, plan.issues
     return plan
 
@@ -62,10 +63,10 @@ def _hand_plan(layout: RepoLayout, *, new_library: bool, **fields) -> InstallPla
     new_library True: mkdir, model, footprint, symbol_lib with no base. False: the same
     files into an existing pair, the symbol library carrying the hash of what is on disk.
     """
-    sym = vendor_symbol_lib("PART", footprint_field=f"{LIB}:FP")
+    sym = vendor_symbol_lib("PART", footprint_field=f"{footprint_library_for(LIB)}:FP")
     footprint = vendor_footprint("FP", model=f"{MODEL_DIR_VAR}/X.stp")
     sym_path = layout.symbols_dir / f"{LIB}.kicad_sym"
-    pretty = layout.footprints_dir / f"{LIB}.pretty"
+    pretty = layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty"
     ops: list[FileOp] = []
     base = None
     if new_library:
@@ -111,21 +112,21 @@ def hand_layout(tmp_path) -> RepoLayout:
 # -- D-03 load gate at apply time ---------------------------------------------------------
 
 
-def test_gate_rejects_before_any_write(synthetic_custom, ul_package, tmp_path, snapshot):
-    plan = _with_cli(_ul_plan(synthetic_custom, ul_package), FakeCli({"sym upgrade": "reject"}))
-    before = snapshot(synthetic_custom.custom_dir)
+def test_gate_rejects_before_any_write(atomic_custom, ul_package, tmp_path, snapshot):
+    plan = _with_cli(_ul_plan(atomic_custom, ul_package), FakeCli({"sym upgrade": "reject"}))
+    before = snapshot(atomic_custom.custom_dir)
 
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
     assert not result.ok
     assert "install.cli_gate_failed" in _codes(_errors(result.issues))
-    assert snapshot(synthetic_custom.custom_dir) == before
+    assert snapshot(atomic_custom.custom_dir) == before
     assert not (tmp_path / "bk").exists()
     assert result.backup_dir is None
 
 
-def test_gate_runs_on_planned_bytes(synthetic_custom, ul_package, tmp_path):
-    plan = _ul_plan(synthetic_custom, ul_package)
+def test_gate_runs_on_planned_bytes(atomic_custom, ul_package, tmp_path):
+    plan = _ul_plan(atomic_custom, ul_package)
     fake = FakeCli()
     result = apply_plan(_with_cli(plan, fake), backup_root=tmp_path / "bk")
 
@@ -193,17 +194,17 @@ def test_gate_not_run_for_a_model_only_plan(hand_layout):
 # -- stale plan (T-04-18) -----------------------------------------------------------------
 
 
-def test_stale_plan_target_changed(synthetic_custom, ul_package, tmp_path, snapshot):
-    plan = _ul_plan(synthetic_custom, ul_package)
+def test_stale_plan_target_changed(atomic_custom, ul_package, tmp_path, snapshot):
+    plan = _ul_plan(atomic_custom, ul_package)
     plan.symbol_lib_path.write_bytes(plan.symbol_lib_path.read_bytes() + b"\n")
-    before = snapshot(synthetic_custom.custom_dir)
+    before = snapshot(atomic_custom.custom_dir)
 
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
     assert not result.ok
     stale = [i for i in _errors(result.issues) if i.code == "install.stale_plan"]
     assert stale and plan.symbol_lib_path.name in stale[0].text and "rebuild" in stale[0].text
-    assert snapshot(synthetic_custom.custom_dir) == before
+    assert snapshot(atomic_custom.custom_dir) == before
     assert not (tmp_path / "bk").exists()
 
 
@@ -222,7 +223,7 @@ def test_stale_plan_created_path_exists(hand_layout, snapshot, name):
 
 def test_stale_plan_new_library_folder_appeared(hand_layout):
     plan = _hand_plan(hand_layout, new_library=True)
-    (hand_layout.footprints_dir / f"{LIB}.pretty").mkdir()
+    (hand_layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty").mkdir()
 
     result = apply_plan(plan, backup_root=hand_layout.repo_root / "bk")
 
@@ -278,8 +279,8 @@ def test_stale_plan_target_edited_during_gate(hand_layout, tmp_path):
     assert result.touched == ()
 
 
-def test_stale_plan_ul_target_edited_during_gate(synthetic_custom, ul_package, tmp_path):
-    plan = _ul_plan(synthetic_custom, ul_package)
+def test_stale_plan_ul_target_edited_during_gate(atomic_custom, ul_package, tmp_path):
+    plan = _ul_plan(atomic_custom, ul_package)
     edited = plan.symbol_lib_path.read_bytes() + b"\n# edited in KiCad\n"
     state, hook = _first_call_hook(lambda: plan.symbol_lib_path.write_bytes(edited))
     fake = FakeCli(on_call=hook)
@@ -291,7 +292,7 @@ def test_stale_plan_ul_target_edited_during_gate(synthetic_custom, ul_package, t
     assert not result.ok
     assert _codes(_errors(result.issues)) == ["install.stale_plan"]
     assert plan.symbol_lib_path.read_bytes() == edited
-    assert not (synthetic_custom.models_dir / "CSD85301Q2.stp").exists()
+    assert not (atomic_custom.models_dir / "CSD85301Q2.stp").exists()
     assert not (plan.pretty_path / "DQK0006B.kicad_mod").exists()
 
 
@@ -361,13 +362,13 @@ def test_stale_plan_created_path_appears_between_writes(hand_layout):
 # -- the staged source (WR-04) -----------------------------------------------------------
 
 
-def test_source_changed_at_apply(synthetic_custom, ul_package, tmp_path, snapshot):
+def test_source_changed_at_apply(atomic_custom, ul_package, tmp_path, snapshot):
     _, candidate = ul_package
-    plan = _ul_plan(synthetic_custom, ul_package)
+    plan = _ul_plan(atomic_custom, ul_package)
     model = candidate.models[0].file.path
     original = model.read_bytes()
     model.write_bytes(original + b" ")
-    before = snapshot(synthetic_custom.custom_dir)
+    before = snapshot(atomic_custom.custom_dir)
     try:
         result = apply_plan(plan, backup_root=tmp_path / "bk")
     finally:
@@ -375,17 +376,17 @@ def test_source_changed_at_apply(synthetic_custom, ul_package, tmp_path, snapsho
 
     assert not result.ok
     assert "install.source_changed" in _codes(_errors(result.issues))
-    assert snapshot(synthetic_custom.custom_dir) == before
+    assert snapshot(atomic_custom.custom_dir) == before
     assert not (tmp_path / "bk").exists()
 
 
-def test_source_gone_at_apply(synthetic_custom, ul_package, tmp_path, snapshot):
+def test_source_gone_at_apply(atomic_custom, ul_package, tmp_path, snapshot):
     _, candidate = ul_package
-    plan = _ul_plan(synthetic_custom, ul_package)
+    plan = _ul_plan(atomic_custom, ul_package)
     model = candidate.models[0].file.path
     original = model.read_bytes()
     model.unlink()
-    before = snapshot(synthetic_custom.custom_dir)
+    before = snapshot(atomic_custom.custom_dir)
     try:
         result = apply_plan(plan, backup_root=tmp_path / "bk")
     finally:
@@ -393,7 +394,7 @@ def test_source_gone_at_apply(synthetic_custom, ul_package, tmp_path, snapshot):
 
     assert not result.ok
     assert "install.source_gone" in _codes(_errors(result.issues))
-    assert snapshot(synthetic_custom.custom_dir) == before
+    assert snapshot(atomic_custom.custom_dir) == before
 
 
 # -- containment (T-04-19) ---------------------------------------------------------------
@@ -410,7 +411,7 @@ def test_path_outside_custom(hand_layout, tmp_path):
     assert not result.ok
     assert "install.path_outside_custom" in _codes(_errors(result.issues))
     assert list(outside.iterdir()) == []
-    assert not (hand_layout.footprints_dir / f"{LIB}.pretty").exists()
+    assert not (hand_layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty").exists()
     assert not (tmp_path / "bk").exists()
 
 
@@ -619,7 +620,7 @@ def test_prune_failure_warns(hand_layout, monkeypatch):
 def test_success_keeps_the_soft_verify_warnings(hand_layout):
     # symbol pins are 1 and 2; the footprint has pad 3 as well
     fp = vendor_footprint("FP", pads=("1", "2", "3"), model=f"{MODEL_DIR_VAR}/X.stp")
-    other = hand_layout.symbols_dir / "IC_Other_TI.kicad_sym"
+    other = hand_layout.symbols_dir / "Atomic_Sensor_Temperature.kicad_sym"
     other.write_bytes(target_lib(V6_VERSION, ("PART",)))
     plan = _hand_plan(hand_layout, new_library=True)
     plan = dataclasses.replace(
@@ -658,7 +659,7 @@ def test_mkdir_then_rollback_removes_folder(hand_layout, snapshot, monkeypatch):
 
     assert not result.ok
     assert _codes(_errors(result.issues)) == ["fs.write_failed", "install.rolled_back"]
-    assert not (hand_layout.footprints_dir / f"{LIB}.pretty").exists()
+    assert not (hand_layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty").exists()
     assert snapshot(hand_layout.custom_dir) == before
 
 
@@ -671,7 +672,7 @@ def test_mkdir_creates_missing_parents(tmp_path):
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
     assert result.ok, result.issues
-    assert (layout.footprints_dir / f"{LIB}.pretty" / "FP.kicad_mod").is_file()
+    assert (layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty" / "FP.kicad_mod").is_file()
     assert [p.name for p in result.touched] == ["X.stp", "FP.kicad_mod", f"{LIB}.kicad_sym"]
 
 
@@ -735,7 +736,7 @@ def test_rollback_failed_step_continues(hand_layout, monkeypatch):
     assert not result.ok
     # the undo went on past the failed restore
     assert not (hand_layout.models_dir / "X.stp").exists()
-    assert not (hand_layout.footprints_dir / f"{LIB}.pretty" / "FP.kicad_mod").exists()
+    assert not (hand_layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty" / "FP.kicad_mod").exists()
     left = [i for i in result.issues if i.code == "install.rollback_failed"]
     assert len(left) == 1 and left[0].severity is Severity.ERROR
     assert str(plan.symbol_lib_path) in left[0].text and str(result.backup_dir) in left[0].text
@@ -801,7 +802,7 @@ def test_rollback_reports_a_created_file_it_cannot_remove(hand_layout, monkeypat
     (left,) = [i for i in result.issues if i.code == "install.rollback_failed"]
     assert str(hand_layout.models_dir / "X.stp") in left.text
     # the folder and the other files were still undone
-    assert not (hand_layout.footprints_dir / f"{LIB}.pretty").exists()
+    assert not (hand_layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty").exists()
     assert not plan.symbol_lib_path.exists()
 
 
@@ -840,7 +841,7 @@ MATRIX_WRITES = 3
 
 def _shape_plan(shape: str, request, tmp_path) -> tuple[InstallPlan, RepoLayout]:
     if shape == "existing":
-        layout = request.getfixturevalue("synthetic_custom")
+        layout = request.getfixturevalue("atomic_custom")
         plan = _ul_plan(layout, request.getfixturevalue("ul_package"))
     else:
         write_custom_layout(tmp_path, [], [])
@@ -902,9 +903,9 @@ def test_rollback_fail_with_locked_target(shape, request, tmp_path, snapshot, mo
     assert not list(layout.custom_dir.rglob("*.tmp"))
 
 
-def test_rollback_backup_failure(synthetic_custom, ul_package, tmp_path, snapshot, monkeypatch):
-    plan = _ul_plan(synthetic_custom, ul_package)
-    before = snapshot(synthetic_custom.custom_dir)
+def test_rollback_backup_failure(atomic_custom, ul_package, tmp_path, snapshot, monkeypatch):
+    plan = _ul_plan(atomic_custom, ul_package)
+    before = snapshot(atomic_custom.custom_dir)
     failure = Issue(Severity.ERROR, "fs.backup_failed", "Could not back up the library: disk full")
     monkeypatch.setattr(fsutil, "backup_file", lambda path, backup_dir, **kwargs: failure)
     state = _flaky_writes(monkeypatch, fail_on=99)
@@ -914,18 +915,18 @@ def test_rollback_backup_failure(synthetic_custom, ul_package, tmp_path, snapsho
     assert not result.ok
     assert _errors(result.issues) == [failure]
     assert state["calls"] == 0
-    assert snapshot(synthetic_custom.custom_dir) == before
+    assert snapshot(atomic_custom.custom_dir) == before
 
 
-def test_success_touched_order(synthetic_custom, ul_package, tmp_path):
-    plan = _ul_plan(synthetic_custom, ul_package)
+def test_success_touched_order(atomic_custom, ul_package, tmp_path):
+    plan = _ul_plan(atomic_custom, ul_package)
     pretty = plan.pretty_path
 
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
     assert result.ok, result.issues
     assert result.touched == (
-        synthetic_custom.models_dir / "CSD85301Q2.stp",
+        atomic_custom.models_dir / "CSD85301Q2.stp",
         pretty / "DQK0006B.kicad_mod",
         plan.symbol_lib_path,
     )
@@ -1045,7 +1046,7 @@ def test_progress_error_does_not_abort_the_install(hand_layout):
 
     assert result.ok, result.issues
     assert seen == [0, 1, 2]
-    pretty = hand_layout.footprints_dir / f"{LIB}.pretty"
+    pretty = hand_layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty"
     assert pretty.is_dir()
     assert (hand_layout.models_dir / "X.stp").is_file()
     assert (pretty / "FP.kicad_mod").is_file()
@@ -1069,7 +1070,7 @@ def test_rollback_interrupt_in_progress_is_reraised(hand_layout, snapshot):
 
     # the model written at index 1 and the created .pretty folder are gone
     assert not (hand_layout.models_dir / "X.stp").exists()
-    assert not (hand_layout.footprints_dir / f"{LIB}.pretty").exists()
+    assert not (hand_layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty").exists()
     assert snapshot(hand_layout.custom_dir) == before
 
 
@@ -1109,7 +1110,7 @@ def test_rollback_step_error_is_reported(hand_layout, monkeypatch):
     (left,) = [i for i in result.issues if i.code == "install.rollback_failed"]
     assert left.severity is Severity.ERROR and str(plan.symbol_lib_path) in left.text
     # the later undo steps still ran
-    assert not (hand_layout.footprints_dir / f"{LIB}.pretty").exists()
+    assert not (hand_layout.footprints_dir / f"{footprint_library_for(LIB)}.pretty").exists()
     assert not (hand_layout.models_dir / "X.stp").exists()
 
 

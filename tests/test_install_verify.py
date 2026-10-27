@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
 from vendorfixtures import snapeda_footprint
-from zipfixtures import symbol_lib, write_custom_layout
+from zipfixtures import footprint_library_for, symbol_lib, write_custom_layout
 
 from kicad_lib_manager import library_scanner
 from kicad_lib_manager.importer import verify
@@ -20,7 +20,7 @@ from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, FileOp, InstallPlan, 
 from kicad_lib_manager.kicad_files import find_symbol, footprint_name, parse_bytes
 from kicad_lib_manager.models import Severity
 
-LIB = "IC_Test_TI"
+LIB = "Atomic_Analog"
 
 
 def _layout(tmp_path: Path) -> RepoLayout:
@@ -45,9 +45,9 @@ def make_plan(
     layout = _layout(tmp_path)
     sym_path = layout.symbols_dir / f"{library}.kicad_sym"
     if sym is None:
-        sym = vendor_symbol_lib("PART", footprint_field=f"{library}:FP")
+        sym = vendor_symbol_lib("PART", footprint_field=f"{footprint_library_for(library)}:FP")
     sym_path.write_bytes(sym)
-    pretty = layout.footprints_dir / f"{library}.pretty"
+    pretty = layout.footprints_dir / f"{footprint_library_for(library)}.pretty"
     pretty.mkdir()
     if footprints is None:
         footprints = {"FP.kicad_mod": vendor_footprint("FP", model=f"{MODEL_DIR_VAR}/X.stp")}
@@ -98,7 +98,7 @@ def test_hard_ok(tmp_path):
 
 
 def test_hard_parse_failed(tmp_path):
-    good = vendor_symbol_lib("PART", footprint_field=f"{LIB}:FP")
+    good = vendor_symbol_lib("PART", footprint_field=f"{footprint_library_for(LIB)}:FP")
     plan = make_plan(tmp_path, sym=good[: len(good) // 2])
     found = _by_code(verify.verify_install(plan), "verify.parse_failed")
     assert len(found) == 1
@@ -121,7 +121,7 @@ def test_hard_symbol_missing(tmp_path):
 
 
 def test_hard_symbol_duplicated(tmp_path):
-    sym = symbol_lib(("PART", "PART"), props={"Footprint": f"{LIB}:FP"})
+    sym = symbol_lib(("PART", "PART"), props={"Footprint": f"{footprint_library_for(LIB)}:FP"})
     plan = make_plan(tmp_path, sym=sym)
     issues = verify.verify_install(plan)
     found = _by_code(issues, "verify.symbol_duplicated")
@@ -131,7 +131,7 @@ def test_hard_symbol_duplicated(tmp_path):
 
 
 def test_hard_link_case(tmp_path):
-    sym = vendor_symbol_lib("PART", footprint_field=f"{LIB}:DQK0006B")
+    sym = vendor_symbol_lib("PART", footprint_field=f"{footprint_library_for(LIB)}:DQK0006B")
     plan = make_plan(
         tmp_path,
         sym=sym,
@@ -201,7 +201,7 @@ def test_hard_reads_disk(tmp_path):
 
 def test_hard_reads_symbol_from_disk(tmp_path):
     plan = make_plan(tmp_path)
-    plan.symbol_lib_path.write_bytes(vendor_symbol_lib("ELSE", footprint_field=f"{LIB}:FP"))
+    plan.symbol_lib_path.write_bytes(vendor_symbol_lib("ELSE", footprint_field=f"{footprint_library_for(LIB)}:FP"))
     assert len(_by_code(verify.verify_install(plan), "verify.symbol_missing")) == 1
 
 
@@ -209,7 +209,7 @@ def test_hard_reads_symbol_from_disk(tmp_path):
 
 
 def _pin_pad_plan(tmp_path, *, pins=None, pads=("1", "2"), npth=False):
-    sym = vendor_symbol_lib("PART", footprint_field=f"{LIB}:FP", pins=pins)
+    sym = vendor_symbol_lib("PART", footprint_field=f"{footprint_library_for(LIB)}:FP", pins=pins)
     fp = vendor_footprint("FP", pads=pads, npth=npth, model=f"{MODEL_DIR_VAR}/X.stp")
     return make_plan(tmp_path, sym=sym, footprints={"FP.kicad_mod": fp})
 
@@ -248,7 +248,7 @@ def test_pin_pad_both_directions(tmp_path):
     issue = _mismatch(issues)
     assert "pins with no pad: 3" in issue.text and "pads with no pin: 4" in issue.text
     assert len(_by_code(issues, "verify.pin_pad_mismatch")) == 1
-    assert f"{LIB}:FP" in issue.text
+    assert f"{footprint_library_for(LIB)}:FP" in issue.text
 
 
 def test_pin_pad_ignores_empty(tmp_path):
@@ -274,7 +274,7 @@ def test_np_thru_hole_pads_ignored():
 
 
 def test_pin_pad_extends_child(tmp_path):
-    sym = extends_pair("PARENT_X", "CHILD_Y").replace(b'"Footprint" ""', f'"Footprint" "{LIB}:FP"'.encode())
+    sym = extends_pair("PARENT_X", "CHILD_Y").replace(b'"Footprint" ""', f'"Footprint" "{footprint_library_for(LIB)}:FP"'.encode())
     plan = make_plan(tmp_path, sym=sym, symbol_names=("PARENT_X", "CHILD_Y"))
     issues = verify.verify_install(plan)
     assert _mismatch(issues) is None
@@ -285,7 +285,7 @@ def test_pin_pad_extends_child(tmp_path):
 
 
 def test_pin_pad_extends_child_still_reports_real_mismatch(tmp_path):
-    sym = extends_pair("PARENT_X", "CHILD_Y").replace(b'"Footprint" ""', f'"Footprint" "{LIB}:FP"'.encode())
+    sym = extends_pair("PARENT_X", "CHILD_Y").replace(b'"Footprint" ""', f'"Footprint" "{footprint_library_for(LIB)}:FP"'.encode())
     fp = vendor_footprint("FP", pads=("1", "2", "3"), model=f"{MODEL_DIR_VAR}/X.stp")
     plan = make_plan(tmp_path, sym=sym, symbol_names=("PARENT_X", "CHILD_Y"), footprints={"FP.kicad_mod": fp})
     assert "pads with no pin: 3" in _mismatch(verify.verify_install(plan)).text

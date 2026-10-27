@@ -10,9 +10,18 @@ from pathlib import Path
 
 import pytest
 from clifixtures import KICAD_GENERATOR_VERSION, KICAD_SYMBOL_FORMAT
+from customfixtures import ABSENT_LIBRARY, BATTERY_CHARGER, IMU
 from fakecli import FakeCli
 from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
-from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib, unpack_sample, write_custom_layout
+from zipfixtures import (
+    STEP_BYTES,
+    footprint,
+    footprint_library_for,
+    make_zip,
+    symbol_lib,
+    unpack_sample,
+    write_custom_layout,
+)
 
 from kicad_lib_manager.importer import kicad_cli, planner
 from kicad_lib_manager.importer.applier import apply_plan
@@ -39,8 +48,8 @@ from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.sexpr import apply_edits, unquote
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-UL_LIBRARY = "IC_Battery_Charger_TI"
-LIBRARY = "IC_Test_TI"
+UL_LIBRARY = BATTERY_CHARGER
+LIBRARY = "Atomic_Analog"
 DATASHEET = {"Datasheet": "https://example.com/part"}
 
 
@@ -60,8 +69,8 @@ def _error(plan, code):
 
 @pytest.fixture
 def layout(tmp_path):
-    """A synthetic Custom/ holding one symbol/footprint library pair named IC_Test_TI."""
-    write_custom_layout(tmp_path, [LIBRARY], [LIBRARY])
+    """A synthetic Custom/ holding one symbol/footprint library pair named Atomic_Analog."""
+    write_custom_layout(tmp_path, [LIBRARY], [footprint_library_for(LIBRARY)])
     return RepoLayout.for_repo(tmp_path)
 
 
@@ -197,50 +206,50 @@ def test_several_footprints_first_is_linked_and_all_are_filters(layout, tmp_path
         assert plan.footprint_names == ("FP_B", "FP_A")
         result = apply_plan(plan, backup_root=tmp_path / "bk")
     assert result.ok, result.issues
-    pretty = layout.footprints_dir / f"{LIBRARY}.pretty"
+    pretty = layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty"
     assert sorted(p.name for p in pretty.iterdir()) == ["FP_A.kicad_mod", "FP_B.kicad_mod"]
     library = parse_bytes((layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes(), "lib")
     symbol = find_symbol(library.root, "PART")
-    assert find_property(symbol.node, "Footprint").value == f"{LIBRARY}:FP_B"
+    assert find_property(symbol.node, "Footprint").value == f"{footprint_library_for(LIBRARY)}:FP_B"
     assert find_property(symbol.node, "ki_fp_filters").value == "FP_B FP_A"
 
 
 # -- WR-04: staged files must still be what intake saw ---------------------------
 
 
-def test_source_gone_after_package_close(synthetic_custom, ul_package):
+def test_source_gone_after_package_close(atomic_custom, ul_package):
     package, candidate = ul_package
     package.close()
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), atomic_custom)
     assert plan.blocked and not plan.ops
     assert "install.source_gone" in _codes(plan)
 
 
-def test_source_changed_in_folder_package(synthetic_custom, tmp_path):
+def test_source_changed_in_folder_package(atomic_custom, tmp_path):
     folder = unpack_sample(tmp_path / "folder", kicad_only=True)
     with open_package(folder, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
         assert candidate is not None
         edited = candidate.symbols[0].file.path
         edited.write_bytes(edited.read_bytes() + b"\n")
-        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
+        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), atomic_custom)
     assert plan.blocked and not plan.ops
     assert "install.source_changed" in _codes(plan)
 
 
-def test_model_changed_after_plan_is_refused_by_apply(synthetic_custom, tmp_path, snapshot):
+def test_model_changed_after_plan_is_refused_by_apply(atomic_custom, tmp_path, snapshot):
     folder = unpack_sample(tmp_path / "folder", kicad_only=True)
-    before = snapshot(synthetic_custom.custom_dir)
+    before = snapshot(atomic_custom.custom_dir)
     with open_package(folder, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
-        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
+        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), atomic_custom)
         assert not plan.blocked, plan.issues
         model = candidate.models[0].file.path
         model.write_bytes(model.read_bytes() + b" ")
         result = apply_plan(plan, backup_root=tmp_path / "bk")
     assert not result.ok
     assert "install.source_changed" in [i.code for i in result.issues]
-    assert snapshot(synthetic_custom.custom_dir) == before
+    assert snapshot(atomic_custom.custom_dir) == before
 
 
 # -- WR-05: package and candidate Issues reach the plan -------------------------
@@ -293,13 +302,13 @@ def test_blank_options_mean_not_set():
 
 
 @pytest.mark.parametrize("blank", ["", "  "], ids=["empty", "spaces"])
-def test_blank_option_keeps_ul_vendor_values(synthetic_custom, ul_package, blank):
+def test_blank_option_keeps_ul_vendor_values(atomic_custom, ul_package, blank):
     _, candidate = ul_package
-    unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
+    unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY), atomic_custom)
     blanked = build_plan(
         candidate,
         InstallOptions(library=UL_LIBRARY, **dict.fromkeys(_TEXT_FIELDS, blank)),
-        synthetic_custom,
+        atomic_custom,
     )
     assert not blanked.blocked, blanked.issues
     assert blanked.ops == unset.ops
@@ -330,11 +339,11 @@ def test_new_library_refused_when_symbols_missing(tmp_path, snapshot):
     layout = _bare_layout(tmp_path, "Footprints", "3DModels")
     before = snapshot(tmp_path / "Custom")
     with _open(tmp_path, _members()) as (_, candidate):
-        plan = build_plan(candidate, InstallOptions(library="IC_New_TI"), layout)
+        plan = build_plan(candidate, InstallOptions(library=NEW_LIBRARY), layout)
     assert plan.blocked and not plan.ops
     assert _codes(plan) == ["install.symbols_dir_missing"]
     assert _error(plan, "install.symbols_dir_missing").text == (
-        "Cannot create IC_New_TI: the Custom/Symbols folder is missing. Check the Custom submodule is checked out."
+        f"Cannot create {NEW_LIBRARY}: the Custom/Symbols folder is missing. Check the Custom submodule is checked out."
     )
     assert snapshot(tmp_path / "Custom") == before
 
@@ -342,11 +351,11 @@ def test_new_library_refused_when_symbols_missing(tmp_path, snapshot):
 def test_new_library_refused_when_footprints_missing(tmp_path):
     layout = _bare_layout(tmp_path, "Symbols", "3DModels")
     with _open(tmp_path, _members()) as (_, candidate):
-        plan = build_plan(candidate, InstallOptions(library="IC_New_TI"), layout)
+        plan = build_plan(candidate, InstallOptions(library=NEW_LIBRARY), layout)
     assert plan.blocked and not plan.ops
     assert _codes(plan) == ["install.footprints_dir_missing"]
     assert _error(plan, "install.footprints_dir_missing").text == (
-        "Cannot create IC_New_TI: the Custom/Footprints folder is missing. Check the Custom submodule is checked out."
+        f"Cannot create {NEW_LIBRARY}: the Custom/Footprints folder is missing. Check the Custom submodule is checked out."
     )
 
 
@@ -360,9 +369,9 @@ def test_existing_library_unaffected_by_symbols_check(layout, tmp_path):
 # -- Consistency of the installed names -----------------------------------------
 
 
-def test_footprint_consistency_default_names(synthetic_custom, ul_package):
+def test_footprint_consistency_default_names(atomic_custom, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), synthetic_custom)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), atomic_custom)
     assert not plan.blocked, plan.issues
     fp_op = next(op for op in plan.ops if op.kind == "footprint")
     sym_op = next(op for op in plan.ops if op.kind == "symbol_lib")
@@ -372,7 +381,7 @@ def test_footprint_consistency_default_names(synthetic_custom, ul_package):
     assert ref.name == unquote(value.children[2].text) == fp_op.path.stem == "DQK0006B"
     library = parse_bytes(sym_op.data, "lib")
     symbol = find_symbol(library.root, plan.symbol_name)
-    assert find_property(symbol.node, "Footprint").value == f"{UL_LIBRARY}:DQK0006B"
+    assert find_property(symbol.node, "Footprint").value == f"{footprint_library_for(UL_LIBRARY)}:DQK0006B"
     assert find_property(symbol.node, "ki_fp_filters").value == "DQK0006B"
 
 
@@ -392,11 +401,11 @@ def test_existing_symbol_name_is_an_unresolved_conflict_and_blocks(layout, tmp_p
 
 
 def test_existing_footprint_file_is_a_blocking_conflict(layout, tmp_path):
-    pretty = layout.footprints_dir / f"{LIBRARY}.pretty"
+    pretty = layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty"
     (pretty / "fp.kicad_mod").write_bytes(footprint("FP"))
     with _open(tmp_path, _members()) as (_, candidate):
         plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout)
-    assert [c.key for c in plan.conflicts] == [f"footprint:{LIBRARY}:fp"]
+    assert [c.key for c in plan.conflicts] == [f"footprint:{footprint_library_for(LIBRARY)}:fp"]
     assert plan.blocked
 
 
@@ -462,7 +471,7 @@ def _tools(fake):
 
 def _target_layout(tmp_path, version, names=("EXISTING_A",), *, library=LIBRARY, eol=None):
     """A synthetic Custom/ holding library as a symbol/footprint pair whose symbol file has the given format version."""
-    write_custom_layout(tmp_path, [library], [library])
+    write_custom_layout(tmp_path, [library], [footprint_library_for(library)])
     layout = RepoLayout.for_repo(tmp_path)
     (layout.symbols_dir / f"{library}.kicad_sym").write_bytes(target_lib(version, names, eol=eol))
     return layout
@@ -672,10 +681,10 @@ def test_version_detect_tools_explicit_cli_wins(tmp_path):
 
 # -- LIB-02 library rules (plan 04-06, task 2) ----------------------------------
 
-NEW_LIBRARY = "IC_New_TI"
+NEW_LIBRARY = ABSENT_LIBRARY
 
 
-def _pair_layout(tmp_path, symbol_libs=(LIBRARY,), footprint_libs=(LIBRARY,)):
+def _pair_layout(tmp_path, symbol_libs=(LIBRARY,), footprint_libs=(footprint_library_for(LIBRARY),)):
     write_custom_layout(tmp_path, list(symbol_libs), list(footprint_libs))
     return RepoLayout.for_repo(tmp_path)
 
@@ -693,7 +702,7 @@ def test_library_new_pair_with_cli(tmp_path):
     assert not plan.blocked, plan.issues
     assert [op.kind for op in plan.ops] == ["mkdir", "model", "footprint", "symbol_lib"]
     assert (plan.new_symbol_lib, plan.new_footprint_lib) == (True, True)
-    assert plan.ops[0].path == layout.footprints_dir / f"{NEW_LIBRARY}.pretty"
+    assert plan.ops[0].path == layout.footprints_dir / f"{footprint_library_for(NEW_LIBRARY)}.pretty"
     sym_op = _op(plan, "symbol_lib")
     assert sym_op.path == layout.symbols_dir / f"{NEW_LIBRARY}.kicad_sym"
     assert sym_op.base_sha256 is None
@@ -704,7 +713,7 @@ def test_library_new_pair_with_cli(tmp_path):
     assert [" ".join(call[1:3]) for call in fake.calls] == ["sym upgrade"]
     # The edited block is what ended up in the new file
     symbol = find_symbol(loaded.root, VENDOR)
-    assert find_property(symbol.node, "Footprint").value == f"{NEW_LIBRARY}:FP"
+    assert find_property(symbol.node, "Footprint").value == f"{footprint_library_for(NEW_LIBRARY)}:FP"
 
 
 def test_library_new_pair_without_cli(tmp_path):
@@ -722,20 +731,20 @@ def test_library_new_pair_without_cli(tmp_path):
     assert [i.severity for i in plan.issues if i.code == "install.cli_not_found"] == [Severity.INFO]
 
 
-def test_library_pair_completed_pretty_missing(synthetic_custom, ul_package, tmp_path):
-    # The synthetic IC_IMU_TDK has a symbol library and, by construction, no footprint library
-    assert not (synthetic_custom.footprints_dir / "IC_IMU_TDK.pretty").exists()
+def test_library_pair_completed_pretty_missing(atomic_custom, ul_package, tmp_path):
+    # The synthetic Atomic_ IMU library has a symbol library and, by construction, no footprint library
+    assert not (atomic_custom.footprints_dir / f"{footprint_library_for(IMU)}.pretty").exists()
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library="IC_IMU_TDK"), synthetic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=IMU), atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, True)
-    assert [op.path for op in plan.ops if op.kind == "mkdir"] == [synthetic_custom.footprints_dir / "IC_IMU_TDK.pretty"]
+    assert [op.path for op in plan.ops if op.kind == "mkdir"] == [atomic_custom.footprints_dir / f"{footprint_library_for(IMU)}.pretty"]
     assert _op(plan, "symbol_lib").base_sha256 is not None
     assert [i.severity for i in plan.issues if i.code == "install.pair_completed"] == [Severity.WARNING]
-    assert "IC_IMU_TDK.pretty" in _error_or_warning(plan, "install.pair_completed").text
+    assert f"{footprint_library_for(IMU)}.pretty" in _error_or_warning(plan, "install.pair_completed").text
     result = apply_plan(plan, backup_root=tmp_path / "bk")
     assert result.ok, result.issues
-    assert (synthetic_custom.footprints_dir / "IC_IMU_TDK.pretty" / "DQK0006B.kicad_mod").is_file()
+    assert (atomic_custom.footprints_dir / f"{footprint_library_for(IMU)}.pretty" / "DQK0006B.kicad_mod").is_file()
 
 
 def _error_or_warning(plan, code):
@@ -745,7 +754,7 @@ def _error_or_warning(plan, code):
 
 
 def test_library_pair_completed_sym_missing(tmp_path):
-    layout = _pair_layout(tmp_path, symbol_libs=(), footprint_libs=(LIBRARY,))
+    layout = _pair_layout(tmp_path, symbol_libs=(), footprint_libs=(footprint_library_for(LIBRARY),))
     plan = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY))
     assert not plan.blocked, plan.issues
     assert (plan.new_symbol_lib, plan.new_footprint_lib) == (True, False)
@@ -999,10 +1008,10 @@ def test_rename_value_override_beats_the_token_rewrite(tmp_path):
     assert _value_of(plan, "Value", "PART_X") == "Mine"
 
 
-def test_footprint_consistency_after_override(synthetic_custom, ul_package):
+def test_footprint_consistency_after_override(atomic_custom, ul_package):
     _, candidate = ul_package
     options = InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "DQK0006B_TI"})
-    plan = build_plan(candidate, options, synthetic_custom)
+    plan = build_plan(candidate, options, atomic_custom)
     assert not plan.blocked, plan.issues
     assert plan.footprint_names == ("DQK0006B_TI",) and plan.linked_footprint == "DQK0006B_TI"
     assert Rename("footprint", "DQK0006B", "DQK0006B_TI") in plan.renames
@@ -1011,28 +1020,28 @@ def test_footprint_consistency_after_override(synthetic_custom, ul_package):
     ref = footprint_name(parse_bytes(fp_op.data, "fp").root)
     value = next(c for c in ref.node.children if c.head == "fp_text" and c.children[1].text == "value")
     assert ref.name == unquote(value.children[2].text) == "DQK0006B_TI"
-    assert _value_of(plan, "Footprint", "CSD85301Q2") == f"{UL_LIBRARY}:DQK0006B_TI"
+    assert _value_of(plan, "Footprint", "CSD85301Q2") == f"{footprint_library_for(UL_LIBRARY)}:DQK0006B_TI"
     assert _value_of(plan, "ki_fp_filters", "CSD85301Q2") == "DQK0006B_TI"
 
 
-def test_footprint_consistency_override_is_sanitised(synthetic_custom, ul_package):
+def test_footprint_consistency_override_is_sanitised(atomic_custom, ul_package):
     _, candidate = ul_package
     options = InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "DQK 0006/B"})
-    plan = build_plan(candidate, options, synthetic_custom)
+    plan = build_plan(candidate, options, atomic_custom)
     assert not plan.blocked, plan.issues
     assert plan.footprint_names == ("DQK_0006_B",)
     assert [i.severity for i in plan.issues if i.code == "naming.changed"] == [Severity.INFO]
     assert Rename("footprint", "DQK0006B", "DQK_0006_B") in plan.renames
 
 
-def test_footprint_consistency_unusable_override_refused(synthetic_custom, ul_package, snapshot):
+def test_footprint_consistency_unusable_override_refused(atomic_custom, ul_package, snapshot):
     _, candidate = ul_package
-    before = snapshot(synthetic_custom.custom_dir)
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "///"}), synthetic_custom)
+    before = snapshot(atomic_custom.custom_dir)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "///"}), atomic_custom)
     assert plan.blocked and not plan.ops
     assert _codes(plan) == ["install.invalid_name"]
     assert apply_plan(plan).ok is False
-    assert snapshot(synthetic_custom.custom_dir) == before
+    assert snapshot(atomic_custom.custom_dir) == before
 
 
 def test_fields_value_injection_quoted(tmp_path):
@@ -1094,7 +1103,7 @@ def test_unit_fields_on_every_symbol(tmp_path):
     plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD), options)
     assert not plan.blocked, plan.issues
     for name in (PARENT, CHILD):
-        assert _value_of(plan, "Footprint", name) == f"{LIBRARY}:FP"
+        assert _value_of(plan, "Footprint", name) == f"{footprint_library_for(LIBRARY)}:FP"
         assert _value_of(plan, "ki_fp_filters", name) == "FP"
         assert _value_of(plan, "Manufacturer", name) == "TI"
     # The caller's part number belongs to the chosen symbol; its parent keeps its own name
@@ -1140,7 +1149,7 @@ def test_unit_invariant(layout, tmp_path, size):
     present = [s.name for s in find_symbols(library.root)]
     for name in plan.symbol_names:
         assert present.count(name) == 1
-        assert find_property(find_symbol(library.root, name).node, "Footprint").value == f"{LIBRARY}:FP"
+        assert find_property(find_symbol(library.root, name).node, "Footprint").value == f"{footprint_library_for(LIBRARY)}:FP"
 
 
 def test_several_footprints_order(layout, tmp_path):
@@ -1155,7 +1164,7 @@ def test_several_footprints_order(layout, tmp_path):
     assert not plan.blocked, plan.issues
     footprints = [op for op in plan.ops if op.kind == "footprint"]
     assert [op.path.stem for op in footprints] == ["FP_B", "FP_A"]
-    assert _value_of(plan, "Footprint") == f"{LIBRARY}:FP_B"
+    assert _value_of(plan, "Footprint") == f"{footprint_library_for(LIBRARY)}:FP_B"
     assert _value_of(plan, "ki_fp_filters") == "FP_B FP_A"
     carried = {op.path.stem: [m.path for m in find_models(footprint_name(parse_bytes(op.data, "fp").root).node)] for op in footprints}
     assert carried == {"FP_B": ["${CUSTOM_3DMODEL_DIR}/PART.step"], "FP_A": []}
@@ -1173,9 +1182,9 @@ def test_no_model_package(layout, tmp_path):
     assert "install.model_declined" not in [i.code for i in plan.issues]
 
 
-def test_no_model_declined(synthetic_custom, ul_package):
+def test_no_model_declined(atomic_custom, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, no_model=True), synthetic_custom)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, no_model=True), atomic_custom)
     assert not plan.blocked, plan.issues
     assert plan.model_file is None
     assert not [op for op in plan.ops if op.kind == "model"]
@@ -1246,12 +1255,12 @@ def test_unit_real_cli_loads_in_kicad(tmp_path, new_library, real_tools):
 # -- conflicts, the identical rule and stable keys (plan 04-09, task 1) ------------------
 
 SYM_KEY = f"symbol:{LIBRARY}:{VENDOR}"
-FP_KEY = f"footprint:{LIBRARY}:fp"
+FP_KEY = f"footprint:{footprint_library_for(LIBRARY)}:fp"
 MODEL_KEY = "model:part.step"
 
 
 def _pretty(layout):
-    return layout.footprints_dir / f"{LIBRARY}.pretty"
+    return layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty"
 
 
 def _put_footprint(layout, file_name="FP.kicad_mod", data=None):
@@ -1289,13 +1298,13 @@ def _install(tmp_path, layout, tools=ToolContext(), symbol=None, options=None, *
     return plan
 
 
-def test_noop_second_plan_after_apply(synthetic_custom, ul_package, tmp_path):
+def test_noop_second_plan_after_apply(atomic_custom, ul_package, tmp_path):
     _, candidate = ul_package
     options = InstallOptions(library=UL_LIBRARY)
-    first = build_plan(candidate, options, synthetic_custom)
+    first = build_plan(candidate, options, atomic_custom)
     assert not first.blocked and first.ops, first.issues
     _apply(first, tmp_path)
-    second = build_plan(candidate, options, synthetic_custom)
+    second = build_plan(candidate, options, atomic_custom)
     assert second.ops == () and second.conflicts == ()
     assert not second.blocked, second.issues
     assert second.is_noop
@@ -1391,7 +1400,7 @@ def test_conflict_footprint_identical_is_not_written(tmp_path):
     assert plan.conflicts == () and not plan.blocked, plan.issues
     assert not [op for op in plan.ops if op.kind == "footprint"]
     assert plan.linked_footprint == "FP"
-    assert _value_of(plan, "Footprint") == f"{LIBRARY}:FP"
+    assert _value_of(plan, "Footprint") == f"{footprint_library_for(LIBRARY)}:FP"
 
 
 def test_model_same_sha_reused(tmp_path):
@@ -1517,7 +1526,7 @@ def test_resolution_overwrite_symbol_in_place(tmp_path):
     assert planned.source.text[: span.start] == old.source.text[: span.start]
     assert planned.source.text.endswith(old.source.text[span.end :])
     assert [s.name for s in find_symbols(planned.root)] == ["EXISTING_A", VENDOR, "EXISTING_C"]
-    assert find_property(find_symbol(planned.root, VENDOR).node, "Footprint").value == f"{LIBRARY}:FP"
+    assert find_property(find_symbol(planned.root, VENDOR).node, "Footprint").value == f"{footprint_library_for(LIBRARY)}:FP"
     assert [(c.key, c.resolution) for c in plan.conflicts] == [(SYM_KEY, _res("overwrite"))]
 
 
@@ -1594,7 +1603,7 @@ def test_resolution_rename_footprint_flows(tmp_path):
     assert op.path.name == "FP_ALT.kicad_mod" and op.base_sha256 is None
     value = next(c for c in ref.node.children if c.head == "fp_text" and c.children[1].text == "value")
     assert ref.name == unquote(value.children[2].text) == "FP_ALT"
-    assert _value_of(plan, "Footprint") == f"{LIBRARY}:FP_ALT"
+    assert _value_of(plan, "Footprint") == f"{footprint_library_for(LIBRARY)}:FP_ALT"
     assert _value_of(plan, "ki_fp_filters") == "FP_ALT"
     assert plan.linked_footprint == "FP_ALT" and plan.footprint_names == ("FP_ALT",)
     assert Rename("footprint", "FP", "FP_ALT") in plan.renames
@@ -1607,7 +1616,7 @@ def test_resolution_rename_footprint_uses_the_suggestion(tmp_path):
     plan = _plan(tmp_path, layout, ToolContext(), options=_with({FP_KEY: _res("rename")}))
     assert not plan.blocked, plan.issues
     assert plan.footprint_names == ("FP_2",)
-    assert _value_of(plan, "Footprint") == f"{LIBRARY}:FP_2"
+    assert _value_of(plan, "Footprint") == f"{footprint_library_for(LIBRARY)}:FP_2"
 
 
 def test_resolution_rename_model_flows(tmp_path):
@@ -1684,7 +1693,7 @@ def test_resolution_skip_footprint(tmp_path):
         assert not plan.blocked, plan.issues
         assert [op.kind for op in plan.ops] == ["symbol_lib"]
         assert plan.linked_footprint == "fp" and plan.footprint_names == ("fp",) and plan.model_file is None
-        assert _value_of(plan, "Footprint") == f"{LIBRARY}:fp"
+        assert _value_of(plan, "Footprint") == f"{footprint_library_for(LIBRARY)}:fp"
         assert _value_of(plan, "ki_fp_filters") == "fp"
         assert [i.severity for i in plan.issues if i.code == "install.model_not_attached"] == [Severity.INFO]
         assert plan.renames == ()
@@ -1734,7 +1743,7 @@ def test_resolution_skip_parent_symbol_keeps_the_child_linked(tmp_path):
     loaded, child = _symbol_in(plan, CHILD)
     assert [s.name for s in find_symbols(loaded.root)] == [PARENT, CHILD]
     assert extends_name(child.node) == PARENT
-    assert _value_of(plan, "Footprint", CHILD) == f"{LIBRARY}:FP"
+    assert _value_of(plan, "Footprint", CHILD) == f"{footprint_library_for(LIBRARY)}:FP"
     assert plan.linked_footprint == "FP"
     assert [i.code for i in plan.issues if i.code == "install.symbol_kept"] == ["install.symbol_kept"]
 
