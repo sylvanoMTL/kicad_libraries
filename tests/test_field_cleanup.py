@@ -138,7 +138,11 @@ SNAPEDA_NAMES = [
     "Description",
     "ki_fp_filters",
     "Datasheet",
+    # The SnapEDA symbol had no keywords, so the generated ones are added after its last property (plan 10-23)
+    "ki_keywords",
 ]
+SNAPEDA_FOOTPRINT = "GCT_USBC4242-01-0099-A_REVB1"
+SNAPEDA_KEYWORDS = "Connector receptacle USB-C USB GCT_USBC4242-01-0099-A_REVB1 GCT Global"
 
 
 def _snapeda_changes():
@@ -156,6 +160,15 @@ def _snapeda_changes():
         FieldChange(s, "drop", "MANUFACTURER", "GCT", "", "duplicate"),
         FieldChange(s, "drop", "Availability", "In Stock", "", "volatile"),
         FieldChange(s, "drop", "SNAPEDA_PN", SNAPEDA_MPN, "", "duplicate"),
+        # The generated text (plan 10-23): the symbol's keywords, then the footprint's description and tags
+        FieldChange(s, "set", "ki_keywords", "", SNAPEDA_KEYWORDS, "generated"),
+        FieldChange(
+            SNAPEDA_FOOTPRINT, "set", "Footprint description", "",
+            f"1.5 mm pitch, GCT {SNAPEDA_FOOTPRINT}", "generated", scope="footprint",
+        ),
+        FieldChange(
+            SNAPEDA_FOOTPRINT, "set", "Footprint tags", "", f"{SNAPEDA_FOOTPRINT} P1.5mm", "generated", scope="footprint"
+        ),
     ]
 
 
@@ -288,7 +301,9 @@ def test_cleanup_never_touches_existing_symbols(tmp_path):
         plan = build_plan(candidate, InstallOptions(library=SNAPEDA_LIBRARY, datasheet=SNAPEDA_DATASHEET), layout, ToolContext())
         assert not plan.blocked, [i.text for i in plan.issues]
         assert _block(_op(plan, "symbol_lib").data, "OLD_PART") == old_block
-        assert {c.symbol for c in plan.field_changes} == {SNAPEDA_SYMBOL}
+        # Only the incoming symbol and its footprint list changes; OLD_PART is untouched
+        assert {c.symbol for c in plan.field_changes if c.scope == "symbol"} == {SNAPEDA_SYMBOL}
+        assert {c.symbol for c in plan.field_changes if c.scope == "footprint"} == {SNAPEDA_FOOTPRINT}
         result = apply_plan(plan, backup_root=tmp_path / "bk")
         assert result.ok, [i.text for i in result.issues]
     assert _block(target.read_bytes(), "OLD_PART") == old_block

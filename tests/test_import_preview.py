@@ -416,8 +416,9 @@ def test_sections_order_and_empty_hidden(layout, tmp_path, ul_package, ul_layout
         options = InstallOptions(library=LIBRARY)
         plan = build_plan(candidate, options, layout, ToolContext())
         names = [s.name for s in preview_sections(plan, candidate, options)]
-    # Nothing is renamed and nothing conflicts, so those sections are hidden
-    assert names == ["Files", "Path rewrites", "Format", "Issues"]
+    # Nothing is renamed and nothing conflicts, so those sections are hidden; the generated keywords and
+    # footprint text are listed as field changes (plan 10-23)
+    assert names == ["Files", "Path rewrites", "Field changes", "Format", "Issues"]
 
     ul_plan, ul_candidate, ul_options = _ul_plan(ul_package, ul_layout)
     ul_names = [s.name for s in preview_sections(ul_plan, ul_candidate, ul_options)]
