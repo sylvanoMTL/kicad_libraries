@@ -26,6 +26,18 @@ from zipfixtures import _quote
 V6_VERSION = 20211014
 V10_VERSION = 20251024
 _MODERN_GENERATOR_VERSIONS = {20231120: "8.0", 20241209: "9.0"}
+
+# What a test part needs, beyond an MPN, a footprint, a Value that is the MPN and a 3D model, to pass the
+# atomic rule (D-21): the UL CSD sample carries no Description, so an install of it passes this one; a
+# synthetic vendor symbol carries ATOMIC_PROPS as its properties (Manufacturer is a table spelling, the
+# Datasheet is a ti.com link, which also agrees with the Manufacturer). vendor_symbol_lib has its own
+# datasheet argument, so it takes the Datasheet entry there and the rest as props: see atomic_symbol_lib.
+UL_DESCRIPTION = "Dual N-channel MOSFET, 30 V"
+ATOMIC_PROPS = {
+    "Manufacturer": "Texas Instruments",
+    "Description": "Test part",
+    "Datasheet": "https://www.ti.com/lit/ds/part.pdf",
+}
 _V10_GENERATOR_VERSION = "10.0"
 _EFFECTS = "(effects (font (size 1.27 1.27))"
 
