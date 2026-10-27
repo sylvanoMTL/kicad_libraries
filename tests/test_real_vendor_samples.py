@@ -17,8 +17,6 @@ from gitfixtures import GIT, requires_git
 from zipfixtures import (
     CURRENT_ATOMIC_FOOTPRINT_LIBS,
     CURRENT_ATOMIC_SYMBOL_LIBS,
-    CURRENT_CUSTOM_FOOTPRINT_LIBS,
-    CURRENT_CUSTOM_SYMBOL_LIBS,
     footprint_library_for,
     write_custom_layout,
 )
@@ -26,13 +24,15 @@ from zipfixtures import (
 from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.adapters.base import attach_models
 from kicad_lib_manager.importer.applier import apply_plan
-from kicad_lib_manager.importer.candidate import ExistingLibrary
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.layout import RepoLayout
+from kicad_lib_manager.importer.kicad_cli import stock_symbols_dir
 from kicad_lib_manager.importer.package import open_model_source, open_package
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, InstallOptions, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
-from kicad_lib_manager.importer.suggest import suggest_library
+from kicad_lib_manager.importer.siblings import stock_index
+from kicad_lib_manager.importer.suggest import suggest_library, suggestion_text
+from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 from kicad_lib_manager.kicad_files import find_models, find_symbol, footprint_name, list_properties, load
 from kicad_lib_manager.models import Issue, Severity
 
@@ -41,7 +41,7 @@ SAMPLES = REPO_ROOT / "downloaded_examples"
 REAL_SNAPEDA = SAMPLES / "USB4145-03-0170-C_REVA2.zip"
 REAL_SAMACSYS = SAMPLES / "LIB_RS3-1212S_H3.zip"
 REAL_SNAPEDA_MODEL = SAMPLES / "194150990-659-usb4145-03-0170-c.zip"
-# Install targets, both entries of CURRENT_ATOMIC_SYMBOL_LIBS (D-08); the suggestion tests below stay on the v1 names
+# Install targets, both entries of CURRENT_ATOMIC_SYMBOL_LIBS (D-08)
 SNAPEDA_LIBRARY = "Atomic_Connector"
 SAMACSYS_LIBRARY = "Atomic_Converter_DCDC_Isolated"
 
@@ -87,15 +87,11 @@ def test_real_snapeda_recognised(staging_root):
 
 @requires_snapeda
 def test_real_snapeda_suggestion(staging_root):
-    existing = [
-        ExistingLibrary(name, name in CURRENT_CUSTOM_SYMBOL_LIBS, name in CURRENT_CUSTOM_FOOTPRINT_LIBS)
-        for name in CURRENT_CUSTOM_SYMBOL_LIBS
-    ]
     with open_package(REAL_SNAPEDA, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
     assert candidate is not None
-    suggestion = suggest_library(candidate.symbols[0].meta, existing)
-    assert suggestion.name == "Connector_USB_GCT"
+    suggestion = suggest_library(candidate.symbols[0].meta, stock=None)
+    assert suggestion.name == "Atomic_Connector"
 
 
 def _check_ignore(relative: str) -> int:
@@ -117,13 +113,6 @@ def test_vendor_zips_stay_local():
 
 
 # -- the real SamacSys download (D-02, D-11, D-16) ---------------------------------------------------------
-
-
-def _existing_libraries():
-    return [
-        ExistingLibrary(name, name in CURRENT_CUSTOM_SYMBOL_LIBS, name in CURRENT_CUSTOM_FOOTPRINT_LIBS)
-        for name in CURRENT_CUSTOM_SYMBOL_LIBS
-    ]
 
 
 @requires_samacsys
@@ -171,7 +160,46 @@ def test_real_samacsys_suggestion(staging_root):
     assert meta.manufacturer == "RECOM Power"
     assert meta.mpn == "RS3-1212S/H3"
     assert meta.category == "Power Supply"
-    assert suggest_library(meta, _existing_libraries()).name == "PowerSupply_SubCategory_RECOM"
+    suggestion = suggest_library(meta, stock=None)
+    assert suggestion.name == "Atomic_Converter_DCDC_Isolated"
+    assert suggestion.source == "category"
+
+
+# -- the suggestion on the real downloads with a real KiCad 10 (LIB-04, ROADMAP criterion 1) ---------------
+
+REAL_UL_CSD = SAMPLES / "ul_CSD85301Q2.zip"
+REAL_UL_ATXK = SAMPLES / "ul_ATXK-H14-D-32-768KHZ-E50-T3.zip"
+_LIVE_SYMBOLS = stock_symbols_dir(find_kicad_footprint_dir())
+_LIVE_IS_KICAD_10 = _LIVE_SYMBOLS is not None and (_LIVE_SYMBOLS / "Converter_DCDC_Isolated.kicad_sym").is_file()
+requires_kicad_10 = pytest.mark.skipif(
+    not _LIVE_IS_KICAD_10, reason="no KiCad 10 install with a stock symbols folder"
+)
+
+
+def _first_meta(zip_path):
+    with open_package(zip_path, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+    assert candidate is not None
+    return candidate.symbols[0].meta
+
+
+@requires_kicad_10
+@pytest.mark.skipif(not REAL_UL_CSD.exists(), reason="downloaded_examples/ul_CSD85301Q2.zip not present")
+def test_real_ultra_suggestion_from_kicad_10(staging_root):
+    suggestion = suggest_library(_first_meta(REAL_UL_CSD), stock=stock_index(_LIVE_SYMBOLS))
+    assert suggestion.name == "Atomic_Transistor_FET"
+    assert suggestion.source == "stock"
+    assert suggestion_text(suggestion) == (
+        "Suggested from 75 similar parts in KiCad's Transistor_FET. Other matches: Diode (2)."
+    )
+
+
+@requires_kicad_10
+@pytest.mark.skipif(not REAL_UL_ATXK.exists(), reason="downloaded_examples/ul_ATXK-H14-D-32-768KHZ-E50-T3.zip not present")
+def test_real_ultra_oscillator_is_left_for_the_owner(staging_root):
+    suggestion = suggest_library(_first_meta(REAL_UL_ATXK), stock=stock_index(_LIVE_SYMBOLS))
+    assert suggestion.name == ""
+    assert suggestion.source == "ask"
 
 
 # -- the real downloads installed into a synthetic Custom/ (D-03) ------------------------------------------

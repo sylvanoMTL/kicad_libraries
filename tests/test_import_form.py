@@ -280,7 +280,6 @@ from fakecli import FakeCli  # noqa: E402
 
 from kicad_lib_manager.importer import kicad_cli  # noqa: E402
 from kicad_lib_manager.importer.plan import InstallOptions, ToolContext  # noqa: E402
-from kicad_lib_manager.importer.suggest import LibrarySuggestion, TokenChoice  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -290,42 +289,30 @@ def _clean_cli_cache():
     kicad_cli.clear_cache()
 
 
-def _suggestion(name: str = "IC_SubCategory_TI") -> LibrarySuggestion:
-    """The UL sample's suggestion: SubCategory is a placeholder, TI is a low-confidence host guess."""
-    return LibrarySuggestion(
-        name=name,
-        type=TokenChoice("IC", "reference", True),
-        subcategory=TokenChoice("SubCategory", "placeholder", False),
-        manufacturer=TokenChoice("TI", "host_guess", False),
-        confidence="low",
-        placeholders=("SubCategory",),
-        matches_existing=False,
-        alternatives=(),
-        issues=(),
-    )
-
-
-def test_library_tokens():
-    suggestion = _suggestion()
-    # the untouched suggestion: the placeholder and the low-confidence guess are amber
-    assert form.library_tokens("IC_SubCategory_TI", suggestion) == [("IC", False), ("SubCategory", True), ("TI", True)]
-    # an edit counts as confirmation of the rest: only placeholders stay amber
-    assert form.library_tokens("IC_Power_TI", suggestion) == [("IC", False), ("Power", False), ("TI", False)]
-    assert form.library_tokens("IC_Manufacturer_TI", suggestion) == [("IC", False), ("Manufacturer", True), ("TI", False)]
-    # no suggestion: placeholders only
-    assert form.library_tokens("IC_SubCategory_TI", None) == [("IC", False), ("SubCategory", True), ("TI", False)]
-    assert form.library_tokens("", suggestion) == []
-    assert form.library_tokens("", None) == []
+def test_the_form_has_no_token_line_rule():
+    assert not hasattr(form, "library_tokens")
 
 
 def test_library_badge():
     names = ["Atomic_Battery_Management", "Atomic_Connector"]
+    assert form.NEW_LIBRARY_BADGE == "new - creates .kicad_sym"
     assert form.library_badge("Atomic_Battery_Management", names) == "existing"
-    assert form.library_badge("Atomic_Sensor_Temperature", names) == "new - creates .kicad_sym + .pretty"
-    # a case twin is not the same library
-    assert form.library_badge("atomic_battery_management", names) == "new - creates .kicad_sym + .pretty"
+    assert form.library_badge("Atomic_Sensor_Temperature", names) == "new - creates .kicad_sym"
+    assert form.library_badge("  Atomic_Sensor_Temperature  ", names) == "new - creates .kicad_sym"
+    # a name the rule refuses gets no badge: a case twin, a v1 name, a hand-made name, a bare KiCad name
+    assert form.library_badge("atomic_battery_management", names) == ""
+    assert form.library_badge("IC_Battery_Charger_TI", names) == ""
+    assert form.library_badge("Atomic_MyStuff", names) == ""
+    assert form.library_badge("Battery_Management", names) == ""
     assert form.library_badge("", names) == ""
     assert form.library_badge("   ", names) == ""
+
+
+def test_library_badge_follows_the_allowed_stems():
+    assert form.library_badge("Atomic_Brand_New", []) == ""
+    assert form.library_badge("Atomic_Brand_New", [], frozenset({"Brand_New"})) == "new - creates .kicad_sym"
+    # an allowed set that lacks a snapshot stem refuses it
+    assert form.library_badge("Atomic_Diode", [], frozenset({"Brand_New"})) == ""
 
 
 def test_cli_runs_once_across_rebuilds(eq_layout):

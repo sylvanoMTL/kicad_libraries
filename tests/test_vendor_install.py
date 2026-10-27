@@ -29,8 +29,6 @@ from vendorfixtures import (
 from zipfixtures import (
     CURRENT_ATOMIC_FOOTPRINT_LIBS,
     CURRENT_ATOMIC_SYMBOL_LIBS,
-    CURRENT_CUSTOM_FOOTPRINT_LIBS,
-    CURRENT_CUSTOM_SYMBOL_LIBS,
     footprint_library_for,
     write_custom_layout,
 )
@@ -39,7 +37,6 @@ from kicad_lib_manager import fsutil
 from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.adapters.snapeda import SNAPEDA_RULES
 from kicad_lib_manager.importer.applier import apply_plan
-from kicad_lib_manager.importer.candidate import ExistingLibrary
 from kicad_lib_manager.importer.commit_plan import build_commit_plan, default_message
 from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.fieldrules import GENERIC_RULES
@@ -473,15 +470,10 @@ def test_vendor_commit_trailer(vendor, tmp_path):
 
 
 def test_vendor_suggestion_snapeda(tmp_path):
-    # The suggestion stays on the v1 names of the live tree until plan 10-15, so this scans the v1 mirror
-    v1_usb = next(name for name in CURRENT_CUSTOM_SYMBOL_LIBS if name.startswith("Connector_USB"))
-    existing = [
-        ExistingLibrary(name, name in CURRENT_CUSTOM_SYMBOL_LIBS, name in CURRENT_CUSTOM_FOOTPRINT_LIBS)
-        for name in CURRENT_CUSTOM_SYMBOL_LIBS
-    ]
+    # Without KiCad's libraries the connector's description places it in the one Atomic_ connector library
     with _open_case(CASES["snapeda"], tmp_path) as (_, candidate):
-        suggestion = suggest_library(candidate.symbols[0].meta, existing)
-    assert suggestion.name == v1_usb
+        suggestion = suggest_library(candidate.symbols[0].meta, stock=None)
+    assert suggestion.name == "Atomic_Connector"
 
 
 def _load_issues(exe, layout, case):

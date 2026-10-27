@@ -15,7 +15,7 @@ from .candidate import ImportCandidate
 from .fieldrules import clean_description
 from .plan import Conflict, InstallOptions, InstallPlan, Resolution
 from .stems import name_verdict
-from .suggest import LibrarySuggestion, manufacturer_choice, placeholder_tokens
+from .suggest import manufacturer_choice
 
 # The five symbol fields the dialog lets the user edit; the names are the InstallOptions text overrides
 FIELD_NAMES = ("value", "datasheet", "description", "manufacturer", "mpn")
@@ -61,7 +61,8 @@ class FormValues:
     resolutions: Mapping[str, Resolution] = field(default_factory=dict)
 
 
-NEW_LIBRARY_BADGE = "new - creates .kicad_sym + .pretty"
+# A new library creates only its .kicad_sym: every part uses the shared footprint library (D-12, D-15)
+NEW_LIBRARY_BADGE = "new - creates .kicad_sym"
 
 # -- the blocking reasons (D-09, PREV-07) ----------------------------------------------------------
 
@@ -208,28 +209,10 @@ def noop_text(library: str) -> str:
     return f"Nothing to install: this part is already in {library}."
 
 
-def library_tokens(name: str, suggestion: LibrarySuggestion | None) -> list[tuple[str, bool]]:
-    """Split a library name on "_" into (token, amber) pairs for the token line (D-11).
-
-    A placeholder token (Phase 3 D-04) is always amber. While the text still equals the suggestion,
-    a token of a low-confidence part of that suggestion is amber too; once the user edits the name
-    that counts as confirmation of the rest, so only placeholders stay amber.
-    """
-    if not name:
-        return []
-    placeholders = {token.casefold() for token in placeholder_tokens(name)}
-    guesses: set[str] = set()
-    if suggestion is not None and name == suggestion.name:
-        for choice in (suggestion.type, suggestion.subcategory, suggestion.manufacturer):
-            if not choice.confident:
-                guesses.update(choice.token.split("_"))
-    return [(token, token.casefold() in placeholders or token in guesses) for token in name.split("_")]
-
-
-def library_badge(name: str, existing: Collection[str]) -> str:
-    """"existing" for an exact match, the "new" text otherwise, "" for a blank name (a case twin is new)."""
+def library_badge(name: str, existing: Collection[str], allowed: frozenset[str] | None = None) -> str:
+    """"existing" for a listed library, the "new" text for an allowed name, "" for a blank or refused name."""
     name = name.strip()
-    if not name:
+    if not name or not name_verdict(name, allowed).ok:
         return ""
     return "existing" if name in existing else NEW_LIBRARY_BADGE
 
