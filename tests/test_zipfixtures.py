@@ -20,6 +20,8 @@ from kicad_lib_manager.kicad_files import (
 )
 from kicad_lib_manager.sexpr import parse
 from zipfixtures import (
+    CURRENT_ATOMIC_FOOTPRINT_LIBS,
+    CURRENT_ATOMIC_SYMBOL_LIBS,
     CURRENT_CUSTOM_FOOTPRINT_LIBS,
     CURRENT_CUSTOM_SYMBOL_LIBS,
     LEGACY_DCM_BYTES,
@@ -34,6 +36,7 @@ from zipfixtures import (
     VRML_BYTES,
     corrupt_member,
     footprint,
+    footprint_library_for,
     lie_about_size,
     mark_encrypted,
     string_body,
@@ -220,6 +223,22 @@ def test_current_custom_lists():
     assert "IC_IMU_TDK" in CURRENT_CUSTOM_SYMBOL_LIBS
     assert "IC_IMU_TDK" not in CURRENT_CUSTOM_FOOTPRINT_LIBS
     assert set(CURRENT_CUSTOM_FOOTPRINT_LIBS) < set(CURRENT_CUSTOM_SYMBOL_LIBS)
+
+
+def test_write_custom_layout_makes_a_twice_named_footprint_library_once(tmp_path):
+    write_custom_layout(tmp_path, ["Atomic_A", "Atomic_B"], ["Shared", "Shared"])
+
+    pretties = sorted(p.name for p in (tmp_path / "Custom" / "Footprints").iterdir())
+    assert pretties == ["Shared.pretty"]
+
+
+def test_current_atomic_lists():
+    assert len(CURRENT_ATOMIC_SYMBOL_LIBS) == 9
+    assert len(set(CURRENT_ATOMIC_SYMBOL_LIBS)) == 9
+    assert all(name.startswith("Atomic_") for name in CURRENT_ATOMIC_SYMBOL_LIBS)
+    expected = tuple(dict.fromkeys(footprint_library_for(name) for name in CURRENT_ATOMIC_SYMBOL_LIBS))
+    assert CURRENT_ATOMIC_FOOTPRINT_LIBS == expected
+    assert len(set(CURRENT_ATOMIC_FOOTPRINT_LIBS)) == len(CURRENT_ATOMIC_FOOTPRINT_LIBS)
 
 
 # -- hostile string builders (CR-03) -----------------------------------------------

@@ -310,6 +310,33 @@ CURRENT_CUSTOM_FOOTPRINT_LIBS = tuple(
 )
 
 
+def footprint_library_for(library: str) -> str:
+    """Name the footprint library that a part of the symbol library `library` installs into.
+
+    This is the rule the planner follows today: the footprint library carries the symbol
+    library's name. Every test that names the footprint library of an install target goes
+    through this helper, so plan 10-12 can move footprints into the shared Atomic_Footprints
+    (D-15) by changing it together with the planner.
+    """
+    return library
+
+
+# The nine Atomic_ symbol libraries Phase 13 migrates the live tree to; the v1 mirror above stays
+# until then
+CURRENT_ATOMIC_SYMBOL_LIBS = (
+    "Atomic_Battery_Management",
+    "Atomic_Connector",
+    "Atomic_Converter_DCDC_Isolated",
+    "Atomic_Oscillator",
+    "Atomic_Power_Management",
+    "Atomic_RF_Module",
+    "Atomic_Sensor_Magnetic",
+    "Atomic_Sensor_Motion",
+    "Atomic_Transistor_FET",
+)
+CURRENT_ATOMIC_FOOTPRINT_LIBS = tuple(dict.fromkeys(footprint_library_for(name) for name in CURRENT_ATOMIC_SYMBOL_LIBS))
+
+
 def write_custom_layout(
     root: Path, symbol_libs: Iterable[str], footprint_libs: Iterable[str]
 ) -> Path:

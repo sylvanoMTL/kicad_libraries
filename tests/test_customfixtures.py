@@ -8,16 +8,28 @@ import pytest
 
 from customfixtures import (
     ABSENT_LIBRARY,
+    BATTERY_CHARGER,
     FORMAT_VERSIONS,
-    IMU,
     SYNTHETIC_LIBRARIES,
     UL_PART_TOKENS,
+    V1_ABSENT_LIBRARY,
+    V1_IMU,
+    V1_LIBRARY_NAMES,
     write_synthetic_custom,
 )
 from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.layout import list_existing_libraries
-from kicad_lib_manager.kicad_files import LoadedFile, file_version, footprint_name, parse_bytes
-from zipfixtures import STEP_BYTES
+from kicad_lib_manager.importer.plan import InstallOptions
+from kicad_lib_manager.importer.planner import build_plan
+from kicad_lib_manager.kicad_files import (
+    LoadedFile,
+    file_version,
+    find_property,
+    find_symbol,
+    footprint_name,
+    parse_bytes,
+)
+from zipfixtures import STEP_BYTES, footprint_library_for
 
 
 @pytest.fixture
@@ -34,14 +46,14 @@ def _load(path):
 def test_symbol_files_match_the_inventory(layout):
     written = sorted(p.name for p in layout.symbols_dir.iterdir())
 
-    assert written == sorted(f"{lib.name}.kicad_sym" for lib in SYNTHETIC_LIBRARIES)
+    assert written == sorted(f"{name}.kicad_sym" for name in V1_LIBRARY_NAMES)
     assert len(SYNTHETIC_LIBRARIES) == 5
 
 
 def test_each_symbol_file_has_its_declared_version(layout):
     for lib in SYNTHETIC_LIBRARIES:
-        loaded = _load(layout.symbols_dir / f"{lib.name}.kicad_sym")
-        assert file_version(loaded.root) == lib.version, lib.name
+        loaded = _load(layout.symbols_dir / f"{lib.v1_name}.kicad_sym")
+        assert file_version(loaded.root) == lib.version, lib.v1_name
 
 
 def test_all_four_format_versions_are_present(layout):
@@ -52,21 +64,21 @@ def test_all_four_format_versions_are_present(layout):
 
 def test_libraries_hold_exactly_their_declared_footprints(layout):
     for lib in SYNTHETIC_LIBRARIES:
-        pretty = layout.footprints_dir / f"{lib.name}.pretty"
+        pretty = layout.footprints_dir / f"{lib.v1_name}.pretty"
         if lib.footprints:
-            assert sorted(p.stem for p in pretty.glob("*.kicad_mod")) == sorted(lib.footprints), lib.name
+            assert sorted(p.stem for p in pretty.glob("*.kicad_mod")) == sorted(lib.footprints), lib.v1_name
         else:
-            assert not pretty.exists(), lib.name
+            assert not pretty.exists(), lib.v1_name
 
 
 def test_imu_library_has_symbols_but_no_pretty_folder(layout):
-    assert (layout.symbols_dir / f"{IMU}.kicad_sym").is_file()
-    assert not (layout.footprints_dir / f"{IMU}.pretty").exists()
+    assert (layout.symbols_dir / f"{V1_IMU}.kicad_sym").is_file()
+    assert not (layout.footprints_dir / f"{V1_IMU}.pretty").exists()
 
 
 def test_new_library_name_does_not_exist(layout):
-    assert not (layout.symbols_dir / f"{ABSENT_LIBRARY}.kicad_sym").exists()
-    assert not (layout.footprints_dir / f"{ABSENT_LIBRARY}.pretty").exists()
+    assert not (layout.symbols_dir / f"{V1_ABSENT_LIBRARY}.kicad_sym").exists()
+    assert not (layout.footprints_dir / f"{V1_ABSENT_LIBRARY}.pretty").exists()
 
 
 def test_ul_sample_part_is_absent_by_construction(layout):
@@ -101,7 +113,7 @@ def test_model_files_are_the_stub_step_bytes(layout):
 def test_footprints_link_the_custom_model_dir(layout):
     for lib in SYNTHETIC_LIBRARIES:
         for index, footprint in enumerate(lib.footprints):
-            text = (layout.footprints_dir / f"{lib.name}.pretty" / f"{footprint}.kicad_mod").read_text("utf-8")
+            text = (layout.footprints_dir / f"{lib.v1_name}.pretty" / f"{footprint}.kicad_mod").read_text("utf-8")
             if index < len(lib.models):
                 assert f"${{CUSTOM_3DMODEL_DIR}}/{lib.models[index]}" in text
             else:
@@ -111,9 +123,9 @@ def test_footprints_link_the_custom_model_dir(layout):
 def test_existing_libraries_list_the_five_with_imu_symbols_only(layout):
     listed = {lib.name: lib for lib in list_existing_libraries(layout)}
 
-    assert sorted(listed) == sorted(lib.name for lib in SYNTHETIC_LIBRARIES)
-    assert listed[IMU].has_symbols and not listed[IMU].has_footprints
-    assert all(lib.has_symbols and lib.has_footprints for name, lib in listed.items() if name != IMU)
+    assert sorted(listed) == sorted(V1_LIBRARY_NAMES)
+    assert listed[V1_IMU].has_symbols and not listed[V1_IMU].has_footprints
+    assert all(lib.has_symbols and lib.has_footprints for name, lib in listed.items() if name != V1_IMU)
 
 
 def test_writes_nothing_outside_its_root(tmp_path):
@@ -128,20 +140,75 @@ def test_writes_nothing_outside_its_root(tmp_path):
     assert [p.name for p in root.iterdir()] == ["Custom"]
 
 
+def test_naming_v1_writes_exactly_the_v1_names(tmp_path):
+    layout = write_synthetic_custom(tmp_path / "repo", naming="v1")
+
+    assert sorted(p.stem for p in layout.symbols_dir.glob("*.kicad_sym")) == sorted(V1_LIBRARY_NAMES)
+    assert sorted(p.stem for p in layout.footprints_dir.glob("*.pretty")) == sorted(
+        lib.v1_name for lib in SYNTHETIC_LIBRARIES if lib.footprints
+    )
+
+
+def test_naming_atomic_writes_the_atomic_names(atomic_custom):
+    assert sorted(p.stem for p in atomic_custom.symbols_dir.glob("*.kicad_sym")) == sorted(
+        lib.name for lib in SYNTHETIC_LIBRARIES
+    )
+    assert not (atomic_custom.symbols_dir / f"{ABSENT_LIBRARY}.kicad_sym").exists()
+    for lib in SYNTHETIC_LIBRARIES:
+        pretty = atomic_custom.footprints_dir / f"{footprint_library_for(lib.name)}.pretty"
+        if lib.footprints:
+            written = {p.stem for p in pretty.glob("*.kicad_mod")}
+            assert set(lib.footprints) <= written, lib.name
+    with_footprints = {footprint_library_for(lib.name) for lib in SYNTHETIC_LIBRARIES if lib.footprints}
+    assert {p.stem for p in atomic_custom.footprints_dir.glob("*.pretty")} == with_footprints
+
+
+def test_naming_other_raises(tmp_path):
+    with pytest.raises(ValueError, match="v1.*atomic"):
+        write_synthetic_custom(tmp_path / "repo", naming="other")
+
+
+def test_atomic_custom_writes_nothing_outside_its_root(atomic_custom, tmp_path):
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["repo"]
+    assert [p.name for p in (tmp_path / "repo").iterdir()] == ["Custom"]
+
+
+def test_atomic_install_target_plans_through_footprint_library_for(atomic_custom, ul_package):
+    _, candidate = ul_package
+    footprint_lib = footprint_library_for(BATTERY_CHARGER)
+
+    plan = build_plan(candidate, InstallOptions(library=BATTERY_CHARGER), atomic_custom)
+
+    assert not plan.blocked, plan.issues
+    footprint_ops = [op for op in plan.ops if op.kind == "footprint"]
+    assert [op.path for op in footprint_ops] == [
+        atomic_custom.footprints_dir / f"{footprint_lib}.pretty" / "DQK0006B.kicad_mod"
+    ]
+    symbol_op = next(op for op in plan.ops if op.kind == "symbol_lib")
+    symbol = find_symbol(_parsed(symbol_op).root, "CSD85301Q2")
+    assert find_property(symbol.node, "Footprint").value == f"{footprint_lib}:DQK0006B"
+
+
+def _parsed(op):
+    loaded = parse_bytes(op.data, op.path.name)
+    assert isinstance(loaded, LoadedFile), loaded
+    return loaded
+
+
 @pytest.mark.kicad_cli
 def test_every_synthetic_library_loads_in_kicad_cli(layout, kicad_cli_path):
     for lib in SYNTHETIC_LIBRARIES:
         footprints = [
             (path.name, path.read_bytes())
-            for path in sorted((layout.footprints_dir / f"{lib.name}.pretty").glob("*.kicad_mod"))
+            for path in sorted((layout.footprints_dir / f"{lib.v1_name}.pretty").glob("*.kicad_mod"))
         ]
         issues = kicad_cli.load_gate(
             kicad_cli_path,
-            library=lib.name,
-            symbol_lib=(layout.symbols_dir / f"{lib.name}.kicad_sym").read_bytes(),
+            library=lib.v1_name,
+            symbol_lib=(layout.symbols_dir / f"{lib.v1_name}.kicad_sym").read_bytes(),
             footprints=footprints,
         )
-        assert issues == [], (lib.name, issues)
+        assert issues == [], (lib.v1_name, issues)
 
 
 # ── The session write-protect guard over the live Custom/ (TEST-03, D-13) ────────────────────
