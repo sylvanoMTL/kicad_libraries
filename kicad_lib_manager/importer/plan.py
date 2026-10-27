@@ -57,7 +57,8 @@ class InstallOptions:
 
     library: str
     symbol: str | None = None
-    footprints: tuple[str, ...] = ()
+    # D-14: one vendor footprint per atomic part; None means the package's only footprint
+    footprint: str | None = None
     model: str | None = None
     no_model: bool = False
     # vendor footprint name -> caller-edited target name
@@ -163,6 +164,8 @@ class InstallPlan:
     issues: tuple[Issue, ...]
     field_changes: tuple[FieldChange, ...] = ()
     footprint_library: str | None = None
+    # D-14: vendor footprints the package holds that this part does not use; none of them is written
+    unused_footprints: tuple[str, ...] = ()
 
     @property
     def footprint_link(self) -> str | None:

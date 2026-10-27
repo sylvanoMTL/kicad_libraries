@@ -26,7 +26,7 @@ class PreviewRow:
     """One line of the preview tree.
 
     tone: default | success | muted | warning | error.
-    kind: file | rename | rewrite | format | conflict | issue.
+    kind: file | rename | rewrite | unused | format | conflict | issue.
     op_index points back at plan.ops for file rows, so a content view can find the bytes.
     """
 
@@ -79,8 +79,8 @@ def _chosen_symbol(candidate: ImportCandidate, options: InstallOptions) -> Symbo
 
 
 def _linked_footprint_item(candidate: ImportCandidate, options: InstallOptions) -> FootprintItem | None:
-    if options.footprints:
-        return next((f for f in candidate.footprints if f.name == options.footprints[0]), None)
+    if options.footprint is not None:
+        return next((f for f in candidate.footprints if f.name == options.footprint), None)
     return candidate.footprints[0] if len(candidate.footprints) == 1 else None
 
 
@@ -283,6 +283,20 @@ def _field_changes_section(plan: InstallPlan) -> PreviewSection:
     return PreviewSection("Field changes", tuple(rows))
 
 
+# -- Not used -------------------------------------------------------------------------------------
+
+
+def _unused_section(plan: InstallPlan) -> PreviewSection:
+    """D-14: the footprints the package holds that this part does not use; none is written."""
+    rows = [
+        PreviewRow(
+            text=name, detail="footprint, not installed: one footprint per part", tone="muted", kind="unused",
+        )
+        for name in plan.unused_footprints
+    ]
+    return PreviewSection("Not used", tuple(rows))
+
+
 # -- Format ---------------------------------------------------------------------------------------
 
 
@@ -360,6 +374,7 @@ def preview_sections(
         _renames_section(plan, candidate, options),
         _rewrites_section(plan, candidate, options),
         _field_changes_section(plan),
+        _unused_section(plan),
         _format_section(plan),
         _conflicts_section(plan),
         _issues_section(plan),

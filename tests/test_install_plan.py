@@ -146,9 +146,10 @@ def test_choice_required_for_two_footprints(layout, tmp_path):
         assert _codes(plan) == ["install.choice_required"]
         text = _error(plan, "install.choice_required").text
         assert "FP_A" in text and "FP_B" in text
-        chosen = build_plan(candidate, InstallOptions(library=LIBRARY, footprints=("FP_A",)), layout)
+        chosen = build_plan(candidate, InstallOptions(library=LIBRARY, footprint="FP_A"), layout)
     assert not chosen.blocked, chosen.issues
     assert chosen.footprint_names == ("FP_A",)
+    assert chosen.unused_footprints == ("FP_B",)
     assert [op.path.name for op in chosen.ops if op.kind == "footprint"] == ["FP_A.kicad_mod"]
 
 
@@ -186,7 +187,7 @@ def test_no_model_in_package_warns(layout, tmp_path):
     "options, kwargs, missing",
     [
         (InstallOptions(library=LIBRARY, symbol="NOPE"), {}, "NOPE"),
-        (InstallOptions(library=LIBRARY, footprints=("NOPE",)), {}, "NOPE"),
+        (InstallOptions(library=LIBRARY, footprint="NOPE"), {}, "NOPE"),
         (InstallOptions(library=LIBRARY, model="nope.step"), {"models": ("m1.step",)}, "nope.step"),
     ],
     ids=["symbol", "footprint", "model"],
@@ -199,20 +200,21 @@ def test_unknown_item_refused(layout, tmp_path, options, kwargs, missing):
     assert missing in _error(plan, "install.unknown_item").text
 
 
-def test_several_footprints_first_is_linked_and_all_are_filters(layout, tmp_path):
+def test_several_footprints_only_the_chosen_one_is_installed_and_filtered(layout, tmp_path):
     with _open(tmp_path, _members(footprints=("FP_A", "FP_B"))) as (_, candidate):
-        plan = build_plan(candidate, InstallOptions(library=LIBRARY, footprints=("FP_B", "FP_A")), layout)
+        plan = build_plan(candidate, InstallOptions(library=LIBRARY, footprint="FP_B"), layout)
         assert not plan.blocked, plan.issues
         assert plan.linked_footprint == "FP_B"
-        assert plan.footprint_names == ("FP_B", "FP_A")
+        assert plan.footprint_names == ("FP_B",)
+        assert plan.unused_footprints == ("FP_A",)
         result = apply_plan(plan, backup_root=tmp_path / "bk")
     assert result.ok, result.issues
     pretty = layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty"
-    assert sorted(p.name for p in pretty.iterdir()) == ["FP_A.kicad_mod", "FP_B.kicad_mod"]
+    assert sorted(p.name for p in pretty.iterdir()) == ["FP_B.kicad_mod"]
     library = parse_bytes((layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes(), "lib")
     symbol = find_symbol(library.root, "PART")
     assert find_property(symbol.node, "Footprint").value == f"{footprint_library_for(LIBRARY)}:FP_B"
-    assert find_property(symbol.node, "ki_fp_filters").value == "FP_B FP_A"
+    assert find_property(symbol.node, "ki_fp_filters").value == "FP_B"
 
 
 # -- WR-04: staged files must still be what intake saw ---------------------------
@@ -1171,7 +1173,7 @@ def test_unit_invariant(layout, tmp_path, size):
         assert find_property(find_symbol(library.root, name).node, "Footprint").value == f"{footprint_library_for(LIBRARY)}:FP"
 
 
-def test_several_footprints_order(layout, tmp_path):
+def test_several_footprints_the_chosen_one_carries_the_model(layout, tmp_path):
     members = [
         ("part.kicad_sym", vendor_symbol_lib(VENDOR)),
         ("FP_A.kicad_mod", vendor_footprint("FP_A")),
@@ -1179,14 +1181,15 @@ def test_several_footprints_order(layout, tmp_path):
         ("part.step", STEP_BYTES),
     ]
     with _open(tmp_path, members) as (_, candidate):
-        plan = build_plan(candidate, InstallOptions(library=LIBRARY, footprints=("FP_B", "FP_A")), layout, ToolContext())
+        plan = build_plan(candidate, InstallOptions(library=LIBRARY, footprint="FP_B"), layout, ToolContext())
     assert not plan.blocked, plan.issues
     footprints = [op for op in plan.ops if op.kind == "footprint"]
-    assert [op.path.stem for op in footprints] == ["FP_B", "FP_A"]
+    assert [op.path.stem for op in footprints] == ["FP_B"]
+    assert plan.unused_footprints == ("FP_A",)
     assert _value_of(plan, "Footprint") == f"{footprint_library_for(LIBRARY)}:FP_B"
-    assert _value_of(plan, "ki_fp_filters") == "FP_B FP_A"
+    assert _value_of(plan, "ki_fp_filters") == "FP_B"
     carried = {op.path.stem: [m.path for m in find_models(footprint_name(parse_bytes(op.data, "fp").root).node)] for op in footprints}
-    assert carried == {"FP_B": ["${CUSTOM_3DMODEL_DIR}/PART.step"], "FP_A": []}
+    assert carried == {"FP_B": ["${CUSTOM_3DMODEL_DIR}/PART.step"]}
 
 
 def test_no_model_package(layout, tmp_path):

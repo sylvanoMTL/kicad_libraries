@@ -563,7 +563,7 @@ class _SymState:
 def _select(
     candidate: ImportCandidate, options: InstallOptions
 ) -> tuple[SymbolItem | None, list[FootprintItem], ModelItem | None, list[Issue]]:
-    """Apply D-17: one symbol, one or more footprints, zero or one model; the caller decides among several."""
+    """Apply D-17 and D-14: one symbol, one footprint, zero or one model; the caller decides among several."""
     problems: list[Issue] = []
 
     symbol: SymbolItem | None = None
@@ -582,13 +582,12 @@ def _select(
     footprints: list[FootprintItem] = []
     if not candidate.footprints:
         problems.append(_err("install.no_footprint", "The package holds no footprint to install"))
-    elif options.footprints:
-        for wanted in dict.fromkeys(options.footprints):
-            found = next((f for f in candidate.footprints if f.name == wanted), None)
-            if found is None:
-                problems.append(_err("install.unknown_item", f"The package has no footprint named {wanted}"))
-            else:
-                footprints.append(found)
+    elif options.footprint is not None:
+        found = next((f for f in candidate.footprints if f.name == options.footprint), None)
+        if found is None:
+            problems.append(_err("install.unknown_item", f"The package has no footprint named {options.footprint}"))
+        else:
+            footprints.append(found)
     elif len(candidate.footprints) == 1:
         footprints = [candidate.footprints[0]]
     else:
@@ -1200,4 +1199,5 @@ def build_plan(
         renames=(*sym_renames, *fp_renames, *model_renames),
         issues=tuple(issues),
         field_changes=tuple(c for c in changes if c.symbol in pending),
+        unused_footprints=tuple(f.name for f in candidate.footprints if f not in fp_items),
     )

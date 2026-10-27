@@ -16,7 +16,7 @@ def values(**changes) -> FormValues:
     base = {
         "library": "Lib",
         "symbol": None,
-        "footprints": (),
+        "footprint": None,
         "model": None,
         "no_model": False,
         "footprint_name": None,
@@ -36,7 +36,7 @@ def test_build_options_items():
         FormValues(
             library=" Lib ",
             symbol="S2",
-            footprints=("F2", "F1"),
+            footprint="F2",
             model=None,
             no_model=True,
             footprint_name=None,
@@ -47,7 +47,7 @@ def test_build_options_items():
     )
     assert options.library == "Lib"
     assert options.symbol == "S2"
-    assert options.footprints == ("F2", "F1")
+    assert options.footprint == "F2"
     assert options.no_model is True
     assert options.model is None
     assert dict(options.footprint_names) == {}
@@ -143,7 +143,7 @@ def test_field_defaults_equivalence(case, eq_layout, tmp_path):
         base = FormValues(
             library=library,
             symbol=symbol.name,
-            footprints=tuple(f.name for f in candidate.footprints),
+            footprint=candidate.footprints[0].name,
             model=candidate.models[0].filename,
             no_model=False,
             footprint_name=None,
@@ -238,13 +238,13 @@ def test_empty_footprint_name_blocks_the_plan(eq_layout):
         candidate, _ = detect_candidate(package)
         fp = candidate.footprints[0].name
         blank = build_options(
-            values(library=UL_LIBRARY, symbol=candidate.symbols[0].name, footprints=(fp,), footprint_name=""),
+            values(library=UL_LIBRARY, symbol=candidate.symbols[0].name, footprint=fp, footprint_name=""),
             DEFAULTS,
             linked_vendor=fp,
         )
         plan = build_plan(candidate, blank, eq_layout)
         typed = build_options(
-            values(library=UL_LIBRARY, symbol=candidate.symbols[0].name, footprints=(fp,), footprint_name="DQK/0006B"),
+            values(library=UL_LIBRARY, symbol=candidate.symbols[0].name, footprint=fp, footprint_name="DQK/0006B"),
             DEFAULTS,
             linked_vendor=fp,
         )
@@ -264,7 +264,7 @@ def test_typed_footprint_name_case_twin_is_a_conflict(eq_layout):
         candidate, _ = detect_candidate(package)
         fp = candidate.footprints[0].name
         options = build_options(
-            values(library=UL_LIBRARY, symbol=candidate.symbols[0].name, footprints=(fp,), footprint_name="dqk0006b"),
+            values(library=UL_LIBRARY, symbol=candidate.symbols[0].name, footprint=fp, footprint_name="dqk0006b"),
             DEFAULTS,
             linked_vendor=fp,
         )
@@ -341,12 +341,12 @@ def test_cli_runs_once_across_rebuilds(eq_layout):
         symbol = candidate.symbols[0].name
         fp = candidate.footprints[0].name
         steps = [
-            InstallOptions(library="Atomic_Sensor_Temperature", symbol=symbol, footprints=(fp,)),
-            InstallOptions(library="Atomic_Sensor_Pressure", symbol=symbol, footprints=(fp,)),
+            InstallOptions(library="Atomic_Sensor_Temperature", symbol=symbol, footprint=fp),
+            InstallOptions(library="Atomic_Sensor_Pressure", symbol=symbol, footprint=fp),
             InstallOptions(
                 library="Atomic_Sensor_Pressure",
                 symbol=symbol,
-                footprints=(fp,),
+                footprint=fp,
                 footprint_names={fp: "DQK6"},
                 manufacturer="Acme",
             ),
@@ -375,8 +375,6 @@ def status(**changes) -> FormStatus:
         "library": TEST_LIBRARY,
         "value_text": "V",
         "mpn_text": "M",
-        "several_footprints": False,
-        "footprints_checked": 1,
         "resolutions": {},
     }
     base.update(changes)
@@ -427,15 +425,14 @@ def test_blocking_reasons_order():
             Conflict("symbol:S", "symbol", "S", "Lib.kicad_sym", resolution=Resolution("skip")),
         ),
     )
-    reasons = blocking_reasons(status(value_text="", several_footprints=True, footprints_checked=0), plan)
+    reasons = blocking_reasons(status(value_text=""), plan)
     assert pairs(reasons) == [
         ("Error: The package holds no symbol to install", "plan"),
         ("Value is empty", "value"),
-        ("Select at least one footprint", "footprints"),
         ("Choose Overwrite, Rename or Skip for footprint F1", "conflict:footprint:Lib:f1"),
         ("Choose Overwrite, Rename or Skip for 3D model m.step", "conflict:model:m.step"),
     ]
-    # the library and MPN reasons sit between the plan Issues and the footprint check
+    # the library and MPN reasons follow the plan Issues
     reasons = blocking_reasons(status(library="", mpn_text="  "), None)
     assert pairs(reasons) == [("Pick or type a library name", "library"), ("MPN is empty - it names the 3D model file", "mpn")]
     assert blocking_reasons(status(), fake_plan()) == []
@@ -500,11 +497,11 @@ def test_blocking_reasons_dedup():
             Issue(ERR, "install.empty_required", "MPN cannot be empty: it names the 3D model file; enter a part number"),
             [("MPN is empty - it names the 3D model file", "mpn")],
         ),
-        # no footprint checked of several
+        # several footprints and no choice: the plan's own refusal is shown, aimed at the footprint choice
         (
-            status(several_footprints=True, footprints_checked=0),
+            status(),
             Issue(ERR, "install.choice_required", "The package holds several footprints; choose from: F1, F2"),
-            [("Select at least one footprint", "footprints")],
+            [("Error: The package holds several footprints; choose from: F1, F2", "footprints")],
         ),
     ]
     for form_status, issue, expected in cases:
