@@ -252,6 +252,11 @@ _DROP_REASON = {
     "placeholder": "empty or placeholder value",
     "duplicate": "duplicate Manufacturer/MPN alias",
 }
+_SET_REASON = {
+    "follows_mpn": "follows the MPN",
+    "canonical": "canonical spelling",
+    "datasheet_host": "found from the datasheet link",
+}
 _SHOWN_LIMIT = 60
 _SHOWN_KEPT = 57
 
@@ -275,6 +280,10 @@ def _field_changes_section(plan: InstallPlan) -> PreviewSection:
         elif change.action == "clean":
             label = "Clean"
             detail = f"{_shown(change.old)} → {_shown(change.new)}"
+        elif change.action == "set":
+            label = "Set"
+            reason = _SET_REASON.get(change.reason, change.reason)
+            detail = f"{_shown(change.old)} → {_shown(change.new)}: {reason}"
         else:
             label = "Rename"
             detail = f"→ {change.new}"

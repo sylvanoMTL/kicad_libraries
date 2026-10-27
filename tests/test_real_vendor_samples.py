@@ -238,7 +238,7 @@ def test_real_snapeda_installs(staging_root, tmp_path):
         issues = [*plan.issues, *result.issues]
         values = _symbol_values(layout, library, "USB4145-03-0170-C_REVA2")
     assert values["Footprint"] == f"{footprint_library_for(library)}:GCT_USB4145-03-0170-C_REVA2"
-    assert values["Value"] == "USB4145-03-0170-C_REVA2"
+    assert values["Value"] == "USB4145-03-0170-C"  # Value is the MPN, not the symbol name (D-22)
     assert values["Manufacturer"] == "Global Connector Technology"
     assert values["MPN"] == "USB4145-03-0170-C"
     assert values["Description"] == "Type C USB 2.0 Connector"

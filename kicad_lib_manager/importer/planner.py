@@ -122,7 +122,6 @@ class _Fields:
     manufacturer_forced: bool
     # Caller overrides; they apply to the chosen symbol only
     mpn: str | None = None
-    value: str | None = None
     datasheet: str | None = None
     description: str | None = None
     # MPN used when the symbol carries no value of its own and the caller typed none; "" means the symbol name
@@ -211,10 +210,11 @@ def _edit_symbol(
     forced = fields.manufacturer if fields.manufacturer_forced else None
     role("Manufacturer", rules.manufacturer_aliases, forced, fields.manufacturer)
     mpn = role("MPN", rules.mpn_aliases, fields.mpn, fields.mpn_default or ref.name)
-    if fields.value is not None:
-        put("Value", fields.value)
-    elif new_name != ref.name:
-        retoken("Value")
+    # D-22: Value is always the symbol's own final MPN; a Value that changes is listed
+    value = find_property(node, "Value")
+    put("Value", mpn)
+    if value is not None and value.value != mpn:
+        positioned.append((value.node.start, FieldChange(new_name, "set", "Value", value.value, mpn, "follows_mpn")))
     if new_name != ref.name:
         retoken("ki_keywords")
     if fields.datasheet is not None:
@@ -756,14 +756,9 @@ def build_plan(
             "install.library_case_clash",
             f"Custom/Footprints holds {shared_twins[0]}.pretty, which differs from {shared} only by letter case; rename that folder to {shared}",
         ))
-    # D-13: Value and MPN can be cleared by the caller but never installed empty (MPN names the 3D model file)
-    empty = []
-    if options.value == "":
-        empty.append(_err("install.empty_required", "Value cannot be empty; enter a value"))
+    # D-13: MPN can be cleared by the caller but never installed empty (MPN names the 3D model file)
     if options.mpn == "":
-        empty.append(_err("install.empty_required", "MPN cannot be empty: it names the 3D model file; enter a part number"))
-    if empty:
-        return refuse(*empty)
+        return refuse(_err("install.empty_required", "MPN cannot be empty: it names the 3D model file; enter a part number"))
     # WR-02: creating a library needs its Custom folder; say so before anything is read or written
     for exists, folder, code, created in (
         (library in sym_libs, layout.symbols_dir, "install.symbols_dir_missing", library),
@@ -912,7 +907,6 @@ def build_plan(
         chosen_fields = replace(
             fields,
             mpn=options.mpn,
-            value=options.value,
             datasheet=options.datasheet,
             description=options.description,
             mpn_default=meta.mpn,

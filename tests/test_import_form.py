@@ -1,6 +1,6 @@
 """Qt-free left-pane rules of the import dialog (plan 05-07): item choices and field text become InstallOptions."""
 
-from kicad_lib_manager.importer.form import FIELD_NAMES, FieldDefaults, FormValues, build_options
+from kicad_lib_manager.importer.form import FIELD_NAMES, OVERRIDE_NAMES, FieldDefaults, FormValues, build_options
 from kicad_lib_manager.importer.plan import Resolution
 
 DEFAULTS = FieldDefaults(
@@ -27,8 +27,10 @@ def values(**changes) -> FormValues:
     return FormValues(**base)
 
 
-def test_field_names_are_the_five_planner_overrides():
+def test_field_names_are_the_five_fields_and_four_overrides():
+    """The dialog shows five fields; Value follows the MPN, so InstallOptions takes only the other four (D-22)."""
     assert FIELD_NAMES == ("value", "datasheet", "description", "manufacturer", "mpn")
+    assert OVERRIDE_NAMES == ("datasheet", "description", "manufacturer", "mpn")
 
 
 def test_build_options_items():
@@ -52,7 +54,7 @@ def test_build_options_items():
     assert options.model is None
     assert dict(options.footprint_names) == {}
     assert options.cleared == frozenset()
-    assert [getattr(options, name) for name in FIELD_NAMES] == [None] * 5
+    assert [getattr(options, name) for name in OVERRIDE_NAMES] == [None] * 4
 
 
 def test_build_options_copies_resolutions():
@@ -153,7 +155,7 @@ def test_field_defaults_equivalence(case, eq_layout, tmp_path):
         untouched = build_plan(candidate, build_options(base, FieldDefaults()), eq_layout)
         assert not untouched.blocked, untouched.issues
         defaults = form.field_defaults(candidate, symbol.name, final_name=untouched.symbol_name)
-        typed_values = FormValues(**{**base.__dict__, "fields": {n: defaults.get(n) for n in FIELD_NAMES}})
+        typed_values = FormValues(**{**base.__dict__, "fields": {n: defaults.get(n) for n in OVERRIDE_NAMES}})
         typed = build_plan(candidate, build_options(typed_values, defaults), eq_layout)
         assert typed.ops == untouched.ops
         assert typed.issues == untouched.issues
@@ -171,10 +173,10 @@ def test_field_defaults_equivalence(case, eq_layout, tmp_path):
     if case == "inferred":
         assert defaults.manufacturer == "TI"
     if case == "renamed":
-        assert (defaults.value, defaults.mpn) == ("PART_1", "PART/1")
+        assert (defaults.value, defaults.mpn) == ("PART/1", "PART/1")
     if case == "snapeda":
         assert defaults == FieldDefaults(
-            value=SNAPEDA_SYMBOL,
+            value=SNAPEDA_MPN,
             datasheet="",
             description=SNAPEDA_DESCRIPTION,
             manufacturer=SNAPEDA_MANUFACTURER,
@@ -184,15 +186,15 @@ def test_field_defaults_equivalence(case, eq_layout, tmp_path):
         assert defaults.manufacturer == "TI"
 
 
-def test_field_defaults_value_follows_final_name(tmp_path):
+def test_field_defaults_value_is_the_mpn_whatever_the_final_name(tmp_path):
     zip_path = _synthetic(tmp_path, symbol_lib(("PART",), props=_TI_DATASHEET))
     with open_package(zip_path, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
         same = form.field_defaults(candidate, "PART")
         renamed = form.field_defaults(candidate, "PART", final_name="PART_2")
-    assert same.value == "PART"
-    assert renamed.value == "PART_2"
-    assert renamed.mpn == "PART"  # the MPN fallback is the vendor name, as in the planner
+    assert same.value == same.mpn == "PART"
+    # Value follows the MPN, never the symbol name; the MPN fallback is the vendor name, as in the planner
+    assert renamed.value == renamed.mpn == "PART"
 
 
 def test_build_options_fields():
@@ -203,7 +205,6 @@ def test_build_options_fields():
                 "manufacturer": "Acme",
                 "datasheet": "",
                 "description": "",
-                "value": "",
                 "mpn": " M2 ",
             }
         ),
@@ -212,12 +213,11 @@ def test_build_options_fields():
     assert options.manufacturer == "Acme"
     assert options.mpn == " M2 "  # passed exactly
     assert options.datasheet == "" and "datasheet" in options.cleared
-    assert options.value == "" and "value" in options.cleared
     assert options.description is None and "description" not in options.cleared
-    assert options.cleared == frozenset({"datasheet", "value"})
+    assert options.cleared == frozenset({"datasheet"})
     # not edited: nothing is passed
     untouched = build_options(values(fields={"manufacturer": "Acme"}), defaults)
-    assert (untouched.value, untouched.datasheet, untouched.description, untouched.mpn) == (None,) * 4
+    assert (untouched.datasheet, untouched.description, untouched.mpn) == (None,) * 3
     # whitespace counts as empty
     blank = build_options(values(fields={"datasheet": "   "}), defaults)
     assert blank.datasheet == "" and blank.cleared == frozenset({"datasheet"})
@@ -360,7 +360,6 @@ def status(**changes) -> FormStatus:
         "updating": False,
         "build_failed": False,
         "library": TEST_LIBRARY,
-        "value_text": "V",
         "mpn_text": "M",
         "resolutions": {},
     }
@@ -412,10 +411,10 @@ def test_blocking_reasons_order():
             Conflict("symbol:S", "symbol", "S", "Lib.kicad_sym", resolution=Resolution("skip")),
         ),
     )
-    reasons = blocking_reasons(status(value_text=""), plan)
+    reasons = blocking_reasons(status(mpn_text=""), plan)
     assert pairs(reasons) == [
         ("Error: The package holds no symbol to install", "plan"),
-        ("Value is empty", "value"),
+        ("MPN is empty - it names the 3D model file", "mpn"),
         ("Choose Overwrite, Rename or Skip for footprint F1", "conflict:footprint:Lib:f1"),
         ("Choose Overwrite, Rename or Skip for 3D model m.step", "conflict:model:m.step"),
     ]
@@ -430,11 +429,11 @@ def test_blocking_reasons_model_error():
     """A rejected 3D model source is a blocking reason on the model row, after the plan errors (G-07-5)."""
     plan = fake_plan(issues=(Issue(ERR, "install.no_symbol", "x"),))
     text = "m.step holds no usable 3D model"
-    reasons = blocking_reasons(status(model_error=text, value_text=""), plan)
+    reasons = blocking_reasons(status(model_error=text, mpn_text=""), plan)
     assert pairs(reasons) == [
         ("Error: x", "plan"),
         (f"Error: {text}", "model"),
-        ("Value is empty", "value"),
+        ("MPN is empty - it names the 3D model file", "mpn"),
     ]
     reasons = blocking_reasons(status(model_error=text, build_failed=True), plan)
     assert pairs(reasons) == [
@@ -448,16 +447,16 @@ def test_blocking_reasons_model_error():
 
 def test_blocking_reasons_updating_alone():
     plan = fake_plan(issues=(Issue(ERR, "install.no_symbol", "x"),))
-    reasons = blocking_reasons(status(updating=True, value_text="", library=""), plan)
+    reasons = blocking_reasons(status(updating=True, mpn_text="", library=""), plan)
     assert reasons == [Reason("Updating preview...", "plan")]
 
 
 def test_blocking_reasons_build_failed():
     plan = fake_plan(issues=(Issue(ERR, "install.no_symbol", "stale plan error"),))
-    reasons = blocking_reasons(status(build_failed=True, value_text=""), plan)
+    reasons = blocking_reasons(status(build_failed=True, mpn_text=""), plan)
     assert pairs(reasons) == [
         ("Error: Preview could not be built - see the log", "plan"),
-        ("Value is empty", "value"),
+        ("MPN is empty - it names the 3D model file", "mpn"),
     ]
 
 
@@ -477,8 +476,7 @@ def test_blocking_reasons_dedup():
             Issue(ERR, "install.invalid_library", name_verdict("").reason),
             [("Pick or type a library name", "library")],
         ),
-        # empty Value and empty MPN
-        (status(value_text=""), Issue(ERR, "install.empty_required", "Value cannot be empty; enter a value"), [("Value is empty", "value")]),
+        # empty MPN
         (
             status(mpn_text=""),
             Issue(ERR, "install.empty_required", "MPN cannot be empty: it names the 3D model file; enter a part number"),

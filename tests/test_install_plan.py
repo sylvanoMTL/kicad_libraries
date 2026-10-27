@@ -292,12 +292,12 @@ def test_candidate_carries_package_issues(layout, tmp_path):
 
 # -- WR-05: a blank override means not set --------------------------------------
 
-_TEXT_FIELDS = ("value", "datasheet", "description", "manufacturer", "mpn")
+_TEXT_FIELDS = ("datasheet", "description", "manufacturer", "mpn")
 
 
 def test_blank_options_mean_not_set():
-    blank = InstallOptions(library="X", value="", datasheet="  ", description="\t", manufacturer="", mpn="")
-    assert [getattr(blank, name) for name in _TEXT_FIELDS] == [None] * 5
+    blank = InstallOptions(library="X", datasheet="  ", description="\t", manufacturer="", mpn="")
+    assert [getattr(blank, name) for name in _TEXT_FIELDS] == [None] * 4
     assert InstallOptions(library="X", mpn=" CSD85301Q2 ").mpn == " CSD85301Q2 "
     assert dataclasses.replace(InstallOptions(library="X", mpn="A"), mpn="").mpn is None
     kept = InstallOptions(library=" X ", symbol=" ", model="")
@@ -606,11 +606,11 @@ def test_version_memoised(tmp_path):
     layout = _target_layout(tmp_path, V9)
     fake = FakeCli(output_version=V9)
     with _open(tmp_path, _vendor()) as (_, candidate):
-        first = build_plan(candidate, InstallOptions(library=LIBRARY, value="ONE"), layout, _tools(fake))
-        second = build_plan(candidate, InstallOptions(library=LIBRARY, value="TWO"), layout, _tools(fake))
+        first = build_plan(candidate, InstallOptions(library=LIBRARY, mpn="ONE"), layout, _tools(fake))
+        second = build_plan(candidate, InstallOptions(library=LIBRARY, mpn="TWO"), layout, _tools(fake))
     assert not first.blocked and not second.blocked
     assert [call[1:3] for call in fake.calls] == [["sym", "upgrade"]]
-    # The caller's Value is the only difference between the two builds; both start from the one CLI result
+    # The caller's MPN (and so the Value that follows it) is the only difference between the two builds; both start from the one CLI result
     assert _value_of(first, "Value") == "ONE" and _value_of(second, "Value") == "TWO"
     assert _op(first, "symbol_lib").data.replace(b"ONE", b"TWO") == _op(second, "symbol_lib").data
 
@@ -942,7 +942,6 @@ def test_fields_overrides_win(tmp_path):
     vendor = vendor_symbol_lib(VENDOR, props={"MF": "Old Co", "MP": "OLD123"})
     options = InstallOptions(
         library=LIBRARY,
-        value="VAL",
         datasheet="https://example.com/ds.pdf",
         description="A description",
         manufacturer="NewCo",
@@ -955,7 +954,7 @@ def test_fields_overrides_win(tmp_path):
     assert names.count("Manufacturer") == 1 and names.count("MPN") == 1
     assert "MF" not in names and "MP" not in names
     assert [_value_of(plan, n) for n in ("Value", "Datasheet", "ki_description", "Manufacturer", "MPN")] == [
-        "VAL",
+        "NEW-1",  # Value follows the MPN (D-22)
         "https://example.com/ds.pdf",
         "A description",
         "NewCo",
@@ -1006,7 +1005,7 @@ def test_rename_sanitised_symbol(tmp_path):
     subs = [unquote(c.children[1].text) for c in symbol.node.children if c.head == "symbol"]
     assert subs == ["PART_X_1_1", "PART_X_2_1"]
     assert find_symbol(loaded.root, "PART/X") is None
-    assert _value_of(plan, "Value", "PART_X") == "PART_X"
+    assert _value_of(plan, "Value", "PART_X") == "PART/X"  # Value is the MPN (the vendor name), not the retokened name
     # Only a token equal to the old name changes: PART/XY is a different word
     assert _value_of(plan, "ki_keywords", "PART_X") == "PART_X PART/XY power"
     assert _value_of(plan, "MPN", "PART_X") == "PART/X"
@@ -1020,13 +1019,12 @@ def test_rename_not_listed_when_the_name_is_clean(tmp_path):
     assert plan.renames == ()
 
 
-def test_rename_value_override_beats_the_token_rewrite(tmp_path):
+def test_rename_value_is_the_mpn_not_the_token_rewrite(tmp_path):
     layout = _target_layout(tmp_path, V6)
-    plan = _plan(
-        tmp_path, layout, ToolContext(), vendor_symbol_lib("PART/X"), InstallOptions(library=LIBRARY, value="Mine")
-    )
+    plan = _plan(tmp_path, layout, ToolContext(), vendor_symbol_lib("PART/X"), InstallOptions(library=LIBRARY))
     assert not plan.blocked, plan.issues
-    assert _value_of(plan, "Value", "PART_X") == "Mine"
+    # The symbol is renamed to PART_X, but its Value is its MPN, which is the vendor name
+    assert _value_of(plan, "Value", "PART_X") == _value_of(plan, "MPN", "PART_X") == "PART/X"
 
 
 def test_footprint_consistency_after_override(atomic_custom, ul_package):
@@ -1144,7 +1142,8 @@ def test_unit_parent_rename_updates_extends(tmp_path):
     assert extends_name(child.node) == PARENT
     _, parent = _symbol_in(plan, PARENT)
     assert [unquote(c.children[1].text) for c in parent.node.children if c.head == "symbol"] == ["PARENT_X_1_1"]
-    assert "PARENT/X" not in loaded.source.text.replace('(property "MPN" "PARENT/X"', "")
+    text = loaded.source.text.replace('(property "MPN" "PARENT/X"', "").replace('(property "Value" "PARENT/X"', "")
+    assert "PARENT/X" not in text
 
 
 def test_unit_existing_parent_is_a_conflict(tmp_path):
@@ -1460,7 +1459,7 @@ def test_model_case_twin_conflict(tmp_path):
 def test_conflict_keys_stable(tmp_path):
     layout = _clashing_layout(tmp_path)
     plain = _plan(tmp_path, layout, ToolContext())
-    changed = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY, value="OTHER", mpn=None))
+    changed = _plan(tmp_path, layout, ToolContext(), options=InstallOptions(library=LIBRARY, description="OTHER", mpn=None))
     assert [c.key for c in plain.conflicts] == [SYM_KEY, FP_KEY, MODEL_KEY]
     assert [c.key for c in changed.conflicts] == [c.key for c in plain.conflicts]
 
@@ -1598,7 +1597,7 @@ def test_resolution_rename_symbol(tmp_path):
     assert [unquote(c.children[1].text) for c in symbol.node.children if c.head == "symbol"] == ["PART_2_1_1", "PART_2_2_1"]
     assert [s.name for s in find_symbols(loaded.root)] == ["EXISTING_A", VENDOR, "PART_2"]
     assert _value_of(plan, "MPN", "PART_2") == VENDOR
-    assert _value_of(plan, "Value", "PART_2") == "PART_2"
+    assert _value_of(plan, "Value", "PART_2") == VENDOR  # Value is the MPN, not the new name
     assert Rename("symbol", VENDOR, "PART_2") in plan.renames
     assert [(c.key, c.resolution) for c in plan.conflicts] == [(SYM_KEY, _res("rename"))]
 

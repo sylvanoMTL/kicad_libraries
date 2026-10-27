@@ -200,7 +200,8 @@ def test_sc2_rename_follows_sub_symbols(atomic_custom, ul_package, tmp_path):
     first_block = first.source.text[find_symbol(first.root, SYMBOL).node.start : find_symbol(first.root, SYMBOL).node.end]
 
     key = f"symbol:{LIBRARY}:{SYMBOL}"
-    options = InstallOptions(library=LIBRARY, value="CSD85301Q2-ALT", resolutions={key: Resolution("rename")})
+    # A changed description makes the second install differ from the first, so the symbol conflicts
+    options = InstallOptions(library=LIBRARY, description="Alternate", resolutions={key: Resolution("rename")})
     plan = build_plan(candidate, options, layout, NO_CLI)
     assert not plan.blocked, plan.issues
     assert plan.symbol_name == f"{SYMBOL}_2"
@@ -211,7 +212,8 @@ def test_sc2_rename_follows_sub_symbols(atomic_custom, ul_package, tmp_path):
     renamed = find_symbol(written.root, f"{SYMBOL}_2")
     subs = [c.children[1].text for c in renamed.node.children if c.head == "symbol"]
     assert [unquote(s) for s in subs] == [f"{SYMBOL}_2_1_1", f"{SYMBOL}_2_2_1"]
-    assert find_property(renamed.node, "Value").value == "CSD85301Q2-ALT"
+    # Value follows the MPN, which a rename leaves as the vendor name (D-22)
+    assert find_property(renamed.node, "Value").value == find_property(renamed.node, "MPN").value == SYMBOL
     # Nothing else changed: the first block is still byte-identical and the new one is last
     old = find_symbol(written.root, SYMBOL).node
     assert written.source.text[old.start : old.end] == first_block

@@ -21,7 +21,6 @@ def _status(library):
         updating=False,
         build_failed=False,
         library=library,
-        value_text="x",
         mpn_text="x",
         resolutions={},
     )
