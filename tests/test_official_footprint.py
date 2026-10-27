@@ -323,3 +323,151 @@ def test_the_destination_choice_and_picker_fit_the_left_pane(qtbot, make_dialog,
             assert right <= viewport.width(), (widget, right, viewport.width())
     assert dialog._fp_official_radio.isVisible() and dialog._official_combo.isVisible()
 
+
+# -- refusals: anything the importer cannot verify against KiCad's own folder -----------------------------------
+
+
+@pytest.mark.parametrize(
+    ("link", "with_kicad", "code", "text"),
+    [
+        (None, True, "install.official_missing", "Pick an official KiCad footprint"),
+        ("  ", True, "install.official_missing", "Pick an official KiCad footprint"),
+        ("No_Such_Lib:SOT-23-5", True, "install.official_unknown", "No_Such_Lib:SOT-23-5 is not one of KiCad's installed footprints"),
+        (f"{OFFICIAL_LIBRARY}:No-Such-Footprint", True, "install.official_unknown", f"{OFFICIAL_LIBRARY}:No-Such-Footprint is not one of KiCad's installed footprints"),
+        # Wrong letter case is a different footprint on Linux, so it refuses on Windows too (T-10-32)
+        ("package_to_sot_smd:sot-23-5", True, "install.official_unknown", "package_to_sot_smd:sot-23-5 is not one of KiCad's installed footprints"),
+        (OFFICIAL_LINK, False, "install.official_unavailable", "KiCad's footprints were not found, so an official footprint cannot be used"),
+    ],
+)
+def test_an_official_link_that_cannot_be_verified_refuses_and_writes_nothing(
+    atomic_custom, tmp_path, snapshot, link, with_kicad, code, text
+):
+    footprints, _ = write_fake_kicad(tmp_path)
+    tools = ToolContext(kicad_footprints_dir=footprints) if with_kicad else ToolContext()
+    before = snapshot(atomic_custom.custom_dir)
+    with synthetic_package(tmp_path) as (_, candidate):
+        plan = build_plan(candidate, official_options(link), atomic_custom, tools)
+        assert plan.blocked and not plan.ops
+        assert codes(plan, Severity.ERROR) == [code]
+        assert next(issue for issue in plan.issues if issue.code == code).text == text
+        assert not apply_plan(plan, backup_root=tmp_path / "backups").ok
+    assert snapshot(atomic_custom.custom_dir) == before
+
+
+def test_an_unknown_footprint_target_is_a_programming_error():
+    with pytest.raises(ValueError, match="footprint_target"):
+        InstallOptions(library=LIBRARY, footprint_target="somewhere")
+
+
+def test_an_official_install_never_writes_into_kicads_installation(atomic_custom, tmp_path, snapshot):
+    footprints, models = write_fake_kicad(tmp_path)
+    kicad_root = footprints.parent
+    before = snapshot(kicad_root)
+    with synthetic_package(tmp_path) as (_, candidate):
+        plan = build_plan(candidate, official_options(), atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+        assert not plan.blocked, plan.issues
+        assert all(kicad_root not in op.path.parents for op in plan.ops)
+        assert apply_plan(plan, backup_root=tmp_path / "backups").ok
+    assert snapshot(kicad_root) == before
+    assert models.is_dir()
+
+
+def test_a_wurth_footprint_is_never_offered_or_accepted_as_official(atomic_custom, tmp_path):
+    from kicad_lib_manager.widgets.import_dialog import official_candidates
+
+    footprints, _ = write_fake_kicad(tmp_path)
+    wurth = atomic_custom.repo_root / "WurthElektronik" / "KiCad-Library" / "footprints" / "WE_Test.pretty"
+    wurth.mkdir(parents=True)
+    (wurth / "WE-TEST.kicad_mod").write_bytes(vendor_footprint("WE-TEST"))
+    listed = official_candidates(
+        build_index, footprints, package_code="WE-TEST", vendor_path=None, stock=None, part="PART"
+    )
+    assert listed == [OFFICIAL_LINK]
+    with synthetic_package(tmp_path) as (_, candidate):
+        plan = build_plan(
+            candidate, official_options("WE_Test:WE-TEST"), atomic_custom, ToolContext(kicad_footprints_dir=footprints)
+        )
+    assert codes(plan, Severity.ERROR) == ["install.official_unknown"]
+
+
+def test_a_package_without_footprints_may_use_an_official_one(atomic_custom, tmp_path):
+    footprints, _ = write_fake_kicad(tmp_path)
+    with synthetic_package(tmp_path, footprints=(), models=()) as (_, candidate):
+        plan = build_plan(candidate, official_options(), atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+        assert not plan.blocked, plan.issues
+        assert plan.footprint_link == OFFICIAL_LINK
+        assert plan.unused_footprints == () and plan.unused_models == ()
+        # No vendor footprint, so there are no pads to compare the official ones with
+        assert "install.pad_mismatch" not in codes(plan, Severity.WARNING)
+        shared = build_plan(candidate, InstallOptions(library=LIBRARY), atomic_custom, ToolContext())
+        assert "install.no_footprint" in codes(shared, Severity.ERROR)
+
+
+def test_matching_pads_raise_no_warning(atomic_custom, tmp_path):
+    footprints, _ = write_fake_kicad(tmp_path)
+    five = ("1", "2", "3", "4", "5")
+    members = [
+        ("part.kicad_sym", vendor_symbol_lib(SYMBOL, pins=(("1", "2", "3", "4", "5"),), props=ATOMIC_PROPS)),
+        ("FP.kicad_mod", vendor_footprint("FP", pads=five)),
+    ]
+    source = tmp_path / "src"
+    source.mkdir(exist_ok=True)
+    with open_package(make_zip(source / "five.zip", members), REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+        plan = build_plan(candidate, official_options(), atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+    assert not plan.blocked, plan.issues
+    assert not [issue for issue in plan.issues if issue.code in ("verify.pin_pad_mismatch", "install.pad_mismatch")]
+
+
+def test_a_pad_difference_is_a_warning_and_never_blocks(atomic_custom, tmp_path):
+    footprints, _ = write_fake_kicad(tmp_path)
+    with synthetic_package(tmp_path, footprint_pads=("1", "2", "6")) as (_, candidate):
+        plan = build_plan(candidate, official_options(), atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+    text = next(issue for issue in plan.issues if issue.code == "install.pad_mismatch")
+    assert text.severity is Severity.WARNING
+    assert text.text.endswith("different pads from the vendor footprint FP: missing 6; extra 3, 4, 5")
+    assert not plan.blocked, plan.issues
+
+
+def test_an_official_footprint_without_a_model_asks_for_one_or_another_footprint(atomic_custom, tmp_path):
+    # The stock sample's SOT-23-5 links no 3D model, so the atomic rule stops the part (D-17, Phase 9 D-19)
+    _, footprints = write_stock_sample(tmp_path / "stock")
+    with synthetic_package(tmp_path) as (_, candidate):
+        plan = build_plan(candidate, official_options(SOT), atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+    assert plan.blocked
+    from kicad_lib_manager.importer.form import atomic_reason
+
+    issue = next(issue for issue in plan.issues if issue.code == "install.atomic.model_3d")
+    reason = atomic_reason(issue)
+    assert reason.text == "3D model: the footprint has no 3D model. Use Add 3D model... or an official KiCad footprint"
+    assert reason.target == "model"
+
+
+# -- the real KiCad 10 and the CSD sample (RESEARCH Pattern 6) ---------------------------------------------------
+
+
+def test_real_kicad_ranks_texas_dqk_first_for_the_csd_sample_and_its_pads_fit(atomic_custom, ul_package):
+    from kicad_lib_manager.importer.kicad_cli import stock_symbols_dir
+    from kicad_lib_manager.importer.siblings import stock_index
+    from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
+    from kicad_lib_manager.widgets.import_dialog import official_candidates
+
+    footprints = find_kicad_footprint_dir()
+    symbols = stock_symbols_dir(footprints)
+    if footprints is None or symbols is None or not (footprints / "Package_SON.pretty" / "Texas_DQK.kicad_mod").is_file():
+        pytest.skip("no KiCad install with a stock symbols folder")
+    _, candidate = ul_package
+    vendor = candidate.footprints[0]
+    listed = official_candidates(
+        build_index, footprints, package_code=vendor.name, vendor_path=vendor.file.path, stock=stock_index(symbols),
+        part=candidate.symbols[0].meta.mpn or candidate.symbols[0].name,
+    )
+    assert listed[0] == TEXAS
+    plan = build_plan(
+        candidate,
+        official_options(TEXAS),
+        atomic_custom,
+        ToolContext(kicad_footprints_dir=footprints, kicad_symbols_dir=symbols),
+    )
+    assert plan.footprint_link == TEXAS
+    assert not [issue for issue in plan.issues if issue.code in ("verify.pin_pad_mismatch", "install.pad_mismatch")]
