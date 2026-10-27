@@ -126,7 +126,8 @@ def test_links_with_no_match_are_not_returned(sample_index):
 
 
 def test_a_code_with_fewer_than_three_leading_letters_matches_only_the_full_text(sample_index):
-    assert rank(sample_index, package_code="SO") == []
+    # SO is inside SOIC-8... and SOT-23-5 (50 each) but is never a leading-letters word match (30)
+    assert rank(sample_index, package_code="SO") == [RankedFootprint(SOIC, 50), RankedFootprint(SOT, 50)]
 
 
 def test_at_most_limit_links_come_back(tmp_path):

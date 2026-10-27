@@ -115,18 +115,47 @@ def _read_entries(symbols_dir: Path, file_name: str, library: str) -> list[Sibli
     return [SiblingEntry(library, name, footprint) for name, footprint in read_library(data)]
 
 
+def _folder_state(symbols_dir: Path, files: list[str]) -> tuple[int, int]:
+    """(number of library files, newest modification time in ns of the folder and its libraries)."""
+    newest = 0
+    try:
+        newest = symbols_dir.stat().st_mtime_ns
+        for name in files:
+            newest = max(newest, (symbols_dir / name).stat().st_mtime_ns)
+    except OSError:
+        pass
+    return len(files), newest
+
+
+# Resolved folder -> (state, index); one entry per folder, replaced when the folder changes
+_STOCK_CACHE: dict[Path, tuple[tuple[int, int], SiblingIndex]] = {}
+
+
 def stock_index(symbols_dir: Path | None, progress: Callable | None = None) -> SiblingIndex:
-    """Index KiCad's installed symbol libraries, leaving out the libraries that hold no parts (D-10)."""
+    """Index KiCad's installed symbol libraries, leaving out the libraries that hold no parts (D-10).
+
+    The result is cached per folder and reused while the number of library files and the newest
+    modification time stay the same; progress(message, current, total) is called once per file.
+    """
     if symbols_dir is None or not symbols_dir.is_dir():
         return EMPTY_INDEX
     files = _library_files(symbols_dir)
+    key = symbols_dir.resolve()
+    state = _folder_state(symbols_dir, files)
+    cached = _STOCK_CACHE.get(key)
+    if cached is not None and cached[0] == state:
+        return cached[1]
     entries: list[SiblingEntry] = []
-    for file_name in files:
+    for number, file_name in enumerate(files, start=1):
         stem = file_name[: -len(_SYMBOL_SUFFIX)]
+        if progress is not None:
+            progress(f"Reading symbols {stem}", number, len(files))
         if stem.casefold() in _EXCLUDED_FOLD:
             continue
         entries.extend(_read_entries(symbols_dir, file_name, stem))
-    return SiblingIndex(tuple(entries))
+    index = SiblingIndex(tuple(entries))
+    _STOCK_CACHE[key] = (state, index)
+    return index
 
 
 def own_index(symbols_dir: Path, allowed: frozenset[str] | None = None) -> SiblingIndex:
