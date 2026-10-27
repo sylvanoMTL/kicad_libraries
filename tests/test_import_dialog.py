@@ -13,6 +13,8 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSettings
+from PySide6.QtTest import QTest
+from installfixtures import ATOMIC_PROPS, UL_DESCRIPTION
 from zipfixtures import footprint_library_for
 
 from kicad_lib_manager import settings
@@ -86,15 +88,39 @@ def make_dialog(qtbot, atomic_custom, tmp_path, gates):
 
 def wait_plan(qtbot, dialog: ImportDialog, timeout: int = 30000) -> None:
     qtbot.waitUntil(
-        lambda: dialog._plan is not None and dialog._building is None and dialog._queued is None,
+        lambda: dialog._plan is not None
+        and dialog._building is None
+        and dialog._queued is None
+        and not dialog._dirty,
         timeout=timeout,
     )
 
 
-def set_library(dialog: ImportDialog, name: str, activate: bool = True) -> None:
+def type_description(dialog: ImportDialog, text: str = UL_DESCRIPTION) -> None:
+    """Type the Description like the owner: key presses into the field, so it counts as edited."""
+    edit = dialog._field_edits["description"]
+    edit.setFocus()
+    edit.selectAll()
+    QTest.keyClicks(edit, text)
+
+
+def fill_description(qtbot, dialog: ImportDialog) -> None:
+    """Type the Description into a planned dialog whose field is empty, then wait for the plan that follows."""
+    if dialog._field_edits["description"].text() == "":
+        type_description(dialog)
+        wait_current(qtbot, dialog)
+
+
+def set_library(dialog: ImportDialog, name: str, activate: bool = True, fill: bool = True) -> None:
+    """Pick the library; with fill, also type UL_DESCRIPTION into an empty Description (the UL sample has none).
+
+    fill=False leaves the field alone, for the tests whose subject is a missing Description.
+    """
     dialog._library_combo.setEditText(name)
     if activate:
         dialog._library_combo.textActivated.emit(name)
+    if fill and dialog._field_edits["description"].text() == "":
+        type_description(dialog)
 
 
 def files_rows(dialog: ImportDialog) -> tuple[str, list[str]]:
@@ -160,7 +186,7 @@ def test_supersede_discards_stale_result(qtbot, make_dialog, gates):
     qtbot.waitUntil(lambda: len(calls) == 1, timeout=30000)
     first = calls[0]
     for name in (NEW_A, NEW_B, NEW_C):
-        set_library(dialog, name, activate=False)
+        set_library(dialog, name, activate=False, fill=False)
         dialog._request_rebuild()
     gates[0].set()
     qtbot.waitUntil(lambda: len(calls) == 2, timeout=30000)
@@ -172,6 +198,11 @@ def test_supersede_discards_stale_result(qtbot, make_dialog, gates):
     wait_plan(qtbot, dialog)
     assert calls == [first, NEW_C]
     assert dialog._plan.library == NEW_C
+    # the part needs its Description to be installable: type it now that the builds are done
+    type_description(dialog)
+    qtbot.waitUntil(lambda: len(calls) == 3, timeout=30000)
+    gates[2].set()
+    wait_plan(qtbot, dialog)
     assert dialog._install_btn.isEnabled()
 
 
@@ -204,7 +235,7 @@ def test_rebuild_failure_keeps_tree_and_logs(qtbot, make_dialog):
 
     def flaky_build(candidate, options, layout, tools=ToolContext(), **kwargs):
         count["n"] += 1
-        if count["n"] == 2:
+        if count["n"] == 3:  # builds 1 and 2 are the plan and the one after the Description is typed
             raise RuntimeError("boom")
         return real_build_plan(candidate, options, layout, tools, **kwargs)
 
@@ -213,12 +244,14 @@ def test_rebuild_failure_keeps_tree_and_logs(qtbot, make_dialog):
     dialog.issues_logged.connect(logged.extend)
     dialog.open_path(UL_ZIP)
     wait_plan(qtbot, dialog)
+    type_description(dialog)
+    wait_plan(qtbot, dialog)
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
     first_rows = files_rows(dialog)
     assert first_rows[0] == "Files (3)"
 
     dialog._request_rebuild()
-    qtbot.waitUntil(lambda: count["n"] == 2 and dialog._building is None, timeout=30000)
+    qtbot.waitUntil(lambda: count["n"] == 3 and dialog._building is None, timeout=30000)
     assert files_rows(dialog) == first_rows
     assert not dialog._install_btn.isEnabled()
     assert any(i.text.startswith("Import step failed: RuntimeError: boom") for i in logged)
@@ -802,8 +835,6 @@ from kicad_lib_manager.importer.candidate import ImportCandidate  # noqa: E402
 from kicad_lib_manager.importer.plan import InstallOptions  # noqa: E402
 from kicad_lib_manager.widgets.theme import MUTED  # noqa: E402
 
-_DATASHEET = {"Datasheet": "https://example.com/part"}
-
 
 @pytest.fixture
 def item_layout(tmp_path):
@@ -877,7 +908,7 @@ def wait_current(qtbot, dialog: ImportDialog, timeout: int = 30000) -> None:
 def multi_zip(tmp_path: Path, *, symbols=("S1", "S2"), footprints=("F1", "F2", "F3"), models=("a.step", "b.step")) -> Path:
     from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib
 
-    members = [("part.kicad_sym", symbol_lib(symbols, props=_DATASHEET))]
+    members = [("part.kicad_sym", symbol_lib(symbols, props=ATOMIC_PROPS))]
     members += [(f"{name}.kicad_mod", footprint(name)) for name in footprints]
     members += [(name, STEP_BYTES) for name in models]
     return make_zip(tmp_path / "multi.zip", members)
@@ -968,7 +999,7 @@ def test_picker_no_model_and_no_footprint_labels(qtbot, make_item_dialog, record
 
     no_model = make_zip(
         tmp_path / "no_model.zip",
-        [("part.kicad_sym", symbol_lib(("S1",), props=_DATASHEET)), ("FP.kicad_mod", footprint("FP"))],
+        [("part.kicad_sym", symbol_lib(("S1",), props=ATOMIC_PROPS)), ("FP.kicad_mod", footprint("FP"))],
     )
     dialog = make_item_dialog(no_model)
     wait_current(qtbot, dialog)
@@ -978,7 +1009,7 @@ def test_picker_no_model_and_no_footprint_labels(qtbot, make_item_dialog, record
     assert "intake.no_model" in [i.code for i in dialog._plan.issues]  # the package-level WARNING
 
     no_footprint = make_zip(
-        tmp_path / "no_footprint.zip", [("part.kicad_sym", symbol_lib(("S1",), props=_DATASHEET))]
+        tmp_path / "no_footprint.zip", [("part.kicad_sym", symbol_lib(("S1",), props=ATOMIC_PROPS))]
     )
     second = make_item_dialog(no_footprint)
     wait_current(qtbot, second)
@@ -1081,9 +1112,12 @@ def type_text(qtbot, edit, text: str) -> None:
         qtbot.keyClicks(edit, text)
 
 
-def ul_dialog(make_item_dialog, qtbot, **changes) -> ImportDialog:
+def ul_dialog(make_item_dialog, qtbot, fill: bool = True, **changes) -> ImportDialog:
+    """The UL sample open and planned; with fill, its Description is typed (the sample has none)."""
     dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, **changes)
     wait_current(qtbot, dialog)
+    if fill:
+        fill_description(qtbot, dialog)
     return dialog
 
 
@@ -1098,7 +1132,7 @@ def test_footprint_name_default_and_vendor_hint(qtbot, make_item_dialog, tmp_pat
 
     odd = make_zip(
         tmp_path / "odd.zip",
-        [("part.kicad_sym", symbol_lib(("S1",), props=_DATASHEET)), ("FP_1.kicad_mod", footprint("FP/1"))],
+        [("part.kicad_sym", symbol_lib(("S1",), props=ATOMIC_PROPS)), ("FP_1.kicad_mod", footprint("FP/1"))],
     )
     second = make_item_dialog(odd, show=True, suggest_library=_good_suggestion)
     wait_current(qtbot, second)
@@ -1187,7 +1221,7 @@ def test_empty_footprint_name_blocks(qtbot, make_item_dialog, recorded):
 
 
 def test_fields_start_with_what_the_plan_writes(qtbot, make_item_dialog):
-    dialog = ul_dialog(make_item_dialog, qtbot)
+    dialog = ul_dialog(make_item_dialog, qtbot, fill=False)  # the sample's own Description is empty
     assert {name: dialog._field_edits[name].text() for name in FIELD_KEYS} == UL_DEFAULTS
     assert dialog._symbol_name_label.full_text() == "CSD85301Q2"
     for name in FIELD_KEYS:
@@ -1200,7 +1234,7 @@ def test_fields_symbol_label_shows_rename(qtbot, make_item_dialog, tmp_path):
 
     zip_path = make_zip(
         tmp_path / "renamed.zip",
-        [("part.kicad_sym", symbol_lib(("PART/1",), props=_DATASHEET)), ("FP.kicad_mod", footprint("FP"))],
+        [("part.kicad_sym", symbol_lib(("PART/1",), props=ATOMIC_PROPS)), ("FP.kicad_mod", footprint("FP"))],
     )
     dialog = make_item_dialog(zip_path, show=True, suggest_library=_good_suggestion)
     wait_current(qtbot, dialog)
@@ -1634,7 +1668,7 @@ def test_updating_label_and_busy_strip(qtbot, make_item_dialog, gates):
 
     def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
         state["n"] += 1
-        if state["n"] >= 2:
+        if state["n"] >= 3:  # ul_dialog builds twice: the plan, then the one after the Description is typed
             gate = threading.Event()
             gates.append(gate)
             assert gate.wait(30)
@@ -1849,6 +1883,7 @@ def test_strip_look(qtbot, make_item_dialog):
     two = Issue(Severity.ERROR, "install.test_b", "Second problem")
     dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(one, two))
     wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)  # so the two issues above are the only reasons
     strip = dialog._strip
     assert strip.textFormat() == Qt.TextFormat.RichText and strip.wordWrap()
     assert AMBER_TINT.lower() in strip.styleSheet().lower()
@@ -1907,6 +1942,7 @@ def test_strip_tooltip_single_reason_decodes_entities(qtbot, make_item_dialog):
     odd = Issue(Severity.ERROR, "install.test_amp", "Tom & Jerry's <part>")
     dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(odd))
     wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)  # so the issue above is the only reason
     assert list(strip_links(dialog)) == ["Error: Tom & Jerry's <part>"]
     tooltip = dialog._strip.toolTip()
     assert "&amp;" in tooltip and "&lt;part&gt;" in tooltip and "<part>" not in tooltip
@@ -1957,6 +1993,7 @@ def test_noop_strip(qtbot, make_item_dialog):
 
     dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=noop_build)
     wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
     assert dialog._plan.is_noop
     assert dialog._strip.text() == f"Nothing to install: this part is already in {LIB}."
     assert MUTED.lower() in dialog._strip.styleSheet().lower()
@@ -1969,7 +2006,7 @@ def test_updating_reason_replaces_the_others(qtbot, make_item_dialog, gates):
 
     def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
         state["n"] += 1
-        if state["n"] >= 3:
+        if state["n"] >= 4:  # builds 1 and 2 are ul_dialog's, 3 is the emptied MPN
             gate = threading.Event()
             gates.append(gate)
             assert gate.wait(30)
@@ -1997,7 +2034,7 @@ def test_build_failure_reason_and_retry(qtbot, make_item_dialog):
 
     def flaky_build(candidate, options, layout, tools=ToolContext(), **kwargs):
         count["n"] += 1
-        if count["n"] == 2:
+        if count["n"] == 3:  # builds 1 and 2 are ul_dialog's (the plan, then the typed Description)
             raise RuntimeError("boom")
         return real_build_plan(candidate, options, layout, tools, **kwargs)
 
@@ -2006,7 +2043,7 @@ def test_build_failure_reason_and_retry(qtbot, make_item_dialog):
     dialog.issues_logged.connect(logged.extend)
     first_tree = files_rows(dialog)
     dialog._request_rebuild()
-    qtbot.waitUntil(lambda: count["n"] == 2 and dialog._building is None, timeout=30000)
+    qtbot.waitUntil(lambda: count["n"] == 3 and dialog._building is None, timeout=30000)
     assert files_rows(dialog) == first_tree
     assert "Error: Preview could not be built - see the log" in strip_links(dialog)
     assert not dialog._install_btn.isEnabled()
@@ -2054,7 +2091,7 @@ def test_ctrl_return_and_no_default_buttons(qtbot, make_item_dialog):
     assert applied == [] and dialog._stack.currentWidget() is dialog._edit_page
 
     # not enabled (a rebuild is pending): Ctrl+Return does nothing
-    type_text(qtbot, dialog._field_edits["datasheet"], "https://example.com/x")
+    type_text(qtbot, dialog._field_edits["datasheet"], "https://www.ti.com/lit/ds/csd85301q2.pdf")
     assert not dialog._install_btn.isEnabled()
     qtbot.keyClick(dialog, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
     qtbot.wait(100)
@@ -2086,7 +2123,7 @@ def test_one_build_at_a_time(qtbot, make_item_dialog, gates):
             running["calls"] += 1
             running["max"] = max(running["max"], running["now"])
         try:
-            if running["calls"] == 2:
+            if running["calls"] == 3:  # builds 1 and 2 are ul_dialog's (the plan, then the typed Description)
                 gate = threading.Event()
                 gates.append(gate)
                 assert gate.wait(30)
@@ -2127,7 +2164,10 @@ def write_clashes(layout, *, symbol=False, footprint=True, model=True, lower_fp=
 
     if footprint:
         name = "dqk0006b.kicad_mod" if lower_fp else "DQK0006B.kicad_mod"
-        (layout.footprints_dir / f"{footprint_library_for(library)}.pretty" / name).write_bytes(fp_bytes("DQK0006B", model="other.step"))
+        # the existing footprint links a model that is in Custom/3DModels, so keeping it still leaves an atomic part (D-21)
+        (layout.models_dir / "other.step").write_bytes(STEP_BYTES)
+        existing = fp_bytes("DQK0006B", model="${CUSTOM_3DMODEL_DIR}/other.step")
+        (layout.footprints_dir / f"{footprint_library_for(library)}.pretty" / name).write_bytes(existing)
     if model:
         (layout.models_dir / "CSD85301Q2.stp").write_bytes(STEP_BYTES + b"\n")
     if symbol:
@@ -2138,6 +2178,7 @@ def clash_dialog(make_item_dialog, qtbot, item_layout, core=None, **kinds) -> Im
     write_clashes(item_layout, **kinds)
     dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, **(core or {}))
     wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
     return dialog
 
 
@@ -2373,7 +2414,7 @@ def test_conflicts_overflow_geometry(qtbot, make_item_dialog, item_layout, tmp_p
     from zipfixtures import STEP_BYTES, make_zip, symbol_lib
     from zipfixtures import footprint as fp_bytes
 
-    members = [("part.kicad_sym", symbol_lib(("S1",), props=_DATASHEET))]
+    members = [("part.kicad_sym", symbol_lib(("S1",), props=ATOMIC_PROPS))]
     members += [(f"F{i}.kicad_mod", fp_bytes(f"F{i}")) for i in range(1, 7)]
     members += [("a.step", STEP_BYTES)]
     package = make_zip(tmp_path / "six.zip", members)
@@ -2570,7 +2611,7 @@ def test_builds_never_overlap(qtbot, make_item_dialog, item_layout, gates):
             running["now"] += 1
             running["calls"] += 1
             running["max"] = max(running["max"], running["now"])
-            gated = running["calls"] == 2
+            gated = running["calls"] == 3  # builds 1 and 2 are clash_dialog's (the plan, then the typed Description)
         try:
             if gated:
                 gate = threading.Event()
@@ -2582,15 +2623,15 @@ def test_builds_never_overlap(qtbot, make_item_dialog, item_layout, gates):
                 running["now"] -= 1
 
     dialog = clash_dialog(make_item_dialog, qtbot, item_layout, core={"build_plan": counting_build}, model=False)
-    assert running["calls"] == 1
+    assert running["calls"] == 2
     dialog._request_rebuild()
     qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
     dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
     qtbot.wait(150)
-    assert running["calls"] == 2 and not open_views(dialog)  # the one-off waits for the running build
+    assert running["calls"] == 3 and not open_views(dialog)  # the one-off waits for the running build
     gates[0].set()
     wait_view(qtbot, dialog)
-    assert running["calls"] == 3
+    assert running["calls"] == 4
     assert running["max"] == 1
 
 
@@ -2628,6 +2669,7 @@ def make_install_dialog(qtbot, item_layout, gates, recorded, tmp_path):
         dialog.show()
         dialog.open_path(package)
         wait_current(qtbot, dialog)
+        fill_description(qtbot, dialog)
         return dialog
 
     return make
@@ -3213,6 +3255,7 @@ def test_tracer_commit_end_to_end(qtbot, tmp_path):
     dialog.show()
     dialog.open_path(UL_ZIP)
     wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
     install_ul(qtbot, dialog)
 
     (panel,) = commit_panel_of(dialog)
@@ -3643,6 +3686,7 @@ def test_git_state_changes_only_after_click(qtbot, tmp_path, monkeypatch):
     dialog.show()
     dialog.open_path(UL_ZIP)
     wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
     install_ul(qtbot, dialog)
     (panel,) = commit_panel_of(dialog)
     qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
@@ -3804,6 +3848,8 @@ def test_add_model_tracer_snapeda_end_to_end(qtbot, make_item_dialog, item_layou
         assert suffix in filters[-1]
 
     set_library(dialog, "Atomic_Connector")
+    # the SnapEDA download has no Datasheet: type one, as the owner would, so the part passes the atomic rule (D-21)
+    type_text(qtbot, dialog._field_edits["datasheet"], ATOMIC_PROPS["Datasheet"])
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
     staging = dialog._model_packages[-1].staging_dir
     assert staging is not None and staging.is_dir()
@@ -4371,6 +4417,7 @@ def test_add_model_rejection_reset_by_change(qtbot, make_item_dialog, tmp_path, 
     assert dialog._model_rejection is None
     dialog.open_path(UL_ZIP)
     wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)  # opening again starts the fields over
     assert dialog._remove_model_btn.isHidden()
     assert not any(reason.startswith("Error:") for reason in strip_links(dialog))
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
@@ -4395,6 +4442,7 @@ def test_add_model_stale_failure_does_not_block(qtbot, make_item_dialog, gates, 
     dialog._change_btn.click()
     dialog.open_path(UL_ZIP)
     wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)  # opening again starts the fields over
 
     gates[-1].set()
     qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)

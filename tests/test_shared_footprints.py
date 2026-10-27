@@ -10,6 +10,7 @@ import re
 from datetime import date
 
 from customfixtures import ABSENT_LIBRARY, BATTERY_CHARGER, atomic_lib, atomic_part
+from installfixtures import UL_DESCRIPTION
 from zipfixtures import footprint_library_for
 
 from kicad_lib_manager.importer import stems
@@ -30,7 +31,7 @@ FOOTPRINT = "DQK0006B"
 
 def test_footprint_link_runs_from_the_plan_to_every_consumer(atomic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    options = InstallOptions(library=LIBRARY)
+    options = InstallOptions(library=LIBRARY, description=UL_DESCRIPTION)
     plan = build_plan(candidate, options, atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     link = f"{footprint_library_for(LIBRARY)}:{FOOTPRINT}"
@@ -59,7 +60,7 @@ def test_footprint_link_runs_from_the_plan_to_every_consumer(atomic_custom, ul_p
 
 def test_verify_expects_the_plans_footprint_link(atomic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     assert apply_plan(plan, backup_root=tmp_path / "bk").ok
     # A plan that expects another footprint library than the one written is caught
     wrong = dataclasses.replace(plan, footprint_library="Somewhere_Else")
@@ -68,7 +69,7 @@ def test_verify_expects_the_plans_footprint_link(atomic_custom, ul_package, tmp_
 
 def test_a_kept_symbol_links_no_footprint(atomic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    first = build_plan(candidate, InstallOptions(library=LIBRARY), atomic_custom, ToolContext())
+    first = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     assert apply_plan(first, backup_root=tmp_path / "bk").ok
     # Make the installed symbol differ from the incoming one, so the same name is a real conflict
     sym_path = atomic_custom.symbols_dir / f"{LIBRARY}.kicad_sym"
@@ -78,7 +79,7 @@ def test_a_kept_symbol_links_no_footprint(atomic_custom, ul_package, tmp_path):
     sym_path.write_text(changed, encoding="utf-8")
 
     key = f"symbol:{LIBRARY}:{SYMBOL}"
-    options = InstallOptions(library=LIBRARY, resolutions={key: Resolution("skip")})
+    options = InstallOptions(library=LIBRARY, description=UL_DESCRIPTION, resolutions={key: Resolution("skip")})
     plan = build_plan(candidate, options, atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     assert plan.footprint_library is None
@@ -95,7 +96,7 @@ def test_tracer_new_symbol_library_comes_alone_with_a_shared_footprint(synthetic
     _, candidate = ul_package
     # The v1 tree has no Atomic_Footprints.pretty yet
     assert not (synthetic_custom.footprints_dir / "Atomic_Footprints.pretty").exists()
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), synthetic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), synthetic_custom, ToolContext())
     assert not plan.blocked, plan.issues
 
     shared = synthetic_custom.footprints_dir / "Atomic_Footprints.pretty"
@@ -126,7 +127,7 @@ def test_tracer_existing_library_writes_into_the_existing_shared_folder(atomic_c
     _, candidate = ul_package
     shared = atomic_custom.footprints_dir / "Atomic_Footprints.pretty"
     assert shared.is_dir()
-    plan = build_plan(candidate, InstallOptions(library=BATTERY_CHARGER), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=BATTERY_CHARGER, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     assert not [op for op in plan.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
     assert ("footprint", shared / "DQK0006B.kicad_mod") in {(op.kind, op.path) for op in plan.ops}
@@ -138,7 +139,7 @@ def test_a_case_twin_of_the_shared_library_refuses(atomic_custom, ul_package):
     twin = atomic_custom.footprints_dir / "atomic_footprints.pretty"
     (atomic_custom.footprints_dir / "Atomic_Footprints.pretty").rename(atomic_custom.footprints_dir / "tmp_rename.pretty")
     (atomic_custom.footprints_dir / "tmp_rename.pretty").rename(twin)
-    plan = build_plan(candidate, InstallOptions(library=LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     assert plan.blocked and not plan.ops
     codes = [i.code for i in plan.issues if i.severity is Severity.ERROR]
     assert codes == ["install.library_case_clash"]
@@ -154,7 +155,7 @@ def test_a_missing_footprints_folder_names_the_shared_library(tmp_path, ul_packa
     layout = RepoLayout.for_repo(tmp_path)
     layout.symbols_dir.mkdir(parents=True)
     layout.models_dir.mkdir(parents=True)
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), layout, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), layout, ToolContext())
     assert plan.blocked and not plan.ops
     error = next(i for i in plan.issues if i.code == "install.footprints_dir_missing")
     assert error.text.startswith("Cannot create Atomic_Footprints: the Custom/Footprints folder is missing")
@@ -162,7 +163,7 @@ def test_a_missing_footprints_folder_names_the_shared_library(tmp_path, ul_packa
 
 def test_an_existing_shared_library_gives_no_mkdir(atomic_custom, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     assert not [op for op in plan.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
     assert (plan.new_symbol_lib, plan.new_footprint_lib) == (True, False)
@@ -170,11 +171,11 @@ def test_an_existing_shared_library_gives_no_mkdir(atomic_custom, ul_package):
 
 def test_a_second_new_library_reuses_the_folder_the_first_created(synthetic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    first = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), synthetic_custom, ToolContext())
+    first = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), synthetic_custom, ToolContext())
     assert (first.new_symbol_lib, first.new_footprint_lib) == (True, True)
     assert apply_plan(first, backup_root=tmp_path / "bk").ok
     # Same footprint name again for another new library: the folder is shared, so the footprint is now identical
-    second = build_plan(candidate, InstallOptions(library="Atomic_Transistor_BJT"), synthetic_custom, ToolContext())
+    second = build_plan(candidate, InstallOptions(library="Atomic_Transistor_BJT", description=UL_DESCRIPTION), synthetic_custom, ToolContext())
     assert not [op for op in second.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
     assert not second.blocked, second.issues
     assert (second.new_symbol_lib, second.new_footprint_lib) == (True, False)
@@ -187,7 +188,7 @@ def test_an_existing_symbol_library_without_a_footprint_folder_installs_with_one
     sym = synthetic_custom.symbols_dir
     source = next(sym.glob("*.kicad_sym"))
     (sym / f"{LIBRARY}.kicad_sym").write_bytes(source.read_bytes())
-    plan = build_plan(candidate, InstallOptions(library=LIBRARY), synthetic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), synthetic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     mkdirs = [op.path for op in plan.ops if op.kind == "mkdir" and op.path.suffix == ".pretty"]
     assert mkdirs == [synthetic_custom.footprints_dir / "Atomic_Footprints.pretty"]
@@ -201,7 +202,7 @@ SHARED = "Atomic_Footprints"
 
 
 def _install_first(atomic_custom, candidate, tmp_path, library=ABSENT_LIBRARY):
-    plan = build_plan(candidate, InstallOptions(library=library), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=library, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     assert apply_plan(plan, backup_root=tmp_path / "bk").ok
     return atomic_custom.footprints_dir / f"{SHARED}.pretty" / f"{FOOTPRINT}.kicad_mod"
@@ -228,7 +229,7 @@ def test_tracer_the_same_footprint_in_another_format_is_reused(atomic_custom, ul
     installed = _install_first(atomic_custom, candidate, tmp_path)
     _reformat(installed)
 
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     assert not [op for op in plan.ops if op.kind == "footprint"]
     assert not [c for c in plan.conflicts if c.kind == "footprint"]
@@ -243,7 +244,7 @@ def test_tracer_a_different_footprint_offers_the_part_number_as_its_new_name(ato
     installed = _install_first(atomic_custom, candidate, tmp_path)
     _change_a_pad(installed)
 
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     conflicts = [c for c in plan.conflicts if c.kind == "footprint"]
     assert len(conflicts) == 1
     assert conflicts[0].suggested_name == f"{FOOTPRINT}_{SYMBOL}"
@@ -274,7 +275,7 @@ def test_the_conflict_names_every_other_part_linking_the_footprint(atomic_custom
     _clash(atomic_custom, candidate, tmp_path)
     _library_linking(atomic_custom, BATTERY_CHARGER, [("PARTA", LINK), ("PARTB", LINK)])
 
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     conflict = next(c for c in plan.conflicts if c.kind == "footprint")
     assert conflict.existing.endswith(
         "; it is linked by 2 other parts: PARTA (Atomic_Battery_Management), PARTB (Atomic_Battery_Management)"
@@ -286,7 +287,7 @@ def test_one_linking_part_reads_as_part_not_parts(atomic_custom, ul_package, tmp
     _clash(atomic_custom, candidate, tmp_path)
     _library_linking(atomic_custom, BATTERY_CHARGER, [("PARTA", LINK)])
 
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     conflict = next(c for c in plan.conflicts if c.kind == "footprint")
     assert conflict.existing.endswith("; it is linked by 1 other part: PARTA (Atomic_Battery_Management)")
 
@@ -296,7 +297,7 @@ def test_overwrite_warns_with_the_parts_it_changes(atomic_custom, ul_package, tm
     _clash(atomic_custom, candidate, tmp_path)
     _library_linking(atomic_custom, BATTERY_CHARGER, [("PARTA", LINK), ("PARTB", LINK)])
 
-    options = InstallOptions(library=ABSENT_LIBRARY, resolutions={FP_KEY: Resolution("overwrite")})
+    options = InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION, resolutions={FP_KEY: Resolution("overwrite")})
     plan = build_plan(candidate, options, atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     shared = [i for i in plan.issues if i.code == "install.footprint_shared"]
@@ -313,7 +314,7 @@ def test_an_unresolved_conflict_gives_no_overwrite_warning(atomic_custom, ul_pac
     _clash(atomic_custom, candidate, tmp_path)
     _library_linking(atomic_custom, BATTERY_CHARGER, [("PARTA", LINK)])
 
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     assert not [i for i in plan.issues if i.code == "install.footprint_shared"]
 
 
@@ -324,7 +325,7 @@ def test_the_part_being_installed_and_other_footprints_are_not_listed(atomic_cus
     _library_linking(atomic_custom, ABSENT_LIBRARY, [(SYMBOL, LINK)])
     _library_linking(atomic_custom, BATTERY_CHARGER, [("PARTA", f"{LINK}_OTHER"), ("PARTB", LINK)])
 
-    options = InstallOptions(library=ABSENT_LIBRARY, resolutions={FP_KEY: Resolution("overwrite")})
+    options = InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION, resolutions={FP_KEY: Resolution("overwrite")})
     plan = build_plan(candidate, options, atomic_custom, ToolContext())
     conflict = next(c for c in plan.conflicts if c.kind == "footprint")
     assert conflict.existing.endswith("; it is linked by 1 other part: PARTB (Atomic_Battery_Management)")
@@ -337,7 +338,7 @@ def test_more_than_twenty_linking_parts_are_cut_short(atomic_custom, ul_package,
     _clash(atomic_custom, candidate, tmp_path)
     _library_linking(atomic_custom, BATTERY_CHARGER, [(f"PART{n:02d}", LINK) for n in range(23)])
 
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     conflict = next(c for c in plan.conflicts if c.kind == "footprint")
     assert "linked by 23 other parts: PART00 (Atomic_Battery_Management)" in conflict.existing
     assert conflict.existing.endswith(", and 3 more")
@@ -347,7 +348,7 @@ def test_a_conflict_with_no_linking_part_keeps_the_plain_text(atomic_custom, ul_
     _, candidate = ul_package
     _clash(atomic_custom, candidate, tmp_path)
 
-    options = InstallOptions(library=ABSENT_LIBRARY, resolutions={FP_KEY: Resolution("overwrite")})
+    options = InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION, resolutions={FP_KEY: Resolution("overwrite")})
     plan = build_plan(candidate, options, atomic_custom, ToolContext())
     conflict = next(c for c in plan.conflicts if c.kind == "footprint")
     assert conflict.existing == f"{SHARED}.pretty already holds a different {FOOTPRINT}.kicad_mod"
@@ -360,7 +361,7 @@ def test_the_rename_suggestion_moves_on_when_the_part_number_name_is_taken(atomi
     taken = installed.with_name(f"{FOOTPRINT}_{SYMBOL}.kicad_mod")
     taken.write_bytes(installed.read_bytes())
 
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     conflict = next(c for c in plan.conflicts if c.kind == "footprint")
     assert conflict.suggested_name == f"{FOOTPRINT}_{SYMBOL}_2"
 
@@ -371,6 +372,6 @@ def test_a_model_conflict_still_suggests_the_next_numbered_name(atomic_custom, u
     model = next(atomic_custom.models_dir.glob(f"{SYMBOL}.*"))
     model.write_bytes(model.read_bytes() + b"changed")
 
-    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=ABSENT_LIBRARY, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     conflict = next(c for c in plan.conflicts if c.kind == "model")
     assert conflict.suggested_name == f"{model.stem}_2{model.suffix}"

@@ -12,7 +12,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
-from installfixtures import extends_pair, vendor_footprint, vendor_symbol_lib
+from installfixtures import ATOMIC_PROPS, extends_pair, vendor_footprint, vendor_symbol_lib
 from PySide6.QtCore import QSettings, Qt
 from zipfixtures import (
     STEP_BYTES,
@@ -30,7 +30,7 @@ from kicad_lib_manager.importer.plan import FieldChange, InstallOptions, Resolut
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.importer.preview import preview_sections
 from kicad_lib_manager.kicad_files import find_property, find_symbol, parse_bytes
-from kicad_lib_manager.models import Issue
+from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.widgets.import_dialog import ImportCore, ImportDialog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -55,11 +55,20 @@ def _open_vendor(tmp_path, symbol):
         yield candidate
 
 
-def _plan(tmp_path, data, **options):
+def _plan(tmp_path, data, gate_errors=(), **options):
+    """Plan the vendor symbol; the Description a user types is given, so the part passes the atomic rule (D-21).
+
+    gate_errors names the install.atomic.<rule> errors the atomic gate may add for a test whose subject is
+    a field the part leaves missing; no other error is allowed, and without them the plan is not blocked.
+    """
+    options.setdefault("description", ATOMIC_PROPS["Description"])
     layout = _layout(tmp_path)
     with _open_vendor(tmp_path, data) as candidate:
         plan = build_plan(candidate, InstallOptions(library=LIBRARY, **options), layout, ToolContext())
-        assert not plan.blocked, [i.text for i in plan.issues]
+        errors = [i for i in plan.issues if i.severity is Severity.ERROR]
+        assert all(i.code in gate_errors for i in errors), [i.text for i in errors]
+        if not gate_errors:
+            assert not plan.blocked, [i.text for i in plan.issues]
         return plan, candidate
 
 
@@ -129,7 +138,7 @@ def test_field_defaults_value_falls_back_to_the_symbol_name(tmp_path):
 
 
 def test_each_symbol_of_an_extends_pair_follows_its_own_mpn(tmp_path):
-    pair = extends_pair().replace(b'"Value" "PARENT_X"', b'"Value" "10k"').replace(b'"Value" "CHILD_Y"', b'"Value" "20k"')
+    pair = extends_pair(props=ATOMIC_PROPS).replace(b'"Value" "PARENT_X"', b'"Value" "10k"').replace(b'"Value" "CHILD_Y"', b'"Value" "20k"')
     plan, _ = _plan(tmp_path, pair, symbol="CHILD_Y")
     assert plan.symbol_names == ("PARENT_X", "CHILD_Y")
     assert _sets(plan) == [
@@ -155,9 +164,11 @@ def test_a_renamed_symbol_gets_its_mpn_not_the_retokened_value(tmp_path):
     other = vendor_symbol_lib(VENDOR, props={"MPN": "OTHER-9"})
     (layout.symbols_dir / f"{LIBRARY}.kicad_sym").write_bytes(other)
     with _open_vendor(tmp_path, symbol) as candidate:
-        first = build_plan(candidate, InstallOptions(library=LIBRARY), layout, ToolContext())
+        first = build_plan(candidate, InstallOptions(library=LIBRARY, description=ATOMIC_PROPS["Description"]), layout, ToolContext())
         conflict = next(c for c in first.conflicts if c.kind == "symbol")
-        options = InstallOptions(library=LIBRARY, resolutions={conflict.key: Resolution("rename", "PART_B")})
+        options = InstallOptions(
+            library=LIBRARY, description=ATOMIC_PROPS["Description"], resolutions={conflict.key: Resolution("rename", "PART_B")}
+        )
         plan = build_plan(candidate, options, layout, ToolContext())
         assert not plan.blocked, [i.text for i in plan.issues]
     assert plan.symbol_name == "PART_B"
@@ -314,7 +325,7 @@ def test_the_datasheet_link_names_the_manufacturer(tmp_path, datasheet, name):
 
 
 def test_a_distributor_link_is_never_used(tmp_path):
-    plan, candidate = _plan_for(tmp_path, "https://www.digikey.com/x.pdf")
+    plan, candidate = _plan_for(tmp_path, "https://www.digikey.com/x.pdf", gate_errors=("install.atomic.manufacturer",))
     assert _symbol_manufacturer(plan) == ""
     assert _sets(plan, "Manufacturer") == []
     aggregator = [i for i in plan.issues if i.code == "naming.aggregator_host"]
@@ -326,7 +337,7 @@ def test_a_distributor_link_is_never_used(tmp_path):
 
 
 def test_an_unlisted_domain_infers_nothing_and_says_nothing_about_a_distributor(tmp_path):
-    plan, candidate = _plan_for(tmp_path, "https://www.example-widgets.com/x.pdf")
+    plan, candidate = _plan_for(tmp_path, "https://www.example-widgets.com/x.pdf", gate_errors=("install.atomic.manufacturer",))
     assert _symbol_manufacturer(plan) == ""
     assert "naming.aggregator_host" not in _codes(plan)
     assert "install.manufacturer_missing" in _codes(plan)
@@ -347,7 +358,9 @@ def test_a_typed_manufacturer_is_canonical_too(tmp_path):
 
 
 def test_a_cleared_manufacturer_is_written_empty_without_inference_or_warning(tmp_path):
-    plan, _ = _plan_for(tmp_path, "https://www.ti.com/x", manufacturer="", cleared=frozenset({"manufacturer"}))
+    plan, _ = _plan_for(
+        tmp_path, "https://www.ti.com/x", manufacturer="", cleared=frozenset({"manufacturer"}), gate_errors=("install.atomic.manufacturer",)
+    )
     assert _symbol_manufacturer(plan) == ""
     assert _sets(plan, "Manufacturer") == []
     assert "install.manufacturer_missing" not in _codes(plan)
@@ -355,7 +368,9 @@ def test_a_cleared_manufacturer_is_written_empty_without_inference_or_warning(tm
 
 
 def test_a_cleared_manufacturer_on_a_distributor_link_says_nothing(tmp_path):
-    plan, _ = _plan_for(tmp_path, "https://www.digikey.com/x", manufacturer="", cleared=frozenset({"manufacturer"}))
+    plan, _ = _plan_for(
+        tmp_path, "https://www.digikey.com/x", manufacturer="", cleared=frozenset({"manufacturer"}), gate_errors=("install.atomic.manufacturer",)
+    )
     assert _symbol_manufacturer(plan) == ""
     assert "naming.aggregator_host" not in _codes(plan)
     assert "install.manufacturer_missing" not in _codes(plan)
@@ -368,7 +383,9 @@ def test_a_typed_datasheet_decides_where_the_manufacturer_is_found(tmp_path):
 
 
 def test_a_cleared_datasheet_still_lets_the_vendor_link_name_the_manufacturer(tmp_path):
-    plan, _ = _plan_for(tmp_path, "https://www.ti.com/x", datasheet="", cleared=frozenset({"datasheet"}))
+    plan, _ = _plan_for(
+        tmp_path, "https://www.ti.com/x", datasheet="", cleared=frozenset({"datasheet"}), gate_errors=("install.atomic.datasheet",)
+    )
     assert _symbol_value(plan, VENDOR, "Datasheet") == ""
     assert _symbol_manufacturer(plan) == "Texas Instruments"
 

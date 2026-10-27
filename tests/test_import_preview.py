@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 from fakecli import FakeCli
-from installfixtures import target_lib, vendor_footprint, vendor_symbol_lib
+from installfixtures import ATOMIC_PROPS, UL_DESCRIPTION, target_lib, vendor_footprint, vendor_symbol_lib
 from zipfixtures import STEP_BYTES, footprint, footprint_library_for, make_zip, symbol_lib, write_custom_layout
 
 from kicad_lib_manager.importer import kicad_cli
@@ -32,7 +32,6 @@ NEW_LIBRARY = "Atomic_Sensor_Temperature"
 SINGLE_LIBRARY = "Atomic_Sensor_Pressure"
 VENDOR = "PART"
 V6, V8, V9 = 20211014, 20231120, 20241209
-DATASHEET = {"Datasheet": "https://example.com/part"}
 ORDER = ("Files", "Renames", "Path rewrites", "Field changes", "Format", "Conflicts", "Issues")
 
 
@@ -67,8 +66,9 @@ def _open(tmp_path, members, name="pkg.zip"):
         yield package, candidate
 
 
-def _members(symbols=("PART",), footprints=("FP",), models=()):
-    members = [("part.kicad_sym", symbol_lib(symbols, props=DATASHEET))]
+def _members(symbols=("PART",), footprints=("FP",), models=("part.step",)):
+    """One symbol with the atomic fields (D-21), the footprints and, by default, a STEP model; models=() leaves it out."""
+    members = [("part.kicad_sym", symbol_lib(symbols, props=ATOMIC_PROPS))]
     members += [(f"{name}.kicad_mod", footprint(name)) for name in footprints]
     members += [(name, STEP_BYTES) for name in models]
     return members
@@ -95,6 +95,8 @@ def _texts(section):
 
 def _ul_plan(ul_package, layout, library=UL_LIBRARY, tools=None, **kwargs):
     _, candidate = ul_package
+    # the UL sample carries no Description, which the atomic rule needs (D-21)
+    kwargs.setdefault("description", UL_DESCRIPTION)
     options = InstallOptions(library=library, **kwargs)
     plan = build_plan(candidate, options, layout, tools or ToolContext())
     return plan, candidate, options
@@ -207,7 +209,7 @@ def test_rows_refused_plan(ul_package, ul_layout):
 
 
 def test_rows_new_library_without_model_has_no_model_row(layout, tmp_path):
-    with _open(tmp_path, _members()) as (_, candidate):
+    with _open(tmp_path, _members(models=())) as (_, candidate):
         options = InstallOptions(library=SINGLE_LIBRARY)
         plan = build_plan(candidate, options, layout, ToolContext())
         files = _sections(plan, candidate, options)["Files"]
@@ -253,7 +255,7 @@ def test_rewrites_match_planned_bytes(ul_package, ul_layout):
 
 
 def test_rewrites_without_model_have_no_model_row(layout, tmp_path):
-    with _open(tmp_path, _members()) as (_, candidate):
+    with _open(tmp_path, _members(models=())) as (_, candidate):
         options = InstallOptions(library=LIBRARY)
         plan = build_plan(candidate, options, layout, ToolContext())
         rewrites = _sections(plan, candidate, options)["Path rewrites"]
@@ -264,7 +266,8 @@ def test_rewrites_without_model_have_no_model_row(layout, tmp_path):
 def test_rewrites_skip_a_kept_symbol(tmp_path):
     # The existing PART is kept, so its Footprint and filters are not rewritten and must not be listed
     layout = _target_layout(tmp_path, V6, ("PART",))
-    with _open(tmp_path, _members()) as (_, candidate):
+    # no model: the footprint's Model row would list under Path rewrites too; a kept symbol is not judged by the gate
+    with _open(tmp_path, _members(models=())) as (_, candidate):
         key = f"symbol:{LIBRARY}:PART"
         options = InstallOptions(library=LIBRARY, resolutions={key: Resolution("skip")})
         plan = build_plan(candidate, options, layout, ToolContext())
@@ -307,8 +310,10 @@ def test_format_rows_cases(tmp_path, target, vendor, cli, row1, row2, glyph, ton
     layout = _target_layout(tmp_path, target)
     tools = {None: ToolContext(), "fake": _tools(FakeCli()), "differs": _tools(FakeCli(output_version=V8))}[cli]
     members = [
-        ("part.kicad_sym", vendor_symbol_lib(VENDOR, version=vendor)),
+        # a Description and a STEP model, so the part passes the atomic rule (D-21); the ti.com Datasheet names the maker
+        ("part.kicad_sym", vendor_symbol_lib(VENDOR, version=vendor, props={"Description": ATOMIC_PROPS["Description"]})),
         ("FP.kicad_mod", vendor_footprint("FP")),
+        ("part.step", STEP_BYTES),
     ]
     with _open(tmp_path, members) as (_, candidate):
         options = InstallOptions(library=LIBRARY)
@@ -329,7 +334,10 @@ def test_format_rows_cases(tmp_path, target, vendor, cli, row1, row2, glyph, ton
 
 
 def _conflict_plan(layout, tmp_path, resolutions):
-    (layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty" / "FP.kicad_mod").write_bytes(footprint("FP", model="old.step"))
+    # The existing FP links a model that is in Custom/3DModels, so keeping it still leaves an atomic part (D-21)
+    (layout.models_dir / "old.step").write_bytes(STEP_BYTES)
+    existing = footprint("FP", model="${CUSTOM_3DMODEL_DIR}/old.step")
+    (layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty" / "FP.kicad_mod").write_bytes(existing)
     with _open(tmp_path, _members()) as (_, candidate):
         options = InstallOptions(library=LIBRARY, resolutions=resolutions)
         plan = build_plan(candidate, options, layout, ToolContext())
@@ -370,7 +378,7 @@ def test_conflict_rows_details(layout, tmp_path):
 
 
 def test_issue_rows_no_model_warning(layout, tmp_path):
-    with _open(tmp_path, _members()) as (_, candidate):
+    with _open(tmp_path, _members(models=())) as (_, candidate):
         options = InstallOptions(library=LIBRARY)
         plan = build_plan(candidate, options, layout, ToolContext())
         issues = _sections(plan, candidate, options)["Issues"]
@@ -402,7 +410,8 @@ def test_issue_rows_follow_severity(layout, tmp_path):
 
 
 def test_sections_order_and_empty_hidden(layout, tmp_path, ul_package, ul_layout):
-    with _open(tmp_path, _members()) as (_, candidate):
+    # the model already carries the name the install gives it, so no rename is listed
+    with _open(tmp_path, _members(models=("PART.step",))) as (_, candidate):
         options = InstallOptions(library=LIBRARY)
         plan = build_plan(candidate, options, layout, ToolContext())
         names = [s.name for s in preview_sections(plan, candidate, options)]

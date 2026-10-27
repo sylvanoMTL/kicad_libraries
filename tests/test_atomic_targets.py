@@ -2,6 +2,7 @@
 
 import customfixtures
 import pytest
+from installfixtures import UL_DESCRIPTION
 from zipfixtures import CURRENT_ATOMIC_SYMBOL_LIBS
 
 from kicad_lib_manager.importer import stems
@@ -48,7 +49,8 @@ def test_a_bare_kicad_name_is_refused_with_its_reason(synthetic_custom, ul_packa
 
 def test_an_atomic_name_that_is_absent_on_disk_builds(synthetic_custom, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=customfixtures.ABSENT_LIBRARY), synthetic_custom)
+    options = InstallOptions(library=customfixtures.ABSENT_LIBRARY, description=UL_DESCRIPTION)
+    plan = build_plan(candidate, options, synthetic_custom)
     assert customfixtures.ABSENT_LIBRARY == "Atomic_Transistor_FET"
     assert "install.invalid_library" not in [i.code for i in plan.issues]
     sym_ops = [op for op in plan.ops if op.kind == "symbol_lib"]
@@ -80,7 +82,7 @@ def test_an_empty_name_is_refused(synthetic_custom, ul_package):
 
 def test_the_tools_allowed_stems_decide_the_name(synthetic_custom, ul_package):
     _, candidate = ul_package
-    options = InstallOptions(library="Atomic_Brand_New")
+    options = InstallOptions(library="Atomic_Brand_New", description=UL_DESCRIPTION)
     assert any(i.code == "install.invalid_library" for i in build_plan(candidate, options, synthetic_custom).issues)
     tools = ToolContext(allowed_stems=stems.allowed_stems(["Brand_New"]))
     plan = build_plan(candidate, options, synthetic_custom, tools)

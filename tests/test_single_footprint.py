@@ -9,6 +9,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from installfixtures import ATOMIC_PROPS
 from PySide6.QtCore import QSettings
 from test_import_dialog import (
     multi_zip,
@@ -37,7 +38,6 @@ from kicad_lib_manager.widgets.import_dialog import ImportCore, ImportDialog
 REPO_ROOT = Path(__file__).resolve().parent.parent
 LIBRARY = "Atomic_Analog"
 SHARED = footprint_library_for(LIBRARY)
-DATASHEET = {"Datasheet": "https://example.com/part"}
 
 
 @pytest.fixture(autouse=True)
@@ -53,8 +53,9 @@ def layout(tmp_path):
 
 
 @contextmanager
-def _open(tmp_path, footprints=("F1", "F2", "F3"), models=()):
-    members = [("part.kicad_sym", symbol_lib(("PART",), props=DATASHEET))]
+def _open(tmp_path, footprints=("F1", "F2", "F3"), models=("part.step",)):
+    # the symbol carries the atomic fields and the package a STEP model, so the part passes the atomic rule (D-21)
+    members = [("part.kicad_sym", symbol_lib(("PART",), props=ATOMIC_PROPS))]
     members += [(f"{name}.kicad_mod", footprint(name)) for name in footprints]
     members += [(name, STEP_BYTES) for name in models]
     src = tmp_path / "src"

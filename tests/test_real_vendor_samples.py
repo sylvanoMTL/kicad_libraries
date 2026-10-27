@@ -44,6 +44,8 @@ REAL_SNAPEDA_MODEL = SAMPLES / "194150990-659-usb4145-03-0170-c.zip"
 # Install targets, both entries of CURRENT_ATOMIC_SYMBOL_LIBS (D-08)
 SNAPEDA_LIBRARY = "Atomic_Connector"
 SAMACSYS_LIBRARY = "Atomic_Converter_DCDC_Isolated"
+# A datasheet link on the maker's own domain, for the SnapEDA part whose download carries none
+GCT_DATASHEET = "https://gct.co/files/drawings/usb4145.pdf"
 
 _SNAPEDA_SKIP = "downloaded_examples/USB4145-03-0170-C_REVA2.zip not present (licence-restricted SnapEDA sample, kept local)"
 requires_snapeda = pytest.mark.skipif(not REAL_SNAPEDA.exists(), reason=_SNAPEDA_SKIP)
@@ -288,7 +290,9 @@ def test_real_snapeda_installs_with_separate_model(staging_root, tmp_path):
         assert candidate is not None
         attached, _ = attach_models(candidate, model_package)
         assert attached is not None
-        plan = build_plan(attached, InstallOptions(library=library), layout, NO_CLI)
+        # the download has no Datasheet; the owner types the manufacturer's own link, so the part passes the atomic rule (D-21)
+        options = InstallOptions(library=library, datasheet=GCT_DATASHEET)
+        plan = build_plan(attached, options, layout, NO_CLI)
         assert not plan.blocked, [i.text for i in plan.issues]
         result = apply_plan(plan, backup_root=tmp_path / "bk")
         assert result.ok, [i.text for i in result.issues]
