@@ -43,6 +43,18 @@ _TEXT_OVERRIDES = ("datasheet", "description", "manufacturer", "mpn")
 
 
 @dataclass(frozen=True)
+class PartText:
+    """The three generated texts of a part (D-26 to D-30): the symbol's keywords and the footprint's description and tags.
+
+    Each is one line of text exactly as it is written into the file; "" means none.
+    """
+
+    keywords: str = ""
+    fp_description: str = ""
+    fp_tags: str = ""
+
+
+@dataclass(frozen=True)
 class InstallOptions:
     """The caller's choices. Item names refer to vendor items (SymbolItem.name, FootprintItem.name, ModelItem.filename).
 
@@ -70,9 +82,17 @@ class InstallOptions:
     mpn: str | None = None
     resolutions: Mapping[str, Resolution] = field(default_factory=dict)
     cleared: frozenset[str] = frozenset()
+    # D-30: None means the generated text; any string, an empty one too, is written exactly as given. They are
+    # not part of the blank-to-None rule above.
+    keywords: str | None = None
+    fp_description: str | None = None
+    fp_tags: str | None = None
+    # Stems of the libraries the suggestion ranked below the chosen one; their words join the keywords (D-26)
+    related_stems: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "cleared", frozenset(self.cleared))
+        object.__setattr__(self, "related_stems", tuple(self.related_stems))
         unknown = self.cleared.difference(_TEXT_OVERRIDES)
         if unknown:
             raise ValueError(f"cleared names unknown field(s): {', '.join(sorted(unknown))}")
@@ -122,7 +142,9 @@ class FieldChange:
     symbol is the final symbol name and field the property name before the change. old is the
     value before; new is the value after for a clean or a set and the new property name for a
     rename, and empty for a drop. action is drop | clean | rename | set; reason is volatile |
-    placeholder | duplicate | whitespace | alias | follows_mpn | canonical | datasheet_host.
+    placeholder | duplicate | whitespace | alias | follows_mpn | canonical | datasheet_host | generated.
+    scope is "symbol", or "footprint" for a change of the footprint's description or tags, whose symbol
+    is then the final footprint name.
     """
 
     symbol: str
@@ -131,6 +153,7 @@ class FieldChange:
     old: str = ""
     new: str = ""
     reason: str = ""
+    scope: str = "symbol"
 
 
 @dataclass(frozen=True)
@@ -141,7 +164,9 @@ class InstallPlan:
     the model copy reads its bytes from the staged file at apply time.
 
     field_changes lists every dropped, cleaned or renamed incoming property, in property order,
-    for the preview (D-09).
+    for the preview (D-09). generated_text is what the generators made and part_text what the install
+    writes, which differs where the caller typed a text of their own (D-30); both read the same plan the
+    preview shows.
     """
 
     vendor: str
@@ -166,6 +191,8 @@ class InstallPlan:
     footprint_library: str | None = None
     # D-14: vendor footprints the package holds that this part does not use; none of them is written
     unused_footprints: tuple[str, ...] = ()
+    generated_text: PartText = PartText()
+    part_text: PartText = PartText()
 
     @property
     def footprint_link(self) -> str | None:

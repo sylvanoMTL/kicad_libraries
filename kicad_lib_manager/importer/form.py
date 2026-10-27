@@ -30,6 +30,14 @@ FIELD_LABELS = {
     "manufacturer": "Manufacturer",
     "mpn": "MPN",
 }
+# The three generated texts the dialog shows under the fields (D-30): the symbol's keywords and the footprint's
+# description and tags. They are InstallOptions fields of the same names; the plan's part_text holds what is written.
+TEXT_NAMES = ("keywords", "fp_description", "fp_tags")
+TEXT_LABELS = {
+    "keywords": "Keywords",
+    "fp_description": "Footprint description",
+    "fp_tags": "Footprint tags",
+}
 
 
 @dataclass(frozen=True)
@@ -52,7 +60,8 @@ class FormValues:
 
     symbol, footprint and model are vendor item names (or None), never blank strings.
     footprint is the one footprint the part uses (D-14). footprint_name None means the name was not
-    edited, and fields holds only the fields the user edited.
+    edited, and fields holds only the fields the user edited. texts holds only the generated texts the user
+    edited, by TEXT_NAMES; related_stems are the suggestion's runner-up library stems, whose words join the keywords.
     """
 
     library: str
@@ -63,6 +72,8 @@ class FormValues:
     footprint_name: str | None
     fields: Mapping[str, str] = field(default_factory=dict)
     resolutions: Mapping[str, Resolution] = field(default_factory=dict)
+    texts: Mapping[str, str] = field(default_factory=dict)
+    related_stems: tuple[str, ...] = ()
 
 
 # A new library creates only its .kicad_sym: every part uses the shared footprint library (D-12, D-15)
@@ -359,7 +370,8 @@ def build_options(values: FormValues, defaults: FieldDefaults, linked_vendor: st
     Only edited fields are passed (D-13). Text is passed exactly as typed. An emptied field whose
     default is not empty is passed as "" and named in cleared, so it installs blank; an emptied field
     whose default is already empty passes nothing. The footprint name, when edited, is passed for
-    the linked footprint; an empty one is an explicit override that the planner refuses.
+    the linked footprint; an empty one is an explicit override that the planner refuses. An edited generated
+    text is passed exactly as typed, an empty one too (D-30).
     """
     texts: dict[str, str] = {}
     cleared: set[str] = set()
@@ -385,5 +397,7 @@ def build_options(values: FormValues, defaults: FieldDefaults, linked_vendor: st
         footprint_names=footprint_names,
         resolutions=dict(values.resolutions),
         cleared=frozenset(cleared),
+        related_stems=tuple(values.related_stems),
+        **{name: values.texts[name] for name in TEXT_NAMES if name in values.texts},
         **texts,
     )

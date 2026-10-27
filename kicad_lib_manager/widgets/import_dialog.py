@@ -40,13 +40,13 @@ from ..importer.content import ContentText, op_content, unchanged_content
 from ..importer.detect import detect_candidate
 from ..importer.downloads import age_text, newest_zip
 from ..importer.form import (
-    FIELD_LABELS, FIELD_NAMES, UPDATING_REASON, FieldDefaults, FormStatus, FormValues, Reason,
-    blocking_reasons, build_options, carry_resolutions, field_defaults, kind_label, library_badge,
+    FIELD_LABELS, FIELD_NAMES, TEXT_LABELS, TEXT_NAMES, UPDATING_REASON, FieldDefaults, FormStatus, FormValues,
+    Reason, blocking_reasons, build_options, carry_resolutions, field_defaults, kind_label, library_badge,
     noop_text, ready_text,
 )
 from ..importer.layout import RepoLayout, list_symbol_libs
 from ..importer.package import Package, open_model_source, open_package
-from ..importer.plan import Conflict, InstallOptions, InstallPlan, InstallResult, Resolution, ToolContext
+from ..importer.plan import Conflict, InstallOptions, InstallPlan, InstallResult, PartText, Resolution, ToolContext
 from ..importer.planner import build_plan, detect_tools
 from ..importer.preview import file_counts, preview_sections
 from ..importer.siblings import own_index, stock_index
@@ -75,6 +75,11 @@ _NO_MODEL = "No model"
 ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
 REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
 _BLANK_FIELD_HINT = "Empty - the field will be written blank"
+_TEXT_TIPS = {
+    "keywords": "Words KiCad's symbol chooser searches. The vendor's words come first, then the generated ones.",
+    "fp_description": "The sentence KiCad shows for the footprint. It replaces the vendor's.",
+    "fp_tags": "Words KiCad's footprint chooser searches. The vendor's tags come first, then the generated ones.",
+}
 _VALUE_TIP = "Value follows the MPN"
 _NO_FOOTPRINT_FIELD = "(none)"
 _LIBRARY_PLACEHOLDER = "Pick a library, or type Atomic_ and a KiCad library name"
@@ -334,6 +339,8 @@ class ImportDialog(QDialog):
         self._linked_fp: str | None = None  # vendor name of the linked footprint
         self._defaults = FieldDefaults()
         self._edited: set[str] = set()  # field names the user changed; only these reach the planner
+        # The generated texts (keywords, footprint description and tags) the user typed over; the others follow the plan
+        self._texts_edited: set[str] = set()
         self._fp_name_edited = False
         # Conflict choices by Conflict.key (D-14a): pruned to the keys of each accepted plan
         self._resolutions: dict[str, Resolution] = {}
@@ -927,6 +934,31 @@ class ImportDialog(QDialog):
             form.addRow(label, row)
             self._field_edits[name] = edit
             self._field_restore[name] = restore
+        # The generated texts: the plan's text until typed over, each with a button that returns to the generated one (D-30)
+        self._text_edits: dict[str, QLineEdit] = {}
+        self._text_regenerate: dict[str, QToolButton] = {}
+        for name in TEXT_NAMES:
+            label = TEXT_LABELS[name]
+            row = QWidget()
+            row_lay = QHBoxLayout(row)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+            row_lay.setSpacing(SP_XS)
+            edit = QLineEdit()
+            edit.setAccessibleName(label)
+            edit.setMinimumHeight(28)
+            edit.setToolTip(_TEXT_TIPS[name])
+            edit.textEdited.connect(lambda text, n=name: self._on_text_edited(n, text))
+            regenerate = QToolButton()
+            regenerate.setText("Regenerate")
+            regenerate.setAccessibleName(f"Regenerate {label}")
+            regenerate.setToolTip(f"Write the generated {label.lower()} again")
+            regenerate.setEnabled(False)
+            regenerate.clicked.connect(lambda _checked=False, n=name: self._regenerate_text(n))
+            row_lay.addWidget(self._framed(edit, name), 1)
+            row_lay.addWidget(regenerate)
+            form.addRow(label, row)
+            self._text_edits[name] = edit
+            self._text_regenerate[name] = regenerate
         left_lay.addLayout(form)
 
     def _build_conflicts_section(self, left_lay: QVBoxLayout):
@@ -1330,6 +1362,8 @@ class ImportDialog(QDialog):
             footprint_name=self._fp_name_edit.text() if self._fp_name_edited else None,
             fields={name: self._field_edits[name].text() for name in FIELD_NAMES if name in self._edited},
             resolutions=dict(self._resolutions),
+            texts={name: self._text_edits[name].text() for name in TEXT_NAMES if name in self._texts_edited},
+            related_stems=self._suggestion.related_stems if self._suggestion is not None else (),
         )
 
     # -- the item picker (INTK-07, D-04) -------------------------------------------
@@ -1356,8 +1390,10 @@ class ImportDialog(QDialog):
     def _clear_form(self):
         """Forget every edit and empty the footprint and field controls (a new or discarded package)."""
         self._edited.clear()
+        self._texts_edited.clear()
         self._fp_name_edited = False
         self._defaults = FieldDefaults()
+        self._set_text_edits(PartText())
         self._fp_name_edit.blockSignals(True)
         try:
             self._fp_name_edit.clear()
@@ -1577,6 +1613,8 @@ class ImportDialog(QDialog):
         chain += [self._library_combo, self._fp_name_edit, self._fp_name_restore, self._fp_field]
         for name in FIELD_NAMES:
             chain += [self._field_edits[name], self._field_restore[name]]
+        for name in TEXT_NAMES:
+            chain += [self._text_edits[name], self._text_regenerate[name]]
         for first, second in zip(chain, chain[1:]):
             QWidget.setTabOrder(first, second)
 
@@ -1593,6 +1631,8 @@ class ImportDialog(QDialog):
             return
         combo.setToolTip(combo.currentText())
         self._set_linked(combo.currentData())
+        # Another footprint: its description and tags start again from the generated text
+        self._texts_edited.difference_update(("fp_description", "fp_tags"))
         self._request_rebuild()
 
     def _on_symbol_changed(self, _index: int = -1):
@@ -1926,6 +1966,10 @@ class ImportDialog(QDialog):
             self._defaults = field_defaults(self._candidate, chosen, final_name=plan.symbol_name)
             self._set_field_texts()
             self._show_symbol_name(chosen, plan.symbol_name)
+        # D-30: the texts the plan writes; a row the user typed over keeps its text
+        self._set_text_edits(plan.part_text)
+        for name in TEXT_NAMES:
+            self._update_text_regenerate(name, plan)
         # PREV-03: read from the plan, never computed from the inputs
         if plan.footprint_link is None or not plan.symbol_names:
             self._fp_field.setText(_NO_FOOTPRINT_FIELD)
@@ -1957,6 +2001,7 @@ class ImportDialog(QDialog):
             self._defaults = FieldDefaults()
             self._set_field_texts()
             return
+        self._texts_edited.discard("keywords")
         item = next(s for s in self._candidate.symbols if s.name == chosen)
         final = item.name_check.sanitized  # until a plan says otherwise (a conflict Rename)
         self._defaults = field_defaults(self._candidate, chosen, final_name=final)
@@ -2011,6 +2056,53 @@ class ImportDialog(QDialog):
             self._edited.add(name)
         self._update_field_restore(name)
         self._mark_dirty()
+
+    # -- the generated texts (D-30) --------------------------------------------------
+
+    def _set_text_edits(self, text: PartText):
+        """Put the plan's text into every generated-text row the user did not type over."""
+        for name in TEXT_NAMES:
+            if name in self._texts_edited:
+                continue
+            edit = self._text_edits[name]
+            edit.blockSignals(True)
+            try:
+                edit.setText(getattr(text, name))
+                edit.setCursorPosition(0)
+            finally:
+                edit.blockSignals(False)
+
+    def _update_text_regenerate(self, name: str, plan: InstallPlan | None = None):
+        """Regenerate works while the row holds text other than the generated one."""
+        plan = plan if plan is not None else self._plan
+        generated = getattr(plan.generated_text, name) if plan is not None else ""
+        self._text_regenerate[name].setEnabled(
+            name in self._texts_edited and self._text_edits[name].text() != generated
+        )
+
+    def _on_text_edited(self, name: str, text: str):
+        """User typing only (textEdited): the row is theirs from now on, and the plan is rebuilt after the quiet period."""
+        generated = getattr(self._plan.generated_text, name) if self._plan is not None else None
+        if text == generated:
+            self._texts_edited.discard(name)  # typed back to the generated text: the planner decides again
+        else:
+            self._texts_edited.add(name)
+        self._update_text_regenerate(name)
+        self._mark_dirty()
+
+    def _regenerate_text(self, name: str):
+        """Forget the typed text of one row: the generated text comes back with the next plan."""
+        self._texts_edited.discard(name)
+        if self._plan is not None:
+            edit = self._text_edits[name]
+            edit.blockSignals(True)
+            try:
+                edit.setText(getattr(self._plan.generated_text, name))
+                edit.setCursorPosition(0)
+            finally:
+                edit.blockSignals(False)
+        self._update_text_regenerate(name)
+        self._request_rebuild()
 
     def _restore_field(self, name: str):
         if name == "value":
