@@ -28,9 +28,12 @@ def _rich_tip(lines: list[str]) -> str:
 class LibraryTableWidget(QWidget):
     # (library rel_path, symbol name) of a marked symbol row the user double-clicked
     symbol_activated = Signal(str, str)
+    # (kind, library rel_path) of a library row the user asked to rescan; kind is "symbol" or "footprint"
+    library_rescan_requested = Signal(str, str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._library_rescan_enabled = True
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
@@ -465,10 +468,29 @@ class LibraryTableWidget(QWidget):
             if lib.selected:
                 self._uncheck_peers(lib, self._fp_items)
 
-    def _show_context_menu(self, tree: QTreeWidget, pos):
+    def set_library_rescan_enabled(self, enabled: bool):
+        """Enable or disable "Rescan this library" (off while a scan runs)."""
+        self._library_rescan_enabled = enabled
+
+    def _build_context_menu(self, tree: QTreeWidget, item: QTreeWidgetItem | None) -> QMenu:
         menu = QMenu(self)
         menu.addAction("Expand All", tree.expandAll)
         menu.addAction("Collapse All", tree.collapseAll)
+        lib = item.data(0, Qt.ItemDataRole.UserRole) if item is not None else None
+        # Library rows only: source group rows, symbol rows and problem rows hold other data
+        if isinstance(lib, (SymbolLibrary, FootprintLibrary)):
+            kind = "symbol" if isinstance(lib, SymbolLibrary) else "footprint"
+            rel_path = lib.rel_path
+            menu.addSeparator()
+            action = menu.addAction("Rescan this library")
+            action.setEnabled(self._library_rescan_enabled)
+            action.triggered.connect(
+                lambda _checked=False: self.library_rescan_requested.emit(kind, rel_path)
+            )
+        return menu
+
+    def _show_context_menu(self, tree: QTreeWidget, pos):
+        menu = self._build_context_menu(tree, tree.itemAt(pos))
         menu.exec(tree.viewport().mapToGlobal(pos))
 
     def select_all(self):
