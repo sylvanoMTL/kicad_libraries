@@ -14,7 +14,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from urllib.parse import urlsplit
 
-from ..manufacturers import CORPORATE_WORDS, token_map
+from ..manufacturers import CORPORATE_WORDS, by_host, token_map
 from ..models import Issue, Severity
 from .candidate import PartMeta
 from .categories import classify
@@ -118,6 +118,21 @@ def registered_domain(host: str) -> str:
 def is_aggregator_host(host: str) -> bool:
     """Return True for a distributor or library site, whatever its TLD."""
     return registered_domain(host.casefold()).split(".")[0] in AGGREGATOR_DOMAINS
+
+
+def manufacturer_from_datasheet(datasheet: str) -> tuple[str, str | None]:
+    """Find the manufacturer a datasheet link names: (canonical name or "", the aggregator host or None).
+
+    Only a registered domain listed in the manufacturer table names a company. A distributor or library
+    site never does; its host is returned so the caller can say why nothing was used (D-23).
+    """
+    host = datasheet_host(datasheet)
+    if host is None:
+        return "", None
+    if is_aggregator_host(host):
+        return "", host
+    entry = by_host(registered_domain(host.casefold()))
+    return (entry.name if entry is not None else ""), None
 
 
 def manufacturer_token(value: str) -> TokenChoice:

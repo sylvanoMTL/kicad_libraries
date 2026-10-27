@@ -46,6 +46,7 @@ from ..kicad_files import (
     synth_property_text,
     unit_library_text,
 )
+from ..manufacturers import canonical
 from ..models import Issue, Severity
 from ..sexpr import Edit, Node, apply_edits, parse, quote, token_stream
 from . import kicad_cli
@@ -67,7 +68,7 @@ from .plan import (
     Resolution,
     ToolContext,
 )
-from .suggest import manufacturer_choice
+from .suggest import manufacturer_from_datasheet
 
 _LISTED_NAMES = 20
 
@@ -120,6 +121,8 @@ class _Fields:
     # Used when the symbol carries no value of its own; written always when forced (the caller typed it)
     manufacturer: str
     manufacturer_forced: bool
+    # True when `manufacturer` was found from the datasheet link, so a property that gets it is listed (D-23)
+    manufacturer_inferred: bool = False
     # Caller overrides; they apply to the chosen symbol only
     mpn: str | None = None
     datasheet: str | None = None
@@ -167,18 +170,36 @@ def _edit_symbol(
         if found.value != value:
             edits.append(set_property_edit(found, value))
 
-    def role(name: str, aliases: tuple[str, ...], override: str | None, fallback: str) -> str:
+    def role(
+        name: str,
+        aliases: tuple[str, ...],
+        override: str | None,
+        fallback: str,
+        *,
+        spell: Callable[[str], str] | None = None,
+        inferred: bool = False,
+    ) -> str:
         """Make `name` exist (D-12): keep the exact property, else rename the first vendor alias in place, else add it.
 
         A placeholder alias value counts as absent (D-06). Every other present alias is a duplicate and is
-        removed (D-08). The rename and each removal are recorded as field changes.
+        removed (D-08). The rename and each removal are recorded as field changes. `spell` gives the final
+        spelling of the value, and a changed spelling is a "canonical" set change; `inferred` marks a
+        fallback found from the datasheet link, listed as a "datasheet_host" set change (D-23).
         """
         present = [p for p in (find_property(node, alias) for alias in aliases) if p is not None]
         usable = [p for p in present if not is_placeholder(p.value)]
         vendor_value = usable[0].value if usable else ""
-        value = override if override is not None else (vendor_value or fallback)
+        chosen = override if override is not None else (vendor_value or fallback)
+        value = spell(chosen) if spell is not None else chosen
         exact = find_property(node, name)
         target = exact or (usable[0] if usable else (present[0] if present else None))
+        if value != chosen:
+            at = target.node.start if target is not None else node.end
+            positioned.append((at, FieldChange(new_name, "set", name, chosen, value, "canonical")))
+        elif inferred and override is None and not vendor_value and value:
+            at = target.node.start if target is not None else node.end
+            before = target.value if target is not None and not is_placeholder(target.value) else ""
+            positioned.append((at, FieldChange(new_name, "set", name, before, value, "datasheet_host")))
         if target is None:
             add(name, value)
             return value
@@ -208,7 +229,14 @@ def _edit_symbol(
     put("Footprint", fields.footprint)
     put("ki_fp_filters", fields.filters)
     forced = fields.manufacturer if fields.manufacturer_forced else None
-    role("Manufacturer", rules.manufacturer_aliases, forced, fields.manufacturer)
+    role(
+        "Manufacturer",
+        rules.manufacturer_aliases,
+        forced,
+        fields.manufacturer,
+        spell=canonical,
+        inferred=fields.manufacturer_inferred,
+    )
     mpn = role("MPN", rules.mpn_aliases, fields.mpn, fields.mpn_default or ref.name)
     # D-22: Value is always the symbol's own final MPN; a Value that changes is listed
     value = find_property(node, "Value")
@@ -882,10 +910,13 @@ def build_plan(
     manufacturer = options.manufacturer if options.manufacturer is not None else meta.manufacturer
     # D-13: an explicitly cleared Manufacturer ("") is written empty, with no inference and no warning (Pitfall 3)
     cleared_manufacturer = options.manufacturer == ""
+    inferred_manufacturer = False
     if not manufacturer and not cleared_manufacturer:
-        choice = manufacturer_choice(meta)
-        if choice.source != "placeholder":
-            manufacturer = choice.token
+        datasheet = options.datasheet if options.datasheet is not None else meta.datasheet
+        found, _aggregator = manufacturer_from_datasheet(datasheet)
+        if found:
+            manufacturer = found
+            inferred_manufacturer = True
         else:
             issues.append(Issue(Severity.WARNING, "install.manufacturer_missing", "No manufacturer was found; the Manufacturer property is empty"))
     base_fields = _Fields(
@@ -893,6 +924,7 @@ def build_plan(
         filters="",
         manufacturer=manufacturer,
         manufacturer_forced=options.manufacturer is not None,
+        manufacturer_inferred=inferred_manufacturer,
     )
     renders: dict[tuple, tuple[LoadedFile, dict[str, str], str, list[FieldChange]] | Issue] = {}
 

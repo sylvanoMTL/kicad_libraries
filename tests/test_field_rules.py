@@ -1,8 +1,9 @@
 """The rules that decide a written symbol's fields, one section per rule (Phase 10, D-22 and following).
 
-Value rule: every symbol the install writes gets Value equal to its own final MPN. The rule sits in the
-planner, so the form defaults, the preview and the dialog show what the plan writes, and no caller can
-set another Value. The tests run on synthetic packages in a synthetic Custom/ under tmp_path with
+Value rule: every symbol the install writes gets Value equal to its own final MPN. Manufacturer rule: the
+Manufacturer is the canonical table spelling, taken from the vendor, the owner or the datasheet link's
+company domain. The rules sit in the planner, so the form defaults, the preview and the dialog show what
+the plan writes, and no caller can set another Value. The tests run on synthetic packages in a synthetic Custom/ under tmp_path with
 ToolContext() and no kicad-cli.
 """
 
@@ -72,8 +73,9 @@ def _symbol_value(plan, name, field="Value"):
     return None if prop is None else prop.value
 
 
-def _sets(plan):
-    return [c for c in plan.field_changes if c.action == "set"]
+def _sets(plan, field="Value"):
+    """The set changes of one field; the Value section looks at Value only, since a ti.com link also finds a Manufacturer."""
+    return [c for c in plan.field_changes if c.action == "set" and c.field == field]
 
 
 # -- Value follows the MPN (D-22) ---------------------------------------------------------------------
@@ -228,3 +230,56 @@ def test_dialog_value_is_read_only_and_mirrors_the_mpn(qtbot, atomic_custom, tmp
     assert value.text() == ""
     dialog._field_restore["mpn"].click()
     assert value.text() == mpn.text() == "PART-1"
+
+
+# -- Manufacturer is canonical (D-23) -----------------------------------------------------------------
+
+
+def _symbol_manufacturer(plan, name=VENDOR):
+    return _symbol_value(plan, name, "Manufacturer")
+
+
+def _open_dialog(qtbot, atomic_custom, tmp_path, symbol):
+    (tmp_path / "src").mkdir(exist_ok=True)
+    zip_path = make_zip(
+        tmp_path / "src" / "pkg.zip",
+        [("part.kicad_sym", symbol), ("FP.kicad_mod", vendor_footprint("FP")), ("part.step", STEP_BYTES)],
+    )
+    core = dataclasses.replace(
+        ImportCore(), detect_tools=lambda kicad_fp_dir: ToolContext(), kicad_running=lambda: [], downloads_dir=lambda: None
+    )
+    dialog = ImportDialog(atomic_custom.repo_root, atomic_custom, core=core, backup_root=tmp_path / "backups")
+    qtbot.addWidget(dialog)
+    dialog.open_path(zip_path)
+    qtbot.waitUntil(
+        lambda: dialog._plan is not None and dialog._plan_gen == dialog._gen and dialog._building is None
+        and dialog._queued is None and not dialog._dirty,
+        timeout=30000,
+    )
+    return dialog
+
+
+def test_a_vendor_alias_is_written_in_the_canonical_spelling(tmp_path):
+    symbol = vendor_symbol_lib(VENDOR, props={"Manufacturer": "TI"})
+    plan, _ = _plan(tmp_path, symbol)
+    assert _symbol_manufacturer(plan) == "Texas Instruments"
+    assert _sets(plan, "Manufacturer") == [FieldChange(VENDOR, "set", "Manufacturer", "TI", "Texas Instruments", "canonical")]
+
+
+def test_canonical_manufacturer_row_in_the_preview(tmp_path):
+    symbol = vendor_symbol_lib(VENDOR, props={"Manufacturer": "TI"})
+    plan, candidate = _plan(tmp_path, symbol)
+    section = next(s for s in preview_sections(plan, candidate, InstallOptions(library=LIBRARY)) if s.name == "Field changes")
+    assert {row.text: row.detail for row in section.rows}["Set Manufacturer"] == "TI → Texas Instruments: canonical spelling"
+
+
+def test_field_defaults_manufacturer_is_canonical(tmp_path):
+    symbol = vendor_symbol_lib(VENDOR, props={"Manufacturer": "TI"})
+    _, candidate = _plan(tmp_path, symbol)
+    assert form.field_defaults(candidate, VENDOR).manufacturer == "Texas Instruments"
+
+
+def test_dialog_shows_the_canonical_manufacturer(qtbot, atomic_custom, tmp_path):
+    symbol = vendor_symbol_lib(VENDOR, props={"Manufacturer": "TI"})
+    dialog = _open_dialog(qtbot, atomic_custom, tmp_path, symbol)
+    assert dialog._field_edits["manufacturer"].text() == "Texas Instruments"

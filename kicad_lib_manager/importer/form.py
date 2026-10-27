@@ -9,12 +9,13 @@ Keeping the rules here means they are tested without a display, and the dialog h
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
+from ..manufacturers import canonical
 from ..models import Issue, Severity
 from .candidate import ImportCandidate
 from .fieldrules import clean_description
 from .plan import Conflict, InstallOptions, InstallPlan, Resolution
 from .stems import name_verdict
-from .suggest import manufacturer_choice
+from .suggest import manufacturer_from_datasheet
 
 # The five symbol fields the dialog shows. Value is shown read-only: it always follows the MPN (D-22), so it has
 # no InstallOptions override; OVERRIDE_NAMES are the four the user can edit and InstallOptions takes
@@ -219,8 +220,8 @@ def field_defaults(candidate: ImportCandidate, symbol_name: str, final_name: str
 
     This mirrors planner._edit_symbol and the manufacturer step of build_plan: Value is the MPN (D-22);
     Datasheet is the vendor one and
-    Description the vendor one with its whitespace collapsed (D-07); Manufacturer is the vendor value,
-    else the inferred token unless that is a placeholder; MPN is meta.mpn, which is the vendor value or
+    Description the vendor one with its whitespace collapsed (D-07); Manufacturer is the vendor value in its
+    canonical spelling, else the company the datasheet link names (D-23); MPN is meta.mpn, which is the vendor value or
     one supplied by package metadata, else the vendor symbol name. part_meta keeps the raw description on
     purpose: tests/test_locate_text_caps.py compares the raw text of an 8 MiB symbol, and the cleaning is
     cheap here. test_field_defaults_equivalence proves the equality against the planner.
@@ -230,11 +231,7 @@ def field_defaults(candidate: ImportCandidate, symbol_name: str, final_name: str
         return FieldDefaults()
     meta = item.meta
     mpn = meta.mpn or symbol_name
-    manufacturer = meta.manufacturer
-    if not manufacturer:
-        choice = manufacturer_choice(meta)
-        if choice.source != "placeholder":
-            manufacturer = choice.token
+    manufacturer = canonical(meta.manufacturer) if meta.manufacturer else manufacturer_from_datasheet(meta.datasheet)[0]
     return FieldDefaults(
         value=mpn,
         datasheet=meta.datasheet,
