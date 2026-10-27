@@ -9,7 +9,6 @@ Keeping the rules here means they are tested without a display, and the dialog h
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
-from ..kicad_files import replace_exact_tokens
 from ..models import Issue, Severity
 from .candidate import ImportCandidate
 from .fieldrules import clean_description
@@ -17,8 +16,10 @@ from .plan import Conflict, InstallOptions, InstallPlan, Resolution
 from .stems import name_verdict
 from .suggest import manufacturer_choice
 
-# The five symbol fields the dialog lets the user edit; the names are the InstallOptions text overrides
+# The five symbol fields the dialog shows. Value is shown read-only: it always follows the MPN (D-22), so it has
+# no InstallOptions override; OVERRIDE_NAMES are the four the user can edit and InstallOptions takes
 FIELD_NAMES = ("value", "datasheet", "description", "manufacturer", "mpn")
+OVERRIDE_NAMES = tuple(name for name in FIELD_NAMES if name != "value")
 FIELD_LABELS = {
     "value": "Value",
     "datasheet": "Datasheet",
@@ -80,7 +81,7 @@ def kind_label(kind: str) -> str:
 class Reason:
     """One reason Install is off, and the control that fixes it.
 
-    target is "plan" (no control), "library", "footprint_name", "value", "mpn", "footprints" (the footprint choice), "model"
+    target is "plan" (no control), "library", "footprint_name", "mpn", "footprints" (the footprint choice), "model"
     (the 3D model row), "conflict:{key}" or "rename:{key}".
     """
 
@@ -95,7 +96,6 @@ class FormStatus:
     updating: bool
     build_failed: bool
     library: str
-    value_text: str
     mpn_text: str
     resolutions: Mapping[str, Resolution]
     model_error: str = ""  # the ERROR text of a rejected 3D model source; empty when none is held
@@ -120,7 +120,7 @@ def _issue_target(issue: Issue) -> str:
     if code in ("install.invalid_library", "install.library_case_clash"):
         return "library"
     if code == "install.empty_required":
-        return "mpn" if text.startswith("MPN") else "value"
+        return "mpn"
     if code == "install.invalid_name":
         lowered = text.lower()
         if "footprint name" in lowered:
@@ -136,15 +136,14 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
     """Every reason Install is off, in the UI-SPEC order, without repeating one a form reason already gives.
 
     Order: Updating (alone, the others could be stale); the build failure or the plan's ERROR Issues;
-    a rejected 3D model source; the library name; Value and MPN; unresolved conflicts in plan order;
+    a rejected 3D model source; the library name; MPN; unresolved conflicts in plan order;
     empty rename names. A plan ERROR is dropped when the form reason beside it says the same thing
-    (refused library name, empty Value or MPN, empty rename).
+    (refused library name, empty MPN, empty rename).
     """
     if status.updating:
         return [Reason(UPDATING_REASON, "plan")]
     library = status.library.strip()
     verdict = name_verdict(library, status.allowed or None)
-    value_blank = not status.value_text.strip()
     mpn_blank = not status.mpn_text.strip()
     # A failed build leaves the previous plan on screen; what it said could be stale
     plan = None if status.build_failed else plan
@@ -155,7 +154,7 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
         if code == "install.invalid_library":
             return not verdict.ok
         if code == "install.empty_required":
-            return mpn_blank if text.startswith("MPN") else value_blank
+            return mpn_blank
         if code == "install.bad_rename":
             return any(text.startswith(f"{c.key}:") for c in renames)
         return False
@@ -171,8 +170,6 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
         reasons.append(Reason(f"Error: {status.model_error}", "model"))
     if not verdict.ok:
         reasons.append(Reason(verdict.reason, "library"))
-    if value_blank:
-        reasons.append(Reason("Value is empty", "value"))
     if mpn_blank:
         reasons.append(Reason("MPN is empty - it names the 3D model file", "mpn"))
     if plan is not None:
@@ -220,8 +217,8 @@ def library_badge(name: str, existing: Collection[str], allowed: frozenset[str] 
 def field_defaults(candidate: ImportCandidate, symbol_name: str, final_name: str | None = None) -> FieldDefaults:
     """The field values build_plan writes for the vendor symbol symbol_name when no override is given.
 
-    This mirrors planner._edit_symbol and the manufacturer step of build_plan: Value keeps the vendor
-    value with the exact symbol-name tokens following the final name; Datasheet is the vendor one and
+    This mirrors planner._edit_symbol and the manufacturer step of build_plan: Value is the MPN (D-22);
+    Datasheet is the vendor one and
     Description the vendor one with its whitespace collapsed (D-07); Manufacturer is the vendor value,
     else the inferred token unless that is a placeholder; MPN is meta.mpn, which is the vendor value or
     one supplied by package metadata, else the vendor symbol name. part_meta keeps the raw description on
@@ -232,20 +229,18 @@ def field_defaults(candidate: ImportCandidate, symbol_name: str, final_name: str
     if item is None:
         return FieldDefaults()
     meta = item.meta
-    value = meta.value
-    if final_name is not None and final_name != symbol_name:
-        value = replace_exact_tokens(value, symbol_name, final_name)
+    mpn = meta.mpn or symbol_name
     manufacturer = meta.manufacturer
     if not manufacturer:
         choice = manufacturer_choice(meta)
         if choice.source != "placeholder":
             manufacturer = choice.token
     return FieldDefaults(
-        value=value,
+        value=mpn,
         datasheet=meta.datasheet,
         description=clean_description(meta.description),
         manufacturer=manufacturer,
-        mpn=meta.mpn or symbol_name,
+        mpn=mpn,
     )
 
 
@@ -259,7 +254,7 @@ def build_options(values: FormValues, defaults: FieldDefaults, linked_vendor: st
     """
     texts: dict[str, str] = {}
     cleared: set[str] = set()
-    for name in FIELD_NAMES:
+    for name in OVERRIDE_NAMES:
         if name not in values.fields:
             continue
         text = values.fields[name]

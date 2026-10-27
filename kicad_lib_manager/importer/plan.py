@@ -39,19 +39,20 @@ class Resolution:
     rename_to: str | None = None
 
 
-_TEXT_OVERRIDES = ("value", "datasheet", "description", "manufacturer", "mpn")
+_TEXT_OVERRIDES = ("datasheet", "description", "manufacturer", "mpn")
 
 
 @dataclass(frozen=True)
 class InstallOptions:
     """The caller's choices. Item names refer to vendor items (SymbolItem.name, FootprintItem.name, ModelItem.filename).
 
-    An empty or whitespace-only value, datasheet, description, manufacturer or mpn means "not set"
+    An empty or whitespace-only datasheet, description, manufacturer or mpn means "not set"
     and becomes None, so the vendor value is kept (WR-05; a Qt line edit returns "" for an untouched
     field). A caller that wants an empty value names the field in `cleared` (D-13, the Phase 5
     preview): such a field with a blank or None value is stored as "" and installs as an empty
-    property. Text is always kept exactly as typed. Value and mpn cannot be cleared; build_plan
-    refuses an empty one, because mpn names the 3D model file. An unknown name in `cleared` raises
+    property. Text is always kept exactly as typed. Mpn cannot be cleared; build_plan refuses an
+    empty one, because mpn names the 3D model file. There is no Value option: every symbol's Value
+    is its own final MPN (D-22). An unknown name in `cleared` raises
     ValueError, since it is a programming error.
     """
 
@@ -63,7 +64,6 @@ class InstallOptions:
     no_model: bool = False
     # vendor footprint name -> caller-edited target name
     footprint_names: Mapping[str, str] = field(default_factory=dict)
-    value: str | None = None
     datasheet: str | None = None
     description: str | None = None
     manufacturer: str | None = None
@@ -117,12 +117,12 @@ class Rename:
 
 @dataclass(frozen=True)
 class FieldChange:
-    """One incoming symbol property the planner dropped, cleaned or renamed (D-09).
+    """One incoming symbol property the planner dropped, cleaned, renamed or set (D-09).
 
     symbol is the final symbol name and field the property name before the change. old is the
-    value before; new is the value after for a clean and the new property name for a rename, and
-    empty for a drop. action is drop | clean | rename; reason is volatile | placeholder |
-    duplicate | whitespace | alias.
+    value before; new is the value after for a clean or a set and the new property name for a
+    rename, and empty for a drop. action is drop | clean | rename | set; reason is volatile |
+    placeholder | duplicate | whitespace | alias | follows_mpn | canonical | datasheet_host.
     """
 
     symbol: str

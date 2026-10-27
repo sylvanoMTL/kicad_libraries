@@ -75,6 +75,7 @@ _NO_MODEL = "No model"
 ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
 REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
 _BLANK_FIELD_HINT = "Empty - the field will be written blank"
+_VALUE_TIP = "Value follows the MPN"
 _NO_FOOTPRINT_FIELD = "(none)"
 _LIBRARY_PLACEHOLDER = "Pick a library, or type Atomic_ and a KiCad library name"
 _BUSY_DELAY_MS = 150  # the busy strip shows only if a rebuild takes longer than this (no flicker)
@@ -913,6 +914,10 @@ class ImportDialog(QDialog):
                 edit.setPlaceholderText(_BLANK_FIELD_HINT)
             if name == "mpn":
                 edit.setToolTip("MPN names the 3D model file")
+            if name == "value":
+                # D-22: Value is always the MPN, so it is shown but never typed into
+                edit.setReadOnly(True)
+                edit.setToolTip(_VALUE_TIP)
             edit.textEdited.connect(lambda text, n=name: self._on_field_edited(n, text))
             restore = self._restore_button(f"Restore default {label}")
             restore.clicked.connect(lambda _checked=False, n=name: self._restore_field(n))
@@ -1955,9 +1960,21 @@ class ImportDialog(QDialog):
         self._set_field_texts()
         self._show_symbol_name(chosen, final)
 
+    def _mirror_value(self):
+        """Value shows the MPN field's text, whatever it is now (D-22); it has no restore button to use."""
+        edit = self._field_edits["value"]
+        edit.blockSignals(True)
+        try:
+            edit.setText(self._field_edits["mpn"].text())
+            edit.setCursorPosition(0)
+        finally:
+            edit.blockSignals(False)
+
     def _set_field_texts(self):
         """Put the defaults into every field that was not edited; edited fields keep their text."""
         for name, edit in self._field_edits.items():
+            if name == "value":
+                continue
             if name not in self._edited:
                 edit.blockSignals(True)
                 try:
@@ -1966,15 +1983,25 @@ class ImportDialog(QDialog):
                 finally:
                     edit.blockSignals(False)
             self._update_field_restore(name)
+        self._mirror_value()
+        self._update_field_restore("value")
 
     def _update_field_restore(self, name: str):
-        default = self._defaults.get(name)
         button = self._field_restore[name]
+        if name == "value":
+            button.setEnabled(False)
+            button.setToolTip(_VALUE_TIP)
+            return
+        default = self._defaults.get(name)
         button.setEnabled(self._field_edits[name].text() != default)
         button.setToolTip(f"Restore default: {default}")
 
     def _on_field_edited(self, name: str, text: str):
         """User typing only (textEdited): remember the edit and wait for the quiet period."""
+        if name == "value":
+            return
+        if name == "mpn":
+            self._mirror_value()
         if text == self._defaults.get(name):
             self._edited.discard(name)  # typed back to the default: the planner decides again
         else:
@@ -1983,6 +2010,8 @@ class ImportDialog(QDialog):
         self._mark_dirty()
 
     def _restore_field(self, name: str):
+        if name == "value":
+            return
         self._edited.discard(name)
         edit = self._field_edits[name]
         edit.blockSignals(True)
@@ -1991,6 +2020,8 @@ class ImportDialog(QDialog):
             edit.setCursorPosition(0)
         finally:
             edit.blockSignals(False)
+        if name == "mpn":
+            self._mirror_value()
         self._update_field_restore(name)
         self._request_rebuild()
 
@@ -2205,7 +2236,6 @@ class ImportDialog(QDialog):
             updating=self._updating() or (not current and not self._build_failed),
             build_failed=self._build_failed,
             library=self._library_combo.currentText(),
-            value_text=self._field_edits["value"].text(),
             mpn_text=self._field_edits["mpn"].text(),
             resolutions=dict(self._resolutions),
             model_error=self._model_rejection.issue.text if self._model_rejection is not None else "",
