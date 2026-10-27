@@ -5,6 +5,7 @@ test swaps one for a gated fake (dataclasses.replace on ImportCore) to hold a wo
 Everything is written into tmp_path copies; QSettings is redirected like test_main_window.
 """
 
+import html
 import threading
 import time
 from dataclasses import replace
@@ -20,6 +21,7 @@ from kicad_lib_manager.importer.plan import InstallResult, ToolContext
 from kicad_lib_manager.importer.applier import apply_plan as real_apply_plan
 from kicad_lib_manager.importer.planner import build_plan as real_build_plan
 from kicad_lib_manager.importer.preview import file_counts, preview_sections
+from kicad_lib_manager.importer.layout import list_symbol_libs as real_list_symbol_libs
 from kicad_lib_manager.importer.suggest import suggest_library as real_suggest_library
 from kicad_lib_manager.widgets.import_dialog import ImportCore, ImportDialog
 
@@ -193,8 +195,8 @@ def test_install_uses_latest_plan_object(qtbot, make_dialog):
     assert recorded[0].library == NEW_B
 
 
-def _good_suggestion(meta, existing=()):
-    return replace(real_suggest_library(meta, existing), name=LIB, placeholders=())
+def _good_suggestion(meta, **kwargs):
+    return replace(real_suggest_library(meta, **kwargs), name=LIB)
 
 
 def test_rebuild_failure_keeps_tree_and_logs(qtbot, make_dialog):
@@ -291,7 +293,7 @@ def test_close_refused_while_installing(qtbot, make_dialog, gates):
     assert not dialog.isVisible()
 
 
-def test_core_calls_run_off_the_gui_thread(qtbot, make_dialog):
+def test_core_calls_run_off_the_gui_thread(qtbot, make_dialog, tmp_path):
     main = threading.get_ident()
     seen: dict[str, int] = {}
 
@@ -303,14 +305,20 @@ def test_core_calls_run_off_the_gui_thread(qtbot, make_dialog):
         return wrapper
 
     import kicad_lib_manager.importer.detect as detect
-    from kicad_lib_manager.importer.layout import list_existing_libraries
+    from kicad_lib_manager.importer.layout import list_symbol_libs
+    from kicad_lib_manager.importer.siblings import own_index, stock_index
+    from stockfixtures import write_stock_sample
 
+    stock_symbols, _ = write_stock_sample(tmp_path / "stock")
     core = core_with(
         open_package=spy("open_package", real_open_package),
         detect_candidate=spy("detect_candidate", detect.detect_candidate),
+        detect_tools=lambda kicad_fp_dir: ToolContext(kicad_symbols_dir=stock_symbols),
         build_plan=spy("build_plan", real_build_plan),
         apply_plan=spy("apply_plan", real_apply_plan),
-        list_existing_libraries=spy("list_existing_libraries", list_existing_libraries),
+        list_symbol_libs=spy("list_symbol_libs", list_symbol_libs),
+        own_index=spy("own_index", own_index),
+        stock_index=spy("stock_index", stock_index),
         suggest_library=spy("suggest_library", real_suggest_library),
     )
     dialog = make_dialog(core)
@@ -321,7 +329,7 @@ def test_core_calls_run_off_the_gui_thread(qtbot, make_dialog):
         dialog._install_btn.click()
     assert set(seen) == {
         "open_package", "detect_candidate", "build_plan", "apply_plan",
-        "list_existing_libraries", "suggest_library",
+        "list_symbol_libs", "own_index", "stock_index", "suggest_library",
     }
     assert all(ident != main for ident in seen.values())
 
@@ -1394,27 +1402,17 @@ def test_emptied_mpn_blocks_install(qtbot, make_item_dialog):
     assert dialog._install_btn.isEnabled()
 
 
-# -- plan 05-09 Task 1: Target library combo, badge, token line and the Updating indicators ---------
+# -- plan 05-09 Task 1 and plan 10-15 Task 2: the library picker, its badge, note and tooltip -----------
 
 from PySide6.QtWidgets import QProgressBar  # noqa: E402
 
-from kicad_lib_manager.importer.candidate import ExistingLibrary  # noqa: E402
-from kicad_lib_manager.importer.suggest import RankedLibrary  # noqa: E402
+from kicad_lib_manager.importer import form  # noqa: E402
+from kicad_lib_manager.importer.stems import ATOMIC_PREFIX, allowed_stems  # noqa: E402
+from kicad_lib_manager.importer.suggest import suggestion_text  # noqa: E402
 from kicad_lib_manager.widgets.theme import SUCCESS  # noqa: E402
 
-NEW_BADGE = "new - creates .kicad_sym + .pretty"
-TOKEN_HINT = "Amber parts are guesses or placeholders. Pick an existing library or type a real name."
-
-
-def _with_alternatives(meta, existing=()):
-    base = real_suggest_library(meta, existing)
-    return replace(
-        base,
-        alternatives=(
-            RankedLibrary("IC_IMU_TDK", 5, (), True, False),
-            RankedLibrary("Connector_USB_GCT", 3, (), True, True),
-        ),
-    )
+NEW_BADGE = "new - creates .kicad_sym"
+ASK_HINT = "Pick a library, or type Atomic_ and a KiCad library name"
 
 
 def combo_items(dialog: ImportDialog) -> list[str]:
@@ -1426,21 +1424,43 @@ def combo_items(dialog: ImportDialog) -> list[str]:
     ]
 
 
-def test_library_combo_lists_alternatives_then_existing(qtbot, make_item_dialog):
+def completions(dialog: ImportDialog, prefix: str) -> list[str]:
+    """What the library completer offers for a typed prefix."""
+    completer = dialog._library_combo.completer()
+    completer.setCompletionPrefix(prefix)
+    names = []
+    for row in range(completer.completionCount()):
+        completer.setCurrentRow(row)
+        names.append(completer.currentCompletion())
+    return names
+
+
+def test_library_combo_lists_the_owners_atomic_libraries_then_every_other_allowed_name(qtbot, make_item_dialog, item_layout):
+    from zipfixtures import symbol_lib
+
     reads = {"n": 0}
-    existing = [ExistingLibrary("Zed_Part_X", True, True), ExistingLibrary("Alpha_Part_X", True, False)]
+    # a hand-made Atomic_ library the rule refuses must stay out of the picker
+    (item_layout.symbols_dir / "Atomic_MyStuff.kicad_sym").write_bytes(symbol_lib(("Atomic_MyStuff",)))
 
     def read_libraries(layout):
         reads["n"] += 1
-        return list(existing)
+        return real_list_symbol_libs(layout)
 
-    dialog = make_item_dialog(
-        UL_ZIP, show=True, suggest_library=_with_alternatives, list_existing_libraries=read_libraries
-    )
+    dialog = make_item_dialog(UL_ZIP, show=True, list_symbol_libs=read_libraries)
     wait_current(qtbot, dialog)
-    # pre-filled with the suggestion; the dropdown holds the alternatives in rank order, a separator, then every library
-    assert dialog._library_combo.currentText() == dialog._suggestion.name
-    assert combo_items(dialog) == ["IC_IMU_TDK", "Connector_USB_GCT", "---", "Zed_Part_X", "Alpha_Part_X"]
+    items = combo_items(dialog)
+    divider = items.index("---")
+    on_disk = sorted(
+        (p.stem for p in item_layout.symbols_dir.glob("Atomic_*.kicad_sym") if p.stem != "Atomic_MyStuff"),
+        key=str.casefold,
+    )
+    assert items[:divider] == on_disk
+    assert on_disk  # the layout does hold Atomic_ libraries, so the first group is not vacuous
+    others = sorted((ATOMIC_PREFIX + s for s in allowed_stems() if ATOMIC_PREFIX + s not in on_disk), key=str.casefold)
+    assert items[divider + 1 :] == others
+    assert items.count("---") == 1
+    for absent in ("IC_Battery_Charger_TI", "Atomic_MyStuff", "Atomic_Footprints"):
+        assert absent not in items
     assert reads["n"] == 1
 
     # the list is read again each time a package is opened
@@ -1448,6 +1468,33 @@ def test_library_combo_lists_alternatives_then_existing(qtbot, make_item_dialog)
     dialog.open_path(UL_ZIP)
     wait_current(qtbot, dialog)
     assert reads["n"] == 2
+
+
+def test_typing_filters_the_library_list_by_substring_ignoring_case(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True)
+    wait_current(qtbot, dialog)
+    expected = {"Atomic_Driver_FET", "Atomic_Transistor_FET", "Atomic_Transistor_FET_Other"}
+    assert set(completions(dialog, "fet")) == expected
+    assert set(completions(dialog, "FET")) == expected
+    assert completions(dialog, "no such library") == []
+
+    type_text(qtbot, dialog._library_combo.lineEdit(), "transistor_fet")
+    assert dialog._library_combo.completer().completionPrefix() == "transistor_fet"
+    assert set(completions(dialog, "transistor_fet")) == {"Atomic_Transistor_FET", "Atomic_Transistor_FET_Other"}
+
+
+def test_a_pick_from_the_completer_sets_the_text_and_rebuilds_at_once(qtbot, make_item_dialog, recorded):
+    dialog = make_item_dialog(UL_ZIP, show=True)
+    wait_current(qtbot, dialog)
+    before = len(recorded)
+    type_text(qtbot, dialog._library_combo.lineEdit(), "energy")  # a pending typing timer
+    assert dialog._debounce.isActive()
+    dialog._library_combo.setEditText("Atomic_Sensor_Energy")
+    dialog._library_combo.completer().activated[str].emit("Atomic_Sensor_Energy")
+    assert not dialog._debounce.isActive() and not dialog._dirty
+    qtbot.waitUntil(lambda: len(recorded) > before, timeout=30000)
+    assert recorded[-1].library == "Atomic_Sensor_Energy"
+    wait_current(qtbot, dialog)
 
 
 def test_library_typing_debounced_pick_immediate(qtbot, make_item_dialog, recorded):
@@ -1478,42 +1525,101 @@ def test_library_typing_debounced_pick_immediate(qtbot, make_item_dialog, record
     assert len(recorded) == before + 2
 
 
-def test_library_badge_and_token_line(qtbot, make_item_dialog):
-    dialog = make_item_dialog(UL_ZIP, show=True)  # the real suggestion: a placeholder name
-    wait_current(qtbot, dialog)
-    name = dialog._suggestion.name
-    assert "SubCategory" in name
-    assert dialog._library_combo.currentText() == name
-    # the token line shows the name with the placeholder in bold amber, and the hint explains why
-    html_text = dialog._token_line.text()
-    assert f'<span style="color:{AMBER};font-weight:bold">SubCategory</span>' in html_text
-    assert not dialog._token_hint.isHidden()
-    assert dialog._token_hint.text() == TOKEN_HINT
-    assert dialog._token_hint.textFormat() == Qt.TextFormat.PlainText
-    assert dialog._library_badge.text() == NEW_BADGE
-
+def test_a_name_differing_only_by_case_is_corrected_when_editing_finishes(qtbot, make_item_dialog, recorded):
+    dialog = ul_dialog(make_item_dialog, qtbot)
     edit = dialog._library_combo.lineEdit()
-    type_text(qtbot, edit, "IC_Battery_Charger_TI")
-    assert dialog._library_badge.text() == "existing"  # follows the keystrokes at once, before any rebuild
-    assert SUCCESS in dialog._library_badge.styleSheet()
-    assert "SubCategory" not in dialog._token_line.text()
-    assert dialog._token_hint.isHidden()
-    type_text(qtbot, edit, "IC_New_TI")
-    assert dialog._library_badge.text() == NEW_BADGE
-    type_text(qtbot, edit, "ic_battery_charger_ti")  # a case twin is not the existing library
-    assert dialog._library_badge.text() == NEW_BADGE
-    type_text(qtbot, edit, "")
+    type_text(qtbot, edit, "atomic_transistor_fet")
+    assert dialog._library_note.isHidden()
+    assert edit.text() == "atomic_transistor_fet"  # the typed text stays while the owner is typing
+
+    edit.editingFinished.emit()
+    assert edit.text() == "Atomic_Transistor_FET"
+    assert not dialog._library_note.isHidden()
+    assert dialog._library_note.text() == "Spelling corrected to Atomic_Transistor_FET"
+    assert dialog._library_note.textFormat() == Qt.TextFormat.PlainText
+    qtbot.waitUntil(lambda: recorded[-1].library == "Atomic_Transistor_FET", timeout=30000)
+    wait_current(qtbot, dialog)
+    assert dialog._plan.library == "Atomic_Transistor_FET"
+    assert dialog._library_badge.text() == "existing"
+
+    # the note goes at the next keystroke
+    type_text(qtbot, edit, "X")
+    assert dialog._library_note.isHidden()
+
+
+def test_a_name_that_is_already_right_or_wrong_in_other_ways_gets_no_correction(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    edit = dialog._library_combo.lineEdit()
+    for text in ("Atomic_Transistor_FET", "Transistor_FET", "IC_New_TI", ""):
+        type_text(qtbot, edit, text)
+        edit.editingFinished.emit()
+        assert edit.text() == text
+        assert dialog._library_note.isHidden()
+
+
+def test_a_pick_with_the_wrong_case_is_corrected_too(qtbot, make_item_dialog, recorded):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    dialog._library_combo.setEditText("ATOMIC_DIODE")
+    dialog._library_combo.textActivated.emit("ATOMIC_DIODE")
+    assert dialog._library_combo.currentText() == "Atomic_Diode"
+    assert dialog._library_note.text() == "Spelling corrected to Atomic_Diode"
+    qtbot.waitUntil(lambda: recorded[-1].library == "Atomic_Diode", timeout=30000)
+    wait_current(qtbot, dialog)
+
+
+def _asks(meta, **kwargs):
+    return replace(real_suggest_library(meta, **kwargs), name="", source="ask", reason="", alternatives=())
+
+
+def test_nothing_placing_the_part_leaves_the_library_empty_and_blocks_install(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_asks)
+    wait_current(qtbot, dialog)
+    assert dialog._library_combo.currentText() == ""
+    assert dialog._library_combo.lineEdit().placeholderText() == ASK_HINT
+    assert dialog._library_combo.toolTip() == ""
     assert dialog._library_badge.isHidden()
-    assert dialog._token_hint.isHidden()
+    assert not dialog._install_btn.isEnabled()
+    assert [r.target for r in dialog._strip_reasons if r.text == "Pick or type a library name"] == ["library"]
+    assert frame_blocked(dialog, "library")
 
 
-def test_library_token_line_escapes_markup(qtbot, make_item_dialog):
+def test_library_badge_reads_existing_new_or_nothing(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    edit = dialog._library_combo.lineEdit()
+    assert dialog._library_badge.text() == "existing"  # the suggested Atomic_Battery_Management is on disk
+    assert SUCCESS in dialog._library_badge.styleSheet()
+    type_text(qtbot, edit, "Atomic_Sensor_Temperature")  # allowed, not on disk: new, and only a .kicad_sym
+    assert dialog._library_badge.text() == NEW_BADGE
+    type_text(qtbot, edit, "Atomic_Battery_Management")
+    assert dialog._library_badge.text() == "existing"  # follows the keystrokes at once, before any rebuild
+    for refused in ("IC_Battery_Charger_TI", "atomic_battery_management", "Atomic_MyStuff", ""):
+        type_text(qtbot, edit, refused)  # a v1 name, a case twin, a hand-made name, nothing
+        assert dialog._library_badge.isHidden(), refused
+
+
+def test_library_tooltip_holds_the_escaped_reason_only_for_the_suggested_name(qtbot, make_item_dialog):
+    reason = "Suggested from 2 similar parts in your <b>Atomic_Diode</b> & more"
+
+    def with_markup(meta, **kwargs):
+        return replace(real_suggest_library(meta, **kwargs), name=LIB, source="own", reason=reason)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=with_markup)
+    wait_current(qtbot, dialog)
+    tip = dialog._library_combo.toolTip()
+    assert tip == "<p>" + html.escape(suggestion_text(dialog._suggestion)) + "</p>"
+    assert "&lt;b&gt;Atomic_Diode&lt;/b&gt;" in tip and "&amp;" in tip
+    assert "<b>" not in tip
+    type_text(qtbot, dialog._library_combo.lineEdit(), "Atomic_Diode")
+    assert dialog._library_combo.toolTip() == ""
+    dialog._library_combo.setEditText(LIB)
+    assert dialog._library_combo.toolTip() == tip
+
+
+def test_the_v1_token_line_and_hint_are_gone(qtbot, make_item_dialog):
     dialog = make_item_dialog(UL_ZIP, show=True)
     wait_current(qtbot, dialog)
-    type_text(qtbot, dialog._library_combo.lineEdit(), "<b>x</b>_&")
-    text = dialog._token_line.text()
-    assert "&lt;b&gt;x&lt;/b&gt;" in text and "&amp;" in text
-    assert "<b>" not in text
+    assert not hasattr(dialog, "_token_line") and not hasattr(dialog, "_token_hint")
+    assert not hasattr(form, "library_tokens")
 
 
 def test_updating_label_and_busy_strip(qtbot, make_item_dialog, gates):
@@ -1556,12 +1662,16 @@ def test_updating_label_and_busy_strip(qtbot, make_item_dialog, gates):
 
 
 def test_library_long_name_geometry(qtbot, make_item_dialog):
-    """Backstop (UI E6/long-text): a 60-character library name keeps the badge and token line inside the pane."""
-    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    """Backstop (UI E6/long-text): a 60-character library name keeps the badge inside the pane."""
+    long_stem = ("Averylongtokenabc_" * 3 + "Zlast")[:53]
+    long_name = ATOMIC_PREFIX + long_stem
+    assert len(long_name) == 60 and not long_name.endswith("_")
+    dialog = make_item_dialog(
+        UL_ZIP, show=True, suggest_library=_good_suggestion,
+        detect_tools=lambda kicad_fp_dir: ToolContext(allowed_stems=allowed_stems([long_stem])),
+    )
     dialog.resize(900, 600)
     wait_current(qtbot, dialog)
-    long_name = ("IC_" + "Averylongtokenabc_" * 3 + "Zlast_TI")[:60]
-    assert len(long_name) == 60 and not long_name.endswith("_")
     type_text(qtbot, dialog._library_combo.lineEdit(), long_name)
     qtbot.wait(50)
     scroll = dialog._left_scroll
@@ -1569,14 +1679,12 @@ def test_library_long_name_geometry(qtbot, make_item_dialog):
     left = scroll.widget()
     assert not scroll.horizontalScrollBar().isVisible()
     assert left.width() <= viewport.width()
-    for widget in (dialog._library_combo, dialog._library_badge, dialog._token_line, dialog._token_hint):
+    for widget in (dialog._library_combo, dialog._library_badge):
         if widget.isVisible():
             right = widget.mapTo(left, QPoint(widget.width(), 0)).x()
             assert right <= viewport.width(), (widget, right, viewport.width())
     assert dialog._library_badge.isVisible()
-    assert dialog._token_line.toolTip() == long_name
-    # the token line wraps instead of widening the pane
-    assert dialog._token_line.height() >= dialog._token_line.fontMetrics().height()
+    assert dialog._library_badge.text() == NEW_BADGE
 
 
 # -- plan 05-09 Task 2: the clickable blocking-reason strip, amber frames, ready and no-op lines ----
@@ -1589,7 +1697,7 @@ from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
 from kicad_lib_manager.importer.stems import name_verdict  # noqa: E402
 from kicad_lib_manager.widgets.theme import AMBER_TINT, LINK, SP_SM  # noqa: E402
 
-# The UL sample's suggestion is a v1 name until plan 10-15 gives it the Atomic_ scheme: the form refuses it with the name rule's reason
+# A v1 name is refused by the name rule, with this reason
 V1_NAME_REASON = name_verdict("IC_SubCategory_TI").reason
 
 
@@ -1614,12 +1722,13 @@ def with_issues(*issues):
 
 
 def test_refused_suggestion_blocks_install(qtbot, make_item_dialog):
-    """D-08: the UL sample opens blocked on its v1 library name until an Atomic_ name is picked."""
+    """D-05, D-08: with no KiCad and no category the UL sample opens with an empty library and Install blocked until a name is picked."""
     dialog = make_item_dialog(UL_ZIP, show=True)
     wait_current(qtbot, dialog)
-    assert "SubCategory" in dialog._library_combo.currentText()
+    assert dialog._suggestion.source == "ask"
+    assert dialog._library_combo.currentText() == ""
     assert not dialog._install_btn.isEnabled()
-    assert V1_NAME_REASON in strip_links(dialog)
+    assert "Pick or type a library name" in strip_links(dialog)
     assert dialog._strip.text().startswith("⚠ Install is blocked: ")
     assert frame_blocked(dialog, "library")
     # the planner's own refusal is not repeated as a second reason

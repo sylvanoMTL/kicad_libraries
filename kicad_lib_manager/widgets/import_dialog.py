@@ -296,6 +296,7 @@ class ImportDialog(QDialog):
         self._suggestion: LibrarySuggestion | None = None
         self._existing: tuple = ()
         self._note_for = ""  # the corrected name the spelling note is about; "" when the note is hidden
+        self._typed = ""  # the library text as the owner typed it, until editing ends
 
         # Rebuild coordinator (PREV-07): serialised builds, the latest request wins. A one-off build
         # (the incoming side of a conflict, D-08) shares the queue: never two build_plan calls at once.
@@ -1187,6 +1188,7 @@ class ImportDialog(QDialog):
             combo.blockSignals(False)
         # The popup shows every full name even when the closed combo is narrower
         combo.view().setMinimumWidth(combo.view().sizeHintForColumn(0) + 32)
+        self._typed = ""
         self._hide_library_note()
         self._refresh_library_labels()
 
@@ -1200,6 +1202,7 @@ class ImportDialog(QDialog):
             combo.setEditText("")
         finally:
             combo.blockSignals(False)
+        self._typed = ""
         self._hide_library_note()
         self._refresh_library_labels()
 
@@ -1232,15 +1235,25 @@ class ImportDialog(QDialog):
             self._hide_library_note()
 
     def _correct_library_spelling(self) -> bool:
-        """Set the official spelling when the text differs from an allowed name only by letter case (D-11)."""
+        """Use the official spelling of a name that differs from an allowed one only by letter case, and say so (D-11).
+
+        The combo already swaps typed text for the list entry that matches it ignoring case when editing
+        ends, so the typed text (kept in _typed) is what shows the owner's spelling was off.
+        """
         text = self._library_combo.currentText()
+        typed, self._typed = self._typed, ""
         verdict = name_verdict(text, self._allowed())
-        if verdict.ok or not verdict.note or verdict.name == text:
+        if not verdict.ok and verdict.note and verdict.name != text:
+            official = verdict.name
+        elif verdict.ok and typed and typed != text and typed.casefold() == text.casefold():
+            official = text
+        else:
             return False
-        self._library_combo.setEditText(verdict.name)
+        if official != text:
+            self._library_combo.setEditText(official)
         self._refresh_library_labels()
-        self._note_for = verdict.name
-        self._library_note.setText(verdict.note)
+        self._note_for = official
+        self._library_note.setText(f"Spelling corrected to {official}")
         self._library_note.show()
         return True
 
@@ -2037,8 +2050,9 @@ class ImportDialog(QDialog):
         if self._candidate is not None and self._correct_library_spelling():
             self._request_rebuild()
 
-    def _on_library_text_edited(self, _text: str):
+    def _on_library_text_edited(self, text: str):
         """User typing in the library name (textEdited): the labels already follow; the rebuild waits 300 ms."""
+        self._typed = text
         self._hide_library_note()
         if self._candidate is not None:
             self._mark_dirty()
