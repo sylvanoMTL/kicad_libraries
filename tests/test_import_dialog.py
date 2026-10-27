@@ -1253,7 +1253,9 @@ def test_fields_clear_and_restore(qtbot, make_item_dialog, recorded):
     assert dialog._dirty and not dialog._install_btn.isEnabled()
     wait_current(qtbot, dialog)
     assert recorded[-1].datasheet == "" and "datasheet" in recorded[-1].cleared
-    assert dialog._install_btn.isEnabled()  # a blank Datasheet installs
+    # a blank Datasheet is written as asked, and the atomic gate keeps Install off until it is filled or restored
+    assert [i.code for i in dialog._plan.issues if i.severity is Severity.ERROR] == ["install.atomic.datasheet"]
+    assert not dialog._install_btn.isEnabled()
     assert dialog._field_restore["datasheet"].isEnabled()
     assert dialog._field_restore["datasheet"].toolTip() == f"Restore default: {UL_DEFAULTS['datasheet']}"
 
@@ -1270,6 +1272,11 @@ def test_fields_clear_and_restore(qtbot, make_item_dialog, recorded):
     type_text(qtbot, dialog._field_edits["description"], "")
     wait_current(qtbot, dialog)
     assert recorded[-1].description is None and "description" not in recorded[-1].cleared
+    # the part has no Description now, so the gate keeps Install off until one is typed again
+    assert not dialog._install_btn.isEnabled()
+    type_text(qtbot, dialog._field_edits["description"], UL_DESCRIPTION)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].description == UL_DESCRIPTION
 
     # Value is read-only and follows the MPN: emptying the MPN empties Value, the plan carries
     # install.empty_required and Install stays off; restoring the MPN brings both back
@@ -3841,7 +3848,7 @@ def test_add_model_tracer_snapeda_end_to_end(qtbot, make_item_dialog, item_layou
     assert dialog._plan.model_file == f"{SNAPEDA_MPN}.stp"
     codes = [i.code for i in dialog._plan.issues]
     assert "intake.model_attached" in codes
-    assert "intake.no_model" not in codes and "install.no_model" not in codes
+    assert "intake.no_model" not in codes and "install.atomic.model_3d" not in codes
     _title, rows = files_rows(dialog)
     assert any(row.endswith(f"{SNAPEDA_MPN}.stp") for row in rows), rows
     for suffix in ("*.step", "*.stp", "*.wrl", "*.zip"):

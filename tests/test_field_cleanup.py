@@ -45,7 +45,7 @@ from kicad_lib_manager.kicad_files import (
     property_insert_edit,
     remove_property_edit,
 )
-from kicad_lib_manager.models import Issue
+from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.sexpr import apply_edits
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -215,7 +215,10 @@ def test_placeholder_vendor_fields_dropped(tmp_path):
 
 def test_protected_fields_never_dropped(tmp_path):
     plan, _ = _plan_vendor(tmp_path, {"Description": "", "ki_description": ""}, datasheet="", keywords="")
-    assert not plan.blocked, [i.text for i in plan.issues]
+    # The empty fields are kept, and the atomic gate refuses the part for them (D-21)
+    gate = [i.code for i in plan.issues if i.severity is Severity.ERROR]
+    assert gate == ["install.atomic.manufacturer", "install.atomic.datasheet", "install.atomic.description"]
+    assert plan.blocked
     names = _property_names(_symbol_in(plan))
     for kept in ("Datasheet", "Description", "ki_description", "ki_keywords", "ki_locked", "ki_fp_filters"):
         assert kept in names, names
@@ -260,7 +263,7 @@ def test_placeholder_alias_is_absent(tmp_path):
     assert not plan.blocked, [i.text for i in plan.issues]
     assert candidate.symbols[0].meta.manufacturer == ""
     assert _value_of(plan, "Manufacturer") == "Texas Instruments"
-    assert "install.manufacturer_missing" not in [i.code for i in plan.issues]
+    assert "install.atomic.manufacturer" not in [i.code for i in plan.issues]
 
     second = tmp_path / "second"
     second.mkdir()

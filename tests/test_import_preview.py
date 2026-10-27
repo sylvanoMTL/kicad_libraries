@@ -377,14 +377,15 @@ def test_conflict_rows_details(layout, tmp_path):
 # -- Issues -------------------------------------------------------------------------------
 
 
-def test_issue_rows_no_model_warning(layout, tmp_path):
+def test_issue_rows_no_model_is_a_blocking_error(layout, tmp_path):
     with _open(tmp_path, _members(models=())) as (_, candidate):
         options = InstallOptions(library=LIBRARY)
         plan = build_plan(candidate, options, layout, ToolContext())
         issues = _sections(plan, candidate, options)["Issues"]
-    row = next(r for r in issues.rows if "No 3D model found" in r.text)
-    assert row.text == "⚠ No 3D model found in pkg.zip; the footprint installs without one"
-    assert (row.tone, row.glyph, row.kind) == ("warning", "⚠", "issue")
+    assert plan.blocked
+    row = next(r for r in issues.rows if r.kind == "issue" and r.text.endswith("has no 3D model"))
+    assert row.text == "✖ the footprint has no 3D model"
+    assert (row.tone, row.glyph, row.kind) == ("error", "✖", "issue")
 
 
 def test_issue_rows_follow_severity(layout, tmp_path):

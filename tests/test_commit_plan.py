@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 import pytest
+from installfixtures import UL_DESCRIPTION
 from zipfixtures import footprint_library_for
 
 from kicad_lib_manager.importer import commit_plan
@@ -213,7 +214,7 @@ def test_build_uses_disk_spelling(tmp_path):
 
 def test_build_from_real_ul_plan(atomic_custom, ul_package, tmp_path):
     package, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=LIB), atomic_custom)
+    plan = build_plan(candidate, InstallOptions(library=LIB, description=UL_DESCRIPTION), atomic_custom)
     result = apply_plan(plan, backup_root=tmp_path / "backups")
     assert result.ok
 

@@ -69,6 +69,7 @@ def test_build_options_copies_resolutions():
 from pathlib import Path  # noqa: E402
 
 import pytest  # noqa: E402
+from installfixtures import UL_DESCRIPTION  # noqa: E402
 from vendorfixtures import (  # noqa: E402
     SNAPEDA_DESCRIPTION,
     SNAPEDA_MANUFACTURER,
@@ -96,6 +97,10 @@ UL_ZIP = REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip"
 UL_LIBRARY = "Atomic_Battery_Management"
 TEST_LIBRARY = "Atomic_Analog"
 _TI_DATASHEET = {"Datasheet": "https://www.ti.com/lit/gpn/part"}
+# A ti.com Datasheet plus a Description: the part passes the atomic gate once the manufacturer is inferred (D-21)
+_DESCRIBED = {**_TI_DATASHEET, "Description": "A test part"}
+# The gate errors an untouched plan of a case still carries: the UL sample has no Description, the SnapEDA one no Datasheet
+_GATE_ERRORS = {"ul": ["install.atomic.description"], "snapeda": ["install.atomic.datasheet"]}
 
 
 @pytest.fixture
@@ -124,15 +129,15 @@ def _equivalence_package(case: str, tmp_path: Path) -> tuple[Path, str]:
         return _synthetic(tmp_path, symbol_lib(("PART",), props=props)), TEST_LIBRARY
     if case == "inferred":
         # No manufacturer property: the planner infers TI from the datasheet host
-        return _synthetic(tmp_path, symbol_lib(("PART",), props=_TI_DATASHEET)), TEST_LIBRARY
+        return _synthetic(tmp_path, symbol_lib(("PART",), props=_DESCRIBED)), TEST_LIBRARY
     if case == "snapeda":
         # SnapEDA rules: MF/MP renamed, MANUFACTURER/SNAPEDA_PN dropped, the raw description collapsed
         return snapeda_zip(tmp_path / "snapeda.zip", with_model=True), TEST_LIBRARY
     if case == "placeholder_mf":
         # A placeholder alias counts as absent, so the planner infers TI from the datasheet host
-        return _synthetic(tmp_path, symbol_lib(("PART",), props={**_TI_DATASHEET, "MF": "N/A"})), TEST_LIBRARY
+        return _synthetic(tmp_path, symbol_lib(("PART",), props={**_DESCRIBED, "MF": "N/A"})), TEST_LIBRARY
     # "renamed": the vendor name changes when it is sanitised, and Value follows it
-    return _synthetic(tmp_path, symbol_lib(("PART/1",), props=_TI_DATASHEET)), TEST_LIBRARY
+    return _synthetic(tmp_path, symbol_lib(("PART/1",), props=_DESCRIBED)), TEST_LIBRARY
 
 
 @pytest.mark.parametrize("case", ["ul", "aliases", "inferred", "renamed", "snapeda", "placeholder_mf"])
@@ -153,7 +158,9 @@ def test_field_defaults_equivalence(case, eq_layout, tmp_path):
             resolutions={},
         )
         untouched = build_plan(candidate, build_options(base, FieldDefaults()), eq_layout)
-        assert not untouched.blocked, untouched.issues
+        # What the form shows is what the planner writes, whether or not the gate lets the part in
+        gate_errors = [i.code for i in untouched.issues if i.severity is Severity.ERROR]
+        assert gate_errors == _GATE_ERRORS.get(case, []), untouched.issues
         defaults = form.field_defaults(candidate, symbol.name, final_name=untouched.symbol_name)
         typed_values = FormValues(**{**base.__dict__, "fields": {n: defaults.get(n) for n in OVERRIDE_NAMES}})
         typed = build_plan(candidate, build_options(typed_values, defaults), eq_layout)
@@ -244,7 +251,13 @@ def test_empty_footprint_name_blocks_the_plan(eq_layout):
         )
         plan = build_plan(candidate, blank, eq_layout)
         typed = build_options(
-            values(library=UL_LIBRARY, symbol=candidate.symbols[0].name, footprint=fp, footprint_name="DQK/0006B"),
+            values(
+                library=UL_LIBRARY,
+                symbol=candidate.symbols[0].name,
+                footprint=fp,
+                footprint_name="DQK/0006B",
+                fields={"description": UL_DESCRIPTION},
+            ),
             DEFAULTS,
             linked_vendor=fp,
         )
@@ -328,14 +341,15 @@ def test_cli_runs_once_across_rebuilds(eq_layout):
         symbol = candidate.symbols[0].name
         fp = candidate.footprints[0].name
         steps = [
-            InstallOptions(library="Atomic_Sensor_Temperature", symbol=symbol, footprint=fp),
-            InstallOptions(library="Atomic_Sensor_Pressure", symbol=symbol, footprint=fp),
+            InstallOptions(library="Atomic_Sensor_Temperature", symbol=symbol, footprint=fp, description=UL_DESCRIPTION),
+            InstallOptions(library="Atomic_Sensor_Pressure", symbol=symbol, footprint=fp, description=UL_DESCRIPTION),
             InstallOptions(
                 library="Atomic_Sensor_Pressure",
                 symbol=symbol,
                 footprint=fp,
                 footprint_names={fp: "DQK6"},
                 manufacturer="Acme",
+                description=UL_DESCRIPTION,
             ),
         ]
         for options in steps:
