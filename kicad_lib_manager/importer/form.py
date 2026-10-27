@@ -6,13 +6,15 @@ write into each field when nothing is set, so the form shows the real result (RE
 Keeping the rules here means they are tested without a display, and the dialog holds only widgets.
 """
 
+import re
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass, field
 
+from ..atomic_check import datasheet_problem
 from ..manufacturers import canonical
 from ..models import Issue, Severity
 from .candidate import ImportCandidate
-from .fieldrules import clean_description
+from .fieldrules import clean_description, is_placeholder
 from .plan import Conflict, InstallOptions, InstallPlan, Resolution
 from .stems import name_verdict
 from .suggest import manufacturer_from_datasheet
@@ -82,8 +84,9 @@ def kind_label(kind: str) -> str:
 class Reason:
     """One reason Install is off, and the control that fixes it.
 
-    target is "plan" (no control), "library", "footprint_name", "mpn", "footprints" (the footprint choice), "model"
-    (the 3D model row), "conflict:{key}" or "rename:{key}".
+    target is "plan" (no control), "library", "footprint_name", "mpn", "manufacturer", "datasheet", "description",
+    "footprints" (the footprint choice), "model" (the Add 3D model... button), "model_rejected" (the Remove button
+    of a rejected 3D model source), "conflict:{key}" or "rename:{key}".
     """
 
     text: str
@@ -101,6 +104,10 @@ class FormStatus:
     resolutions: Mapping[str, Resolution]
     model_error: str = ""  # the ERROR text of a rejected 3D model source; empty when none is held
     allowed: frozenset[str] = frozenset()  # allowed KiCad library stems; empty means the built-in snapshot
+    # The live field texts: a typed fix lifts its reason before the rebuild (D-25)
+    datasheet_text: str = ""
+    description_text: str = ""
+    manufacturer_text: str = ""
 
 
 def _blank_renames(status: FormStatus, plan: InstallPlan | None) -> list[Conflict]:
@@ -113,6 +120,105 @@ def _blank_renames(status: FormStatus, plan: InstallPlan | None) -> list[Conflic
         if chosen is not None and chosen.action == "rename" and not (chosen.rename_to or "").strip():
             blank.append(conflict)
     return blank
+
+
+_ATOMIC_PREFIX = "install.atomic."
+# The control each atomic rule is fixed in: Value follows the MPN (D-22), the model is the Add 3D model... button
+ATOMIC_TARGETS = {
+    "mpn": "mpn",
+    "manufacturer": "manufacturer",
+    "footprint": "footprint_name",
+    "value": "mpn",
+    "datasheet": "datasheet",
+    "description": "description",
+    "model_3d": "model",
+}
+_RULE_LABELS = {"footprint": "Footprint", "model_3d": "3D model", **FIELD_LABELS}
+# What the Phase 9 check says for a missing value, and the sentence the owner reads instead
+_ATOMIC_SENTENCES = (
+    ("mpn", "no MPN", "Enter the MPN"),
+    ("manufacturer", "no manufacturer", "Enter the Manufacturer"),
+    ("datasheet", "no datasheet", "Enter a Datasheet link"),
+    ("datasheet", "Datasheet is not a link or file path", "The Datasheet must be a link or a file path"),
+    ("description", "no description", "Type a Description"),
+)
+# How each rule's own texts start, so "<parent>: <text>" is told from a text that holds a colon itself
+_ATOMIC_STARTS = {
+    "mpn": ("no MPN", "MPN "),
+    "manufacturer": ("no manufacturer", "Manufacturer ", '"'),
+    "footprint": ("no footprint", "Footprint ", "footprint "),
+    "value": ("no Value", "Value "),
+    "datasheet": ("no datasheet", "Datasheet "),
+    "description": ("no description",),
+    "model_3d": ("the footprint has no 3D model", "Could not check the 3D model", "3D model "),
+}
+_RAW_FIELD_RE = re.compile(r'"?\bki_([a-z_]+)\b"?')
+
+
+def _plain(text: str) -> str:
+    """The text with each raw KiCad field name in words (ki_fp_filters reads as fp filters), never the name."""
+    return _RAW_FIELD_RE.sub(lambda m: m.group(1).replace("_", " "), text)
+
+
+def _atomic_parts(issue: Issue) -> tuple[str, str | None, str]:
+    """Split an install.atomic.<rule> Issue into (rule, parent symbol name or None, the check's own text).
+
+    A failure of a parent symbol of an extends unit reads "<name>: <text>", text being one of the rule's wordings.
+    """
+    rule = issue.code[len(_ATOMIC_PREFIX):]
+    text = issue.text
+    starts = _ATOMIC_STARTS.get(rule, ())
+    if starts and not text.startswith(starts):
+        head, sep, rest = text.partition(": ")
+        if sep and head and rest.startswith(starts):
+            return rule, head, rest
+    return rule, None, text
+
+
+def _atomic_sentence(rule: str, text: str) -> str:
+    """The plain sentence for one rule's text; a text the table does not know reads "<Label>: <text>"."""
+    for known_rule, known, sentence in _ATOMIC_SENTENCES:
+        if rule == known_rule and text.startswith(known):
+            return sentence
+    label = _RULE_LABELS.get(rule, rule)
+    if rule == "model_3d":
+        return f"{label}: {_plain(text).rstrip('.')}. Use Add 3D model..."
+    return f"{label}: {_plain(text)}"
+
+
+def atomic_reason(issue: Issue) -> Reason:
+    """The reason for one broken atomic rule: a plain sentence and the control that fixes it (D-25).
+
+    A failure of a parent symbol names the parent and targets no control: the dialog edits only the chosen symbol.
+    """
+    rule, parent, text = _atomic_parts(issue)
+    sentence = _atomic_sentence(rule, text)
+    if parent is not None:
+        return Reason(f"{parent} (parent symbol): {sentence}", "plan")
+    return Reason(sentence, ATOMIC_TARGETS.get(rule, "plan"))
+
+
+def _filled(text: str) -> bool:
+    return bool(text.strip()) and not is_placeholder(text)
+
+
+def _atomic_fixed_live(issue: Issue, status: FormStatus) -> bool:
+    """True when the live field text already fixes a missing-value ERROR of the chosen symbol (D-25)."""
+    rule, parent, text = _atomic_parts(issue)
+    if parent is not None:
+        return False
+    if rule == "description":
+        return _filled(status.description_text)
+    if rule == "manufacturer":
+        return text.startswith("no manufacturer") and _filled(status.manufacturer_text)
+    if rule == "datasheet":
+        return datasheet_problem(status.datasheet_text) is None
+    if rule == "mpn":
+        # A blank MPN field has its own reason ("MPN is empty ...") beside this one
+        return text.startswith("no MPN")
+    if rule == "value":
+        return _filled(status.mpn_text)
+    return False
 
 
 def _issue_target(issue: Issue) -> str:
@@ -158,6 +264,8 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
             return mpn_blank
         if code == "install.bad_rename":
             return any(text.startswith(f"{c.key}:") for c in renames)
+        if code.startswith(_ATOMIC_PREFIX):
+            return _atomic_fixed_live(issue, status)
         return False
 
     reasons: list[Reason] = []
@@ -165,10 +273,14 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
         reasons.append(Reason(BUILD_FAILED_REASON, "plan"))
     elif plan is not None:
         for issue in plan.issues:
-            if issue.severity is Severity.ERROR and not explained(issue):
+            if issue.severity is not Severity.ERROR or explained(issue):
+                continue
+            if issue.code.startswith(_ATOMIC_PREFIX):
+                reasons.append(atomic_reason(issue))
+            else:
                 reasons.append(Reason(f"Error: {issue.text}", _issue_target(issue)))
     if status.model_error.strip():
-        reasons.append(Reason(f"Error: {status.model_error}", "model"))
+        reasons.append(Reason(f"Error: {status.model_error}", "model_rejected"))
     if not verdict.ok:
         reasons.append(Reason(verdict.reason, "library"))
     if mpn_blank:

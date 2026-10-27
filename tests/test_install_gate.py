@@ -98,7 +98,7 @@ def test_the_dialog_blocks_install_until_the_description_is_typed(qtbot, atomic_
     set_library(dialog, LIBRARY, fill=False)
     wait_plan(qtbot, dialog)
     assert not dialog._install_btn.isEnabled()
-    assert "no description" in dialog._strip.text()
+    assert "Type a Description" in dialog._strip.text()
 
     type_description(dialog)
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
