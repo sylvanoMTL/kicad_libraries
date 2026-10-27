@@ -5,6 +5,8 @@ Linux:   ~/.config/KiCadExtLibManager/settings.ini
 macOS:   ~/Library/Preferences/KiCadExtLibManager/settings.ini
 """
 
+import hashlib
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings
@@ -39,6 +41,14 @@ def load_kicad_fp_dir() -> Path | None:
 def save_kicad_fp_dir(path: Path) -> None:
     s = get_settings()
     s.setValue("kicad_fp_dir", str(path))
+
+
+# ── Scan cache ───────────────────────────────────────────────────────
+
+def scan_cache_file(repo_root: Path) -> Path:
+    """The saved scan of one repository folder: scan_cache/<hash>.json beside settings.ini, never in the repo."""
+    key = hashlib.sha256(os.path.normcase(str(Path(repo_root).resolve())).encode("utf-8")).hexdigest()[:16]
+    return Path(get_settings().fileName()).parent / "scan_cache" / f"{key}.json"
 
 
 # ── Import folder ────────────────────────────────────────────────────

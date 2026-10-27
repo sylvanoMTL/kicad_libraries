@@ -9,6 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import QThread, Signal, Qt
 from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
+from . import scan_cache
 from .importer.layout import RepoLayout
 from .library_scanner import scan_all, find_kicad_footprint_dir, sync_kicad_path_vars
 from .table_generator import (
@@ -18,7 +19,7 @@ from .models import Issue, ScanResult, Severity
 from .settings import (
     load_kicad_fp_dir, save_kicad_fp_dir,
     load_dest_history, add_dest_to_history,
-    load_window_geometry, save_window_geometry,
+    load_window_geometry, save_window_geometry, scan_cache_file,
 )
 from .widgets.library_table import LibraryTableWidget
 from .widgets.log_panel import LogPanel
@@ -66,11 +67,15 @@ class ScanWorker(QThread):
     progress = Signal(str, int)  # message, percentage
     finished = Signal(object)    # ScanResult
     error = Signal(str)
+    note = Signal(object)        # Issue about the saved scan
 
-    def __init__(self, repo_root: Path, kicad_fp_dir: Path | None = None):
+    def __init__(self, repo_root: Path, kicad_fp_dir: Path | None = None, *,
+                 cache_file: Path | None = None, reuse_cache: bool = False):
         super().__init__()
         self._repo_root = repo_root
         self._kicad_fp_dir = kicad_fp_dir
+        self._cache_file = cache_file
+        self._reuse_cache = reuse_cache
 
     def run(self):
         try:
@@ -78,8 +83,48 @@ class ScanWorker(QThread):
                 pct = int(current / max(total, 1) * 100)
                 self.progress.emit(msg, pct)
 
+            fingerprint = None
+            if self._cache_file is not None:
+                # Cache problems never stop the scan: this is the thread boundary (O-04)
+                if self._reuse_cache:
+                    self.progress.emit("Checking for library changes...", 0)
+                    try:
+                        check = scan_cache.load_fresh(
+                            self._cache_file, self._repo_root, self._kicad_fp_dir
+                        )
+                    except Exception:
+                        check = scan_cache.CacheCheck(None, Issue(
+                            Severity.INFO, "cache.unreadable",
+                            "The saved scan could not be read; scanning the whole repository.",
+                        ))
+                    self.note.emit(check.note)
+                    if check.result is not None:
+                        self.finished.emit(check.result)
+                        return
+                    fingerprint = check.fingerprint
+                # Taken before scan_all reads any file, so an edit during the scan shows as stale
+                if fingerprint is None:
+                    try:
+                        fingerprint = scan_cache.fingerprint(self._repo_root, self._kicad_fp_dir)
+                    except Exception:
+                        fingerprint = None
+
             result = scan_all(self._repo_root, progress=on_progress,
                               kicad_fp_dir=self._kicad_fp_dir)
+
+            if self._cache_file is not None:
+                # Before finished: the GUI has not yet touched the selected flags
+                try:
+                    failure = scan_cache.save(
+                        self._cache_file, self._repo_root, self._kicad_fp_dir, fingerprint, result
+                    )
+                except Exception as e:
+                    failure = Issue(
+                        Severity.WARNING, "cache.save_failed",
+                        f"Could not save this scan for the next start: {e}",
+                    )
+                if failure is not None:
+                    self.note.emit(failure)
             self.finished.emit(result)
         except Exception as e:
             self.error.emit(str(e))
@@ -114,7 +159,8 @@ class MainWindow(QMainWindow):
         # Detect KiCad installation, then start scan
         self._detect_kicad()
         self._log_existing_tables(Path(self._dest_combo.currentText()))
-        self._start_scan()
+        # Reuse the saved scan when no library file changed (O-01)
+        self._start_scan(reuse_cache=True)
 
     def _build_menu(self):
         menubar = self.menuBar()
@@ -339,11 +385,13 @@ class MainWindow(QMainWindow):
         ):
             control.setEnabled(not running)
 
-    def _start_scan(self, show_progress: bool = True):
+    def _start_scan(self, show_progress: bool = True, reuse_cache: bool = False):
         """Start a scan; every scan request must go through here.
 
         show_progress=False runs the scan quietly (no QProgressDialog); only the
         post-install rescan uses it, so the trees update behind the import dialog.
+        reuse_cache=True (app start only) shows the saved scan when no library file
+        changed; every other scan is a full scan, and every full scan saves its result.
 
         Refuses while a worker exists, because a disabled control does not stop a
         programmatic caller (the post-import rescan included). The guard keys on
@@ -372,10 +420,18 @@ class MainWindow(QMainWindow):
         if self._pending_post_install is not None:
             self._pending_post_install.scan_started = True
 
-        self._log.log("Scanning repository...", "info")
+        self._log.log(
+            "Checking for library changes since the saved scan..." if reuse_cache
+            else "Scanning repository...",
+            "info",
+        )
 
-        self._worker = ScanWorker(REPO_ROOT, self._kicad_fp_dir)
+        self._worker = ScanWorker(
+            REPO_ROOT, self._kicad_fp_dir,
+            cache_file=scan_cache_file(REPO_ROOT), reuse_cache=reuse_cache,
+        )
         self._worker.progress.connect(self._on_scan_progress)
+        self._worker.note.connect(self._log.log_issue)
         self._worker.finished.connect(self._on_scan_finished)
         self._worker.error.connect(self._on_scan_error)
         self._worker.start()

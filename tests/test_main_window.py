@@ -877,3 +877,119 @@ def test_atomic_dialog_is_rejected_when_the_window_closes(make_window):
 
     assert w._atomic_dialog is None
     assert dialog.result() == dialog.DialogCode.Rejected
+
+
+# ── Saved scan reused at startup (quick 261027-gg7) ───────────────────────
+
+SAVED_SYM = "Custom/Symbols/A.kicad_sym"
+SAVED_FP = "Custom/Footprints/B.pretty"
+SAVED_NOTE = "Showing the saved scan from"
+
+
+def _disk_scan(repo):
+    """A fake scan whose libraries really exist under repo, so the saved scan can be checked."""
+    (repo / SAVED_SYM).parent.mkdir(parents=True, exist_ok=True)
+    if not (repo / SAVED_SYM).exists():  # never touch an existing file: its mtime is what the saved scan checks
+        (repo / SAVED_SYM).write_text("(kicad_symbol_lib)", encoding="utf-8")
+    (repo / SAVED_FP).mkdir(parents=True, exist_ok=True)
+    return ScanResult(
+        symbol_libs=[
+            SymbolLibrary("A", SAVED_SYM, "Custom", footprint_refs=[FootprintRef("B", "X", True)]),
+        ],
+        footprint_libs=[FootprintLibrary("B", SAVED_FP, "Custom")],
+    )
+
+
+def _first_start(make_window, repo):
+    """Start once so the full scan saves its result; returns the window."""
+    return make_window([_disk_scan(repo)], repo=repo)
+
+
+def test_second_start_reuses_the_saved_scan_without_scanning(make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    first = _first_start(make_window, repo)
+    assert len(make_window.calls) == 1
+    cache = settings.scan_cache_file(repo)
+    assert cache.is_file()
+    assert repo.resolve() not in cache.resolve().parents
+    assert "No saved scan yet; scanning the whole repository." in _log_text(first)
+    first.close()
+    _write_tables(repo, [SAVED_SYM])
+
+    second = make_window([_disk_scan(repo)], repo=repo)
+
+    assert make_window.calls == [], _log_text(second)
+    text = _log_text(second)
+    assert SAVED_NOTE in text
+    assert "no library file changed since then. Use Rescan for a full scan." in text
+    assert "Scanning repository..." not in text
+    assert [lib.rel_path for lib in second._scan_result.symbol_libs] == [SAVED_SYM]
+    assert [lib.rel_path for lib in second._scan_result.footprint_libs] == [SAVED_FP]
+    # Selection comes from the destination tables, never from the saved scan
+    assert _selected(second._scan_result.symbol_libs) == {SAVED_SYM}
+    assert _selected(second._scan_result.footprint_libs) == {SAVED_FP}
+
+
+def test_an_edited_library_file_runs_the_full_scan_and_says_so(make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _first_start(make_window, repo).close()
+    sym = repo / SAVED_SYM
+    info = sym.stat()
+    os.utime(sym, ns=(info.st_atime_ns, info.st_mtime_ns + 5_000_000_000))
+
+    second = make_window([_disk_scan(repo)], repo=repo)
+
+    assert len(make_window.calls) == 1
+    text = _log_text(second)
+    assert "1 library file changed since the saved scan; scanning the whole repository." in text
+    assert SAVED_NOTE not in text
+
+
+def test_a_corrupt_saved_scan_runs_the_full_scan_without_crashing(make_window, tmp_path, qtbot):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _first_start(make_window, repo).close()
+    settings.scan_cache_file(repo).write_text("{ this is not json", encoding="utf-8")
+
+    with qtbot.captureExceptions() as exceptions:
+        second = make_window([_disk_scan(repo)], repo=repo)
+
+    assert exceptions == []
+    assert len(make_window.calls) == 1
+    assert "The saved scan could not be read; scanning the whole repository." in _log_text(second)
+    # The full scan saved a good file again
+    third = make_window([_disk_scan(repo)], repo=repo)
+    assert make_window.calls == []
+    assert SAVED_NOTE in _log_text(third)
+
+
+def test_rescan_after_a_reused_start_is_a_full_scan_that_rewrites_the_saved_scan(
+    make_window, tmp_path, qtbot
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _first_start(make_window, repo).close()
+    second = make_window([_disk_scan(repo)], repo=repo)
+    assert make_window.calls == [], _log_text(second)
+    cache = settings.scan_cache_file(repo)
+    os.utime(cache, ns=(1_000_000_000, 1_000_000_000))
+
+    _rescan_and_wait(second, qtbot)
+
+    assert len(make_window.calls) == 1
+    assert cache.stat().st_mtime_ns > 2_000_000_000
+    assert "Scanning repository..." in _log_text(second)
+
+
+def test_failed_cache_save_warns_and_still_shows_the_scan(make_window, tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cache = settings.scan_cache_file(repo)
+    cache.mkdir(parents=True)  # a folder where the file must go
+
+    w = make_window([_disk_scan(repo)], repo=repo)
+
+    assert [lib.rel_path for lib in w._scan_result.symbol_libs] == [SAVED_SYM]
+    assert "Could not save this scan for the next start" in _log_text(w)
