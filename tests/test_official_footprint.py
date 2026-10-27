@@ -471,3 +471,21 @@ def test_real_kicad_ranks_texas_dqk_first_for_the_csd_sample_and_its_pads_fit(at
     )
     assert plan.footprint_link == TEXAS
     assert not [issue for issue in plan.issues if issue.code in ("verify.pin_pad_mismatch", "install.pad_mismatch")]
+
+
+@pytest.mark.kicad_cli
+def test_cli_loads_a_symbol_linked_to_an_official_footprint(atomic_custom, ul_package, tmp_path, real_tools, kicad_cli_path):
+    from installfixtures import UL_DESCRIPTION
+
+    from kicad_lib_manager.importer import kicad_cli
+
+    _, candidate = ul_package
+    plan = build_plan(candidate, official_options(TEXAS, description=UL_DESCRIPTION), atomic_custom, real_tools)
+    assert not plan.blocked, plan.issues
+    assert [op.kind for op in plan.ops] == ["symbol_lib"]
+    result = apply_plan(plan, backup_root=tmp_path / "backups")
+    assert result.ok, result.issues
+    issues = kicad_cli.load_gate(
+        kicad_cli_path, library=LIBRARY, symbol_lib=plan.symbol_lib_path.read_bytes(), footprints=[]
+    )
+    assert [issue for issue in issues if issue.severity is Severity.ERROR] == [], issues
