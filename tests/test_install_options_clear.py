@@ -65,7 +65,9 @@ def test_cleared_options_store_empty():
 def test_cleared_datasheet_writes_empty_property(ul_layout, ul_package):
     _, candidate = ul_package
     plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, cleared=frozenset({"datasheet"})), ul_layout)
-    assert not plan.blocked, plan.issues
+    # The Datasheet is written empty as asked, and the atomic gate then refuses the part for it (D-21)
+    assert [i.code for i in _errors(plan)] == ["install.atomic.datasheet"]
+    assert plan.blocked
     assert _prop(plan, "Datasheet") == ""
     assert _prop(plan, "Value") == "CSD85301Q2"
     assert _prop(plan, "MPN") == "CSD85301Q2"
@@ -78,9 +80,10 @@ def test_cleared_manufacturer_skips_inference(ul_layout, ul_package):
     unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION), ul_layout)
     assert _prop(unset, "Manufacturer") == "Texas Instruments"
     plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, cleared=frozenset({"manufacturer"})), ul_layout)
-    assert not plan.blocked, plan.issues
+    # Nothing is inferred; the empty Manufacturer is then refused by the atomic gate (D-21)
+    assert [i.code for i in _errors(plan)] == ["install.atomic.manufacturer"]
+    assert plan.blocked
     assert _prop(plan, "Manufacturer") == ""
-    assert "install.manufacturer_missing" not in [i.code for i in plan.issues]
     sym_op = next(op for op in plan.ops if op.kind == "symbol_lib")
     assert b'"Texas Instruments"' not in sym_op.data
 
@@ -90,7 +93,9 @@ def test_cleared_description_creates_empty_property(ul_layout, ul_package):
     unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY), ul_layout)
     assert _prop(unset, "ki_description") is None and _prop(unset, "Description") is None
     plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({"description"})), ul_layout)
-    assert not plan.blocked, plan.issues
+    # The empty Description is written as asked, and the atomic gate then refuses the part for it (D-21)
+    assert [i.code for i in _errors(plan)] == ["install.atomic.description"]
+    assert plan.blocked
     assert [_prop(plan, "ki_description"), _prop(plan, "Description")].count("") == 1
 
 

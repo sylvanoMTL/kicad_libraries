@@ -171,19 +171,23 @@ def test_choice_required_for_two_models_and_no_model_installs_without(layout, tm
         assert _codes(plan) == ["install.choice_required"]
         without = build_plan(candidate, InstallOptions(library=LIBRARY, no_model=True), layout)
         picked = build_plan(candidate, InstallOptions(library=LIBRARY, model="m2.step"), layout)
-    assert not without.blocked, without.issues
+    # Declining every model leaves the footprint without one, which the atomic gate refuses (D-24)
+    assert _codes(without) == ["install.atomic.model_3d"]
+    assert without.blocked
     assert without.model_file is None
     assert not [op for op in without.ops if op.kind == "model"]
     assert not picked.blocked, picked.issues
     assert picked.model_file == "PART.step"
 
 
-def test_no_model_in_package_warns(layout, tmp_path):
+def test_no_model_in_package_is_blocked_by_the_gate(layout, tmp_path):
     with _open(tmp_path, _members(models=())) as (_, candidate):
         plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout)
-    assert not plan.blocked, plan.issues
+    assert plan.blocked
     assert plan.model_file is None
-    assert [i.severity for i in plan.issues if i.code == "install.no_model"] == [Severity.WARNING]
+    assert [(i.severity, i.code) for i in plan.issues if i.code == "install.atomic.model_3d"] == [
+        (Severity.ERROR, "install.atomic.model_3d")
+    ]
 
 
 @pytest.mark.parametrize(
@@ -316,7 +320,8 @@ def test_blank_option_keeps_ul_vendor_values(atomic_custom, ul_package, blank):
         InstallOptions(library=UL_LIBRARY, **dict.fromkeys(_TEXT_FIELDS, blank)),
         atomic_custom,
     )
-    assert not blanked.blocked, blanked.issues
+    # The UL sample has no Description, so both plans are refused by the gate for that alone
+    assert _codes(blanked) == _codes(unset) == ["install.atomic.description"]
     assert blanked.ops == unset.ops
     assert blanked.model_file == "CSD85301Q2.stp"
     sym_op = next(op for op in blanked.ops if op.kind == "symbol_lib")
@@ -893,7 +898,7 @@ def test_fields_mf_mp_renamed_in_place(tmp_path):
     assert _property_names(symbol) == [{"MF": "Manufacturer", "MP": "MPN"}.get(n, n) for n in original]
     assert (_value_of(plan, "Manufacturer"), _value_of(plan, "MPN")) == ("Texas Instruments", "XYZ123")
     assert plan.model_file == "XYZ123.stp"
-    assert "install.manufacturer_missing" not in [i.code for i in plan.issues]
+    assert "install.atomic.manufacturer" not in [i.code for i in plan.issues]
 
 
 def test_fields_exact_manufacturer_kept(tmp_path):
@@ -973,16 +978,17 @@ def test_fields_overrides_win(tmp_path):
         "NEW-1",
     ]
     assert plan.model_file == "NEW-1.step"
-    assert "install.manufacturer_missing" not in [i.code for i in plan.issues]
+    assert "install.atomic.manufacturer" not in [i.code for i in plan.issues]
 
 
-def test_fields_manufacturer_missing_warns(tmp_path):
+def test_fields_manufacturer_missing_is_a_gate_error(tmp_path):
     layout = _target_layout(tmp_path, V6)
     plan = _plan(tmp_path, layout, ToolContext(), vendor_symbol_lib(VENDOR, datasheet=""))
-    assert not plan.blocked, plan.issues
+    # With no datasheet to name the company, the Manufacturer stays empty and the gate refuses the part
+    assert _codes(plan) == ["install.atomic.manufacturer", "install.atomic.datasheet", "install.atomic.description"]
+    assert plan.blocked
     assert _value_of(plan, "Manufacturer") == ""
     assert _value_of(plan, "MPN") == VENDOR
-    assert [i.severity for i in plan.issues if i.code == "install.manufacturer_missing"] == [Severity.WARNING]
 
 
 @pytest.mark.parametrize(
@@ -1205,25 +1211,26 @@ def test_several_footprints_the_chosen_one_carries_the_model(layout, tmp_path):
 
 def test_no_model_package(layout, tmp_path):
     plan = _plan(tmp_path, layout, ToolContext(), model=False)
-    assert not plan.blocked, plan.issues
+    assert plan.blocked
     assert plan.model_file is None
     assert not [op for op in plan.ops if op.kind in ("model",)]
     assert b"(model" not in _op(plan, "footprint").data
-    found = [i for i in plan.issues if i.code == "install.no_model"]
-    assert [i.severity for i in found] == [Severity.WARNING]
-    assert "No 3D model found in pkg.zip" in found[0].text
+    found = [i for i in plan.issues if i.code == "install.atomic.model_3d"]
+    assert [i.severity for i in found] == [Severity.ERROR]
+    assert found[0].text == "the footprint has no 3D model"
     assert "install.model_declined" not in [i.code for i in plan.issues]
 
 
 def test_no_model_declined(atomic_custom, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, no_model=True), atomic_custom)
-    assert not plan.blocked, plan.issues
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, no_model=True, description=UL_DESCRIPTION), atomic_custom)
+    # Declining the model leaves the footprint without one, which the atomic gate refuses (D-24)
+    assert _codes(plan) == ["install.atomic.model_3d"]
+    assert plan.blocked
     assert plan.model_file is None
     assert not [op for op in plan.ops if op.kind == "model"]
     assert b"(model" not in next(op for op in plan.ops if op.kind == "footprint").data
     assert [i.severity for i in plan.issues if i.code == "install.model_declined"] == [Severity.INFO]
-    assert "install.no_model" not in [i.code for i in plan.issues]
 
 
 @pytest.mark.parametrize(
@@ -1239,7 +1246,9 @@ def test_no_model_declined(atomic_custom, ul_package):
 )
 def test_no_model_stale_vendor_path(layout, tmp_path, path, stale):
     plan = _plan(tmp_path, layout, ToolContext(), model=False, footprint_bytes=vendor_footprint("FP", model=path))
-    assert not plan.blocked, plan.issues
+    # The vendor link is kept, and the gate refuses it because no model of it is in Custom/3DModels
+    assert _codes(plan) == ["install.atomic.model_3d"]
+    assert plan.blocked
     assert plan.model_file is None
     # The vendor path is never edited
     assert [m.path for m in find_models(footprint_name(parse_bytes(_op(plan, "footprint").data, "fp").root).node)] == [path]
@@ -1250,7 +1259,9 @@ def test_no_model_stale_vendor_path(layout, tmp_path, path, stale):
 
 def test_model_extra_blocks_warn(layout, tmp_path):
     plan = _plan(tmp_path, layout, ToolContext(), footprint_bytes=vendor_footprint("FP", models=("a.step", "b.step")))
-    assert not plan.blocked, plan.issues
+    # The block left unchanged links a file that is not in Custom/3DModels, so the gate refuses the part
+    assert _codes(plan) == ["install.atomic.model_3d"]
+    assert plan.blocked
     paths = [m.path for m in find_models(footprint_name(parse_bytes(_op(plan, "footprint").data, "fp").root).node)]
     assert paths == ["${CUSTOM_3DMODEL_DIR}/PART.step", "b.step"]
     assert [i.severity for i in plan.issues if i.code == "install.extra_models"] == [Severity.WARNING]
@@ -1689,7 +1700,9 @@ def test_resolution_rename_invalid(tmp_path, kind, rename_to, expected):
     plan = _plan(tmp_path, layout, ToolContext(), options=_with(resolutions))
     if expected is None:
         assert plan.blocked
-        assert _codes(plan) == ["install.bad_rename"]
+        # A footprint left as it is on disk carries no 3D model link, so the atomic gate also names its model
+        gate = ["install.atomic.model_3d"] if kind == "footprint" else []
+        assert _codes(plan) == ["install.bad_rename", *gate]
         return
     assert not plan.blocked, plan.issues
     assert "naming.changed" in [i.code for i in plan.issues if i.severity is Severity.INFO]
@@ -1720,7 +1733,9 @@ def test_resolution_rename_target_identical(tmp_path):
 
 def test_resolution_skip_footprint(tmp_path):
     layout = _target_layout(tmp_path, V6)
-    _put_footprint(layout, "fp.kicad_mod", vendor_footprint("fp", pads=("1",)))
+    # The kept footprint links a model that is on disk, so the part still passes the atomic gate
+    _put_footprint(layout, "fp.kicad_mod", vendor_footprint("fp", pads=("1",), model="${CUSTOM_3DMODEL_DIR}/kept.step"))
+    _put_model(layout, "kept.step", STEP_BYTES)
     with _open(tmp_path, _vendor()) as (_, candidate):
         plan = build_plan(candidate, _with({FP_KEY: _res("skip")}), layout, ToolContext())
         assert not plan.blocked, plan.issues
@@ -1733,7 +1748,7 @@ def test_resolution_skip_footprint(tmp_path):
         result = _apply(plan, tmp_path)
     # D-09: the pin/pad check runs against the footprint that is really linked
     assert "verify.pin_pad_mismatch" in [i.code for i in result.issues]
-    assert os.listdir(_pretty(layout)) == ["fp.kicad_mod"] and os.listdir(layout.models_dir) == []
+    assert os.listdir(_pretty(layout)) == ["fp.kicad_mod"] and os.listdir(layout.models_dir) == ["kept.step"]
 
 
 def test_resolution_skip_model(tmp_path):
@@ -1771,7 +1786,7 @@ def test_resolution_skip_parent_symbol_keeps_the_child_linked(tmp_path):
     layout = _target_layout(tmp_path, V6, (PARENT,))
     key = f"symbol:{LIBRARY}:{PARENT}"
     options = InstallOptions(library=LIBRARY, symbol=CHILD, resolutions={key: _res("skip")})
-    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD), options)
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, props=ATOMIC_PROPS), options)
     assert not plan.blocked, plan.issues
     loaded, child = _symbol_in(plan, CHILD)
     assert [s.name for s in find_symbols(loaded.root)] == [PARENT, CHILD]

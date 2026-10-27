@@ -242,22 +242,22 @@ def test_sc2_no_model_package(atomic_custom, tmp_path):
     for step in list(folder.rglob("*.stp")) + list(folder.rglob("*.step")):
         step.unlink()
     layout = atomic_custom
-    before = _tree_digest(layout.models_dir)
+    before = _tree_digest(layout.custom_dir)
     with open_package(folder, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
         assert candidate is not None
-        plan, result = _install(candidate, layout, tmp_path)
+        plan = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), layout, NO_CLI)
+        result = apply_plan(plan, backup_root=tmp_path / "bk")
 
+        # A part without a 3D model is blocked (D-24): the plan still lists what it would write, and nothing is written
         assert not [op for op in plan.ops if op.kind == "model"]
         footprint_op = next(op for op in plan.ops if op.kind == "footprint")
         assert b"(model" not in footprint_op.data
-        for issues in (plan.issues, result.issues):
-            found = [i for i in issues if i.code == "install.no_model"]
-            assert [i.severity for i in found] == [Severity.WARNING]
-    assert result.ok, result.issues
-    assert _tree_digest(layout.models_dir) == before
-    footprint = load(layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty" / "DQK0006B.kicad_mod")
-    assert find_models(footprint_name(footprint.root).node) == []
+        found = [i for i in plan.issues if i.code == "install.atomic.model_3d"]
+        assert [i.severity for i in found] == [Severity.ERROR]
+        assert plan.blocked
+    assert not result.ok
+    assert _tree_digest(layout.custom_dir) == before
 
 
 def test_package_issue_reaches_install_result_from_a_folder(atomic_custom, tmp_path):

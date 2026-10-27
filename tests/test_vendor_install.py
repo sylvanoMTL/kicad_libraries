@@ -107,7 +107,7 @@ def _op(plan, kind):
 
 def test_tracer_snapeda_end_to_end(tmp_path):
     layout = _snapeda_layout(tmp_path)
-    with _open_snapeda(tmp_path) as (package, candidate):
+    with _open_snapeda(tmp_path, with_model=True) as (package, candidate):
         assert candidate.vendor == "SnapEDA"
         assert candidate.confidence >= 0.7
         assert "intake.unknown_vendor" not in [i.code for i in candidate.issues]
@@ -124,7 +124,7 @@ def test_tracer_snapeda_end_to_end(tmp_path):
         assert find_property(symbol.node, "MPN").value == SNAPEDA_MPN
         assert find_property(symbol.node, "SnapEDA_Link") is not None
         assert find_property(symbol.node, "MAXIMUM_PACKAGE_HEIGHT") is not None
-        assert "install.no_model" in [i.code for i in plan.issues]
+        assert plan.model_file == f"{SNAPEDA_MPN}.step"
 
         result = apply_plan(plan, backup_root=tmp_path / "bk")
         assert result.ok, [i.text for i in result.issues]
@@ -374,7 +374,7 @@ def _errors(issues):
     return [i for i in issues if i.severity is Severity.ERROR]
 
 
-@by_case
+@by_modelled_case
 def test_vendor_install_links_like_ul(case, tmp_path):
     with _install_case(case, tmp_path) as (layout, _, plan, result):
         assert result.ok, [i.text for i in result.issues]
@@ -388,18 +388,27 @@ def test_vendor_install_links_like_ul(case, tmp_path):
         _, footprint = _installed_footprint(layout, case)
         models = [m.path for m in find_models(footprint.node)]
         model_dir = layout.models_dir
-        if case.model_file is None:
-            assert models == []
-            assert [i.severity for i in plan.issues if i.code == "install.no_model"] == [Severity.WARNING]
-            assert not model_dir.exists() or not list(model_dir.iterdir())
-        else:
-            assert models == [f"{MODEL_DIR_VAR}/{case.model_file}"]
-            assert (model_dir / case.model_file).read_bytes().startswith(b"ISO-10303-21;")
-            assert "install.no_model" not in [i.code for i in plan.issues]
+        assert models == [f"{MODEL_DIR_VAR}/{case.model_file}"]
+        assert (model_dir / case.model_file).read_bytes().startswith(b"ISO-10303-21;")
 
         for op in plan.ops:
             if op.kind in ("symbol_lib", "footprint"):
                 assert op.path.read_bytes() == op.data
+
+
+def test_vendor_part_without_a_model_is_blocked_by_the_gate(tmp_path):
+    case = CASES["snapeda"]
+    assert case.model_file is None
+    with _open_case(case, tmp_path) as (layout, candidate):
+        plan = build_plan(candidate, _case_options(case), layout, NO_CLI)
+        result = apply_plan(plan, backup_root=tmp_path / "bk")
+        # The plan still lists what it would write (a footprint with no model), and nothing is written (D-24)
+        assert plan.blocked
+        assert [i.code for i in _errors(plan.issues)] == ["install.atomic.model_3d"]
+        assert b"(model" not in _op(plan, "footprint").data
+    assert not result.ok
+    assert not list(layout.models_dir.iterdir())
+    assert not (layout.footprints_dir / f"{footprint_library_for(case.library)}.pretty" / f"{case.footprint}.kicad_mod").exists()
 
 
 def _values(symbol):

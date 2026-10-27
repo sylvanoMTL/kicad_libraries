@@ -9,7 +9,7 @@ read, through open_package, which stages outside the repo.
 import re
 import subprocess
 import tempfile
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import pytest
@@ -33,7 +33,7 @@ from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.importer.siblings import stock_index
 from kicad_lib_manager.importer.suggest import suggest_library, suggestion_text
 from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
-from kicad_lib_manager.kicad_files import find_models, find_symbol, footprint_name, list_properties, load
+from kicad_lib_manager.kicad_files import find_models, find_symbol, footprint_name, list_properties, load, parse_bytes
 from kicad_lib_manager.models import Issue, Severity
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -208,14 +208,22 @@ def test_real_ultra_oscillator_is_left_for_the_owner(staging_root):
 
 
 @contextmanager
-def _installed(zip_path, library, tmp_path, tools=NO_CLI):
-    """Install a real zip into a synthetic Custom/ built under tmp_path; yield (layout, plan, result)."""
+def _installed(zip_path, library, tmp_path, tools=NO_CLI, *, datasheet=None, model_zip=None):
+    """Install a real zip into a synthetic Custom/ built under tmp_path; yield (layout, plan, result).
+
+    datasheet and model_zip supply what the download lacks (the SnapEDA part has no Datasheet and no 3D model),
+    so the part passes the atomic gate (D-21, D-24).
+    """
     write_custom_layout(tmp_path / "repo", CURRENT_ATOMIC_SYMBOL_LIBS, CURRENT_ATOMIC_FOOTPRINT_LIBS)
     layout = RepoLayout.for_repo(tmp_path / "repo")
-    with open_package(zip_path, REPO_ROOT) as package:
+    with ExitStack() as stack:
+        package = stack.enter_context(open_package(zip_path, REPO_ROOT))
         candidate, _ = detect_candidate(package)
         assert candidate is not None
-        plan = build_plan(candidate, InstallOptions(library=library), layout, tools)
+        if model_zip is not None:
+            candidate, _ = attach_models(candidate, stack.enter_context(open_model_source(model_zip, REPO_ROOT)))
+            assert candidate is not None
+        plan = build_plan(candidate, InstallOptions(library=library, datasheet=datasheet), layout, tools)
         assert not plan.blocked, [i.text for i in plan.issues]
         yield layout, plan, apply_plan(plan, backup_root=tmp_path / "bk")
 
@@ -233,12 +241,23 @@ def _errors(issues):
 
 
 @requires_snapeda
-def test_real_snapeda_installs(staging_root, tmp_path):
+def test_real_snapeda_alone_is_blocked_by_the_gate_for_its_datasheet_and_model(staging_root, tmp_path):
+    """The USB4145 download has no Datasheet and no 3D model: the plan lists what it would write and is refused (D-21, D-24)."""
     library = SNAPEDA_LIBRARY
-    with _installed(REAL_SNAPEDA, library, tmp_path) as (layout, plan, result):
-        assert result.ok, [i.text for i in result.issues]
-        issues = [*plan.issues, *result.issues]
-        values = _symbol_values(layout, library, "USB4145-03-0170-C_REVA2")
+    write_custom_layout(tmp_path / "repo", CURRENT_ATOMIC_SYMBOL_LIBS, CURRENT_ATOMIC_FOOTPRINT_LIBS)
+    layout = RepoLayout.for_repo(tmp_path / "repo")
+    with open_package(REAL_SNAPEDA, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+        assert candidate is not None
+        plan = build_plan(candidate, InstallOptions(library=library), layout, NO_CLI)
+        result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert plan.blocked
+    assert [i.code for i in _errors(plan.issues)] == ["install.atomic.datasheet", "install.atomic.model_3d"]
+    assert not result.ok
+    symbol_op = next(op for op in plan.ops if op.kind == "symbol_lib")
+    loaded = parse_bytes(symbol_op.data, "lib")
+    assert not isinstance(loaded, Issue), loaded
+    values = {p.name: p.value for p in list_properties(find_symbol(loaded.root, "USB4145-03-0170-C_REVA2").node)}
     assert values["Footprint"] == f"{footprint_library_for(library)}:GCT_USB4145-03-0170-C_REVA2"
     assert values["Value"] == "USB4145-03-0170-C"  # Value is the MPN, not the symbol name (D-22)
     assert values["Manufacturer"] == "Global Connector Technology"
@@ -246,9 +265,7 @@ def test_real_snapeda_installs(staging_root, tmp_path):
     assert values["Description"] == "Type C USB 2.0 Connector"
     for gone in ("MANUFACTURER", "SNAPEDA_PN", "Price", "Check_prices", "Availability", "Package"):
         assert gone not in values, gone
-    assert [i.severity for i in plan.issues if i.code == "install.no_model"] == [Severity.WARNING]
-    assert "verify.pin_pad_mismatch" not in [i.code for i in issues]
-    assert not _errors(issues)
+    assert not (layout.symbols_dir / f"{library}.kicad_sym").read_bytes().count(b"USB4145")
 
 
 # -- the real SnapEDA 3D model download, the second file of the two-file delivery (G-07-2, D-02) ----------
@@ -306,7 +323,7 @@ def test_real_snapeda_installs_with_separate_model(staging_root, tmp_path):
     codes = [i.code for i in issues]
     assert "intake.model_attached" in codes
     assert "intake.no_model" not in codes
-    assert "install.no_model" not in codes
+    assert "install.atomic.model_3d" not in codes
     assert model_size == 2443718
     assert [m.path for m in find_models(footprint_name(footprint.root).node)] == [
         f"{MODEL_DIR_VAR}/USB4145-03-0170-C.stp"
@@ -337,18 +354,24 @@ def test_real_samacsys_installs(staging_root, tmp_path):
 
 @pytest.mark.kicad_cli
 @pytest.mark.parametrize(
-    ("zip_path", "library", "footprint"),
+    ("zip_path", "library", "footprint", "supplied"),
     [
+        # the SnapEDA download lacks a Datasheet and a 3D model, so the owner's link and the model download are supplied
         pytest.param(
-            REAL_SNAPEDA, SNAPEDA_LIBRARY, "GCT_USB4145-03-0170-C_REVA2", id="snapeda", marks=requires_snapeda
+            REAL_SNAPEDA,
+            SNAPEDA_LIBRARY,
+            "GCT_USB4145-03-0170-C_REVA2",
+            {"datasheet": GCT_DATASHEET, "model_zip": REAL_SNAPEDA_MODEL},
+            id="snapeda",
+            marks=[requires_snapeda, requires_snapeda_model],
         ),
-        pytest.param(REAL_SAMACSYS, SAMACSYS_LIBRARY, "RS3", id="samacsys", marks=requires_samacsys),
+        pytest.param(REAL_SAMACSYS, SAMACSYS_LIBRARY, "RS3", {}, id="samacsys", marks=requires_samacsys),
     ],
 )
 def test_real_vendor_installs_load_in_kicad(
-    staging_root, tmp_path, real_tools, kicad_cli_path, zip_path, library, footprint
+    staging_root, tmp_path, real_tools, kicad_cli_path, zip_path, library, footprint, supplied
 ):
-    with _installed(zip_path, library, tmp_path, tools=real_tools) as (layout, _, result):
+    with _installed(zip_path, library, tmp_path, tools=real_tools, **supplied) as (layout, _, result):
         assert result.ok, [i.text for i in result.issues]
         fp_path = layout.footprints_dir / f"{footprint_library_for(library)}.pretty" / f"{footprint}.kicad_mod"
         fp_bytes = fp_path.read_bytes()

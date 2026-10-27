@@ -239,7 +239,7 @@ def test_attach_then_install(how, tmp_path):
         assert plan.model_file == f"{SNAPEDA_MPN}.stp"
         model_op = next(op for op in plan.ops if op.kind == "model")
         assert model_op.source is attached.models[0].file
-        assert "install.no_model" not in _codes(plan.issues)
+        assert "install.atomic.model_3d" not in _codes(plan.issues)
 
         result = apply_plan(plan, backup_root=tmp_path / "bk")
         assert result.ok, [i.text for i in result.issues]

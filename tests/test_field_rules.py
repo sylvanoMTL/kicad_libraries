@@ -58,17 +58,17 @@ def _open_vendor(tmp_path, symbol):
 def _plan(tmp_path, data, gate_errors=(), **options):
     """Plan the vendor symbol; the Description a user types is given, so the part passes the atomic rule (D-21).
 
-    gate_errors names the install.atomic.<rule> errors the atomic gate may add for a test whose subject is
-    a field the part leaves missing; no other error is allowed, and without them the plan is not blocked.
+    gate_errors names the install.atomic.<rule> errors the atomic gate must raise for a test whose subject is
+    a field the part leaves missing; the plan has exactly those errors and is blocked. Without them it has
+    no error and is not blocked.
     """
     options.setdefault("description", ATOMIC_PROPS["Description"])
     layout = _layout(tmp_path)
     with _open_vendor(tmp_path, data) as candidate:
         plan = build_plan(candidate, InstallOptions(library=LIBRARY, **options), layout, ToolContext())
         errors = [i for i in plan.issues if i.severity is Severity.ERROR]
-        assert all(i.code in gate_errors for i in errors), [i.text for i in errors]
-        if not gate_errors:
-            assert not plan.blocked, [i.text for i in plan.issues]
+        assert [i.code for i in errors] == list(gate_errors), [i.text for i in errors]
+        assert plan.blocked == bool(gate_errors), [i.text for i in plan.issues]
         return plan, candidate
 
 
@@ -318,7 +318,7 @@ def test_the_datasheet_link_names_the_manufacturer(tmp_path, datasheet, name):
     plan, candidate = _plan_for(tmp_path, datasheet)
     assert _symbol_manufacturer(plan) == name
     assert _sets(plan, "Manufacturer") == [FieldChange(VENDOR, "set", "Manufacturer", "", name, "datasheet_host")]
-    assert "install.manufacturer_missing" not in _codes(plan)
+    assert "install.atomic.manufacturer" not in _codes(plan)
     assert form.field_defaults(candidate, VENDOR).manufacturer == name
     section = next(s for s in preview_sections(plan, candidate, InstallOptions(library=LIBRARY)) if s.name == "Field changes")
     assert {row.text: row.detail for row in section.rows}["Set Manufacturer"] == f"(empty) → {name}: found from the datasheet link"
@@ -332,7 +332,7 @@ def test_a_distributor_link_is_never_used(tmp_path):
     assert len(aggregator) == 1
     assert aggregator[0].severity.value == "info"
     assert "www.digikey.com" in aggregator[0].text
-    assert "install.manufacturer_missing" in _codes(plan)
+    assert "install.atomic.manufacturer" in _codes(plan)
     assert form.field_defaults(candidate, VENDOR).manufacturer == ""
 
 
@@ -340,7 +340,7 @@ def test_an_unlisted_domain_infers_nothing_and_says_nothing_about_a_distributor(
     plan, candidate = _plan_for(tmp_path, "https://www.example-widgets.com/x.pdf", gate_errors=("install.atomic.manufacturer",))
     assert _symbol_manufacturer(plan) == ""
     assert "naming.aggregator_host" not in _codes(plan)
-    assert "install.manufacturer_missing" in _codes(plan)
+    assert "install.atomic.manufacturer" in _codes(plan)
     assert form.field_defaults(candidate, VENDOR).manufacturer == ""
 
 
@@ -363,7 +363,6 @@ def test_a_cleared_manufacturer_is_written_empty_without_inference_or_warning(tm
     )
     assert _symbol_manufacturer(plan) == ""
     assert _sets(plan, "Manufacturer") == []
-    assert "install.manufacturer_missing" not in _codes(plan)
     assert "naming.aggregator_host" not in _codes(plan)
 
 
@@ -373,7 +372,6 @@ def test_a_cleared_manufacturer_on_a_distributor_link_says_nothing(tmp_path):
     )
     assert _symbol_manufacturer(plan) == ""
     assert "naming.aggregator_host" not in _codes(plan)
-    assert "install.manufacturer_missing" not in _codes(plan)
 
 
 def test_a_typed_datasheet_decides_where_the_manufacturer_is_found(tmp_path):

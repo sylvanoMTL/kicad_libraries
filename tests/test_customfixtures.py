@@ -17,6 +17,8 @@ from customfixtures import (
     V1_LIBRARY_NAMES,
     write_synthetic_custom,
 )
+from installfixtures import UL_DESCRIPTION
+
 from kicad_lib_manager.importer import kicad_cli
 from kicad_lib_manager.importer.layout import list_existing_libraries
 from kicad_lib_manager.importer.plan import InstallOptions
@@ -177,7 +179,7 @@ def test_atomic_install_target_plans_through_footprint_library_for(atomic_custom
     _, candidate = ul_package
     footprint_lib = footprint_library_for(BATTERY_CHARGER)
 
-    plan = build_plan(candidate, InstallOptions(library=BATTERY_CHARGER), atomic_custom)
+    plan = build_plan(candidate, InstallOptions(library=BATTERY_CHARGER, description=UL_DESCRIPTION), atomic_custom)
 
     assert not plan.blocked, plan.issues
     footprint_ops = [op for op in plan.ops if op.kind == "footprint"]

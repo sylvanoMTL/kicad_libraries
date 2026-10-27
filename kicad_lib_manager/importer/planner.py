@@ -54,6 +54,7 @@ from . import package as _package
 from . import stems
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
 from .fieldrules import DESCRIPTION_FIELDS, FieldRules, clean_description, is_placeholder, is_protected, is_volatile
+from .incoming import incoming_context, incoming_issues
 from .layout import RepoLayout, list_footprint_libs, list_model_files, list_symbol_libs
 from .naming import MAX_NAME_LEN, NameResult, case_clash, sanitize_filename, sanitize_name
 from .package import PackageFile
@@ -930,7 +931,6 @@ def build_plan(
                     f"The datasheet link points to {aggregator}, a distributor or library site, "
                     "so it was not used to find the manufacturer",
                 ))
-            issues.append(Issue(Severity.WARNING, "install.manufacturer_missing", "No manufacturer was found; the Manufacturer property is empty"))
     base_fields = _Fields(
         footprint="",
         filters="",
@@ -992,12 +992,7 @@ def build_plan(
     elif candidate.models and options.no_model:
         listed = _name_list([m.filename for m in candidate.models])
         issues.append(Issue(Severity.INFO, "install.model_declined", f"The 3D model {listed} is not installed because it was declined"))
-    else:
-        issues.append(Issue(
-            Severity.WARNING,
-            "install.no_model",
-            f"No 3D model found in {candidate.source.name}; the footprint installs without one",
-        ))
+    # A part without a 3D model is stopped by the atomic gate below (D-24), so it needs no warning of its own
 
     step("Checking for conflicts", 5)
     resolutions = options.resolutions
@@ -1282,6 +1277,31 @@ def build_plan(
     conflicts.extend(d.conflict for d in fp_decisions if d.conflict is not None)
     if model_dec is not None and model_dec.conflict is not None:
         conflicts.append(model_dec.conflict)
+
+    # D-21: the part as it would be installed must pass the atomic rule; only what is planned or already on disk counts
+    written = [state.final for state in states if state.kind in ("new", "overwrite", "open")]
+    if written:
+        def will_write(decision: _Decision) -> bool:
+            """The decision writes its file, or is still open so the planned file is the one being judged."""
+            return decision.op is not None or (decision.conflict is not None and decision.conflict.resolution is None)
+
+        planned_footprints: dict[str, tuple[str, bytes]] = {}
+        first_fp = fp_decisions[0]
+        if will_write(first_fp):
+            fp_path = first_fp.op.path if first_fp.op is not None else pretty / f"{first_fp.name}{_FOOTPRINT_SUFFIX}"
+            fp_data = first_fp.op.data if first_fp.op is not None else render_fp(0, first_fp.name)[0]
+            planned_footprints[link] = (fp_path.relative_to(layout.repo_root).as_posix(), fp_data or b"")
+        planned_models = {model_dec.name} if model_dec is not None and will_write(model_dec) else set()
+        gate_context = incoming_context(
+            layout.repo_root,
+            layout.footprints_dir,
+            tools.kicad_footprints_dir,
+            planned_footprints=planned_footprints,
+            planned_models=planned_models,
+        )
+        issues.extend(incoming_issues(
+            edited.root, written, rel_path=sym_path.relative_to(layout.repo_root).as_posix(), ctx=gate_context
+        ))
 
     ops: list[FileOp] = []
     if not pretty_exists:
