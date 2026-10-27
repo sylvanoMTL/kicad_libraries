@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 from customfixtures import BATTERY_CHARGER
 from fakecli import FakeCli
-from installfixtures import V6_VERSION, target_lib, vendor_footprint, vendor_symbol_lib
+from installfixtures import UL_DESCRIPTION, V6_VERSION, target_lib, vendor_footprint, vendor_symbol_lib
 from zipfixtures import STEP_BYTES, footprint_library_for, write_custom_layout
 
 from kicad_lib_manager import fsutil
@@ -52,7 +52,7 @@ def _with_cli(plan: InstallPlan, fake: FakeCli) -> InstallPlan:
 
 def _ul_plan(atomic_custom, ul_package) -> InstallPlan:
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), atomic_custom)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION), atomic_custom)
     assert not plan.blocked, plan.issues
     return plan
 

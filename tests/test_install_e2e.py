@@ -21,8 +21,9 @@ from customfixtures import (
     WIRELESS,
     write_synthetic_custom,
 )
-from installfixtures import vendor_footprint, vendor_symbol_lib
+from installfixtures import UL_DESCRIPTION, vendor_footprint, vendor_symbol_lib
 from zipfixtures import (
+    STEP_BYTES,
     UL_FOOTPRINT_MEMBER,
     UL_MODEL_MEMBER,
     UL_SYMBOL_MEMBER,
@@ -65,6 +66,15 @@ def _hidden(prop) -> bool:
     return False
 
 
+def _description(symbol_node) -> str | None:
+    """The description a symbol carries: "Description" in KiCad 7+ files, "ki_description" in the older 20211014 form."""
+    for name in ("Description", "ki_description"):
+        found = find_property(symbol_node, name)
+        if found is not None:
+            return found.value
+    return None
+
+
 def _value_text(footprint_node):
     for child in footprint_node.children:
         if child.head == "fp_text" and child.children[1].text == "value":
@@ -80,7 +90,7 @@ def test_ul_symbol_added_others_identical(atomic_custom, ul_package, tmp_path):
     original_loaded = load(sym_path)
     previous_end = find_symbols(original_loaded.root)[-1].node.end
 
-    plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout)
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), layout)
     assert not plan.blocked, plan.issues
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
@@ -116,6 +126,7 @@ def test_ul_symbol_added_others_identical(atomic_custom, ul_package, tmp_path):
     mpn = find_property(symbol.node, "MPN")
     assert (manufacturer.value, mpn.value) == ("Texas Instruments", "CSD85301Q2")
     assert _hidden(manufacturer) and _hidden(mpn)
+    assert _description(symbol.node) == UL_DESCRIPTION
 
     model = layout.models_dir / "CSD85301Q2.stp"
     assert hashlib.sha256(model.read_bytes()).hexdigest() == candidate.models[0].file.sha256
@@ -146,7 +157,11 @@ def _codes(issues) -> list[str]:
 
 
 def _install(candidate, layout, tmp_path, library=LIBRARY, tools=NO_CLI, **options):
-    """Plan and apply one install with a tmp_path backup root; returns (plan, result)."""
+    """Plan and apply one install with a tmp_path backup root; returns (plan, result).
+
+    The UL sample has no Description, so the install carries one: the part then passes the atomic rule (D-21).
+    """
+    options.setdefault("description", UL_DESCRIPTION)
     plan = build_plan(candidate, InstallOptions(library=library, **options), layout, tools)
     assert not plan.blocked, plan.issues
     return plan, apply_plan(plan, backup_root=tmp_path / "bk")
@@ -188,6 +203,7 @@ def test_sc1_ul_footprint_model_and_fields(atomic_custom, ul_package, tmp_path):
     manufacturer, mpn = find_property(symbol.node, "Manufacturer"), find_property(symbol.node, "MPN")
     assert (manufacturer.value, mpn.value) == ("Texas Instruments", SYMBOL)
     assert _hidden(manufacturer) and _hidden(mpn)
+    assert _description(symbol.node) == UL_DESCRIPTION
     assert plan.linked_footprint == "DQK0006B" and plan.model_file == f"{SYMBOL}.stp"
 
 
@@ -323,7 +339,7 @@ def test_sc3_existing_headers_unchanged(atomic_custom, ul_package, tmp_path, lib
 def test_sc4_fail_on_each_write(atomic_custom, ul_package, tmp_path, snapshot, monkeypatch, fail_on):
     _, candidate = ul_package
     layout = atomic_custom
-    plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, NO_CLI)
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), layout, NO_CLI)
     assert not plan.blocked, plan.issues
     writes = [op for op in plan.ops if op.kind != "mkdir"]
     assert fail_on <= len(writes), "the install has fewer writes than the injected failure position"
@@ -404,6 +420,7 @@ def test_sc5_pin_pad_mismatch(atomic_custom, tmp_path):
         [
             ("part.kicad_sym", _zip_member(UL_SYMBOL_MEMBER)),
             ("DQK0006B.kicad_mod", vendor_footprint("DQK0006B", pads=tuple(str(n) for n in range(1, 10)))),
+            (UL_MODEL_MEMBER, STEP_BYTES),
         ],
     )
     layout = atomic_custom
@@ -424,7 +441,7 @@ def test_second_install_is_noop(atomic_custom, ul_package, tmp_path, snapshot):
     custom_after_first = snapshot(layout.custom_dir)
     backups_after_first = snapshot(tmp_path / "bk")
 
-    plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, NO_CLI)
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), layout, NO_CLI)
     assert plan.is_noop and plan.ops == () and plan.conflicts == ()
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
@@ -442,7 +459,7 @@ def test_second_install_new_library_is_noop(atomic_custom, ul_package, tmp_path,
     _install(candidate, layout, tmp_path, library=NEW_LIBRARY)
     custom_after_first = snapshot(layout.custom_dir)
 
-    plan = build_plan(candidate, InstallOptions(library=NEW_LIBRARY), layout, NO_CLI)
+    plan = build_plan(candidate, InstallOptions(library=NEW_LIBRARY, description=UL_DESCRIPTION), layout, NO_CLI)
     assert plan.is_noop and plan.ops == ()
     result = apply_plan(plan, backup_root=tmp_path / "bk")
 
@@ -588,7 +605,7 @@ def test_cli_second_install_is_noop(atomic_custom, ul_package, tmp_path, real_to
     after_first = snapshot(layout.custom_dir)
     backups = snapshot(tmp_path / "bk")
 
-    again = build_plan(candidate, InstallOptions(library=library), layout, real_tools)
+    again = build_plan(candidate, InstallOptions(library=library, description=UL_DESCRIPTION), layout, real_tools)
     assert again.is_noop, (again.ops, again.conflicts, again.issues)
     second = apply_plan(again, backup_root=tmp_path / "bk")
 

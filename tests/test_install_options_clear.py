@@ -7,6 +7,7 @@ import dataclasses
 
 import pytest
 from customfixtures import BATTERY_CHARGER
+from installfixtures import UL_DESCRIPTION
 from zipfixtures import footprint_library_for, write_custom_layout
 
 from kicad_lib_manager.importer.layout import RepoLayout
@@ -63,7 +64,7 @@ def test_cleared_options_store_empty():
 
 def test_cleared_datasheet_writes_empty_property(ul_layout, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({"datasheet"})), ul_layout)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, cleared=frozenset({"datasheet"})), ul_layout)
     assert not plan.blocked, plan.issues
     assert _prop(plan, "Datasheet") == ""
     assert _prop(plan, "Value") == "CSD85301Q2"
@@ -74,9 +75,9 @@ def test_cleared_datasheet_writes_empty_property(ul_layout, ul_package):
 
 def test_cleared_manufacturer_skips_inference(ul_layout, ul_package):
     _, candidate = ul_package
-    unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY), ul_layout)
+    unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION), ul_layout)
     assert _prop(unset, "Manufacturer") == "Texas Instruments"
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({"manufacturer"})), ul_layout)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, cleared=frozenset({"manufacturer"})), ul_layout)
     assert not plan.blocked, plan.issues
     assert _prop(plan, "Manufacturer") == ""
     assert "install.manufacturer_missing" not in [i.code for i in plan.issues]
@@ -108,7 +109,7 @@ def test_value_cannot_be_cleared_or_set(ul_layout, ul_package):
     with pytest.raises(TypeError):
         InstallOptions(library=UL_LIBRARY, value="")  # type: ignore[call-arg]
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, mpn="NEW-MPN"), ul_layout)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, mpn="NEW-MPN"), ul_layout)
     assert not plan.blocked, plan.issues
     assert _prop(plan, "Value") == _prop(plan, "MPN") == "NEW-MPN"
 

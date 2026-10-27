@@ -12,7 +12,7 @@ import pytest
 from clifixtures import KICAD_GENERATOR_VERSION, KICAD_SYMBOL_FORMAT
 from customfixtures import ABSENT_LIBRARY, BATTERY_CHARGER, IMU
 from fakecli import FakeCli
-from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
+from installfixtures import ATOMIC_PROPS, UL_DESCRIPTION, extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
 from zipfixtures import (
     STEP_BYTES,
     footprint,
@@ -52,6 +52,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 UL_LIBRARY = BATTERY_CHARGER
 LIBRARY = "Atomic_Analog"
 DATASHEET = {"Datasheet": "https://example.com/part"}
+# A vendor symbol with a Description (and the ti.com Datasheet vendor_symbol_lib gives it) passes the atomic rule (D-21)
+DESCRIBED = {"Description": ATOMIC_PROPS["Description"]}
 
 
 def _errors(plan):
@@ -91,8 +93,9 @@ def _src(tmp_path):
     return folder
 
 
-def _members(symbols=("PART",), footprints=("FP",), models=()):
-    members = [("part.kicad_sym", symbol_lib(symbols, props=DATASHEET))]
+def _members(symbols=("PART",), footprints=("FP",), models=("part.step",)):
+    """One symbol with the atomic fields (D-21), the given footprints and, by default, a STEP model; models=() leaves it out."""
+    members = [("part.kicad_sym", symbol_lib(symbols, props=ATOMIC_PROPS))]
     members += [(f"{name}.kicad_mod", footprint(name)) for name in footprints]
     members += [(name, STEP_BYTES) for name in models]
     return members
@@ -176,7 +179,7 @@ def test_choice_required_for_two_models_and_no_model_installs_without(layout, tm
 
 
 def test_no_model_in_package_warns(layout, tmp_path):
-    with _open(tmp_path, _members()) as (_, candidate):
+    with _open(tmp_path, _members(models=())) as (_, candidate):
         plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout)
     assert not plan.blocked, plan.issues
     assert plan.model_file is None
@@ -245,7 +248,7 @@ def test_model_changed_after_plan_is_refused_by_apply(atomic_custom, tmp_path, s
     before = snapshot(atomic_custom.custom_dir)
     with open_package(folder, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)
-        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), atomic_custom)
+        plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION), atomic_custom)
         assert not plan.blocked, plan.issues
         model = candidate.models[0].file.path
         model.write_bytes(model.read_bytes() + b" ")
@@ -374,7 +377,7 @@ def test_existing_library_unaffected_by_symbols_check(layout, tmp_path):
 
 def test_footprint_consistency_default_names(atomic_custom, ul_package):
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), atomic_custom)
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION), atomic_custom)
     assert not plan.blocked, plan.issues
     fp_op = next(op for op in plan.ops if op.kind == "footprint")
     sym_op = next(op for op in plan.ops if op.kind == "symbol_lib")
@@ -483,7 +486,7 @@ def _target_layout(tmp_path, version, names=("EXISTING_A",), *, library=LIBRARY,
 def _vendor(symbol=None, *, model=True, model_name="part.step", footprint_bytes=None):
     """Package members: one vendor symbol (default PART at 20211014), footprint FP and optionally a STEP file."""
     members = [
-        ("part.kicad_sym", vendor_symbol_lib(VENDOR) if symbol is None else symbol),
+        ("part.kicad_sym", vendor_symbol_lib(VENDOR, props=DESCRIBED) if symbol is None else symbol),
         ("FP.kicad_mod", vendor_footprint("FP") if footprint_bytes is None else footprint_bytes),
     ]
     if model:
@@ -521,7 +524,7 @@ def _codes_of(plan, severity):
 def test_version_equal_as_is(tmp_path):
     layout = _target_layout(tmp_path, V6)
     fake = FakeCli()
-    vendor = vendor_symbol_lib(VENDOR, version=V6)
+    vendor = vendor_symbol_lib(VENDOR, version=V6, props=DESCRIBED)
     plan = _plan(tmp_path, layout, _tools(fake), vendor)
     assert not plan.blocked, plan.issues
     assert (plan.normalised, plan.source_version, plan.target_version) == (False, V6, V6)
@@ -618,7 +621,7 @@ def test_version_memoised(tmp_path):
 def test_version_cli_sees_the_chosen_unit_only(tmp_path):
     layout = _target_layout(tmp_path, V9)
     other = vendor_symbol_lib("OTHER").decode()
-    mine = vendor_symbol_lib(VENDOR).decode()
+    mine = vendor_symbol_lib(VENDOR, props=DESCRIBED).decode()
     # One file holding both symbols: the first file's body, then the second file's body
     both = (other[: other.rindex(")")] + mine.split("\r\n", 1)[1]).encode()
     fake = FakeCli(output_version=V9)
@@ -646,7 +649,7 @@ def test_version_real_cli_into_20251024(tmp_path, ul_package, real_tools):
     layout = _target_layout(tmp_path, KICAD_SYMBOL_FORMAT, ("EXISTING_A",))
     original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, tools)
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), layout, tools)
     assert not plan.blocked, plan.issues
     assert plan.normalised and plan.target_version == KICAD_SYMBOL_FORMAT
     sym_op = _op(plan, "symbol_lib")
@@ -724,7 +727,7 @@ def test_library_new_symbol_library_with_cli(tmp_path):
 def test_library_new_symbol_library_without_cli(tmp_path):
     # With no Atomic_Footprints.pretty yet, the one mkdir is the shared folder, never <library>.pretty
     layout = _pair_layout(tmp_path, footprint_libs=())
-    vendor = vendor_symbol_lib(VENDOR)
+    vendor = vendor_symbol_lib(VENDOR, props=DESCRIBED)
     plan = _plan(tmp_path, layout, ToolContext(), vendor, InstallOptions(library=NEW_LIBRARY))
     assert not plan.blocked, plan.issues
     assert [op.kind for op in plan.ops] == ["mkdir", "model", "footprint", "symbol_lib"]
@@ -743,7 +746,7 @@ def test_library_new_symbol_library_without_cli(tmp_path):
 def test_library_existing_symbol_library_without_footprint_folder(atomic_custom, ul_package, tmp_path):
     # The synthetic Atomic_ IMU library has a symbol library and, by construction, no footprint of its own
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=IMU), atomic_custom, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=IMU, description=UL_DESCRIPTION), atomic_custom, ToolContext())
     assert not plan.blocked, plan.issues
     # The shared footprint folder exists in this tree, so no folder is created at all
     assert (plan.new_symbol_lib, plan.new_footprint_lib) == (False, False)
@@ -837,7 +840,7 @@ def test_library_real_cli_new_header(tmp_path, ul_package, real_tools):
     tools = real_tools
     layout = _pair_layout(tmp_path)
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=NEW_LIBRARY), layout, tools)
+    plan = build_plan(candidate, InstallOptions(library=NEW_LIBRARY, description=UL_DESCRIPTION), layout, tools)
     assert not plan.blocked, plan.issues
     sym_op = _op(plan, "symbol_lib")
     header = _header(sym_op.data)
@@ -882,7 +885,7 @@ def _vendor_property_names(data, name=VENDOR):
 
 def test_fields_mf_mp_renamed_in_place(tmp_path):
     layout = _target_layout(tmp_path, V6)
-    vendor = vendor_symbol_lib(VENDOR, props={"MF": "Texas Instruments", "MP": "XYZ123"})
+    vendor = vendor_symbol_lib(VENDOR, props={"MF": "Texas Instruments", "MP": "XYZ123", **DESCRIBED})
     original = _vendor_property_names(vendor)
     plan = _plan(tmp_path, layout, ToolContext(), vendor, model_name="part.stp")
     assert not plan.blocked, plan.issues
@@ -895,7 +898,7 @@ def test_fields_mf_mp_renamed_in_place(tmp_path):
 
 def test_fields_exact_manufacturer_kept(tmp_path):
     layout = _target_layout(tmp_path, V6)
-    vendor = vendor_symbol_lib(VENDOR, props={"Manufacturer": "Exact Co", "MANUFACTURER": "Other Co"})
+    vendor = vendor_symbol_lib(VENDOR, props={"Manufacturer": "Exact Co", "MANUFACTURER": "Other Co", **DESCRIBED})
     plan = _plan(tmp_path, layout, ToolContext(), vendor)
     assert not plan.blocked, plan.issues
     _, symbol = _symbol_in(plan)
@@ -909,7 +912,7 @@ def test_fields_exact_manufacturer_kept(tmp_path):
 def test_fields_added_hidden_20211014(tmp_path, ul_package):
     layout = _target_layout(tmp_path, V6)
     _, candidate = ul_package
-    plan = build_plan(candidate, InstallOptions(library=LIBRARY), layout, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=LIBRARY, description=UL_DESCRIPTION), layout, ToolContext())
     assert not plan.blocked, plan.issues
     loaded, symbol = _symbol_in(plan, "CSD85301Q2")
     assert (_value_of(plan, "Manufacturer", "CSD85301Q2"), _value_of(plan, "MPN", "CSD85301Q2")) == ("Texas Instruments", "CSD85301Q2")
@@ -927,7 +930,16 @@ def test_fields_added_hidden_20211014(tmp_path, ul_package):
 def test_fields_added_hidden_20241209(tmp_path):
     layout = _target_layout(tmp_path, V9)
     plan = _plan(
-        tmp_path, layout, ToolContext(), target_lib(V9, (VENDOR,)), InstallOptions(library=LIBRARY, manufacturer="TI")
+        tmp_path,
+        layout,
+        ToolContext(),
+        target_lib(V9, (VENDOR,)),
+        InstallOptions(
+            library=LIBRARY,
+            manufacturer="TI",
+            datasheet=ATOMIC_PROPS["Datasheet"],
+            description=ATOMIC_PROPS["Description"],
+        ),
     )
     assert not plan.blocked, plan.issues
     loaded, symbol = _symbol_in(plan)
@@ -996,7 +1008,7 @@ def test_fields_description_name_by_version(tmp_path, version, vendor, expected,
 
 def test_rename_sanitised_symbol(tmp_path):
     layout = _target_layout(tmp_path, V6)
-    vendor = vendor_symbol_lib("PART/X", units=2, keywords="PART/X PART/XY power")
+    vendor = vendor_symbol_lib("PART/X", units=2, keywords="PART/X PART/XY power", props=DESCRIBED)
     plan = _plan(tmp_path, layout, ToolContext(), vendor)
     assert not plan.blocked, plan.issues
     assert plan.symbol_names == ("PART_X",)
@@ -1021,7 +1033,7 @@ def test_rename_not_listed_when_the_name_is_clean(tmp_path):
 
 def test_rename_value_is_the_mpn_not_the_token_rewrite(tmp_path):
     layout = _target_layout(tmp_path, V6)
-    plan = _plan(tmp_path, layout, ToolContext(), vendor_symbol_lib("PART/X"), InstallOptions(library=LIBRARY))
+    plan = _plan(tmp_path, layout, ToolContext(), vendor_symbol_lib("PART/X", props=DESCRIBED), InstallOptions(library=LIBRARY))
     assert not plan.blocked, plan.issues
     # The symbol is renamed to PART_X, but its Value is its MPN, which is the vendor name
     assert _value_of(plan, "Value", "PART_X") == _value_of(plan, "MPN", "PART_X") == "PART/X"
@@ -1029,7 +1041,7 @@ def test_rename_value_is_the_mpn_not_the_token_rewrite(tmp_path):
 
 def test_footprint_consistency_after_override(atomic_custom, ul_package):
     _, candidate = ul_package
-    options = InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "DQK0006B_TI"})
+    options = InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, footprint_names={"DQK0006B": "DQK0006B_TI"})
     plan = build_plan(candidate, options, atomic_custom)
     assert not plan.blocked, plan.issues
     assert plan.footprint_names == ("DQK0006B_TI",) and plan.linked_footprint == "DQK0006B_TI"
@@ -1045,7 +1057,7 @@ def test_footprint_consistency_after_override(atomic_custom, ul_package):
 
 def test_footprint_consistency_override_is_sanitised(atomic_custom, ul_package):
     _, candidate = ul_package
-    options = InstallOptions(library=UL_LIBRARY, footprint_names={"DQK0006B": "DQK 0006/B"})
+    options = InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, footprint_names={"DQK0006B": "DQK 0006/B"})
     plan = build_plan(candidate, options, atomic_custom)
     assert not plan.blocked, plan.issues
     assert plan.footprint_names == ("DQK_0006_B",)
@@ -1106,7 +1118,7 @@ def test_unit_parent_first(tmp_path, new_library):
     layout = _pair_layout(tmp_path)
     library = NEW_LIBRARY if new_library else LIBRARY
     options = InstallOptions(library=library, symbol=CHILD)
-    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, child_first=True), options)
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, child_first=True, props=ATOMIC_PROPS), options)
     assert not plan.blocked, plan.issues
     assert plan.symbol_names == (PARENT, CHILD) and plan.symbol_name == CHILD
     names = _symbol_names(plan)
@@ -1119,7 +1131,7 @@ def test_unit_parent_first(tmp_path, new_library):
 def test_unit_fields_on_every_symbol(tmp_path):
     layout = _pair_layout(tmp_path)
     options = InstallOptions(library=LIBRARY, symbol=CHILD, mpn="CHILD-MPN", manufacturer="TI")
-    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD), options)
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, props=ATOMIC_PROPS), options)
     assert not plan.blocked, plan.issues
     for name in (PARENT, CHILD):
         assert _value_of(plan, "Footprint", name) == f"{footprint_library_for(LIBRARY)}:FP"
@@ -1134,7 +1146,7 @@ def test_unit_fields_on_every_symbol(tmp_path):
 def test_unit_parent_rename_updates_extends(tmp_path):
     layout = _pair_layout(tmp_path)
     options = InstallOptions(library=LIBRARY, symbol=CHILD)
-    plan = _plan(tmp_path, layout, ToolContext(), extends_pair("PARENT/X", CHILD), options)
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair("PARENT/X", CHILD, props=ATOMIC_PROPS), options)
     assert not plan.blocked, plan.issues
     assert plan.symbol_names == (PARENT, CHILD)
     assert Rename("symbol", "PARENT/X", PARENT) in plan.renames
@@ -1156,7 +1168,7 @@ def test_unit_existing_parent_is_a_conflict(tmp_path):
 
 @pytest.mark.parametrize("size", [1, 2], ids=["1", "2"])
 def test_unit_invariant(layout, tmp_path, size):
-    symbol = vendor_symbol_lib(PARENT) if size == 1 else extends_pair(PARENT, CHILD)
+    symbol = vendor_symbol_lib(PARENT, props=DESCRIBED) if size == 1 else extends_pair(PARENT, CHILD, props=ATOMIC_PROPS)
     chosen = PARENT if size == 1 else CHILD
     with _open(tmp_path, _vendor(symbol)) as (_, candidate):
         plan = build_plan(candidate, InstallOptions(library=LIBRARY, symbol=chosen), layout, ToolContext())
@@ -1174,7 +1186,7 @@ def test_unit_invariant(layout, tmp_path, size):
 
 def test_several_footprints_the_chosen_one_carries_the_model(layout, tmp_path):
     members = [
-        ("part.kicad_sym", vendor_symbol_lib(VENDOR)),
+        ("part.kicad_sym", vendor_symbol_lib(VENDOR, props=DESCRIBED)),
         ("FP_A.kicad_mod", vendor_footprint("FP_A")),
         ("FP_B.kicad_mod", vendor_footprint("FP_B")),
         ("part.step", STEP_BYTES),
@@ -1264,7 +1276,7 @@ def test_unit_real_cli_loads_in_kicad(tmp_path, new_library, real_tools):
     library = NEW_LIBRARY if new_library else LIBRARY
     original = (layout.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
     options = InstallOptions(library=library, symbol=CHILD)
-    plan = _plan(tmp_path, layout, tools, extends_pair(PARENT, CHILD, child_first=True), options)
+    plan = _plan(tmp_path, layout, tools, extends_pair(PARENT, CHILD, child_first=True, props=ATOMIC_PROPS), options)
     assert not plan.blocked, plan.issues
     assert plan.symbol_names == (PARENT, CHILD)
     sym_op = _op(plan, "symbol_lib")
@@ -1321,7 +1333,7 @@ def _install(tmp_path, layout, tools=ToolContext(), symbol=None, options=None, *
 
 def test_noop_second_plan_after_apply(atomic_custom, ul_package, tmp_path):
     _, candidate = ul_package
-    options = InstallOptions(library=UL_LIBRARY)
+    options = InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION)
     first = build_plan(candidate, options, atomic_custom)
     assert not first.blocked and first.ops, first.issues
     _apply(first, tmp_path)
@@ -1339,7 +1351,7 @@ def test_noop_second_plan_after_normalised_apply(tmp_path, ul_package, real_tool
     tools = real_tools
     layout = _target_layout(tmp_path, KICAD_SYMBOL_FORMAT, ("EXISTING_A",))
     _, candidate = ul_package
-    options = InstallOptions(library=LIBRARY)
+    options = InstallOptions(library=LIBRARY, description=UL_DESCRIPTION)
     first = build_plan(candidate, options, layout, tools)
     assert not first.blocked and first.normalised, first.issues
     _apply(first, tmp_path)
@@ -1589,7 +1601,7 @@ def test_resolution_overwrite_model_case_twin_applies_on_ntfs(tmp_path):
 
 def test_resolution_rename_symbol(tmp_path):
     layout = _clashing_layout(tmp_path, footprint=False, model=False)
-    vendor = vendor_symbol_lib(VENDOR, units=2)
+    vendor = vendor_symbol_lib(VENDOR, units=2, props=DESCRIBED)
     plan = _plan(tmp_path, layout, ToolContext(), vendor, _with({SYM_KEY: _res("rename")}))
     assert not plan.blocked, plan.issues
     assert plan.symbol_names == ("PART_2",)
@@ -1606,7 +1618,7 @@ def test_resolution_rename_symbol_follows_extends(tmp_path):
     layout = _target_layout(tmp_path, V6, (PARENT,))
     key = f"symbol:{LIBRARY}:{PARENT}"
     options = InstallOptions(library=LIBRARY, symbol=CHILD, resolutions={key: _res("rename", "PARENT_NEW")})
-    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, child_first=True), options)
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, child_first=True, props=ATOMIC_PROPS), options)
     assert not plan.blocked, plan.issues
     assert plan.symbol_names == ("PARENT_NEW", CHILD)
     loaded, child = _symbol_in(plan, CHILD)
@@ -1776,7 +1788,7 @@ def test_resolution_parent_before_child(tmp_path):
     span = find_symbol(old.root, CHILD).node
     key = f"symbol:{LIBRARY}:{CHILD}"
     options = InstallOptions(library=LIBRARY, symbol=CHILD, resolutions={key: _res("overwrite")})
-    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, child_first=True), options)
+    plan = _plan(tmp_path, layout, ToolContext(), extends_pair(PARENT, CHILD, child_first=True, props=ATOMIC_PROPS), options)
     assert [c.key for c in plan.conflicts] == [key]
     assert not plan.blocked, plan.issues
     planned = parse_bytes(_op(plan, "symbol_lib").data, "lib")

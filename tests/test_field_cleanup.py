@@ -10,7 +10,7 @@ import dataclasses
 from contextlib import contextmanager
 from pathlib import Path
 
-from installfixtures import vendor_footprint, vendor_symbol_lib
+from installfixtures import ATOMIC_PROPS, UL_DESCRIPTION, vendor_footprint, vendor_symbol_lib
 from vendorfixtures import (
     SNAPEDA_DESCRIPTION,
     SNAPEDA_DESCRIPTION_RAW,
@@ -53,6 +53,8 @@ SNAPEDA_LIBRARY = "Atomic_Connector"
 UL_LIBRARY = "Atomic_Battery_Management"
 VENDOR = "PART"
 LIBRARY = "Atomic_Analog"
+# The SnapEDA sample has no Datasheet; an install of it carries one so the part passes the atomic rule (D-21)
+SNAPEDA_DATASHEET = ATOMIC_PROPS["Datasheet"]
 
 
 def _snapeda_layout(tmp_path):
@@ -88,6 +90,10 @@ def _open_vendor(tmp_path, symbol, model="part.step"):
 
 def _plan_vendor(tmp_path, props=None, **kwargs):
     layout = _library_layout(tmp_path)
+    props = dict(props or {})
+    # A Description makes the part pass the atomic rule (D-21); a test about a description field brings its own
+    if not {"Description", "ki_description"} & set(props):
+        props["Description"] = ATOMIC_PROPS["Description"]
     with _open_vendor(tmp_path, vendor_symbol_lib(VENDOR, props=props, **kwargs)) as (_, candidate):
         return build_plan(candidate, InstallOptions(library=LIBRARY), layout, ToolContext()), candidate
 
@@ -131,6 +137,7 @@ SNAPEDA_NAMES = [
     "MPN",
     "Description",
     "ki_fp_filters",
+    "Datasheet",
 ]
 
 
@@ -155,7 +162,7 @@ def _snapeda_changes():
 def test_snapeda_symbol_cleaned(tmp_path):
     layout = _snapeda_layout(tmp_path)
     with _open_snapeda(tmp_path) as (_, candidate):
-        plan = build_plan(candidate, InstallOptions(library=SNAPEDA_LIBRARY), layout, ToolContext())
+        plan = build_plan(candidate, InstallOptions(library=SNAPEDA_LIBRARY, datasheet=SNAPEDA_DATASHEET), layout, ToolContext())
         assert not plan.blocked, [i.text for i in plan.issues]
         symbol = _symbol_in(plan, SNAPEDA_SYMBOL)
         assert _property_names(symbol) == SNAPEDA_NAMES
@@ -168,7 +175,7 @@ def test_snapeda_symbol_cleaned(tmp_path):
 def test_field_change_rows(tmp_path):
     layout = _snapeda_layout(tmp_path)
     with _open_snapeda(tmp_path) as (_, candidate):
-        options = InstallOptions(library=SNAPEDA_LIBRARY)
+        options = InstallOptions(library=SNAPEDA_LIBRARY, datasheet=SNAPEDA_DATASHEET)
         plan = build_plan(candidate, options, layout, ToolContext())
         section = next(s for s in preview_sections(plan, candidate, options) if s.name == "Field changes")
         assert len(section.rows) == len(plan.field_changes)
@@ -228,7 +235,7 @@ def test_ul_property_list_unchanged_by_cleanup(ul_package, tmp_path):
     _, candidate = ul_package
     write_custom_layout(tmp_path / "repo", [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
     layout = RepoLayout.for_repo(tmp_path / "repo")
-    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), layout, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION), layout, ToolContext())
     assert not plan.blocked, [i.text for i in plan.issues]
     assert "ki_locked" in _property_names(_symbol_in(plan, "CSD85301Q2"))
     assert not [c for c in plan.field_changes if c.action == "drop"]
@@ -275,7 +282,7 @@ def test_cleanup_never_touches_existing_symbols(tmp_path):
     target.write_bytes(old)
     old_block = _block(old, "OLD_PART")
     with _open_snapeda(tmp_path) as (package, candidate):
-        plan = build_plan(candidate, InstallOptions(library=SNAPEDA_LIBRARY), layout, ToolContext())
+        plan = build_plan(candidate, InstallOptions(library=SNAPEDA_LIBRARY, datasheet=SNAPEDA_DATASHEET), layout, ToolContext())
         assert not plan.blocked, [i.text for i in plan.issues]
         assert _block(_op(plan, "symbol_lib").data, "OLD_PART") == old_block
         assert {c.symbol for c in plan.field_changes} == {SNAPEDA_SYMBOL}
@@ -326,7 +333,7 @@ def test_remove_property_edit_edges():
 def test_description_whitespace_collapsed(tmp_path):
     layout = _snapeda_layout(tmp_path)
     with _open_snapeda(tmp_path) as (_, candidate):
-        options = InstallOptions(library=SNAPEDA_LIBRARY)
+        options = InstallOptions(library=SNAPEDA_LIBRARY, datasheet=SNAPEDA_DATASHEET)
         plan = build_plan(candidate, options, layout, ToolContext())
         assert not plan.blocked, [i.text for i in plan.issues]
         assert _value_of(plan, "Description", SNAPEDA_SYMBOL) == SNAPEDA_DESCRIPTION
@@ -351,7 +358,7 @@ def test_ki_description_collapsed(tmp_path):
 def test_description_override_not_cleaned(tmp_path):
     layout = _snapeda_layout(tmp_path)
     with _open_snapeda(tmp_path) as (_, candidate):
-        options = InstallOptions(library=SNAPEDA_LIBRARY, description="Typed  text")
+        options = InstallOptions(library=SNAPEDA_LIBRARY, datasheet=SNAPEDA_DATASHEET, description="Typed  text")
         plan = build_plan(candidate, options, layout, ToolContext())
         assert not plan.blocked, [i.text for i in plan.issues]
         assert _value_of(plan, "Description", SNAPEDA_SYMBOL) == "Typed  text"
@@ -360,7 +367,8 @@ def test_description_override_not_cleaned(tmp_path):
 
 def test_mpn_fallback_is_meta_mpn(tmp_path):
     layout = _library_layout(tmp_path)
-    with _open_vendor(tmp_path, vendor_symbol_lib(VENDOR), model="part.stp") as (_, candidate):
+    symbol = vendor_symbol_lib(VENDOR, props={"Description": ATOMIC_PROPS["Description"]})
+    with _open_vendor(tmp_path, symbol, model="part.stp") as (_, candidate):
         item = candidate.symbols[0]
         hinted = dataclasses.replace(candidate, symbols=(dataclasses.replace(item, meta=dataclasses.replace(item.meta, mpn="HINT-9")),))
         plan = build_plan(hinted, InstallOptions(library=LIBRARY), layout, ToolContext())
