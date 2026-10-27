@@ -19,9 +19,13 @@ Bare `pytest` already prints the reason for every skip (`-ra` is set in `pyproje
 The suite must never write to the live `Custom/` folder, and no test result may depend on which parts it holds.
 Adding or removing a real part in `Custom/` must not change a test result.
 
-- Tests that need a target library use the `synthetic_custom` fixture from `tests/conftest.py`, built by `tests/customfixtures.py`.
-- It writes one library per format version (20211014, 20231120, 20241209, 20251024) with today's naming, in a temporary folder.
-  It never contains the Ultra Librarian sample part.
+- Tests that need a target library use one of two synthetic `Custom/` fixtures from `tests/conftest.py`, built by `tests/customfixtures.py`.
+  Both write into a temporary folder and never contain the Ultra Librarian sample part.
+  - `synthetic_custom` (`write_synthetic_custom` with the default `naming="v1"`) keeps today's v1 names.
+    It writes one library per format version (20211014, 20231120, 20241209, 20251024) and models the live tree for the scan tests.
+  - `atomic_custom` (`naming="atomic"`) holds the `Atomic_` install targets, with their footprints in one `Atomic_Footprints.pretty`.
+    The install and importer tests use it.
+- Every test that names a footprint location goes through `footprint_library_for` in `tests/zipfixtures.py`, so the name of the shared footprint library lives in one place.
 - Do not copy real libraries into fixtures.
   The one exception is the opt-in atomic UAT builder (`tests/test_atomic_uat.py`): it reads the live `Custom/` only to make a scratch copy outside the repository and never writes it, and it does not run unless `KICAD_ATOMIC_UAT_DIR` is set.
   The other opt-in builder (`KICAD_IMPORT_UAT_DIR`) does not read the live `Custom/` at all.
@@ -55,8 +59,17 @@ These skip only on a machine that lacks something. None of them skip on the work
 - Junctions unavailable: `junctions are a Windows feature` and `could not create a junction here` (`tests/test_package_folder.py`).
 - Git not on PATH: `git is not on PATH` (`tests/gitfixtures.py`, `tests/test_fixtures.py`, `tests/test_package_zip.py`).
 - A zipfile feature missing: `this Python's zipfile has no <name>` (`tests/test_package_zip.py`).
-- Licence-restricted vendor samples absent: `downloaded_examples/<file> not present (licence-restricted <vendor> sample, kept local)` (`tests/test_real_vendor_samples.py`, `tests/test_vendorfixtures.py`).
-- No KiCad stock symbols folder: `no KiCad install with a stock symbols folder` (`tests/test_install_verify.py`).
+- Licence-restricted vendor samples absent: `downloaded_examples/<file> not present (licence-restricted <vendor> sample, kept local)`
+  (`tests/test_real_vendor_samples.py`, `tests/test_vendorfixtures.py`, `tests/test_categories.py`, `tests/test_footprint_text.py`).
+  Only `ul_CSD85301Q2.zip` is committed.
+  The others are kept local: the SnapEDA, SamacSys and SnapEDA 3D model downloads, and the Ultra Librarian sample `ul_ATXK-H14-D-32-768KHZ-E50-T3.zip`.
+  `ul_ATXK-H14-D-32-768KHZ-E50-T3.zip` is used by `tests/test_real_vendor_samples.py` (prints `downloaded_examples/ul_ATXK-H14-D-32-768KHZ-E50-T3.zip not present`) and by `tests/test_footprint_text.py`.
+  `tests/test_suggest_atomic.py` prints `the licence-restricted Ultra Librarian sample is not present` when `ul_CSD85301Q2.zip` is missing.
+- No KiCad stock symbols folder: `no KiCad install with a stock symbols folder`
+  (`tests/test_footprint_text.py`, `tests/test_install_verify.py`, `tests/test_official_footprint.py`, `tests/test_siblings.py`, `tests/test_stems.py`).
+- Installed KiCad is not version 10: `installed KiCad is not version 10` (`tests/test_stems.py`, `tests/test_siblings.py`).
+  `tests/test_real_vendor_samples.py` prints `no KiCad 10 install with a stock symbols folder` for the same two conditions together.
+- No KiCad footprints folder: `no KiCad install with a footprints folder` (`tests/test_footprint_index.py`).
 - `tomllib` missing on Python 3.10: `tests/test_manifests.py` skips through `importorskip`.
 - Windows-only behaviour on another platform:
   `held-open handles block os.replace only on win32`, `case is only ignored on Windows`,
