@@ -1,14 +1,17 @@
 """Write-side helpers of kicad_files: every KiCad change is one exact span edit (INST-01, INST-02, INST-03, INST-05)."""
 
 import re
+import zipfile
 from pathlib import Path
 
 import pytest
 
 from kicad_lib_manager import kicad_files as kf
+from kicad_lib_manager.importer.kicad_cli import load_gate
 from kicad_lib_manager.kicad_files import LoadedFile, find_symbol, find_symbols, parse_bytes
 from kicad_lib_manager.sexpr import Edit, apply_edits, unquote
 from installfixtures import extends_pair, target_lib, vendor_footprint, vendor_symbol_lib
+from zipfixtures import UL_FOOTPRINT_MEMBER, UL_ZIP
 
 V6 = 20211014
 V8 = 20231120
@@ -704,3 +707,26 @@ def test_model_insert_without_trailing_newline_keeps_the_ending():
     assert not out.endswith("\n")
     paths = [m.path for m in kf.find_models(kf.footprint_name(_reparse(out).root).node)]
     assert paths == ["${CUSTOM_3DMODEL_DIR}/FIX_NO_EOL.step", MODEL_PATH]
+
+
+# -- footprint descr and tags (FLD-03) -----------------------------------------
+
+
+def _text_edits(loaded: LoadedFile, descr: str, tags: str) -> list[Edit]:
+    node = kf.footprint_name(loaded.root).node
+    text, eol = loaded.source.text, loaded.source.eol
+    return [
+        kf.footprint_text_edit(text, node, "descr", descr, eol),
+        kf.footprint_text_edit(text, node, "tags", tags, eol),
+    ]
+
+
+@pytest.mark.kicad_cli
+def test_real_cli_loads_the_ul_footprint_with_inserted_descr_and_tags(kicad_cli_path):
+    with zipfile.ZipFile(UL_ZIP) as zf:
+        loaded = _load(zf.read(UL_FOOTPRINT_MEMBER))
+    out = _apply(loaded, _text_edits(loaded, "WSON-6 2.1x2.1 mm, 0.65 mm pitch, TI DQK0006B", "WSON-6 DQK0006B"))
+    issues = load_gate(
+        kicad_cli_path, library="L", symbol_lib=None, footprints=[("DQK0006B", out.encode("utf-8"))]
+    )
+    assert issues == []
