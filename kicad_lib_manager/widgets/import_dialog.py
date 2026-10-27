@@ -1379,15 +1379,15 @@ class ImportDialog(QDialog):
             combo = self._item_combo(footprints, "Vendor footprint")
             combo.currentIndexChanged.connect(self._on_footprint_changed)
             self._fp_combo = combo
-            form.addRow("Vendor footprint", self._framed(combo, "footprints"))
+            form.addRow("Footprint", self._framed(combo, "footprints"))
             self._linked_fp = footprints[0]
         elif footprints:
             self._fp_label = self._item_label(footprints[0])
-            form.addRow("Vendor footprint", self._fp_label)
+            form.addRow("Footprint", self._fp_label)
             self._linked_fp = footprints[0]
         else:
             self._fp_label = self._item_label("No footprint in this package", missing=True)
-            form.addRow("Vendor footprint", self._fp_label)
+            form.addRow("Footprint", self._fp_label)
 
         # 3D model: several give a combo that ends with "No model"; Add 3D model... sits under it
         form.addRow("3D model", self._build_model_row())

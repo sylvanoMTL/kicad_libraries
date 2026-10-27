@@ -365,7 +365,7 @@ def test_preview_sections_follow_plan_ops(ul_package, atomic_custom):
     options = InstallOptions(
         library=LIB,
         symbol=candidate.symbols[0].name,
-        footprints=tuple(f.name for f in candidate.footprints),
+        footprint=candidate.footprints[0].name,
         model=candidate.models[0].filename,
     )
     plan = real_build_plan(candidate, options, atomic_custom)
@@ -879,8 +879,8 @@ def assert_vendor_choices(options: InstallOptions, candidate: ImportCandidate) -
     """IN-04: the UI passes vendor item names or nothing, never a blank choice."""
     assert options.symbol is None or options.symbol in {s.name for s in candidate.symbols}
     assert options.model is None or options.model in {m.filename for m in candidate.models}
-    assert set(options.footprints) <= {f.name for f in candidate.footprints}
-    assert "" not in (options.symbol, options.model, *options.footprints)
+    assert options.footprint is None or options.footprint in {f.name for f in candidate.footprints}
+    assert "" not in (options.symbol, options.model, options.footprint)
 
 
 def test_picker_several_items_build_options(qtbot, make_item_dialog, recorded, tmp_path):
@@ -888,13 +888,13 @@ def test_picker_several_items_build_options(qtbot, make_item_dialog, recorded, t
     wait_current(qtbot, dialog)
     first = recorded[-1]
     assert first.symbol == "S1"
-    assert first.footprints == ("F1", "F2", "F3")
+    assert first.footprint == "F1"
     assert first.model == "a.step"
     assert first.no_model is False
 
-    # a combo for the symbols, a checklist for the footprints, a combo ending in "No model" for the models
+    # a combo for the symbols, a single-choice combo for the footprints, a combo ending in "No model" for the models
     assert dialog._symbol_combo is not None and dialog._symbol_combo.count() == 2
-    assert dialog._fp_list is not None and dialog._fp_list.count() == 3
+    assert dialog._fp_combo is not None and dialog._fp_combo.count() == 3
     assert dialog._model_combo is not None and dialog._model_combo.count() == 3
     assert dialog._model_combo.itemText(2) == "No model"
 
@@ -909,55 +909,38 @@ def test_picker_several_items_build_options(qtbot, make_item_dialog, recorded, t
     wait_current(qtbot, dialog)
     assert recorded[-1].model == "b.step" and recorded[-1].no_model is False
 
-    # F1 is linked at first; unchecking it moves "linked" to F2
-    assert dialog._fp_list.item(0).text().endswith("(linked)")
-    dialog._fp_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    # choosing F3 makes it the one footprint; the plan names the others as not used
+    dialog._fp_combo.setCurrentIndex(2)
     wait_current(qtbot, dialog)
-    assert recorded[-1].footprints == ("F2", "F3")
-    assert dialog._fp_list.item(1).text().endswith("(linked)")
-    assert not dialog._fp_list.item(0).text().endswith("(linked)")
+    assert recorded[-1].footprint == "F3"
+    assert dialog._fp_name_edit.text() == "F3"
 
-    # Make linked on F3 puts it first
-    dialog._fp_list.setCurrentRow(2)
-    assert dialog._make_linked_btn.isEnabled()
-    dialog._make_linked_btn.click()
+    # choosing F2 afterwards replaces the choice, it never adds to it
+    dialog._fp_combo.setCurrentIndex(1)
     wait_current(qtbot, dialog)
-    assert recorded[-1].footprints == ("F3", "F2")
-    row = dialog._fp_list.item(2)
-    assert row.text().endswith("(linked)")
-    assert row.font().bold()
-    assert not dialog._fp_list.item(1).font().bold()
-    assert not dialog._make_linked_btn.isEnabled()  # the current row is the linked one now
-
-    # re-checking F1 keeps the linked footprint and lists the others in list order
-    dialog._fp_list.item(0).setCheckState(Qt.CheckState.Checked)
-    wait_current(qtbot, dialog)
-    assert recorded[-1].footprints == ("F3", "F1", "F2")
+    assert recorded[-1].footprint == "F2"
 
 
-def test_picker_checklist_shows_six_rows_then_scrolls(qtbot, make_item_dialog, tmp_path):
+def test_picker_footprint_combo_lists_every_footprint_of_a_long_package(qtbot, make_item_dialog, tmp_path):
     names = tuple(f"F{n}" for n in range(1, 9))
     dialog = make_item_dialog(multi_zip(tmp_path, footprints=names), show=True)
     wait_current(qtbot, dialog)
-    fp_list = dialog._fp_list
-    assert fp_list.count() == 8
-    row = fp_list.sizeHintForRow(0)
-    assert fp_list.maximumHeight() == row * 6 + 2 * fp_list.frameWidth()
-    assert fp_list.verticalScrollBar().maximum() > 0
-    assert fp_list.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    combo = dialog._fp_combo
+    assert [combo.itemText(i) for i in range(combo.count())] == list(names)
+    assert combo.itemData(7) == "F8"
 
 
 def test_picker_single_items_are_labels(qtbot, make_item_dialog, recorded):
     dialog = make_item_dialog()
     wait_current(qtbot, dialog)
     candidate = dialog._candidate
-    assert dialog._symbol_combo is None and dialog._fp_list is None and dialog._model_combo is None
+    assert dialog._symbol_combo is None and dialog._fp_combo is None and dialog._model_combo is None
     assert dialog._symbol_label.full_text() == candidate.symbols[0].name
     assert dialog._fp_label.full_text() == "DQK0006B"
     assert dialog._model_label.full_text() == candidate.models[0].filename
     first = recorded[-1]
     assert first.symbol == candidate.symbols[0].name
-    assert first.footprints == ("DQK0006B",)
+    assert first.footprint == "DQK0006B"
     assert first.model == candidate.models[0].filename
     assert dialog._extends_note.isHidden()
 
@@ -993,7 +976,7 @@ def test_picker_no_model_and_no_footprint_labels(qtbot, make_item_dialog, record
     wait_current(qtbot, second)
     assert second._fp_label.full_text() == "No footprint in this package"
     assert AMBER.lower() in second._fp_label.styleSheet().lower()
-    assert recorded[-1].footprints == ()
+    assert recorded[-1].footprint is None
 
 
 def test_picker_extends_note(qtbot, make_item_dialog, tmp_path):
@@ -1028,12 +1011,11 @@ def test_picker_never_passes_blank(qtbot, make_item_dialog, recorded, tmp_path):
     wait_current(qtbot, dialog)
     dialog._model_combo.setCurrentIndex(2)
     wait_current(qtbot, dialog)
-    dialog._fp_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+    dialog._fp_combo.setCurrentIndex(1)
     wait_current(qtbot, dialog)
-    for row in (1, 2):
-        dialog._fp_list.item(row).setCheckState(Qt.CheckState.Unchecked)
+    dialog._fp_combo.setCurrentIndex(2)
     wait_current(qtbot, dialog)
-    assert recorded[-1].footprints == ()
+    assert recorded[-1].footprint == "F3"
     assert len(recorded) >= 5
     for options in recorded:
         assert_vendor_choices(options, dialog._candidate)
@@ -1286,7 +1268,7 @@ def test_fields_reset_on_symbol_change_kept_on_library_change(qtbot, make_item_d
     type_text(qtbot, dialog._fp_name_edit, "MYFP")
     wait_current(qtbot, dialog)
     assert dialog._fp_name_edit.text() == "MYFP"
-    dialog._fp_list.item(0).setCheckState(Qt.CheckState.Unchecked)  # F1 was linked, F2 is now
+    dialog._fp_combo.setCurrentIndex(1)  # F1 was linked, F2 is now
     wait_current(qtbot, dialog)
     assert dialog._linked_fp == "F2"
     assert dialog._fp_name_edit.text() == "F2"
@@ -1381,8 +1363,8 @@ def test_fields_long_text_geometry(qtbot, make_item_dialog, tmp_path):
     assert dialog._field_edits["description"].text() == "D" * 120
 
 
-def test_footprint_field_and_filters_follow_checked_order(qtbot, make_item_dialog, tmp_path):
-    """Edge PREV-03/ordering: the field names the linked footprint, ki_fp_filters lists the checked ones in order."""
+def test_footprint_field_and_filters_follow_the_chosen_footprint(qtbot, make_item_dialog, tmp_path):
+    """Edge PREV-03: the field and ki_fp_filters name only the chosen footprint (D-14)."""
     from kicad_lib_manager.kicad_files import find_property, find_symbol, parse_bytes
 
     dialog = make_item_dialog(multi_zip(tmp_path), show=True, suggest_library=_good_suggestion)
@@ -1394,16 +1376,11 @@ def test_footprint_field_and_filters_follow_checked_order(qtbot, make_item_dialo
         return find_property(symbol.node, "ki_fp_filters").value
 
     assert dialog._fp_field.text() == f"{FP_LIB}:F1"
-    assert filters() == "F1 F2 F3"
-    dialog._fp_list.setCurrentRow(2)
-    dialog._make_linked_btn.click()
+    assert filters() == "F1"
+    dialog._fp_combo.setCurrentIndex(2)
     wait_current(qtbot, dialog)
     assert dialog._fp_field.text() == f"{FP_LIB}:F3"
-    assert filters() == "F3 F1 F2"
-    dialog._fp_list.item(1).setCheckState(Qt.CheckState.Unchecked)  # F2 out
-    wait_current(qtbot, dialog)
-    assert dialog._fp_field.text() == f"{FP_LIB}:F3"
-    assert filters() == "F3 F1"
+    assert filters() == "F3"
 
 
 def test_emptied_mpn_blocks_install(qtbot, make_item_dialog):
@@ -1721,23 +1698,11 @@ def test_strip_link_focuses_field(qtbot, make_item_dialog):
     assert dialog._install_btn.isEnabled()
 
 
-def test_strip_link_focuses_library_and_footprint_list(qtbot, make_item_dialog, tmp_path):
+def test_strip_link_focuses_library_and_the_footprint_choice_never_blocks(qtbot, make_item_dialog, tmp_path):
     dialog = make_item_dialog(multi_zip(tmp_path), show=True, suggest_library=_good_suggestion)
     wait_current(qtbot, dialog)
-    for row in range(dialog._fp_list.count()):
-        dialog._fp_list.item(row).setCheckState(Qt.CheckState.Unchecked)
-    wait_current(qtbot, dialog)
-    # UI E5/error: the last footprint unchecked adds the reason and the amber frame, once
-    links = strip_links(dialog)
-    assert "Select at least one footprint" in links
-    assert not any(text.startswith("Error:") for text in links)
-    assert frame_blocked(dialog, "footprints")
-    assert not dialog._install_btn.isEnabled()
-    dialog._library_combo.setFocus()
-    dialog._strip.linkActivated.emit(links["Select at least one footprint"])
-    assert dialog.focusWidget() is dialog._fp_list
-    dialog._fp_list.item(0).setCheckState(Qt.CheckState.Checked)
-    wait_current(qtbot, dialog)
+    # the footprint combo always holds a choice, so it adds no reason and no amber frame
+    assert "Select at least one footprint" not in strip_links(dialog)
     assert not frame_blocked(dialog, "footprints")
     assert dialog._install_btn.isEnabled()
 
@@ -2295,7 +2260,7 @@ def test_conflict_row_exclusive_toggles_and_line_one(qtbot):
 
 
 def test_conflicts_overflow_geometry(qtbot, make_item_dialog, item_layout, tmp_path):
-    """Backstop (UI E8/overflow): 3 conflicts and 6 footprints at 900x600 scroll vertically only."""
+    """Backstop (UI E8/overflow): 2 conflicts beside a 6-footprint choice at 900x600 scroll vertically only."""
     from zipfixtures import STEP_BYTES, make_zip, symbol_lib
     from zipfixtures import footprint as fp_bytes
 
@@ -2303,13 +2268,14 @@ def test_conflicts_overflow_geometry(qtbot, make_item_dialog, item_layout, tmp_p
     members += [(f"F{i}.kicad_mod", fp_bytes(f"F{i}")) for i in range(1, 7)]
     members += [("a.step", STEP_BYTES)]
     package = make_zip(tmp_path / "six.zip", members)
-    for i in (1, 2, 3):
-        (item_layout.footprints_dir / f"{FP_LIB}.pretty" / f"F{i}.kicad_mod").write_bytes(fp_bytes(f"F{i}", model="other.step"))
+    # one footprint is installed (D-14), so the footprint and the model are the two conflicts
+    (item_layout.footprints_dir / f"{FP_LIB}.pretty" / "F1.kicad_mod").write_bytes(fp_bytes("F1", model="other.step"))
+    (item_layout.models_dir / "S1.step").write_bytes(STEP_BYTES + b"\n")
     dialog = make_item_dialog(package, show=True, suggest_library=_good_suggestion)
     dialog.resize(900, 600)
     wait_current(qtbot, dialog)
-    assert len(dialog._conflict_rows) == 3
-    rows = [dialog._conflicts_layout.itemAt(i).widget() for i in range(3)]
+    assert len(dialog._conflict_rows) == 2
+    rows = [dialog._conflicts_layout.itemAt(i).widget() for i in range(2)]
     rows[0]._rename_btn.click()
     wait_current(qtbot, dialog)
     type_text(qtbot, rows[0]._rename_edit, "R" * 60)

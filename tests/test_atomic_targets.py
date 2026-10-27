@@ -23,8 +23,6 @@ def _status(library):
         library=library,
         value_text="x",
         mpn_text="x",
-        several_footprints=False,
-        footprints_checked=0,
         resolutions={},
     )
 
