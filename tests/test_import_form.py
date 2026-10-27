@@ -446,13 +446,13 @@ def test_blocking_reasons_model_error():
     reasons = blocking_reasons(status(model_error=text, mpn_text=""), plan)
     assert pairs(reasons) == [
         ("Error: x", "plan"),
-        (f"Error: {text}", "model"),
+        (f"Error: {text}", "model_rejected"),
         ("MPN is empty - it names the 3D model file", "mpn"),
     ]
     reasons = blocking_reasons(status(model_error=text, build_failed=True), plan)
     assert pairs(reasons) == [
         ("Error: Preview could not be built - see the log", "plan"),
-        (f"Error: {text}", "model"),
+        (f"Error: {text}", "model_rejected"),
     ]
     assert blocking_reasons(status(model_error=text, updating=True), plan) == [Reason("Updating preview...", "plan")]
     for blank in ("", "  "):
