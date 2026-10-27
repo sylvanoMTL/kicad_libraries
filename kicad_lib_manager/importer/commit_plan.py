@@ -144,7 +144,7 @@ def build_commit_plan(
         library=result.library,
         new_library=result.new_library,
         symbol=plan.symbol_name,
-        footprint=f"{plan.library}:{plan.linked_footprint}" if plan.linked_footprint else None,
+        footprint=plan.footprint_link,
         model=plan.model_file,
         vendor=vendor_label or "Unknown vendor",
         package=result.source.name if result.source is not None else None,

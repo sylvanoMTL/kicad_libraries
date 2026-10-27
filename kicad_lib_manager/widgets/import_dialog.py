@@ -1957,11 +1957,11 @@ class ImportDialog(QDialog):
             self._set_field_texts()
             self._show_symbol_name(chosen, plan.symbol_name)
         # PREV-03: read from the plan, never computed from the inputs
-        if plan.linked_footprint is None or not plan.symbol_names:
+        if plan.footprint_link is None or not plan.symbol_names:
             self._fp_field.setText(_NO_FOOTPRINT_FIELD)
             self._fp_field.setStyleSheet(f"color: {MUTED};")
         else:
-            self._fp_field.setText(f"{plan.library}:{plan.linked_footprint}")
+            self._fp_field.setText(plan.footprint_link)
             self._fp_field.setStyleSheet("")
 
     # -- footprint name and field text (D-13, D-14, PREV-02, PREV-04) ---------------

@@ -161,6 +161,14 @@ class InstallPlan:
     renames: tuple[Rename, ...]
     issues: tuple[Issue, ...]
     field_changes: tuple[FieldChange, ...] = ()
+    footprint_library: str | None = None
+
+    @property
+    def footprint_link(self) -> str | None:
+        """The Library:Footprint text the symbol's Footprint field carries, or None when none is linked."""
+        if self.footprint_library and self.linked_footprint:
+            return f"{self.footprint_library}:{self.linked_footprint}"
+        return None
 
     @property
     def symbol_name(self) -> str:

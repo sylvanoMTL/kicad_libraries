@@ -140,14 +140,27 @@ def scan_with(*, selected_usb=False, with_installed=True, peer=None, selected_pe
     return ScanResult(symbol_libs=symbols, footprint_libs=footprints)
 
 
-def stub_plan(repo: Path, library: str = LIB, new_library: bool = False):
+def stub_plan(
+    repo: Path,
+    library: str = LIB,
+    new_library: bool = False,
+    *,
+    new_symbol_lib: bool | None = None,
+    new_footprint_lib: bool | None = None,
+    footprint_library: str | None = None,
+    pretty: str | None = None,
+):
+    """A stand-in plan; footprint_library names the footprint library, pretty the .pretty folder the plan writes."""
     layout = RepoLayout.for_repo(repo)
+    footprint_library = footprint_library or footprint_library_for(library)
     return types.SimpleNamespace(
         symbol_name="CSD85301Q2",
         library=library,
-        new_library=new_library,
+        new_symbol_lib=new_library if new_symbol_lib is None else new_symbol_lib,
+        new_footprint_lib=new_library if new_footprint_lib is None else new_footprint_lib,
+        footprint_library=footprint_library,
         symbol_lib_path=layout.symbols_dir / f"{library}.kicad_sym",
-        pretty_path=layout.footprints_dir / f"{footprint_library_for(library)}.pretty",
+        pretty_path=layout.footprints_dir / f"{pretty or footprint_library}.pretty",
         layout=layout,
     )
 
@@ -360,7 +373,7 @@ def test_tables_new_library_add_only(qtbot, make_window, tmp_path):
     assert "KICAD_LIB_GITHUB" in make_window.config_file.read_text(encoding="utf-8")
     # the post-install path asks through the same helper as Generate
     assert len(make_window.questions) == 1
-    assert f"Added {NEW_LIB} to sym-lib-table and fp-lib-table" in log_text(w)
+    assert f"Added {NEW_LIB} to sym-lib-table and {NEW_FP_LIB} to fp-lib-table" in log_text(w)
     assert w._pending_post_install is None
     # the ungenerated selection is still only in the GUI
     assert selected(w._scan_result, FFC_SYM_REL)
@@ -737,7 +750,7 @@ def test_status_rows_new_library_settle(qtbot, make_window, tmp_path):
     }
     assert dialog.rows == {
         "library_list": (f"Updated; {NEW_LIB} is selected", Severity.SUCCESS),
-        "tables": (f"Added {NEW_LIB} to sym-lib-table and fp-lib-table", Severity.SUCCESS),
+        "tables": (f"Added {NEW_LIB} to sym-lib-table and {NEW_FP_LIB} to fp-lib-table", Severity.SUCCESS),
     }
     assert w.statusBar().currentMessage() == f"Installed CSD85301Q2 into {NEW_LIB}"
 
@@ -752,11 +765,11 @@ def test_status_rows_existing_library_hint(qtbot, make_window, tmp_path):
 
     assert at_once == {
         "library_list": ("Rescanning...", Severity.INFO),
-        "tables": ("Not needed: existing library", Severity.INFO),
+        "tables": ("Not needed: existing libraries", Severity.INFO),
     }
     assert dialog.rows == {
         "library_list": (f"Updated; {LIB} is selected", Severity.SUCCESS),
-        "tables": ("Not needed: existing library", Severity.INFO),
+        "tables": ("Not needed: existing libraries", Severity.INFO),
         "generate_hint": (
             f"⚠ {LIB} is not in the library tables. Press Generate Tables to add it.", Severity.WARNING,
         ),
@@ -772,7 +785,7 @@ def test_status_rows_existing_library_listed_has_no_hint(qtbot, make_window, tmp
     dialog, _ = run_install(qtbot, w, repo, LIB, False)
 
     assert "generate_hint" not in dialog.rows
-    assert dialog.rows["tables"] == ("Not needed: existing library", Severity.INFO)
+    assert dialog.rows["tables"] == ("Not needed: existing libraries", Severity.INFO)
 
 
 def test_status_rows_new_library_already_listed(qtbot, make_window, tmp_path):
@@ -783,7 +796,7 @@ def test_status_rows_new_library_already_listed(qtbot, make_window, tmp_path):
 
     dialog, _ = run_install(qtbot, w, repo, NEW_LIB, True)
 
-    assert dialog.rows["tables"] == (f"Not changed: {NEW_LIB} was already in the tables", Severity.INFO)
+    assert dialog.rows["tables"] == (f"sym-lib-table already lists {NEW_LIB}; not changed; fp-lib-table already lists {NEW_FP_LIB}; not changed", Severity.INFO)
 
 
 def test_status_rows_library_not_in_scan(qtbot, make_window, tmp_path):
@@ -842,7 +855,7 @@ def test_status_rows_skipped_after_dialog_closed(qtbot, make_window, tmp_path):
 
     assert set(dialog.rows) == {"library_list", "tables"}
     assert dialog.rows["library_list"] == ("Rescanning...", Severity.INFO)  # nothing was set after the close
-    assert f"Added {NEW_LIB} to sym-lib-table and fp-lib-table" in log_text(w)  # the steps still ran
+    assert f"Added {NEW_LIB} to sym-lib-table and {NEW_FP_LIB} to fp-lib-table" in log_text(w)  # the steps still ran
     assert w._pending_post_install is None
 
 
@@ -893,3 +906,72 @@ def test_main_window_close_closes_idle_dialog_first(qtbot, make_window, tmp_path
     assert order == ["dialog", "geometry"]
     assert w._import_dialog is None
     assert dialog._closing
+
+
+# -- two nicknames in the post-install table step (plan 10-11, D-15, D-16) -----------------------
+
+SHARED_FP = "Atomic_Footprints"
+SHARED_FP_REL = f"Custom/Footprints/{SHARED_FP}.pretty"
+
+
+def test_tables_new_symbol_and_new_footprint_library_use_their_own_names(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    w._on_import_installed(
+        install_result(), stub_plan(repo, NEW_LIB, new_library=True, footprint_library=SHARED_FP)
+    )
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    sym_new = (repo / "sym-lib-table").read_bytes()
+    fp_new = (repo / "fp-lib-table").read_bytes()
+    assert sym_new == old_sym[:-2] + _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8") + b")\n"
+    assert fp_new == old_fp[:-2] + _managed(SHARED_FP, SHARED_FP_REL).encode("utf-8") + b")\n"
+    assert f"Added {NEW_LIB} to sym-lib-table and {SHARED_FP} to fp-lib-table" in log_text(w)
+
+
+def test_tables_only_the_footprint_library_is_new(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo, _managed(LIB, SYM_REL))
+    w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
+
+    plan = stub_plan(repo, LIB, new_symbol_lib=False, new_footprint_lib=True, footprint_library=SHARED_FP)
+    w._on_import_installed(install_result(), plan)
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert (repo / "sym-lib-table").read_bytes() == old_sym
+    assert (repo / "fp-lib-table").read_bytes() == old_fp[:-2] + _managed(SHARED_FP, SHARED_FP_REL).encode("utf-8") + b")\n"
+    assert f"Added {SHARED_FP} to fp-lib-table" in log_text(w)
+    assert "is not in the library tables" not in log_text(w)
+
+
+def test_tables_a_footprint_library_outside_the_repo_gets_no_fp_entry(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    plan = stub_plan(repo, NEW_LIB, new_library=True, footprint_library="Package_TO_SOT_SMD", pretty=NEW_FP_LIB)
+    w._on_import_installed(install_result(), plan)
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert (repo / "sym-lib-table").read_bytes() == old_sym[:-2] + _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8") + b")\n"
+    assert (repo / "fp-lib-table").read_bytes() == old_fp
+    assert b"Package_TO_SOT_SMD" not in (repo / "fp-lib-table").read_bytes()
+    assert f"Added {NEW_LIB} to sym-lib-table" in log_text(w)
+
+
+def test_hint_names_both_libraries_when_neither_is_in_the_tables(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
+
+    plan = stub_plan(repo, LIB, new_symbol_lib=False, new_footprint_lib=False, footprint_library=SHARED_FP)
+    w._on_import_installed(install_result(), plan)
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert f"{LIB} and {SHARED_FP} are not in the library tables. Press Generate Tables to add them." in log_text(w)

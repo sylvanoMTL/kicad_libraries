@@ -49,11 +49,17 @@ class _PostInstall:
     """What the next scan must select once an install has finished (POST-01)."""
 
     library: str
-    new_library: bool
     symbol: str
     sym_rel_path: str
-    fp_rel_path: str
+    new_symbol_lib: bool
+    footprint_library: str | None
+    fp_rel_path: str | None
+    new_footprint_lib: bool
     scan_started: bool = False
+
+    @property
+    def new_library(self) -> bool:
+        return self.new_symbol_lib or self.new_footprint_lib
 
 
 class ScanWorker(QThread):
@@ -592,6 +598,8 @@ class MainWindow(QMainWindow):
             (result.symbol_libs, pending.sym_rel_path),
             (result.footprint_libs, pending.fp_rel_path),
         ):
+            if rel_path is None:
+                continue
             by_path = {lib.rel_path: lib for lib in libs}
             lib = by_path.get(rel_path)
             if lib is None:
@@ -643,29 +651,42 @@ class MainWindow(QMainWindow):
 
         if pending.new_library:
             issues = add_library_entries(
-                dest, library, pending.sym_rel_path, pending.fp_rel_path
+                dest,
+                symbol=(library, pending.sym_rel_path) if pending.new_symbol_lib else None,
+                footprint=(
+                    (pending.footprint_library, pending.fp_rel_path)
+                    if pending.new_footprint_lib and pending.footprint_library and pending.fp_rel_path
+                    else None
+                ),
             )
             self._log_issues(issues)
-            text, severity = self._tables_outcome(library, issues)
+            text, severity = self._tables_outcome(issues)
             self._set_import_status("tables", text, severity)
             # Same rule as Generate: the path variables are offered for change after every
             # table write, never written silently
             self._sync_path_vars()
             return
 
-        listed = True
-        for name, rel_path in (
-            ("sym-lib-table", pending.sym_rel_path),
-            ("fp-lib-table", pending.fp_rel_path),
-        ):
-            info = table_info(dest / name)
+        # The libraries the tables must list: the symbol library, and the footprint library when
+        # it is a folder of this repo (one outside the repo is never in fp-lib-table, D-16)
+        wanted = [(library, "sym-lib-table", pending.sym_rel_path)]
+        if pending.footprint_library and pending.fp_rel_path:
+            wanted.append((pending.footprint_library, "fp-lib-table", pending.fp_rel_path))
+        missing: list[str] = []
+        for name, table, rel_path in wanted:
+            info = table_info(dest / table)
             if isinstance(info, Issue):
                 self._log.log_issue(info)
-                listed = False
+                missing.append(name)
             elif info is None or rel_path not in info.managed:
-                listed = False
-        if not listed:
-            hint = f"{library} is not in the library tables. Press Generate Tables to add it."
+                missing.append(name)
+        if missing:
+            names = " and ".join(dict.fromkeys(missing))
+            two = len(set(missing)) > 1
+            hint = (
+                f"{names} {'are' if two else 'is'} not in the library tables. "
+                f"Press Generate Tables to add {'them' if two else 'it'}."
+            )
             self._log_issues([Issue(Severity.WARNING, "import.not_in_tables", hint)])
             self._set_import_status("generate_hint", f"⚠ {hint}", Severity.WARNING)
 
@@ -676,22 +697,20 @@ class MainWindow(QMainWindow):
             dialog.set_post_install_status(row, text, severity)
 
     @staticmethod
-    def _tables_outcome(library: str, issues: list[Issue]) -> tuple[str, Severity]:
+    def _tables_outcome(issues: list[Issue]) -> tuple[str, Severity]:
         """The Library tables row for a new library, from the Issues of add_library_entries (D-17)."""
         errors = [issue for issue in issues if issue.severity is Severity.ERROR]
         if errors:
             return errors[0].text, Severity.ERROR
-        codes = [issue.code for issue in issues]
-        if "table.entries_added" in codes:
-            return f"Added {library} to sym-lib-table and fp-lib-table", Severity.SUCCESS
+        for issue in issues:
+            if issue.code == "table.entries_added":
+                return issue.text, Severity.SUCCESS
         warned = any(issue.severity is Severity.WARNING for issue in issues)
-        if codes.count("table.already_listed") == 1 and "table.entry_added" not in codes and not warned:
-            return f"Not changed: {library} was already in the tables", Severity.INFO
         parts = [
             issue.text for issue in issues
             if issue.code in ("table.entry_added", "table.already_listed", "table.external_clash")
         ]
-        return "; ".join(parts) or f"Library tables checked for {library}", Severity.WARNING if warned else Severity.INFO
+        return "; ".join(parts) or "Library tables checked", Severity.WARNING if warned else Severity.INFO
 
     def _import_busy(self) -> bool:
         """True while a scan runs or the import dialog is open (D-19)."""
@@ -815,19 +834,24 @@ class MainWindow(QMainWindow):
     def _on_import_installed(self, result, plan):
         """An install finished: rescan quietly and select the installed library."""
         root = plan.layout.repo_root
+        # The footprint library is a repo folder only when it is the .pretty the plan writes; one
+        # outside the repo (an official KiCad library) is never added to fp-lib-table (D-16)
+        in_repo = plan.footprint_library is not None and plan.footprint_library == plan.pretty_path.stem
         self._pending_post_install = _PostInstall(
             library=plan.library,
-            new_library=plan.new_library,
             symbol=plan.symbol_name,
             sym_rel_path=plan.symbol_lib_path.relative_to(root).as_posix(),
-            fp_rel_path=plan.pretty_path.relative_to(root).as_posix(),
+            new_symbol_lib=plan.new_symbol_lib,
+            footprint_library=plan.footprint_library if in_repo else None,
+            fp_rel_path=plan.pretty_path.relative_to(root).as_posix() if in_repo else None,
+            new_footprint_lib=plan.new_footprint_lib and in_repo,
         )
         self.statusBar().showMessage(f"Installed {plan.symbol_name} into {result.library}", 5000)
         self._set_import_status("library_list", "Rescanning...", Severity.INFO)
-        if plan.new_library:
+        if self._pending_post_install.new_library:
             self._set_import_status("tables", "Updating...", Severity.INFO)
         else:
-            self._set_import_status("tables", "Not needed: existing library", Severity.INFO)
+            self._set_import_status("tables", "Not needed: existing libraries", Severity.INFO)
         if self._worker is None:
             self._start_scan(show_progress=False)
         # else: _finish_scan starts the post-install scan when the running one ends

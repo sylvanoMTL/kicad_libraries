@@ -90,6 +90,7 @@ def _hand_plan(layout: RepoLayout, *, new_library: bool, **fields) -> InstallPla
         symbol_names=("PART",),
         footprint_names=("FP",),
         linked_footprint="FP",
+        footprint_library=footprint_library_for(LIB),
         model_file="X.stp",
         source_version=V6_VERSION,
         target_version=V6_VERSION,

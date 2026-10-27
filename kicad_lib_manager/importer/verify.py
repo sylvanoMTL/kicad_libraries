@@ -56,7 +56,7 @@ def _linked_footprint(plan: InstallPlan, library: LoadedFile) -> tuple[LoadedFil
     symbol = next(s for s in find_symbols(library.root) if s.name == plan.symbol_name)
     prop = find_property(symbol.node, "Footprint")
     value = prop.value if prop is not None else ""
-    expected = f"{plan.library}:{plan.linked_footprint}"
+    expected = plan.footprint_link or ""
     if value != expected:
         return None, [_err("verify.link_unresolved", f"The Footprint field of {plan.symbol_name} is {value!r}, expected {expected!r}")]
     lib, _, name = value.partition(":")
@@ -128,7 +128,7 @@ def verify_install(plan: InstallPlan) -> list[Issue]:
             issues.extend(
                 pin_pad_issues(
                     plan.symbol_name,
-                    f"{plan.library}:{plan.linked_footprint}",
+                    plan.footprint_link or "",
                     symbol_pin_numbers(library.root, plan.symbol_name),
                     footprint_pad_numbers(ref.node),
                 )

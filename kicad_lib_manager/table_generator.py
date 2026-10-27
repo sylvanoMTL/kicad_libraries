@@ -366,41 +366,43 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
     return "added"
 
 
-def add_library_entries(dest_folder: Path, nickname: str, sym_rel_path: str, fp_rel_path: str) -> list[Issue]:
-    """Add one library's managed entries to sym-lib-table and fp-lib-table.
+def add_library_entries(dest_folder: Path, *, symbol: tuple[str, str] | None = None, footprint: tuple[str, str] | None = None) -> list[Issue]:
+    """Add managed entries to sym-lib-table and fp-lib-table, each under its own nickname.
 
-    Never edits, reorders or removes any other entry, and never creates the destination
-    folder (D-17). A table that already lists the nickname is left alone; a missing table
-    is created from the same template Generate uses.
+    symbol and footprint are (nickname, repo-relative posix path) pairs; only the ones given are
+    added. Never edits, reorders or removes any other entry, and never creates the destination
+    folder (D-17). A table that already lists the nickname is left alone; a missing table is
+    created from the same template Generate uses.
     """
     if not dest_folder.is_dir():
         return [Issue(Severity.ERROR, "table.dest_missing",
                       f"Destination folder does not exist: {dest_folder}")]
 
     issues: list[Issue] = []
+    requested = [
+        (tag, pair) for tag, pair in (("sym_lib_table", symbol), ("fp_lib_table", footprint))
+        if pair is not None
+    ]
+    if not requested:
+        return issues
     backup_number = _next_backup_number(dest_folder)
-    outcomes: dict[str, str] = {}
-    for tag, rel_path in (("sym_lib_table", sym_rel_path), ("fp_lib_table", fp_rel_path)):
+    outcomes: list[tuple[str, str, str]] = []  # (filename, nickname, outcome)
+    for tag, (nickname, rel_path) in requested:
         filename = _TABLE_FILES[tag]
-        outcomes[filename] = _add_entry(
-            tag, dest_folder / filename, nickname, rel_path, backup_number, issues
-        )
+        outcome = _add_entry(tag, dest_folder / filename, nickname, rel_path, backup_number, issues)
+        outcomes.append((filename, nickname, outcome))
 
-    values = list(outcomes.values())
-    if values == ["added", "added"]:
+    if len(outcomes) == 2 and all(outcome == "added" for _, _, outcome in outcomes):
         issues.append(Issue(Severity.SUCCESS, "table.entries_added",
-                            f"Added {nickname} to sym-lib-table and fp-lib-table"))
-    elif values == ["listed", "listed"]:
-        issues.append(Issue(Severity.INFO, "table.already_listed",
-                            f"Library tables not changed: {nickname} was already listed"))
-    else:
-        for filename, outcome in outcomes.items():
-            if outcome == "added":
-                issues.append(Issue(Severity.SUCCESS, "table.entry_added",
-                                    f"Added {nickname} to {filename}"))
-            elif outcome == "listed":
-                issues.append(Issue(Severity.INFO, "table.already_listed",
-                                    f"{filename} already lists {nickname}; not changed"))
+                            f"Added {outcomes[0][1]} to sym-lib-table and {outcomes[1][1]} to fp-lib-table"))
+        return issues
+    for filename, nickname, outcome in outcomes:
+        if outcome == "added":
+            issues.append(Issue(Severity.SUCCESS, "table.entry_added",
+                                f"Added {nickname} to {filename}"))
+        elif outcome == "listed":
+            issues.append(Issue(Severity.INFO, "table.already_listed",
+                                f"{filename} already lists {nickname}; not changed"))
     return issues
 
 

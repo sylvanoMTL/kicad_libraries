@@ -36,6 +36,10 @@ def _entry(rel: str, eol: bytes) -> bytes:
     return line.encode("utf-8") + eol
 
 
+def _add_both(folder):
+    return tg.add_library_entries(folder, symbol=(NICK, SYM_REL), footprint=(NICK, FP_REL))
+
+
 def _seed(folder, sym=SYM_CRLF, fp=FP_LF):
     (folder / "sym-lib-table").write_bytes(sym)
     (folder / "fp-lib-table").write_bytes(fp)
@@ -48,7 +52,7 @@ def _backups(folder):
 def test_add_entries_keeps_every_other_byte(tmp_path):
     _seed(tmp_path)
 
-    issues = tg.add_library_entries(tmp_path, NICK, SYM_REL, FP_REL)
+    issues = _add_both(tmp_path)
 
     assert not [i for i in issues if i.severity is Severity.ERROR]
     sym_new = (tmp_path / "sym-lib-table").read_bytes()
@@ -64,30 +68,30 @@ def test_add_entries_keeps_every_other_byte(tmp_path):
 
 def test_add_entries_idempotent(tmp_path):
     _seed(tmp_path)
-    tg.add_library_entries(tmp_path, NICK, SYM_REL, FP_REL)
+    _add_both(tmp_path)
     sym_once = (tmp_path / "sym-lib-table").read_bytes()
     fp_once = (tmp_path / "fp-lib-table").read_bytes()
     backups_once = _backups(tmp_path)
 
-    issues = tg.add_library_entries(tmp_path, NICK, SYM_REL, FP_REL)
+    issues = _add_both(tmp_path)
 
     assert (tmp_path / "sym-lib-table").read_bytes() == sym_once
     assert (tmp_path / "fp-lib-table").read_bytes() == fp_once
     assert _backups(tmp_path) == backups_once
     assert [(i.severity, i.code, i.text) for i in issues] == [
-        (Severity.INFO, "table.already_listed",
-         "Library tables not changed: IC_New_TI was already listed"),
+        (Severity.INFO, "table.already_listed", "sym-lib-table already lists IC_New_TI; not changed"),
+        (Severity.INFO, "table.already_listed", "fp-lib-table already lists IC_New_TI; not changed"),
     ]
 
 
 def test_add_entries_summary_added(tmp_path):
     _seed(tmp_path)
 
-    issues = tg.add_library_entries(tmp_path, NICK, SYM_REL, FP_REL)
+    issues = _add_both(tmp_path)
 
     summary = [i for i in issues if i.code == "table.entries_added"]
     assert [(i.severity, i.text) for i in summary] == [
-        (Severity.SUCCESS, "Added IC_New_TI to sym-lib-table and fp-lib-table"),
+        (Severity.SUCCESS, "Added IC_New_TI to sym-lib-table and IC_New_TI to fp-lib-table"),
     ]
     backed_up = [i for i in issues if i.code == "table.backed_up"]
     assert [i.severity for i in backed_up] == [Severity.INFO, Severity.INFO]
@@ -100,14 +104,14 @@ def test_add_entries_backup_number_continues_past_existing(tmp_path):
     _seed(tmp_path)
     (tmp_path / "sym-lib-table_backup_4").write_bytes(b"old")
 
-    tg.add_library_entries(tmp_path, NICK, SYM_REL, FP_REL)
+    _add_both(tmp_path)
 
     assert (tmp_path / "sym-lib-table_backup_5").read_bytes() == SYM_CRLF
     assert (tmp_path / "fp-lib-table_backup_5").read_bytes() == FP_LF
 
 
 def test_add_entries_creates_missing_tables(tmp_path):
-    issues = tg.add_library_entries(tmp_path, NICK, SYM_REL, FP_REL)
+    issues = _add_both(tmp_path)
 
     sym_text = (tmp_path / "sym-lib-table").read_text(encoding="utf-8")
     fp_text = (tmp_path / "fp-lib-table").read_text(encoding="utf-8")
@@ -118,7 +122,7 @@ def test_add_entries_creates_missing_tables(tmp_path):
     assert not _backups(tmp_path)
     assert not [i for i in issues if i.severity is Severity.ERROR]
     assert [i.text for i in issues if i.code == "table.entries_added"] == [
-        "Added IC_New_TI to sym-lib-table and fp-lib-table",
+        "Added IC_New_TI to sym-lib-table and IC_New_TI to fp-lib-table",
     ]
 
 
@@ -132,7 +136,7 @@ def test_add_entries_external_clash(tmp_path):
     )
     _seed(tmp_path, sym=sym)
 
-    issues = tg.add_library_entries(tmp_path, NICK, SYM_REL, FP_REL)
+    issues = _add_both(tmp_path)
 
     assert (tmp_path / "sym-lib-table").read_bytes() == sym
     assert "sym-lib-table_backup_1" not in _backups(tmp_path)
@@ -149,7 +153,7 @@ def test_add_entries_external_clash(tmp_path):
 def test_add_entries_missing_destination(tmp_path):
     dest = tmp_path / "nope"
 
-    issues = tg.add_library_entries(dest, NICK, SYM_REL, FP_REL)
+    issues = _add_both(dest)
 
     assert len(issues) == 1
     assert issues[0].severity is Severity.ERROR
@@ -162,7 +166,7 @@ def test_add_entries_read_only_table(tmp_path):
     sym_path = tmp_path / "sym-lib-table"
     os.chmod(sym_path, stat.S_IREAD)
     try:
-        issues = tg.add_library_entries(tmp_path, NICK, SYM_REL, FP_REL)
+        issues = _add_both(tmp_path)
         assert sym_path.read_bytes() == SYM_CRLF
         errors = [i for i in issues if i.severity is Severity.ERROR]
         assert len(errors) == 1
@@ -179,7 +183,7 @@ def test_add_entries_quotes_values(tmp_path):
     sym_rel = 'Custom/Symbols/we"ird.kicad_sym'
     fp_rel = 'Custom/Footprints/we"ird.pretty'
 
-    issues = tg.add_library_entries(tmp_path, "we_ird", sym_rel, fp_rel)
+    issues = tg.add_library_entries(tmp_path, symbol=("we_ird", sym_rel), footprint=("we_ird", fp_rel))
 
     assert not [i for i in issues if i.severity is Severity.ERROR]
     sym_info = tg.table_info(tmp_path / "sym-lib-table")
@@ -187,3 +191,82 @@ def test_add_entries_quotes_values(tmp_path):
     assert sym_rel in sym_info.managed
     assert fp_rel in fp_info.managed
     assert b'we\\"ird' in (tmp_path / "sym-lib-table").read_bytes()
+
+
+# -- Two nicknames (plan 10-11, D-15) ---------------------------------------------------------------
+
+SHARED = "Atomic_Footprints"
+SHARED_REL = "Custom/Footprints/Atomic_Footprints.pretty"
+
+
+def test_symbol_only_leaves_the_footprint_table_alone(tmp_path):
+    _seed(tmp_path)
+
+    issues = tg.add_library_entries(tmp_path, symbol=(NICK, SYM_REL))
+
+    sym_line = _entry(SYM_REL, b"\r\n")
+    assert (tmp_path / "sym-lib-table").read_bytes() == SYM_CRLF[: -len(b")\r\n")] + sym_line + b")\r\n"
+    assert (tmp_path / "fp-lib-table").read_bytes() == FP_LF
+    assert _backups(tmp_path) == ["sym-lib-table_backup_1"]
+    assert [(i.severity, i.code, i.text) for i in issues if i.code != "table.backed_up"] == [
+        (Severity.SUCCESS, "table.entry_added", "Added IC_New_TI to sym-lib-table"),
+    ]
+
+
+def test_footprint_only_leaves_the_symbol_table_alone(tmp_path):
+    _seed(tmp_path)
+
+    issues = tg.add_library_entries(tmp_path, footprint=(SHARED, SHARED_REL))
+
+    fp_line = (
+        f'  (lib (name "{SHARED}")(type "KiCad")(uri "${{KICAD_LIB_GITHUB}}/{SHARED_REL}")'
+        f'(options "")(descr ""))\n'
+    ).encode()
+    assert (tmp_path / "fp-lib-table").read_bytes() == FP_LF[: -len(b")\n")] + fp_line + b")\n"
+    assert (tmp_path / "sym-lib-table").read_bytes() == SYM_CRLF
+    assert _backups(tmp_path) == ["fp-lib-table_backup_1"]
+    assert [i.text for i in issues if i.code == "table.entry_added"] == ["Added Atomic_Footprints to fp-lib-table"]
+
+
+def test_nothing_requested_changes_nothing(tmp_path):
+    _seed(tmp_path)
+
+    assert tg.add_library_entries(tmp_path) == []
+
+    assert (tmp_path / "sym-lib-table").read_bytes() == SYM_CRLF
+    assert (tmp_path / "fp-lib-table").read_bytes() == FP_LF
+    assert not _backups(tmp_path)
+
+
+def test_two_nicknames_added_give_the_combined_message(tmp_path):
+    _seed(tmp_path)
+
+    issues = tg.add_library_entries(tmp_path, symbol=(NICK, SYM_REL), footprint=(SHARED, SHARED_REL))
+
+    assert [i.text for i in issues if i.code == "table.entries_added"] == [
+        "Added IC_New_TI to sym-lib-table and Atomic_Footprints to fp-lib-table",
+    ]
+    assert not [i for i in issues if i.code == "table.entry_added"]
+    assert f'(name "{NICK}")'.encode() in (tmp_path / "sym-lib-table").read_bytes()
+    assert f'(name "{SHARED}")'.encode() in (tmp_path / "fp-lib-table").read_bytes()
+    assert b'(name "Atomic_Footprints")' not in (tmp_path / "sym-lib-table").read_bytes()
+
+
+def test_a_listed_footprint_entry_is_kept_while_the_new_symbol_entry_is_added(tmp_path):
+    fp = (
+        b"(fp_lib_table\n"
+        b"  (version 7)\n"
+        b'  (lib (name "Atomic_Footprints")(type "KiCad")'
+        b'(uri "${KICAD_LIB_GITHUB}/Custom/Footprints/Atomic_Footprints.pretty")(options "")(descr ""))\n'
+        b")\n"
+    )
+    _seed(tmp_path, fp=fp)
+
+    issues = tg.add_library_entries(tmp_path, symbol=(NICK, SYM_REL), footprint=(SHARED, SHARED_REL))
+
+    assert (tmp_path / "fp-lib-table").read_bytes() == fp
+    assert _entry(SYM_REL, b"\r\n") in (tmp_path / "sym-lib-table").read_bytes()
+    texts = [i.text for i in issues]
+    assert "Added IC_New_TI to sym-lib-table" in texts
+    assert "fp-lib-table already lists Atomic_Footprints; not changed" in texts
+    assert not [i for i in issues if i.code == "table.entries_added"]
