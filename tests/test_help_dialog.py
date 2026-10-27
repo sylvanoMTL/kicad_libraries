@@ -7,6 +7,8 @@ import types
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTreeWidgetItem
 
+from zipfixtures import footprint_library_for
+
 from kicad_lib_manager.importer.commit_plan import CommitFile, CommitPlan
 from kicad_lib_manager.importer.commit_step import CommitProbe
 from kicad_lib_manager.importer.plan import Conflict, InstallResult
@@ -16,6 +18,9 @@ from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
 from kicad_lib_manager.widgets.import_result import ImportResultView
 from kicad_lib_manager.widgets.theme import ACCENT, AMBER
+
+# The Atomic_ install target the stub results below name
+LIBRARY = "Atomic_Analog"
 
 
 def _find_item(dialog: HelpDialog, key: str) -> QTreeWidgetItem:
@@ -89,8 +94,8 @@ def test_help_import_page_matches_finished_flow(qtbot, tmp_path):
 
     # every resolution button a real conflict row shows is named on the page
     row = ConflictRow(Conflict(
-        key="footprint:IC_Test_TI:fp", kind="footprint", name="FP",
-        existing="IC_Test_TI.pretty already holds a different FP.kicad_mod", suggested_name="FP_1",
+        key=f"footprint:{footprint_library_for(LIBRARY)}:fp", kind="footprint", name="FP",
+        existing=f"{footprint_library_for(LIBRARY)}.pretty already holds a different FP.kicad_mod", suggested_name="FP_1",
     ))
     qtbot.addWidget(row)
     buttons = [b.text() for b in row.findChildren(QPushButton) if b.isCheckable()]
@@ -102,11 +107,11 @@ def test_help_import_page_matches_finished_flow(qtbot, tmp_path):
     view = ImportResultView()
     qtbot.addWidget(view)
     result = InstallResult(
-        ok=True, library="IC_Test_TI", new_library=False,
-        touched=(tmp_path / "Custom" / "Symbols" / "IC_Test_TI.kicad_sym", tmp_path / "Custom" / "3DModels" / "x.stp"),
+        ok=True, library=LIBRARY, new_library=False,
+        touched=(tmp_path / "Custom" / "Symbols" / f"{LIBRARY}.kicad_sym", tmp_path / "Custom" / "3DModels" / "x.stp"),
         issues=(), backup_dir=tmp_path / "bk",
     )
-    view.show_result(result, types.SimpleNamespace(symbol_name="X", library="IC_Test_TI"), tmp_path)
+    view.show_result(result, types.SimpleNamespace(symbol_name="X", library=LIBRARY), tmp_path)
     shown = [w.text() for w in view.findChildren(QLabel)] + [w.text() for w in view.findChildren(QPushButton)]
     for label in ("Warnings", "Library list", "Library tables", "Files written", "Backup folder", "Open folder"):
         assert any(text.startswith(label) for text in shown), f"the view no longer shows {label!r}"
@@ -155,8 +160,8 @@ def _panel_texts(panel) -> list[str]:
 def _commit_plan(tmp_path) -> CommitPlan:
     """A small CommitPlan, in the shape of make_cplan in tests/test_commit_panel.py."""
     rels = (
-        ("Symbols/IC_Test.kicad_sym", "symbol"),
-        ("Footprints/IC_Test.pretty/FP_X.kicad_mod", "footprint"),
+        (f"Symbols/{LIBRARY}.kicad_sym", "symbol"),
+        (f"Footprints/{footprint_library_for(LIBRARY)}.pretty/FP_X.kicad_mod", "footprint"),
         ("3DModels/x.step", "model"),
     )
     files = tuple(
@@ -164,7 +169,7 @@ def _commit_plan(tmp_path) -> CommitPlan:
     )
     return CommitPlan(
         repo_root=tmp_path, custom_dir=tmp_path / "Custom", custom_rel="Custom", files=files,
-        library="IC_Test", new_library=False, symbol="PartX", footprint="IC_Test:FP_X", model="x.step",
+        library=LIBRARY, new_library=False, symbol="PartX", footprint=f"{footprint_library_for(LIBRARY)}:FP_X", model="x.step",
         vendor="Ultra Librarian", package="x.zip", date="2026-01-02", overwrite=False, backup_dir=None,
         issues=(),
     )

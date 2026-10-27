@@ -24,11 +24,12 @@ from vendorfixtures import (
     snapeda_zip,
 )
 from zipfixtures import (
-    CURRENT_CUSTOM_FOOTPRINT_LIBS,
-    CURRENT_CUSTOM_SYMBOL_LIBS,
+    CURRENT_ATOMIC_FOOTPRINT_LIBS,
+    CURRENT_ATOMIC_SYMBOL_LIBS,
     REPO_ROOT,
     STEP_BYTES,
     VRML_BYTES,
+    footprint_library_for,
     make_zip,
     write_custom_layout,
 )
@@ -43,7 +44,7 @@ from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.kicad_files import find_models, footprint_name, load
 from kicad_lib_manager.models import Severity
 
-LIBRARY = "Connector_USB_GCT"
+LIBRARY = "Atomic_Connector"
 
 
 @pytest.fixture(autouse=True)
@@ -71,7 +72,7 @@ def _candidate(tmp_path, members=None):
 
 
 def _layout(tmp_path) -> RepoLayout:
-    write_custom_layout(tmp_path / "repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    write_custom_layout(tmp_path / "repo", CURRENT_ATOMIC_SYMBOL_LIBS, CURRENT_ATOMIC_FOOTPRINT_LIBS)
     return RepoLayout.for_repo(tmp_path / "repo")
 
 
@@ -242,7 +243,7 @@ def test_attach_then_install(how, tmp_path):
         result = apply_plan(plan, backup_root=tmp_path / "bk")
         assert result.ok, [i.text for i in result.issues]
         assert (layout.models_dir / f"{SNAPEDA_MPN}.stp").read_bytes() == STEP_BYTES
-        installed = layout.footprints_dir / f"{LIBRARY}.pretty" / f"{SNAPEDA_FOOTPRINT}.kicad_mod"
+        installed = layout.footprints_dir / f"{footprint_library_for(LIBRARY)}.pretty" / f"{SNAPEDA_FOOTPRINT}.kicad_mod"
         ref = footprint_name(load(installed).root)
         assert [m.path for m in find_models(ref.node)] == [f"{MODEL_DIR_VAR}/{SNAPEDA_MPN}.stp"]
 

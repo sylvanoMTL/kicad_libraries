@@ -23,6 +23,7 @@ from zipfixtures import (
     CURRENT_CUSTOM_FOOTPRINT_LIBS,
     CURRENT_CUSTOM_SYMBOL_LIBS,
     footprint,
+    footprint_library_for,
     make_zip,
     symbol_lib,
     write_custom_layout,
@@ -212,7 +213,7 @@ def test_samacsys_symbol_helper_omits_fields():
 
 # -- part_info.txt feeds the suggestion and the fields (D-11, D-12) ------------------------------------------
 
-LIBRARY = "PowerSupply_DCDC_RECOM"
+LIBRARY = "Atomic_Converter_DCDC_Isolated"
 
 
 def _layout(root, symbol_libs=CURRENT_CUSTOM_SYMBOL_LIBS, footprint_libs=CURRENT_CUSTOM_FOOTPRINT_LIBS):
@@ -234,7 +235,7 @@ def test_samacsys_suggestion(tmp_path):
 
 def test_part_info_fills_missing_fields(tmp_path):
     symbol = samacsys_symbol(omit=("Manufacturer_Name", "Manufacturer_Part_Number"))
-    layout = _layout(tmp_path / "lib", [LIBRARY], [LIBRARY])
+    layout = _layout(tmp_path / "lib", [LIBRARY], [footprint_library_for(LIBRARY)])
     zip_path = samacsys_zip(tmp_path / "src" / SAMACSYS_ZIP_NAME, symbol=symbol)
     with open_package(zip_path, REPO_ROOT) as package:
         candidate, _ = detect_candidate(package)

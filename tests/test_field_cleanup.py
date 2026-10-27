@@ -20,9 +20,10 @@ from vendorfixtures import (
     snapeda_zip,
 )
 from zipfixtures import (
-    CURRENT_CUSTOM_FOOTPRINT_LIBS,
-    CURRENT_CUSTOM_SYMBOL_LIBS,
+    CURRENT_ATOMIC_FOOTPRINT_LIBS,
+    CURRENT_ATOMIC_SYMBOL_LIBS,
     STEP_BYTES,
+    footprint_library_for,
     make_zip,
     symbol_lib,
     write_custom_layout,
@@ -48,18 +49,19 @@ from kicad_lib_manager.models import Issue
 from kicad_lib_manager.sexpr import apply_edits
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SNAPEDA_LIBRARY = "Connector_USB_GCT"
+SNAPEDA_LIBRARY = "Atomic_Connector"
+UL_LIBRARY = "Atomic_Battery_Management"
 VENDOR = "PART"
-LIBRARY = "IC_Test_TI"
+LIBRARY = "Atomic_Analog"
 
 
 def _snapeda_layout(tmp_path):
-    write_custom_layout(tmp_path / "repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    write_custom_layout(tmp_path / "repo", CURRENT_ATOMIC_SYMBOL_LIBS, CURRENT_ATOMIC_FOOTPRINT_LIBS)
     return RepoLayout.for_repo(tmp_path / "repo")
 
 
 def _library_layout(tmp_path):
-    write_custom_layout(tmp_path / "repo", [LIBRARY], [LIBRARY])
+    write_custom_layout(tmp_path / "repo", [LIBRARY], [footprint_library_for(LIBRARY)])
     return RepoLayout.for_repo(tmp_path / "repo")
 
 
@@ -222,9 +224,9 @@ def test_protection_and_placeholder_rules():
 
 def test_ul_property_list_unchanged_by_cleanup(ul_package, tmp_path):
     _, candidate = ul_package
-    write_custom_layout(tmp_path / "repo", ["IC_Battery_Charger_TI"], ["IC_Battery_Charger_TI"])
+    write_custom_layout(tmp_path / "repo", [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
     layout = RepoLayout.for_repo(tmp_path / "repo")
-    plan = build_plan(candidate, InstallOptions(library="IC_Battery_Charger_TI"), layout, ToolContext())
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY), layout, ToolContext())
     assert not plan.blocked, [i.text for i in plan.issues]
     assert "ki_locked" in _property_names(_symbol_in(plan, "CSD85301Q2"))
     assert not [c for c in plan.field_changes if c.action == "drop"]
