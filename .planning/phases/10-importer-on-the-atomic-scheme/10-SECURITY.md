@@ -73,6 +73,15 @@ created: "2026-10-27"
 | T-10-40 | Spoofing | removed v1 token path | low | mitigate | No removed name remains anywhere (`test_naming_suggest.py:187`) | closed |
 | T-10-41 | Tampering | gate-ready install tests | medium | mitigate | Commits ad4d7ba, b826b82 remove no refusal or conflict assertion | closed |
 | T-10-42 | Tampering | gate-ready dialog and sample tests | medium | mitigate | 042cbcc, 0142fa1 keep every not-blocked and refusal assertion | closed |
+| T-10-43 | Tampering | `build_plan` family source (`_agreed_family_texts`) | medium | mitigate | A family is used only when every footprint at the top rank score names it, over `rank(..., limit=None)` (`importer/planner.py:91-93,1091`; `test_generated_text.py` ambiguous-code, tie and installed KiCad 10 tests) | closed |
+| T-10-44 | Tampering | official footprint files read by the planner | low | accept | AR-10-05 | closed |
+| T-10-45 | Tampering | `generate_keywords` interface words | low | mitigate | CAN only from the exact-case word or a companion phrase; no bare `"can"` entry (`importer/keywords.py:94,149,174`; `test_keywords.py` can/spi rows, `test_all_caps_can_gives_the_can_keyword`) | closed |
+| T-10-46 | Denial of service | `_cased_matched` over long vendor text | low | accept | AR-10-06 | closed |
+| T-10-47 | Tampering | `_finish_post_install` -> fp-lib-table | medium | mitigate | Add-only `add_library_entries`; a listed nickname returns before any backup or write (`main_window.py:831-838`; `test_main_window_import.py` listed/unlisted byte-exact and no-backup tests) | closed |
+| T-10-48 | Tampering | official KiCad footprint libraries in fp-lib-table | medium | mitigate | `footprint_library` kept only when it is the plan's own `.pretty` folder (`main_window.py:1019,1025`; `test_main_window_import.py:975,1004`) | closed |
+| T-10-49 | Repudiation | 10-REVIEW-DISPOSITION.md | low | mitigate | Each fixed row names its plan and fix commit (1276906, f35486b, 01cd7da), recorded after the combined `-m "not wurth"` run passed | closed |
+| T-10-50 | Denial of service | `_agreed_family_texts` over a large tie | low | mitigate | Stops at the first tied footprint whose family differs or whose score drops; reads are the existing size-capped, cached read (`importer/planner.py` `_agreed_family_texts`) | closed |
+| T-10-51 | Tampering | 10-VERIFICATION.md (check 6) | low | mitigate | Only check 6's expected text changed: `git diff --numstat 33347c9` reports 2 added, 2 deleted | closed |
 | T-10-SC | Tampering | npm/pip/cargo installs | low | accept | AR-10-04 | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -89,6 +98,8 @@ created: "2026-10-27"
 | AR-10-02 | T-10-09 | `classify` is a fixed list of substring checks over text already capped at 8 MiB | plan-time register (10-04) | 2026-10-27 |
 | AR-10-03 | T-10-36 | Help pages are static HTML built only from module constants; no user or vendor text reaches them | plan-time register (10-25) | 2026-10-27 |
 | AR-10-04 | T-10-SC | Phase 10 adds no third-party package; dependency files unchanged since Phase 9 | plan-time register (all plans) | 2026-10-27 |
+| AR-10-05 | T-10-44 | The tie check reads official footprints through the unchanged size-capped, cached read of T-10-30; tests write only under tmp_path | plan-time register (10-26) | 2026-10-28 |
+| AR-10-06 | T-10-46 | `_cased_matched` is one linear `re.findall` over text already capped at intake; covered by the very-long-text generation test | plan-time register (10-27) | 2026-10-28 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -106,6 +117,7 @@ created: "2026-10-27"
 | Audit Date | Threats Total | Closed | Open | Run By |
 |------------|---------------|--------|------|--------|
 | 2026-10-27 | 43 | 42 | 1 (low, non-blocking) | gsd-security-auditor |
+| 2026-10-28 | 52 | 51 | 1 (low, non-blocking, unchanged) | secure-phase L1 (gap closure 10-26..10-28: T-10-43..T-10-51 added, all closed) |
 
 ---
 
@@ -124,4 +136,12 @@ created: "2026-10-27"
 |---|---|
 | Threats found | 43 |
 | Closed | 42 |
+| Open | 1 |
+
+## Security Audit 2026-10-28
+
+| Metric | Count |
+|---|---|
+| Threats found | 52 |
+| Closed | 51 |
 | Open | 1 |
