@@ -141,12 +141,13 @@ def rank(
     package_code: str,
     words: Sequence[str] = (),
     linked: Mapping[str, int] = {},
-    limit: int = DEFAULT_LIMIT,
+    limit: int | None = DEFAULT_LIMIT,
 ) -> list[RankedFootprint]:
     """Score every footprint name against the vendor package code; best first, score 0 dropped.
 
     100 per sibling symbol linking it, 50 when the full code is inside the name, 30 when the code's
     leading letters (3 or more) are a whole word of the name, 5 per family word that is a whole word.
+    A limit of None returns every scored footprint.
     """
     code = package_code.strip().casefold()
     lead = _LEADING_LETTERS_RE.match(package_code.strip())

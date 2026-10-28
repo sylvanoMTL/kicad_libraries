@@ -349,15 +349,16 @@ def test_an_ambiguous_package_code_supplies_no_family(atomic_custom, tmp_path):
         options = InstallOptions(library=EXISTING)
         ambiguous = build_plan(candidate, options, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
         bare = build_plan(candidate, options, atomic_custom, ToolContext())
+        assert not ambiguous.blocked, ambiguous.issues
+        text = ambiguous.part_text
+        assert text == bare.part_text
+        assert bare.part_text.fp_description == f"1.5 mm pitch, TI {code}"
+        for field in (text.fp_description, text.fp_tags, text.keywords):
+            assert not any(word.startswith("SOIC-") for word in _words(field)), field
+        result = apply_plan(ambiguous, backup_root=tmp_path / "bk")
     finally:
         package.close()
-    assert not ambiguous.blocked, ambiguous.issues
-    text = ambiguous.part_text
-    assert text == bare.part_text
-    assert bare.part_text.fp_description == f"1.5 mm pitch, TI {code}"
-    for field in (text.fp_description, text.fp_tags, text.keywords):
-        assert not any(word.startswith("SOIC-") for word in _words(field)), field
-    assert apply_plan(ambiguous, backup_root=tmp_path / "bk").ok
+    assert result.ok, result.issues
     installed = load(atomic_custom.footprints_dir / "Atomic_Footprints.pretty" / f"{code}.kicad_mod")
     assert vendor_texts(footprint_name(installed.root).node) == (bare.part_text.fp_description, bare.part_text.fp_tags)
 
