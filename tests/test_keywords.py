@@ -1,6 +1,7 @@
 """Keyword generation and the vendor merge: single words, KiCad 10 chooser search (FLD-01, D-26, D-27)."""
 
 import pytest
+from customfixtures import ABSENT_LIBRARY
 
 from kicad_lib_manager.importer.keywords import (
     FUNCTION_WORDS,
@@ -11,6 +12,8 @@ from kicad_lib_manager.importer.keywords import (
     merge_words,
     split_words,
 )
+from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
+from kicad_lib_manager.importer.planner import build_plan
 
 
 def _generate(**overrides):
@@ -216,3 +219,34 @@ def test_generation_never_raises_on_odd_text(text):
     for word in words:
         assert word
         assert not any(c.isspace() for c in word)
+
+
+# -- the English word "can" is not the CAN bus (WR-02) -------------------------------------------------
+
+
+def test_the_english_word_can_gives_no_can_keyword():
+    words = _generate(description="You can use it; USB C receptacle")
+    assert "USB" in words
+    assert "USB-C" in words
+    assert "CAN" not in words
+
+
+def test_a_planned_install_writes_can_only_for_a_can_bus_part(atomic_custom, ul_package):
+    _, candidate = ul_package
+    english = build_plan(
+        candidate,
+        InstallOptions(library=ABSENT_LIBRARY, description="You can use it; USB C receptacle"),
+        atomic_custom,
+        ToolContext(),
+    )
+    words = english.part_text.keywords.split()
+    assert "USB" in words
+    assert "can" not in [word.casefold() for word in words]
+
+    bus = build_plan(
+        candidate,
+        InstallOptions(library=ABSENT_LIBRARY, description="Isolated CAN transceiver"),
+        atomic_custom,
+        ToolContext(),
+    )
+    assert bus.part_text.keywords.split().count("CAN") == 1
