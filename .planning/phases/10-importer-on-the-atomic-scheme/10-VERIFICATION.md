@@ -1,8 +1,8 @@
 ---
 phase: 10-importer-on-the-atomic-scheme
-verified: 2026-10-28T00:00:00Z
-status: gaps_found
-score: 6/7 must-haves verified
+verified: 2026-10-28T14:00:00Z
+status: human_needed
+score: 9/9 must-haves verified
 covered_files:
   - .planning/phases/10-importer-on-the-atomic-scheme/10-01-PLAN.md
   - .planning/phases/10-importer-on-the-atomic-scheme/10-01-SUMMARY.md
@@ -54,6 +54,12 @@ covered_files:
   - .planning/phases/10-importer-on-the-atomic-scheme/10-24-SUMMARY.md
   - .planning/phases/10-importer-on-the-atomic-scheme/10-25-PLAN.md
   - .planning/phases/10-importer-on-the-atomic-scheme/10-25-SUMMARY.md
+  - .planning/phases/10-importer-on-the-atomic-scheme/10-26-PLAN.md
+  - .planning/phases/10-importer-on-the-atomic-scheme/10-26-SUMMARY.md
+  - .planning/phases/10-importer-on-the-atomic-scheme/10-27-PLAN.md
+  - .planning/phases/10-importer-on-the-atomic-scheme/10-27-SUMMARY.md
+  - .planning/phases/10-importer-on-the-atomic-scheme/10-28-PLAN.md
+  - .planning/phases/10-importer-on-the-atomic-scheme/10-28-SUMMARY.md
   - kicad_lib_manager/atomic_check.py
   - kicad_lib_manager/importer/categories.py
   - kicad_lib_manager/importer/footprint_index.py
@@ -66,26 +72,31 @@ covered_files:
   - kicad_lib_manager/importer/stems.py
   - kicad_lib_manager/importer/suggest.py
   - kicad_lib_manager/kicad_files.py
+  - kicad_lib_manager/main_window.py
   - kicad_lib_manager/manufacturers.py
   - kicad_lib_manager/widgets/help_dialog.py
   - kicad_lib_manager/widgets/import_dialog.py
-covered_digest: "v3:sha256:bee4ec0b0ff57c6d63fe23dcbd9f4bd1d8df735d6943d651534b9a46f85ad995"
+  - tests/README.md
+  - tests/test_generated_text.py
+  - tests/test_keywords.py
+  - tests/test_main_window_import.py
+covered_digest: "v3:sha256:7d7d5753370c86657a7923d07ec39e14d94b46e2cc7e6155d8f90b950d242a21"
 behavior_unverified: 0
 overrides_applied: 0
-gaps:
-  - truth: "Nothing is guessed (D-28): a package fact that cannot be computed or read is left out of the footprint description, tags and keywords (plan 10-05 prohibition; plan 10-23 truth 'the family is taken from the official KiCad footprint whose name matches the vendor package code')"
-    status: failed
-    reason: "When the vendor footprint's own descr and tags name no package family, planner.py takes the family from the top-ranked official KiCad footprint if its score is >= 30. A score of 30 is only 'the vendor code's leading letters are a whole word of the name', so many footprints tie and the alphabetical tie-break picks an arbitrary one. The wrong family (and the pin count from that text) is then written into the footprint description, the generated tags, the IPC-style name and the symbol keywords, and the preview shows it as an ordinary generated change. Reproduced against the installed KiCad 10 footprints (see Behavioral Spot-Checks). No test covers the ambiguous case."
-    artifacts:
-      - path: "kicad_lib_manager/importer/planner.py"
-        issue: "line 81-83 `_MIN_FAMILY_SCORE = 30` equals the leading-letters score; line 1066-1072 accepts `best[0]` without checking that it is the only top-scored match"
-      - path: "kicad_lib_manager/importer/footprint_index.py"
-        issue: "rank() sorts ties alphabetically (line 156), so the family source among equal scores is effectively random"
-    missing:
-      - "Accept an official footprint as the family source only when the match is specific: score >= 50 (full code in the name), or a leading-letters-only match where exactly one footprint holds the top score (review CR-01 fix: request limit=2 and require best[0].score > best[1].score)"
-      - "A test in tests/test_generated_text.py with a SOIC127P600X175-8N-style code against a stock fixture with two SOIC footprints, asserting that no family is taken (and the description falls back to the known parts)"
+re_verification:
+  previous_status: gaps_found
+  previous_score: 6/7
+  gaps_closed:
+    - "Nothing is guessed (D-28), CR-01: an ambiguous leading-letters tie no longer writes SOIC-20 or LQFP-100 into the description, tags and keywords (plan 10-26, 1276906)"
+    - "WR-02 (not a gap of the report, advisory): the English word can no longer gives the CAN keyword (plan 10-27, f35486b)"
+    - "WR-05 (not a gap of the report, advisory): a new symbol library offers an existing unlisted Atomic_Footprints to fp-lib-table (plan 10-28, 01cd7da)"
+  gaps_remaining: []
+  regressions: []
 behavior_unverified_items: []
 human_verification:
+  - test: "Owner decision on WR-06 (new in the incremental review): a package family can still come from a small leading-letters-only tie whose footprints all name the same family, with no pin-count check. Reproduced on the installed KiCad 10 footprints: the 6-pin vendor codes SON50P150X150X60-6N and SON65P200X200X80-6N tie Package_SON:MicroCrystal_C7_SON-8_1.5x3.2mm_P0.9mm and Package_SON:SON-8-1EP_3x2mm_P0.5mm_EP1.4x1.6mm at score 30, and both name SON-8, so SON-8 is written into the footprint description, tags and symbol keywords when the vendor footprint's own text names no family."
+    expected: "A keep or fix decision. Keep: the owner's rule of 2026-10-28 ('tied matches supply the family only when they all agree') is applied as decided, and the pin-count residual already reported for a lone match (10-26 SUMMARY) now also covers small agreeing ties. Fix: a gap-closure plan adds the review's pad-count filter (a leading-letters-only tie counts only footprints within one pad of the vendor footprint's pad count) or raises the minimum score to 50, plus a test with a two-footprint SON-8 folder and a 6-pad vendor footprint asserting no family."
+    why_human: "The code does what plan 10-26 and the owner's rule specify and the tests pin it, so this is a design decision, not a defect against the plan. Whether a wrong pin count in rare cases is acceptable under D-28 ('nothing is guessed') is the owner's call. If the owner reads D-28 as absolute, this item becomes a gap and the status becomes gaps_found."
   - test: "Setup S1: build the scratch repo. PowerShell, from the repo root: `$env:KICAD_ATOMIC_UAT_DIR = \"$env:TEMP\\kicad_atomic_uat\"` then `env\\Scripts\\python.exe -m pytest tests/test_atomic_uat.py -k uat_atomic_scratch -s`. The output holds a line \"Run the app on it: <command>\"; the \"Check in the app:\" lines after it belong to the Phase 9 check, so skip them."
     expected: "The test passes and prints \"Run the app on it: <command>\"."
     why_human: "Builds the scratch environment the manual checks run in; it must never be run against the live Custom/ or the real KiCad tables."
@@ -131,81 +142,102 @@ human_verification:
 
 **Phase Goal:** A part imported from any supported vendor package lands in the right `Atomic_<stem>` library, with its footprint in the shared `Atomic_Footprints`, and only once it passes the atomic rule, so new imports never bring back the old names
 **Verified:** 2026-10-28
-**Status:** gaps_found (one narrow must-have gap; the human UAT of ROADMAP criteria 1-5 is still pending and listed under Human Verification Required)
-**Re-verification:** No, initial verification
+**Status:** human_needed (all automated must-haves verified; the end-of-phase human UAT of ROADMAP criteria 1-5 is pending, plus one owner decision on review warning WR-06)
+**Re-verification:** Yes, after gap closure (plans 10-26, 10-27, 10-28). The previous report had status gaps_found, 6/7, with truth 6 FAILED on CR-01.
 
 ## Goal Achievement
 
-The goal itself is achieved in the code: suggestion, name rule, shared-footprint install, official-footprint option, install gate and generated text are present, wired end to end (planner -> preview -> install, dialog -> gate) and exercised by tests. One plan-level must-have (D-28, "nothing is guessed") is violated by the package-family fallback, see CR-01 below.
+The goal is achieved in the code: suggestion, name rule, shared-footprint install, official-footprint option, install gate and generated text are present, wired end to end (planner -> preview -> install, dialog -> gate) and exercised by tests. The one gap of the previous report (truth 6, CR-01) is closed in code, and I re-ran it against the installed KiCad 10 footprints rather than reading the summary. A narrower residual of the same class (WR-06) remains; I judge it a flagged owner decision, not a failure of the amended must-have (see below).
+
+### Re-verification of the previously failed truth
+
+Plan 10-26 replaced closure contract (a) of the previous report with the owner's rule of 2026-10-28, "Tied matches supply the family only when they all agree" (quoted in the 10-26 PLAN and SUMMARY). The code matches that rule:
+
+- `kicad_lib_manager/importer/planner.py:84` `_MIN_FAMILY_SCORE = 30`; `:91-107` `_agreed_family_texts` calls `rank(footprint_index, package_code=code, limit=None)`, keeps every entry at the top score, reads each one's family as `package_family([*footprint_texts(...), name])`, and returns `[]` as soon as one entry names no family or a different family. `:1091` the vendor-footprint branch of `build_plan` uses it; the old one-entry `limit=1` call is gone (grep: no `limit=1` in planner.py).
+- `footprint_index.py:144,150,170`: `rank(limit: int | None = DEFAULT_LIMIT)`, docstring "A limit of None returns every scored footprint", body `ranked[:limit]`.
+- Reproduced with `_agreed_family_texts` against the installed KiCad 10 footprints (`C:\Program Files\KiCad\10.0\share\kicad\footprints`):
+
+| Code | Top score | Footprints tied at top | Family now |
+| ---- | --------- | ---------------------- | ---------- |
+| `SOIC127P600X175-8N` | 30 | 48 | none (was SOIC-20) |
+| `LQFP48` | 30 | 36 | none (was LQFP-100) |
+| `WSON6` | 30 | 43 | none |
+| `QFN50P500X500X80-33N` | 30 | 279 | none |
+| `SOT-23-5` | 80 | 2 (SOT-23-5, SOT-23-5_HandSoldering; they disagree) | none (owner confirmed) |
+| `SOT95P280X145-5N` | 30 | 52 | none |
+| `DQK0006B` | 30 | 1 (`Package_SON:Texas_DQK`) | `WSON-6` (UAT check 3 text unchanged) |
+
+- Tests: `tests/test_generated_text.py -k "family or lower_case or csd_sentence"` gives 14 passed, none skipped, matching the plan's count. The two-SOIC test reads the installed footprint back and compares it to the no-folder text.
 
 ### Observable Truths
 
 | #   | Truth | Status | Evidence |
 | --- | ----- | ------ | -------- |
-| 1 | ROADMAP 1: `ul_CSD85301Q2.zip` suggests `Atomic_Transistor_FET` from the `CSD` family in KiCad's libraries; RS3-1212S/H3 gets `Atomic_Converter_DCDC_Isolated` from the category map; unplaceable parts ask; no suggestion holds a manufacturer name | VERIFIED | `importer/suggest.py::suggest_library` runs own siblings, then KiCad siblings (`siblings.py`), then `classify()` (`categories.py`), else returns `kind="ask"` with an empty name. Stems come only from `allowed_stems()` (KiCad library stems minus excluded), so a manufacturer token cannot be produced. `tests/test_suggest_atomic.py`, `test_siblings.py`, `test_categories.py` pass (341 passed in the targeted run). The exact CSD and RS3 outcomes against the installed KiCad 10 libraries are in the human check (checks 1, 7, 8). |
-| 2 | ROADMAP 2: user can pick an existing `Atomic_` library or type a new name; a name equal to an official KiCad library (`Transistor_FET`) or using a manufacturer token (`Atomic_TI`) is refused with the reason shown | VERIFIED | `importer/stems.py::name_verdict` returns the refusals "`Transistor_FET` is the name of a KiCad library; use Atomic_Transistor_FET" and "`Atomic_TI` is not a library name: after Atomic_ comes a KiCad library name, such as Atomic_Transistor_FET", plus case correction. Enforced in `build_plan` and the form (plan 10-10); picker in `import_dialog.py` (line ~1350). `tests/test_stems.py` passes. |
-| 3 | ROADMAP 3: footprint installs into the shared `Atomic_Footprints.pretty`, or into an official KiCad footprint the user picks; Footprint field reads `Atomic_Footprints:<FP>` or `<Lib>:<FP>`; a new symbol library creates no matching `.pretty` | VERIFIED | `stems.SHARED_FOOTPRINT_LIBRARY = "Atomic_Footprints"`; planner supports `is_official` (official link, no vendor footprint or model written, KiCad's own model used) and the shared-library clash rules (reuse, rename `<FP>_<MPN>`, overwrite). `tests/test_shared_footprints.py`, `test_official_footprint.py`, `test_single_footprint.py` pass. |
-| 4 | ROADMAP 4: Install stays disabled while the incoming part fails the atomic check; each failure is a clickable reason that jumps to its field; Value defaults to the MPN; filling in Datasheet, Description or the 3D model clears the matching reason | VERIFIED | `planner.py` (line ~1457-1480) runs `incoming_issues` on the planned bytes and emits `install.atomic.<rule>` errors; `import_dialog.py` (line ~2630-2653) sets `Install Part` enabled only with `not reasons and not plan.blocked`; strip text "⚠ Install is blocked: ..." with clickable reasons (`form.py::blocking_reasons`). `tests/test_install_gate.py`, `test_gate_reasons.py`, `test_incoming_check.py` pass. Live click-to-focus and clearing are in the human check (checks 2, 8, 9). |
-| 5 | ROADMAP 5: preview shows generated `ki_keywords` (function words, interfaces, package codes, manufacturer aliases, MPN variants) and a footprint description and tags (package, IPC name, vendor package code, pitch); all editable; installed files carry exactly what the preview showed | VERIFIED (see gap on the family source) | `keywords.py::generate_keywords`, `footprint_text.py` (`pitch_mm`, `body_mm`, `ipc_name`, `describe`, `generated_tags`), `kicad_files.footprint_text_edit` write the nodes; `PartText` in the plan; dialog edits with Regenerate; written text = options override else generated. `tests/test_keywords.py`, `test_footprint_text.py`, `test_generated_text.py` pass, including written-equals-previewed. The family input has the CR-01 defect below. |
-| 6 | Plan 10-05 prohibition + 10-23 truth: "nothing is guessed" (D-28): the package family is read only from the vendor's own text or from the official footprint whose name matches the vendor package code | FAILED | Code accepts a leading-letters-only match (score 30) among many ties as the family source. Reproduced, see Behavioral Spot-Checks. Gap 1. |
-| 7 | Plan 10-25: help page describes the Atomic_ import with no jargon (no `ki_keywords`, `SubCategory`, `Make linked`); tests/README documents the fixtures and skips; end-of-phase human gate exists | VERIFIED | `help_dialog.py` contains `Atomic_Footprints` (3 hits) and no `ki_keywords`; no `SubCategory` in code; `tests/test_help_dialog.py` is in the review's file list and covered by the orchestrator's green run. The human-check block is collected below. |
+| 1 | ROADMAP 1: `ul_CSD85301Q2.zip` suggests `Atomic_Transistor_FET`; RS3-1212S/H3 gets `Atomic_Converter_DCDC_Isolated` from the category map; unplaceable parts ask; no suggestion holds a manufacturer name | VERIFIED (regression check) | `suggest.py`, `siblings.py`, `categories.py` unchanged by 10-26..10-28; `tests/test_suggest_atomic.py`, `test_siblings.py`, `test_categories.py` pass in my 405-test run. Live CSD/RS3 outcomes are human checks 1, 7, 8. |
+| 2 | ROADMAP 2: pick an existing `Atomic_` library or type a new name; `Transistor_FET` and `Atomic_TI` refused with the reason | VERIFIED (regression check) | `stems.name_verdict`; `tests/test_stems.py` passes. Live widget in human check 4. |
+| 3 | ROADMAP 3: footprint installs into shared `Atomic_Footprints.pretty` or an official KiCad footprint; Footprint field `Atomic_Footprints:<FP>` or `<Lib>:<FP>`; a new symbol library creates no matching `.pretty` | VERIFIED (regression check) | `tests/test_shared_footprints.py`, `test_official_footprint.py`, `test_single_footprint.py` pass. WR-05 closure strengthens the table step (truth 8 below). |
+| 4 | ROADMAP 4: Install disabled while the part fails the atomic check; clickable reasons; Value defaults to MPN; filling Datasheet, Description or 3D model clears the reason | VERIFIED (regression check) | `tests/test_install_gate.py`, `test_gate_reasons.py`, `test_incoming_check.py` pass. Live click and clearing in human checks 2, 8, 9. |
+| 5 | ROADMAP 5: preview shows generated `ki_keywords`, footprint description and tags, all editable; installed files carry exactly what the preview showed | VERIFIED | `tests/test_keywords.py`, `test_footprint_text.py`, `test_generated_text.py` pass (written equals previewed). Both inputs previously flagged (family source CR-01, CAN keyword WR-02) are now fixed, see truths 6 and 9. |
+| 6 | Plan 10-05 prohibition + 10-23 truth as amended by plan 10-26 / owner decision 2026-10-28: an official footprint supplies the package family only when every footprint at the top rank score (30 or more) names the same family; rank()'s alphabetical tie order never decides | VERIFIED (flagged residual WR-06, owner decision requested) | Code and measured KiCad 10 results above. The ambiguous cases the previous report reproduced (SOIC-20, LQFP-100) now give no family. Residual: a small leading-letters-only tie that agrees still supplies its family without a pin-count check, e.g. SON50P150X150X60-6N gets SON-8 (reproduced). See the WR-06 section. |
+| 7 | Plan 10-25: help page describes the Atomic_ import with no jargon; tests/README documents fixtures and skips; end-of-phase human gate exists | VERIFIED (regression check) | `tests/test_help_dialog.py` passes; human-check block collected below. |
+| 8 | Plan 10-28 / WR-05: after an install that creates a new library, the repo footprint library is offered to fp-lib-table whenever it is a folder of this repo, idempotently; an official link never gets an entry; an install into existing libraries still gets only the hint | VERIFIED | `main_window.py:828-849` (read): `footprint=(pending.footprint_library, pending.fp_rel_path) if both set else None`, symbol pair only when `pending.new_symbol_lib`; existing-library branch (`:851-870`) unchanged. 4 new tests in `tests/test_main_window_import.py` (unlisted added, listed left byte-identical with no backup, both Result-view rows) pass in my run (160 passed across the four touched modules). |
+| 9 | Plan 10-27 / WR-02: the English word "can" gives no CAN keyword; real CAN text still does | VERIFIED | `keywords.py` read: bare `can` entry replaced by companion phrases (`can bus`, `canbus`, `can fd`, `canfd`, `can transceiver`, `can controller`) plus `CASED_INTERFACE_WORDS = (("CAN","CAN"),)`. Run: "You can use it; USB C receptacle" -> no CAN; "Isolated CAN transceiver" -> CAN; "can bus" -> CAN; "scan cannot Can" -> no CAN. All-caps prose still gives CAN, an owner-accepted residual (decision 2026-10-28) pinned by `test_all_caps_can_gives_the_can_keyword`. |
 
-**Score:** 6/7 truths verified (0 present, behavior-unverified)
+**Score:** 9/9 must-haves verified (the 7 truths of the previous report plus the two gap-closure truths 8 and 9) (0 present, behavior-unverified)
 
-### CR-01 weighed against the must-haves
+### WR-06 weighed against "nothing is guessed" (D-28)
 
-CR-01 is a gap in must-have achievement, not only an advisory defect. Reasons:
+Reproduced: `_agreed_family_texts(idx, "SON50P150X150X60-6N")` and `"SON65P200X200X80-6N"` return the texts of `Package_SON:MicroCrystal_C7_SON-8_1.5x3.2mm_P0.9mm` / `SON-8-1EP_3x2mm_P0.5mm_EP1.4x1.6mm`, family `SON-8`, for 6-pin vendor packages. `package_family` reads the pin count from the text, never from the pad count (`footprint_text.py:164`), and `footprint_facts` already holds the vendor pad count (`pads=len(centres)`) without comparing it, so a wrong pin count would be written into the permanent footprint description, tags and symbol keywords. It applies only when the vendor footprint's own descr and tags name no family.
 
-- Plan 10-05 carries the prohibition "MUST NOT guess a package fact that cannot be computed or read" (status resolved, verification test). The code does guess one on realistic input, and the only enforcing tests cover the unambiguous cases, so the "resolved" status holds for the tested paths only.
-- Plan 10-23's truth says the family comes from the official footprint "whose name matches the vendor package code". A leading-letters-only match among tens of tied footprints does not meet that wording.
-- The wrong value is not transient: it is written to the permanent `Atomic_Footprints` footprint (description and tags) and to the symbol keywords, and the preview shows it as an ordinary generated change.
-- The ROADMAP criteria themselves still hold, and the owner can edit the three texts in the preview, so this does not defeat the phase goal (right library, shared footprint library, atomic gate). It does defeat the "nothing is guessed" must-have, so status is gaps_found. The fix is small and local (about five lines in `planner.py` plus one test).
+Why I do not mark truth 6 FAILED:
 
-I did not find CR-01 triggered by the three real samples named in the UAT: the CSD sample's own text and `Package_SON:Texas_DQK` give `WSON-6`, which matches the UAT expectation.
+- The behaviour is the specified one. Plan 10-26's truths state "A single top match, or a tie that agrees, supplies its family at any score" and pin an agreeing leading-letters tie (SOIC-8 plus SOIC-8-1EP) as a required result. The prohibition the plan carries ("MUST NOT take a family when the tied footprints disagree or one names none") is satisfied and tested.
+- The owner chose that rule on 2026-10-28 and the 10-26 SUMMARY ("Known residual for the owner") reported the single-match pin-count residual to them (LQFP48 against a lone LQFP-100 would get LQFP-100). WR-06 is the same residual on a small agreeing tie.
+- The specific failure the previous report proved (an arbitrary alphabetical pick among tens of disagreeing footprints) is gone for every code I measured except the SON class.
+- The independent review rates it a warning, and the ledger (`10-REVIEW-DISPOSITION.md`, c12ad8b) leaves it `open`, meaning the owner has not triaged it.
+
+Why it is still surfaced: the owner decided on a single-match example, not on the measured SON case where a small agreeing tie writes a wrong 8-pin family onto a 6-pin part. That is a design question about D-28, so it is the first item in the human verification list. If the owner reads D-28 as absolute, the status becomes gaps_found and the fix is the review's pad-count filter (about 8 lines in `planner.py` plus one test) or raising `_MIN_FAMILY_SCORE` to 50.
 
 ### Required Artifacts
 
 | Artifact | Expected | Status | Details |
 | -------- | -------- | ------ | ------- |
-| `kicad_lib_manager/importer/stems.py` | allow-list, `name_verdict`, shared library constant | VERIFIED | substantive, imported by suggest, siblings, dialog |
-| `kicad_lib_manager/importer/suggest.py`, `siblings.py`, `categories.py` | three-step suggestion | VERIFIED | `suggest_library` wires own, stock, category, ask |
-| `kicad_lib_manager/importer/footprint_index.py` | official footprint index and ranking | VERIFIED (defect CR-01 in tie-handling use; WR-01 thread safety) | used by planner and dialog picker |
-| `kicad_lib_manager/importer/footprint_text.py` | pitch, body, family, describe, tags | VERIFIED | wired through `footprint_facts` in planner |
-| `kicad_lib_manager/importer/keywords.py` | keyword generation | VERIFIED (WR-02 "CAN" false positive) | wired as `generate_keywords` in planner |
-| `kicad_lib_manager/importer/incoming.py` | incoming atomic check on planned bytes | VERIFIED | `incoming_context`/`incoming_issues` called from planner |
-| `kicad_lib_manager/kicad_files.py` | `footprint_text_edit` | VERIFIED | used by planner for descr/tags |
-| `kicad_lib_manager/widgets/import_dialog.py` | picker, strip, gate, three text edits with Regenerate, official choice | VERIFIED | install button gated at line ~2653 |
-| `kicad_lib_manager/widgets/help_dialog.py` | rewritten importing page | VERIFIED | contains Atomic_Footprints |
-| `tests/README.md` | fixtures and skips documented | VERIFIED (per plan 10-25 acceptance; not re-grepped) | |
+| `kicad_lib_manager/importer/planner.py` | `_agreed_family_texts`, uses `limit=None`, one call site | VERIFIED | lines 84-107, 1091; `limit=1` absent |
+| `kicad_lib_manager/importer/footprint_index.py` | `rank(limit: int \| None)` | VERIFIED | lines 144-170 |
+| `kicad_lib_manager/importer/keywords.py` | `CASED_INTERFACE_WORDS`, CAN companion phrases | VERIFIED | lines 68-94 |
+| `kicad_lib_manager/main_window.py` | footprint pair passed after a new-library install | VERIFIED | lines 828-849 |
+| `tests/test_generated_text.py`, `test_keywords.py`, `test_main_window_import.py` | tests for each closure | VERIFIED | 160 passed in the four touched modules |
+| `tests/README.md` | skip row names `tests/test_generated_text.py` | VERIFIED per plan acceptance (not re-grepped) | |
+| Earlier-wave artifacts (`stems.py`, `suggest.py`, `siblings.py`, `categories.py`, `footprint_text.py`, `incoming.py`, `kicad_files.py`, `import_dialog.py`, `help_dialog.py`) | as in the previous report | VERIFIED (regression check) | unchanged since the previous verification; covered by the green suite |
 
 ### Key Link Verification
 
 | From | To | Via | Status | Details |
 | ---- | -- | --- | ------ | ------- |
-| planner.build_plan | incoming.incoming_issues | planned footprint/model bytes into gate context | WIRED | planner.py ~1457-1480 |
-| import_dialog install button | plan.blocked + blocking_reasons | `_refresh` ready flag | WIRED | import_dialog.py ~2630-2653 |
-| planner | footprint_index.rank / footprint_text.footprint_facts | official family fallback | WIRED (but unsafe, CR-01) | planner.py ~1062-1073 |
-| dialog text edits | InstallOptions.keywords/fp_description/fp_tags | form.build_options | WIRED | plan 10-23 key link, covered by `test_generated_text.py` |
-| suggest_library | allowed stems | `allowed_stems()` | WIRED | no manufacturer token can be suggested |
+| planner.build_plan | footprint_index.rank / footprint_text.package_family | `_agreed_family_texts` | WIRED | planner.py 91-107, 1091; feeds `footprint_facts(texts=...)` and so description, tags and keyword package words |
+| main_window._finish_post_install | table_generator.add_library_entries | `footprint=(...)` when the footprint library is a repo folder | WIRED | main_window.py 828-849 |
+| keywords.generate_keywords | `_cased_matched(CASED_INTERFACE_WORDS, ...)` | original-case description and category | WIRED | behaviour run above |
+| planner.build_plan | incoming.incoming_issues; import_dialog install button | gate | WIRED (regression) | unchanged |
 
 ### Data-Flow Trace (Level 4)
 
 | Artifact | Data Variable | Source | Produces Real Data | Status |
 | -------- | ------------- | ------ | ------------------ | ------ |
-| Footprint description / tags | `facts.family` | vendor descr/tags, else official footprint text | Yes for vendor text; unsafe when the official fallback is ambiguous | FLOWING (CR-01) |
-| Library suggestion | `SiblingIndex` | KiCad `.kicad_sym` files and own `Custom/` | Yes | FLOWING |
-| Gate reasons | `incoming_issues` | planned file bytes | Yes | FLOWING |
+| Footprint description / tags / keyword package words | `facts.family` | vendor descr/tags, else agreed official footprint text | Yes; leaves the family out when the tie disagrees. Wrong pin count possible on a small agreeing tie (WR-06) | FLOWING (flagged) |
+| CAN keyword | `generate_keywords` result | original-case text | Yes | FLOWING |
+| fp-lib-table entry | `pending.footprint_library` / `fp_rel_path` | install plan | Yes | FLOWING |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 | -------- | ------- | ------ | ------ |
-| Phase 10 core tests (suggest, siblings, categories, stems, shared/official/single footprint, gate, incoming check, keywords, footprint text, generated text) | `env/Scripts/python.exe -m pytest tests/test_suggest_atomic.py tests/test_siblings.py tests/test_categories.py tests/test_stems.py tests/test_shared_footprints.py tests/test_official_footprint.py tests/test_single_footprint.py tests/test_install_gate.py tests/test_gate_reasons.py tests/test_incoming_check.py tests/test_keywords.py tests/test_footprint_text.py tests/test_generated_text.py -q -m "not wurth"` | 341 passed | PASS |
-| CR-01 reproduction against installed KiCad 10 footprints | `rank(idx, package_code="SOIC127P600X175-8N", limit=3)` then `package_family` over the winner's texts | winner `Package_SO:Infineon_SOIC-20W_7.6x12.8mm_P1.27mm` (score 30, tied with JEITA_SOIC-16 and JEITA_SOIC-8); family `SOIC-20` for an 8-pin code | FAIL |
-| CR-01 second case | same with `LQFP48` | winner `Package_QFP:LQFP-100-1EP_14x14mm_P0.5mm_EP6.9x6.9mm` (score 30); family `LQFP-100` | FAIL |
-| Unambiguous case still right | same with `DQK0006B` | single hit `Package_SON:Texas_DQK` (30); family `WSON-6` | PASS |
+| Closure modules and footprint index | `env/Scripts/python.exe -m pytest tests/test_generated_text.py tests/test_keywords.py tests/test_main_window_import.py tests/test_footprint_index.py -q -rs` | 160 passed, 0 skipped | PASS |
+| Phase 10 core tests plus help dialog and layering | `env/Scripts/python.exe -m pytest tests/test_suggest_atomic.py tests/test_siblings.py tests/test_categories.py tests/test_stems.py tests/test_shared_footprints.py tests/test_official_footprint.py tests/test_single_footprint.py tests/test_install_gate.py tests/test_gate_reasons.py tests/test_incoming_check.py tests/test_keywords.py tests/test_footprint_text.py tests/test_generated_text.py tests/test_help_dialog.py tests/test_importer_layering.py -q -m "not wurth"` | 405 passed | PASS |
+| Family rule on installed KiCad 10 | repro script over `_agreed_family_texts` (table above) | SOIC/LQFP/WSON/QFN/SOT-23-5 none, DQK0006B WSON-6 | PASS |
+| WR-06 | same script, `SON50P150X150X60-6N` | family SON-8 for a 6-pin code | FLAGGED (owner decision) |
+| CAN keyword | `generate_keywords` on four descriptions | false / true / true / false as expected | PASS |
 
-I did not re-run the full `-m "not wurth"` suite; the orchestrator's figures (2920 passed, 4 documented skips; Phase 9 regression 101 passed, 1 skipped) are taken as reported. The `-m wurth` run is outside this verification.
+Orchestrator figures taken as reported, not re-run by me: `-m "not wurth"` at d8ac289 gave 2960 passed, 4 skipped (the four documented skips), 0 failed, and the Custom/ and Würth working trees unchanged. 10-VALIDATION.md (f872e29) is nyquist-compliant; 10-SECURITY.md (85b0b96) reports `threats_open: 0`. The `-m wurth` run is outside this verification.
 
 ### Probe Execution
 
@@ -213,36 +245,37 @@ Step 7c: SKIPPED. No probe is declared by the Phase 10 plans and no `scripts/*/t
 
 ### Requirements Coverage
 
-All six requirement IDs from the phase are declared in plan frontmatter and map to Phase 10 in REQUIREMENTS.md; no orphaned Phase 10 requirement exists. REQUIREMENTS.md still shows them as `[ ]` / Pending; that checkbox update belongs to phase completion.
+All six IDs are declared in plan frontmatter (counts across plans: LIB-04 x5, LIB-05 x8, LIB-06 x12, LIB-07 x8, FLD-01 x5, FLD-03 x4) and map to Phase 10 in REQUIREMENTS.md (lines 150-159); no orphaned Phase 10 requirement exists. REQUIREMENTS.md still shows them as `[ ]` / Pending; that checkbox update belongs to phase completion after the human gate.
 
 | Requirement | Source Plans | Description | Status | Evidence |
 | ----------- | ------------ | ----------- | ------ | -------- |
-| LIB-04 | 10-03, 10-04, 10-15, 10-18, 10-25 | Suggest `Atomic_<KiCad stem>`: siblings, then category map, then ask; never a manufacturer | SATISFIED (human check 1, 7, 8 pending) | `suggest.py`, `siblings.py`, `categories.py`, tests green |
-| LIB-05 | 10-01, 10-02, 10-07, 10-08, 10-09, 10-10, 10-15, 10-25 | Pick or type an `Atomic_` library; official names and manufacturer tokens refused | SATISFIED (human check 4 pending) | `stems.name_verdict`, `test_stems.py` |
-| LIB-06 | 10-02, 10-03, 10-07, 10-08, 10-09, 10-11, 10-12, 10-13, 10-14, 10-24, 10-25 | Footprints into `Atomic_Footprints.pretty` or an official footprint; no `.pretty` pairing | SATISFIED (human checks 3, 5, 6 pending; WR-05 edge case below) | planner, shared/official tests |
-| LIB-07 | 10-06, 10-16, 10-17, 10-19 to 10-22, 10-25 | Install blocked until atomic; clickable reasons; Value = MPN; fields editable | SATISFIED (human checks 2, 8, 9 pending) | `incoming.py`, dialog gate, gate tests |
-| FLD-01 | 10-04, 10-23, 10-25 | Generate `ki_keywords`, editable in the preview | SATISFIED (the migration half belongs to Phase 13) | `keywords.py`, `test_generated_text.py` |
-| FLD-03 | 10-05, 10-23, 10-25 | Footprint description and tags: package, IPC name, vendor code, pitch | PARTIAL: implemented, but the family part is affected by Gap 1 | `footprint_text.py`, planner |
+| LIB-04 | 10-03, 10-04, 10-15, 10-18, 10-25 | Suggest `Atomic_<stem>`: siblings, category map, then ask | SATISFIED (human checks 1, 7, 8 pending) | `suggest.py`, tests green |
+| LIB-05 | 10-01, 10-02, 10-07 to 10-10, 10-15, 10-25 | Pick or type `Atomic_` library; official names and manufacturer tokens refused | SATISFIED (human check 4 pending) | `stems.name_verdict` |
+| LIB-06 | 10-02, 10-03, 10-07 to 10-09, 10-11 to 10-14, 10-24, 10-25, 10-28 | Footprints into `Atomic_Footprints.pretty` or an official footprint; no `.pretty` pairing | SATISFIED (human checks 3, 5, 6 pending); WR-05 edge case now closed | planner, shared/official tests, `main_window.py` 828-849 |
+| LIB-07 | 10-06, 10-16, 10-17, 10-19 to 10-22, 10-25 | Install blocked until atomic; clickable reasons; Value = MPN | SATISFIED (human checks 2, 8, 9 pending) | `incoming.py`, gate tests |
+| FLD-01 | 10-04, 10-23, 10-25, 10-26, 10-27 | Generate `ki_keywords`, editable in the preview | SATISFIED (migration half is Phase 13); WR-02 closed | `keywords.py` |
+| FLD-03 | 10-05, 10-23, 10-25, 10-26 | Footprint description and tags: package, IPC name, vendor code, pitch | SATISFIED under the owner's amended rule; WR-06 residual flagged | `footprint_text.py`, `planner.py` |
 
-Note: FLD-01 and FLD-03 also say "and the migration"; the migration is Phase 13 (MIG-*) and is out of scope for this phase.
+Note: FLD-01 and FLD-03 also say "and the migration"; that is Phase 13 (MIG-*) and out of scope here.
 
 ### Anti-Patterns Found
 
 | File | Line | Pattern | Severity | Impact |
 | ---- | ---- | ------- | -------- | ------ |
-| `importer/planner.py` | 81-83, 1066-1072 | Guessed family from an ambiguous leading-letters match (CR-01) | BLOCKER (Gap 1) | Wrong text in permanent files |
-| `importer/footprint_index.py`, `siblings.py` | 68-72, 108-111, 175-188 | Shared module-level caches mutated from several threads without a lock (WR-01) | WARNING | Rare "Preview could not be built" |
-| `importer/keywords.py` | 76-88, 118-120 | English word "can" produces keyword `CAN` (WR-02) | WARNING | Wrong searchable keyword written |
-| `manufacturers.py`, `keywords.py` | 57-80, 94-107 | `owner` chain unvalidated; cycle would loop forever (WR-03); needs a bad table edit | WARNING | Hang only after a bad source edit |
-| `widgets/import_dialog.py` | 1559, 1574, 1772, 2261, 2312 | Vendor text set as an unescaped tooltip (WR-04, same class as T-10-17) | WARNING | Spoofed tooltip text only |
-| `main_window.py` | 828-870 | After a new symbol library, an existing but unlisted `Atomic_Footprints` gets no fp-lib-table entry or hint (WR-05) | WARNING | Edge case; KiCad shows an unresolved footprint library |
-| info | - | IN-01 to IN-03 (shared mutable defaults, 4-space sibling indent, stale picker ranking) | INFO | Cosmetic or robustness |
+| `importer/planner.py` | 84-107 | Small leading-letters-only tie that agrees supplies a family with no pin-count check (WR-06) | WARNING (owner decision requested) | Wrong pin count possible in description, tags, keywords, only when the vendor footprint names no family |
+| `importer/footprint_index.py`, `siblings.py` | cache dicts | Shared caches mutated from several threads without a lock (WR-01) | WARNING, open | Rare "Preview could not be built" |
+| `manufacturers.py`, `keywords.py` | owner chain | Unvalidated `owner` chain; a cycle would loop forever (WR-03) | WARNING, open | Only after a bad source edit |
+| `widgets/import_dialog.py` | tooltips | Vendor text set as an unescaped tooltip (WR-04, same class as T-10-17, accepted low) | WARNING, open | Garbled tooltip only |
+| tests | - | IN-04: two CAN test rows cannot fail on the CAN rule; two live-footprint tests lack a KiCad-version guard | INFO, open | Test weakness; KiCad release could fail them without a code change |
+| various | - | IN-01 to IN-03 | INFO, open | Cosmetic or robustness |
 
-No `TBD`, `FIXME`, `XXX`, `TODO` or `HACK` markers in `kicad_lib_manager/`. The review warnings and info items are all still `open` in `10-REVIEW-DISPOSITION.md`; they are advisory for this verdict and should be triaged in the gap-closure round. The security audit reports `threats_open: 0` (T-10-17 low, accepted).
+No `TBD`, `FIXME` or `XXX` markers in `kicad_lib_manager/`. 3 of 11 review findings are fixed (CR-01, WR-02, WR-05), 8 are open and untriaged in `10-REVIEW-DISPOSITION.md`; none of the open ones blocks a must-have. `git status` shows no changes to source files from this verification.
 
 ### Human Verification Required
 
-`workflow.human_verify_mode` is `end-of-phase`: the `<human-check>` of plan 10-25 Task 2 is the phase's human gate for ROADMAP criteria 1-5. It is collected below with its setup and exact expected text. Run it on the scratch copy only, never on the live `Custom/` or the real KiCad library tables. Change from the plan text: in check 10 add the scratch libraries to the Project library table only, never Global (security audit note: Global edits the owner's real tables).
+`workflow.human_verify_mode` is `end-of-phase`: the `<human-check>` of plan 10-25 Task 2 is the phase's human gate for ROADMAP criteria 1-5. Run it on the scratch copy only, never on the live `Custom/` or the real KiCad library tables. Check 6 carries the changed expected text from plan 10-28 (both table files are written). In check 10, add the scratch libraries to the Project library table only, never Global.
+
+**Item 0 (new): owner decision on WR-06.** Say whether to keep the agreement rule as decided on 2026-10-28 or to add a pin-count check (the review's fix) or a minimum score of 50, given that on KiCad 10 SON50P150X150X60-6N and SON65P200X200X80-6N get SON-8. Keeping it leaves status human_needed until the checks below pass; fixing it needs one small gap-closure plan.
 
 #### Setup
 
@@ -294,7 +327,9 @@ The output holds a line "Run the app on it: <command>". The "Check in the app:" 
 
 ### Gaps Summary
 
-One gap, from the code review's CR-01, confirmed by reproduction: the official-footprint family fallback in `planner.py` accepts a leading-letters-only match (score 30) without checking it is unique, so a vendor package code such as `SOIC127P600X175-8N` or `LQFP48` can write another package's family and pin count (`SOIC-20`, `LQFP-100`) into the footprint description, tags and symbol keywords. This breaks the D-28 prohibition of plan 10-05 and the family truth of plan 10-23. The five ROADMAP criteria are met in code and tests. After the fix (require score >= 50, or a unique top score, plus an ambiguity test) a re-verification should pass the automated checks, and the status then becomes human_needed until the owner runs the checklist above. The five open warnings and three info items are advisory; WR-02 (`CAN` keyword) and WR-05 (fp-lib-table hint) change written output or table state and are worth closing in the same gap-closure round.
+No blocking gaps. The previous report's only gap (truth 6, CR-01) is closed: `_agreed_family_texts` makes the alphabetical tie order irrelevant, and I reproduced SOIC127P600X175-8N, LQFP48, WSON6, QFN50P500X500X80-33N and SOT-23-5 giving no family on the installed KiCad 10 footprints while DQK0006B still gives WSON-6. WR-02 (CAN keyword) and WR-05 (shared footprint library offered to fp-lib-table) are closed and tested. No regression was found in the truths that passed before (405 targeted tests green; the orchestrator's full run is 2960 passed, 4 documented skips).
+
+Open: WR-06, a narrower form of the CR-01 class, is a warning with an owner decision requested rather than a failure, because the behaviour is exactly what plan 10-26 and the owner's rule specify and test; the owner has not seen the measured SON-8 example. The five ROADMAP criteria still need the owner's end-of-phase UAT, so the status is human_needed.
 
 ---
 
