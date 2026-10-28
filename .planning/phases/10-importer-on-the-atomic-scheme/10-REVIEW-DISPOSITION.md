@@ -5,7 +5,7 @@ titles: json
 findings:
   - id: CR-01
     severity: critical
-    disposition: open
+    disposition: fixed
     title: "The package family is guessed from an arbitrary official footprint and written into the description, tags and keywords"
   - id: WR-01
     severity: warning
@@ -13,7 +13,7 @@ findings:
     title: "Module-level footprint caches are mutated from several worker threads with no lock"
   - id: WR-02
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "The keyword \"CAN\" is generated from the English word \"can\""
   - id: WR-03
     severity: warning
@@ -25,7 +25,7 @@ findings:
     title: "Vendor text is set as a tooltip unescaped in several new or extended places, while the library tooltip is escaped"
   - id: WR-05
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "After a new symbol library is installed, the shared footprint library is never checked against fp-lib-table"
   - id: IN-01
     severity: info
@@ -39,7 +39,7 @@ findings:
     severity: info
     disposition: open
     title: "The official footprint picker ranking is built once per package and goes stale"
-open: 9
+open: 6
 total: 9
 recorded: 2026-10-27T23:17:47.207Z
 ---
@@ -48,12 +48,12 @@ recorded: 2026-10-27T23:17:47.207Z
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | open | - |
+| CR-01 | critical | fixed | 10-26-PLAN.md (1276906) |
 | WR-01 | warning | open | - |
-| WR-02 | warning | open | - |
+| WR-02 | warning | fixed | 10-27-PLAN.md (f35486b); spi/uart/ble left as is, all-caps CAN accepted by owner 2026-10-28, see 10-27 |
 | WR-03 | warning | open | - |
 | WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
+| WR-05 | warning | fixed | 10-28-PLAN.md (01cd7da) |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
