@@ -827,12 +827,15 @@ class MainWindow(QMainWindow):
             return
 
         if pending.new_library:
+            # The footprint library's entry is offered whenever it is a folder of this repo, new or not,
+            # so a shared Atomic_Footprints missing from fp-lib-table is added (WR-05); add_library_entries
+            # leaves a table that already lists it unchanged
             issues = add_library_entries(
                 dest,
                 symbol=(library, pending.sym_rel_path) if pending.new_symbol_lib else None,
                 footprint=(
                     (pending.footprint_library, pending.fp_rel_path)
-                    if pending.new_footprint_lib and pending.footprint_library and pending.fp_rel_path
+                    if pending.footprint_library and pending.fp_rel_path
                     else None
                 ),
             )
