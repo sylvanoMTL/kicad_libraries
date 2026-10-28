@@ -69,7 +69,7 @@ These skip only on a machine that lacks something. None of them skip on the work
   (`tests/test_footprint_text.py`, `tests/test_install_verify.py`, `tests/test_official_footprint.py`, `tests/test_siblings.py`, `tests/test_stems.py`).
 - Installed KiCad is not version 10: `installed KiCad is not version 10` (`tests/test_stems.py`, `tests/test_siblings.py`).
   `tests/test_real_vendor_samples.py` prints `no KiCad 10 install with a stock symbols folder` for the same two conditions together.
-- No KiCad footprints folder: `no KiCad install with a footprints folder` (`tests/test_footprint_index.py`).
+- No KiCad footprints folder: `no KiCad install with a footprints folder` (`tests/test_footprint_index.py`, `tests/test_generated_text.py`).
 - `tomllib` missing on Python 3.10: `tests/test_manifests.py` skips through `importorskip`.
 - Windows-only behaviour on another platform:
   `held-open handles block os.replace only on win32`, `case is only ignored on Windows`,
