@@ -27,6 +27,10 @@ findings:
     severity: warning
     disposition: fixed
     title: "After a new symbol library is installed, the shared footprint library is never checked against fp-lib-table"
+  - id: WR-06
+    severity: warning
+    disposition: open
+    title: "A package family is still taken from a small leading-letters-only tie that has no pin check"
   - id: IN-01
     severity: info
     disposition: open
@@ -39,9 +43,13 @@ findings:
     severity: info
     disposition: open
     title: "The official footprint picker ranking is built once per package and goes stale"
-open: 6
-total: 9
-recorded: 2026-10-27T23:17:47.207Z
+  - id: IN-04
+    severity: info
+    disposition: open
+    title: "Two keyword test rows cannot fail on the CAN rule, and two live-footprint tests depend on KiCad's file contents"
+open: 8
+total: 11
+recorded: 2026-10-28T12:25:22.771Z
 ---
 
 # Phase 10: Code Review Disposition
@@ -54,9 +62,11 @@ recorded: 2026-10-27T23:17:47.207Z
 | WR-03 | warning | open | - |
 | WR-04 | warning | open | - |
 | WR-05 | warning | fixed | 10-28-PLAN.md (01cd7da) |
+| WR-06 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
+| IN-04 | info | open | - |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
