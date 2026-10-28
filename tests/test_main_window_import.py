@@ -731,12 +731,14 @@ def installed_for(lib: str, new_library: bool) -> InstallResult:
     return InstallResult(ok=True, library=lib, new_library=new_library, touched=(), issues=())
 
 
-def run_install(qtbot, w, repo, lib, new_library):
+def run_install(qtbot, w, repo, lib, new_library, **plan_options):
     """Report an install to the window with a recording dialog; return the dialog and the rows seen at once."""
     dialog = RecordingDialog()
     w._import_dialog = dialog
     try:
-        w._on_import_installed(installed_for(lib, new_library), stub_plan(repo, lib, new_library=new_library))
+        w._on_import_installed(
+            installed_for(lib, new_library), stub_plan(repo, lib, new_library=new_library, **plan_options)
+        )
         at_once = dict(dialog.rows)
         qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
     finally:
@@ -1031,3 +1033,49 @@ def test_tables_new_symbol_library_adds_the_existing_unlisted_footprint_library(
     assert (repo / "fp-lib-table").read_bytes() == old_fp[:-2] + _managed(SHARED_FP, SHARED_FP_REL).encode("utf-8") + b")\n"
     assert f"Added {NEW_LIB} to sym-lib-table and {SHARED_FP} to fp-lib-table" in log_text(w)
     assert "is not in the library tables" not in log_text(w)
+
+
+def test_tables_new_symbol_library_leaves_a_listed_footprint_library_alone(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    w._on_import_installed(install_result(), stub_plan(repo, NEW_LIB, new_symbol_lib=True, new_footprint_lib=False))
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    fp_bytes = (repo / "fp-lib-table").read_bytes()
+    assert fp_bytes == old_fp
+    assert fp_bytes.decode("utf-8").count(f'(name "{SHARED_FP}")') == 1
+    assert not list(repo.glob("fp-lib-table_backup_*"))
+    assert (repo / "sym-lib-table").read_bytes() == old_sym[:-2] + _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8") + b")\n"
+    assert f"fp-lib-table already lists {SHARED_FP}; not changed" in log_text(w)
+
+
+def test_status_rows_new_symbol_library_adds_an_unlisted_footprint_library(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo, shared_listed=False)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    dialog, at_once = run_install(qtbot, w, repo, NEW_LIB, True, new_footprint_lib=False)
+
+    assert at_once["tables"] == ("Updating...", Severity.INFO)
+    assert dialog.rows["tables"] == (
+        f"Added {NEW_LIB} to sym-lib-table and {SHARED_FP} to fp-lib-table", Severity.SUCCESS,
+    )
+    assert "generate_hint" not in dialog.rows
+
+
+def test_status_rows_new_symbol_library_with_a_listed_footprint_library(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    dialog, _ = run_install(qtbot, w, repo, NEW_LIB, True, new_footprint_lib=False)
+
+    assert dialog.rows["tables"] == (
+        f"Added {NEW_LIB} to sym-lib-table; fp-lib-table already lists {SHARED_FP}; not changed", Severity.INFO,
+    )
+    assert "generate_hint" not in dialog.rows
