@@ -1,8 +1,10 @@
 """Keyword generation and the vendor merge: single words, KiCad 10 chooser search (FLD-01, D-26, D-27)."""
 
 import pytest
+from customfixtures import ABSENT_LIBRARY
 
 from kicad_lib_manager.importer.keywords import (
+    CASED_INTERFACE_WORDS,
     FUNCTION_WORDS,
     INTERFACE_WORDS,
     JUNK_WORDS,
@@ -11,6 +13,8 @@ from kicad_lib_manager.importer.keywords import (
     merge_words,
     split_words,
 )
+from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
+from kicad_lib_manager.importer.planner import build_plan
 
 
 def _generate(**overrides):
@@ -194,7 +198,7 @@ def test_generation_only_reads_the_manufacturer():
 
 
 def test_vocabulary_tables_hold_single_words_and_no_junk():
-    for _, word in (*FUNCTION_WORDS, *INTERFACE_WORDS):
+    for _, word in (*FUNCTION_WORDS, *INTERFACE_WORDS, *CASED_INTERFACE_WORDS):
         assert word.split() == [word]
         assert "=" not in word
         assert word.casefold() not in JUNK_WORDS
@@ -216,3 +220,89 @@ def test_generation_never_raises_on_odd_text(text):
     for word in words:
         assert word
         assert not any(c.isspace() for c in word)
+
+
+# -- the English word "can" is not the CAN bus (WR-02) -------------------------------------------------
+
+
+def test_the_english_word_can_gives_no_can_keyword():
+    words = _generate(description="You can use it; USB C receptacle")
+    assert "USB" in words
+    assert "USB-C" in words
+    assert "CAN" not in words
+
+
+def test_a_planned_install_writes_can_only_for_a_can_bus_part(atomic_custom, ul_package):
+    _, candidate = ul_package
+    english = build_plan(
+        candidate,
+        InstallOptions(library=ABSENT_LIBRARY, description="You can use it; USB C receptacle"),
+        atomic_custom,
+        ToolContext(),
+    )
+    words = english.part_text.keywords.split()
+    assert "USB" in words
+    assert "can" not in [word.casefold() for word in words]
+
+    bus = build_plan(
+        candidate,
+        InstallOptions(library=ABSENT_LIBRARY, description="Isolated CAN transceiver"),
+        atomic_custom,
+        ToolContext(),
+    )
+    assert bus.part_text.keywords.split().count("CAN") == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "text"),
+    [
+        ("description", "You can use it"),
+        ("description", "Can be mounted on either side"),
+        ("description", "This part can drive 2 A"),
+        ("description", "cannot exceed 5 V"),
+        ("description", "boundary scan chain"),
+        ("category", "can"),
+    ],
+)
+def test_ordinary_can_gives_no_can_keyword(field, text):
+    assert "CAN" not in _generate(**{field: text})
+
+
+@pytest.mark.parametrize(
+    ("field", "text"),
+    [
+        ("description", "Isolated CAN transceiver"),
+        ("description", "CAN-FD transceiver"),
+        ("description", "High-speed CAN, 5 V"),
+        ("description", "Interface (CAN)"),
+        ("description", "can bus transceiver"),
+        ("description", "Can Bus interface"),
+        ("description", "CANbus node"),
+        ("description", "canfd controller"),
+        ("description", "Can Transceiver 3.3 V"),
+        ("description", "CAN bus"),
+        ("category", "Interface CAN"),
+    ],
+)
+def test_can_bus_text_gives_the_can_keyword_once(field, text):
+    assert _generate(**{field: text}).count("CAN") == 1
+
+
+def test_all_caps_can_gives_the_can_keyword():
+    # Accepted residual (owner decision 2026-10-28): the exact-case rule cannot tell all-caps prose from the bus
+    assert _generate(description="YOU CAN USE IT").count("CAN") == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "keywords"),
+    [
+        ("spi flash", ["SPI"]),
+        ("uart bridge", ["UART"]),
+        ("ble module", ["BLE"]),
+        ("SPI and UART", ["SPI", "UART"]),
+    ],
+)
+def test_spi_uart_and_ble_still_match_in_any_case(text, keywords):
+    words = _generate(description=text)
+    for keyword in keywords:
+        assert keyword in words
