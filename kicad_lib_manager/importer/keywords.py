@@ -75,7 +75,12 @@ INTERFACE_WORDS: tuple[tuple[str, str], ...] = (
     ("spi", "SPI"),
     ("uart", "UART"),
     ("usb", "USB"),
-    ("can", "CAN"),
+    ("can bus", "CAN"),
+    ("canbus", "CAN"),
+    ("can fd", "CAN"),
+    ("canfd", "CAN"),
+    ("can transceiver", "CAN"),
+    ("can controller", "CAN"),
     ("i2s", "I2S"),
     ("sdio", "SDIO"),
     ("ethernet", "Ethernet"),
@@ -83,6 +88,10 @@ INTERFACE_WORDS: tuple[tuple[str, str], ...] = (
     ("bluetooth", "Bluetooth"),
     ("wifi", "WiFi"),
 )
+
+# These interface words are also ordinary English words, so they count only when written in exactly this
+# case as a whole word of the original text (WR-02). CAN companion phrases in INTERFACE_WORDS catch the rest.
+CASED_INTERFACE_WORDS: tuple[tuple[str, str], ...] = (("CAN", "CAN"),)
 
 _WORD_SPLIT_RE = re.compile(r"[\s,;]+")
 _WRAPPERS = "()[]{}<>\"'"
@@ -137,6 +146,12 @@ def _matched(pairs: tuple[tuple[str, str], ...], text: str) -> list[str]:
     return [word for phrase, word in pairs if f" {phrase} " in text]
 
 
+def _cased_matched(pairs: tuple[tuple[str, str], ...], text: str) -> list[str]:
+    """Match whole words of the original text with case kept (CAN-FD gives CAN and FD)."""
+    found = set(re.findall(r"[A-Za-z0-9]+", text.replace("\\n", " ")))
+    return [word for token, word in pairs if token in found]
+
+
 def generate_keywords(
     *,
     library: str,
@@ -156,6 +171,7 @@ def generate_keywords(
     words: list[str] = _stem_words(library)
     words += _matched(FUNCTION_WORDS, text)
     words += _matched(INTERFACE_WORDS, text)
+    words += _cased_matched(CASED_INTERFACE_WORDS, f"{description} {category}")
     words += package_words
     words += manufacturer_words(manufacturer)
     if mpn and mpn.casefold() not in symbol_name.casefold():
