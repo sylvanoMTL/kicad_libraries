@@ -113,7 +113,7 @@ Plans:
   4. Install stays disabled while the incoming part fails the atomic check. Each failure is a clickable reason that jumps to its field. Value defaults to the MPN, and filling in Datasheet, Description or the 3D model in the preview clears the matching reason.
   5. The preview shows generated `ki_keywords` (function words, interfaces, package codes, manufacturer aliases, MPN variants) and a footprint description and tags (package, IPC name, vendor package code, pitch). All of them are editable, and the installed files carry exactly what the preview showed.
 
-**Plans:** 27/28 plans executed (3 gap-closure plans planned)
+**Plans:** 28/28 plans executed (3 gap-closure plans planned)
 
 Plans:
 **Wave 1**
@@ -180,7 +180,7 @@ Plans:
 - [x] 10-27-PLAN.md — The English word "can" no longer gives the CAN keyword; CAN-bus text still does (wave 18)
 
 **Wave 19** *(blocked on Wave 18 completion)*
-- [ ] 10-28-PLAN.md — Shared footprint library added to fp-lib-table when missing after a new symbol library (WR-05); dispositions recorded (wave 19)
+- [x] 10-28-PLAN.md — Shared footprint library added to fp-lib-table when missing after a new symbol library (WR-05); dispositions recorded (wave 19)
 
 **UI hint**: yes
 
@@ -238,7 +238,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 |-------|-----------|----------------|--------|-----------|
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
-| 10. Importer on the Atomic Scheme | v2.0 | 27/28 | In Progress | - |
+| 10. Importer on the Atomic Scheme | v2.0 | 28/28 | In Progress | - |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
