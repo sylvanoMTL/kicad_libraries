@@ -1015,3 +1015,19 @@ def test_tables_an_official_link_into_a_new_symbol_library_adds_only_the_symbol_
     assert (repo / "sym-lib-table").read_bytes() == old_sym[:-2] + _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8") + b")\n"
     assert (repo / "fp-lib-table").read_bytes() == old_fp
     assert f"Added {NEW_LIB} to sym-lib-table" in log_text(w)
+
+
+def test_tables_new_symbol_library_adds_the_existing_unlisted_footprint_library(qtbot, make_window, tmp_path):
+    # WR-05: Atomic_Footprints exists on disk but fp-lib-table does not list it, so the install adds it
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo, shared_listed=False)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    w._on_import_installed(install_result(), stub_plan(repo, NEW_LIB, new_symbol_lib=True, new_footprint_lib=False))
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert (repo / "sym-lib-table").read_bytes() == old_sym[:-2] + _managed(NEW_LIB, NEW_SYM_REL).encode("utf-8") + b")\n"
+    assert (repo / "fp-lib-table").read_bytes() == old_fp[:-2] + _managed(SHARED_FP, SHARED_FP_REL).encode("utf-8") + b")\n"
+    assert f"Added {NEW_LIB} to sym-lib-table and {SHARED_FP} to fp-lib-table" in log_text(w)
+    assert "is not in the library tables" not in log_text(w)
