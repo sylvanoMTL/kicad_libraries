@@ -55,6 +55,9 @@ Task rows are added from the PLAN.md files once planning completes (and confirme
 | LIB-06 | shared Atomic_Footprints reuse/rename/conflict, one footprint per part, official KiCad footprint (refusals, pad warnings, kicad-cli load) | plan/apply/dialog | `env/Scripts/python.exe -m pytest tests/test_shared_footprints.py tests/test_single_footprint.py tests/test_official_footprint.py -q` | ✅ | ✅ green |
 | LIB-07 | Value follows MPN, canonical Manufacturer, install gate per rule, clickable reasons with amber targets | plan + form + dialog | `env/Scripts/python.exe -m pytest tests/test_field_rules.py tests/test_install_gate.py tests/test_gate_reasons.py tests/test_atomic_targets.py -q` | ✅ | ✅ green |
 | FLD-01, FLD-03 | generated keywords, footprint description and tags written, edited, regenerated, loaded by kicad-cli | plan + dialog + `kicad_cli` | `env/Scripts/python.exe -m pytest tests/test_generated_text.py -q` | ✅ | ✅ green |
+| FLD-01, FLD-03 | CR-01 (10-26): an official footprint supplies the package family only when every top-score tie agrees; ambiguous codes (SOIC127P600X175-8N, LQFP48) and SOT-23-5 get none | unit + `local_kicad` | `env/Scripts/python.exe -m pytest tests/test_generated_text.py -q -k "family or lower_case or csd_sentence"` | ✅ | ✅ green |
+| FLD-01 | WR-02 (10-27): the English word "can" gives no CAN keyword; CAN phrases and all-caps CAN still do | unit + `build_plan` | `env/Scripts/python.exe -m pytest tests/test_keywords.py -q -k "can or spi"` | ✅ | ✅ green |
+| LIB-06 | WR-05 (10-28): a new symbol library adds an existing, unlisted Atomic_Footprints to fp-lib-table; a listed one stays byte-identical with no backup | GUI flow (`qtbot`) | `env/Scripts/python.exe -m pytest tests/test_main_window_import.py tests/test_table_add_entries.py -q` | ✅ | ✅ green |
 | all | layering for every new module | static | `env/Scripts/python.exe -m pytest tests/test_importer_layering.py tests/test_layering.py -q` | ✅ | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
@@ -92,7 +95,7 @@ Task rows are added from the PLAN.md files once planning completes (and confirme
 - [x] Feedback latency < 60s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** approved 2026-10-27 (validate-phase: every requirement covered; full `-m "not wurth"` run 2920 passed, 4 documented skips)
+**Approval:** approved 2026-10-27 (validate-phase: every requirement covered; full `-m "not wurth"` run 2920 passed, 4 documented skips). Re-approved 2026-10-28 after gap closure 10-26..10-28: every gap-closure task has an automated command, full `-m "not wurth"` run 2960 passed, 4 documented skips.
 
 ## Validation Audit 2026-10-27
 
