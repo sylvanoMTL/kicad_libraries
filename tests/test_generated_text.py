@@ -20,6 +20,7 @@ from kicad_lib_manager.importer.footprint_text import vendor_texts
 from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
 from kicad_lib_manager.importer.planner import build_plan
 from kicad_lib_manager.kicad_files import find_property, find_symbol, footprint_name, load
+from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
 from kicad_lib_manager.widgets.import_dialog import ImportCore, ImportDialog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -244,18 +245,20 @@ VENDOR = "PART"
 EXISTING = "Atomic_Battery_Management"
 
 
-def _vendor_zip(tmp_path, *, keywords="", descr="", tags=""):
+def _vendor_zip(tmp_path, *, keywords="", descr="", tags="", footprint="FP"):
     from installfixtures import ATOMIC_PROPS, vendor_footprint, vendor_symbol_lib
     from zipfixtures import STEP_BYTES, make_zip
 
-    footprint = vendor_footprint("FP")
+    footprint_data = vendor_footprint(footprint)
     extra = (f'  (descr "{descr}")\r\n' if descr else "") + (f'  (tags "{tags}")\r\n' if tags else "")
-    footprint = footprint.replace(b'  (layer "F.Cu")\r\n', b'  (layer "F.Cu")\r\n' + extra.encode(), 1)
-    symbol = vendor_symbol_lib(VENDOR, keywords=keywords, props=ATOMIC_PROPS)
+    footprint_data = footprint_data.replace(b'  (layer "F.Cu")\r\n', b'  (layer "F.Cu")\r\n' + extra.encode(), 1)
+    symbol = vendor_symbol_lib(
+        VENDOR, footprint_field=footprint, fp_filters=footprint, keywords=keywords, props=ATOMIC_PROPS
+    )
     (tmp_path / "src").mkdir(exist_ok=True)
     return make_zip(
         tmp_path / "src" / "pkg.zip",
-        [("part.kicad_sym", symbol), ("FP.kicad_mod", footprint), ("part.step", STEP_BYTES)],
+        [("part.kicad_sym", symbol), (f"{footprint}.kicad_mod", footprint_data), ("part.step", STEP_BYTES)],
     )
 
 
@@ -312,6 +315,157 @@ def test_a_symbol_renamed_by_a_conflict_keeps_the_vendor_keywords_retokened(atom
         package.close()
     assert second.symbol_name == f"{VENDOR}_2"
     assert second.part_text.keywords.split()[:2] == [f"{VENDOR}_2", "power"]
+
+
+# -- the package family comes from official footprints only when they all agree (CR-01, D-28) -------------
+
+
+def _pads(count: int) -> tuple[str, ...]:
+    return tuple(str(number) for number in range(1, count + 1))
+
+
+def _stock_tree(tmp_path, name: str, libraries: dict) -> Path:
+    """KiCad's footprints folder with the given libraries; each footprint is (name, pad count) with no descr or tags."""
+    from stockfixtures import write_stock_kicad
+
+    rows = {
+        library: tuple((footprint, _pads(pads), "", "") for footprint, pads in footprints)
+        for library, footprints in libraries.items()
+    }
+    return write_stock_kicad(tmp_path / name, {}, rows)[1]
+
+
+TWO_SOIC = {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8), ("SOIC-20W_7.5x12.8mm_P1.27mm", 20))}
+
+
+def _plans_with_and_without(atomic_custom, tmp_path, code: str, footprints: Path):
+    """The plan for this vendor footprint code with the given KiCad footprints folder, and the same plan with none."""
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code))
+    try:
+        options = InstallOptions(library=EXISTING)
+        with_folder = build_plan(candidate, options, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+        without = build_plan(candidate, options, atomic_custom, ToolContext())
+    finally:
+        package.close()
+    assert not with_folder.blocked, with_folder.issues
+    assert not without.blocked, without.issues
+    return with_folder, without
+
+
+def _words(text: str) -> list[str]:
+    return [word.rstrip(",") for word in text.split()]
+
+
+def test_an_ambiguous_package_code_supplies_no_family(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "two_soic", TWO_SOIC)
+    code = "SOIC127P600X175-8N"
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code))
+    try:
+        options = InstallOptions(library=EXISTING)
+        ambiguous = build_plan(candidate, options, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+        bare = build_plan(candidate, options, atomic_custom, ToolContext())
+        assert not ambiguous.blocked, ambiguous.issues
+        text = ambiguous.part_text
+        assert text == bare.part_text
+        assert bare.part_text.fp_description == f"1.5 mm pitch, TI {code}"
+        for field in (text.fp_description, text.fp_tags, text.keywords):
+            assert not any(word.startswith("SOIC-") for word in _words(field)), field
+        result = apply_plan(ambiguous, backup_root=tmp_path / "bk")
+    finally:
+        package.close()
+    assert result.ok, result.issues
+    installed = load(atomic_custom.footprints_dir / "Atomic_Footprints.pretty" / f"{code}.kicad_mod")
+    assert vendor_texts(footprint_name(installed.root).node) == (bare.part_text.fp_description, bare.part_text.fp_tags)
+
+
+SOIC_CODE = "SOIC127P600X175-8N"
+
+
+def test_a_single_leading_letters_match_supplies_its_family(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "one_soic", {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8),)})
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints)
+    assert plan.part_text.fp_description.startswith("SOIC-8, ")
+    assert "SOIC-8" in plan.part_text.keywords.split()
+
+
+def test_a_unique_full_code_match_supplies_its_family(atomic_custom, tmp_path):
+    footprints = _stock_tree(
+        tmp_path, "sot", {"Package_TO_SOT_SMD": (("SOT-23-5", 5), ("TSOT-23-5", 5))}
+    )
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, "SOT-23-5", footprints)
+    assert plan.part_text.fp_description.startswith("SOT-23-5, ")
+
+
+@pytest.mark.parametrize(
+    ("libraries", "code", "family"),
+    [
+        pytest.param(
+            {"Package_TO_SOT_SMD": (("SOT-23-5", 5), ("SOT-23-5_HandSoldering", 5))}, "SOT-23-5", "SOT-23-5", id="full code"
+        ),
+        pytest.param(
+            {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8), ("SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.29x3mm", 9))},
+            SOIC_CODE,
+            "SOIC-8",
+            id="leading letters",
+        ),
+    ],
+)
+def test_a_tie_that_agrees_supplies_the_family(atomic_custom, tmp_path, libraries, code, family):
+    footprints = _stock_tree(tmp_path, "agree", libraries)
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, code, footprints)
+    assert plan.part_text.fp_description.startswith(f"{family}, ")
+    assert family in plan.part_text.keywords.split()
+
+
+def test_a_tie_with_a_footprint_naming_no_family_supplies_no_family(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "socket", {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8), ("SOIC_Socket", 8))})
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints)
+    assert plan.part_text == bare.part_text
+
+
+def test_a_lower_case_code_ties_the_same_footprints(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "two_soic", TWO_SOIC)
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE.lower(), footprints)
+    assert plan.part_text == bare.part_text
+
+
+def test_an_empty_kicad_footprints_folder_supplies_no_family(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "empty", {})
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints)
+    assert plan.part_text == bare.part_text
+
+
+# -- against the installed KiCad footprints (skipped when there is no KiCad install) ---------------------
+
+_LIVE_FP_DIR = find_kicad_footprint_dir()
+needs_kicad_footprints = pytest.mark.skipif(_LIVE_FP_DIR is None, reason="no KiCad install with a footprints folder")
+
+
+@needs_kicad_footprints
+@pytest.mark.parametrize(("code", "wrong_family"), [(SOIC_CODE, "SOIC-20"), ("LQFP48", "LQFP-100")])
+def test_kicad_footprints_give_no_family_to_an_ambiguous_code(atomic_custom, tmp_path, code, wrong_family):
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, code, _LIVE_FP_DIR)
+    assert plan.part_text == bare.part_text
+    text = plan.part_text
+    assert wrong_family not in " ".join((text.keywords, text.fp_description, text.fp_tags))
+
+
+@needs_kicad_footprints
+def test_kicad_footprints_give_no_family_to_sot_23_5(atomic_custom, tmp_path):
+    # The KiCad 10 tie at 80 is SOT-23-5 (family SOT-23-5) and SOT-23-5_HandSoldering (its own description gives SOT-23)
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, "SOT-23-5", _LIVE_FP_DIR)
+    text = plan.part_text
+    assert text == bare.part_text
+    assert not text.fp_description.startswith("SOT-23-5, ")
+    for field in (text.fp_description, text.fp_tags, text.keywords):
+        assert "SOT-23-5" in _words(field), field
+
+
+@needs_kicad_footprints
+def test_kicad_footprints_keep_the_csd_sentence(atomic_custom, ul_package):
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom, ToolContext(kicad_footprints_dir=_LIVE_FP_DIR))
+    assert plan.part_text.fp_description == SENTENCE
 
 
 # -- the dialog: edit, Regenerate, follow the library ---------------------------------------------------
