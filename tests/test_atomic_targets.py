@@ -123,6 +123,39 @@ def test_an_empty_library_lists_every_reason_at_once(atomic_custom, snapshot):
     assert snapshot(atomic_custom.custom_dir) == before
 
 
+@pytest.mark.parametrize("library", ["Atomic_TI", "/x", "D:x", "../../../x"])
+def test_a_refused_name_builds_no_path_and_writes_nothing(synthetic_custom, ul_package, snapshot, library):
+    _, candidate = ul_package
+    before = snapshot(synthetic_custom.custom_dir)
+    plan = build_plan(candidate, InstallOptions(library=library), synthetic_custom)
+    _assert_refused(plan, library)
+    assert not apply_plan(plan).ok
+    assert snapshot(synthetic_custom.custom_dir) == before
+
+
+def test_an_existing_v1_library_is_not_read_while_refused(synthetic_custom, ul_package):
+    _, candidate = ul_package
+    name = customfixtures.V1_LIBRARY_NAMES[0]
+    path = synthetic_custom.symbols_dir / f"{name}.kicad_sym"
+    path.write_bytes(b"(not a symbol library")
+    plan = build_plan(candidate, InstallOptions(library=name), synthetic_custom)
+    # A read of the file would add install.target_unreadable or a parse ERROR
+    assert [i.code for i in _errors(plan)] == ["install.atomic.description", "install.invalid_library"]
+    assert not apply_plan(plan).ok
+    assert path.read_bytes() == b"(not a symbol library"
+
+
+def test_a_refused_name_with_an_empty_mpn_lists_both(synthetic_custom, ul_package):
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library="Atomic_TI", cleared=frozenset({"mpn"})), synthetic_custom)
+    assert [i.code for i in _errors(plan)] == ["install.empty_required", "install.invalid_library"]
+    status = FormStatus(updating=False, build_failed=False, library="Atomic_TI", mpn_text="", resolutions={})
+    assert pairs(blocking_reasons(status, plan)) == [
+        (stems.name_verdict("Atomic_TI").reason, "library"),
+        ("MPN is empty - it names the 3D model file", "mpn"),
+    ]
+
+
 def test_the_tools_allowed_stems_decide_the_name(synthetic_custom, ul_package):
     _, candidate = ul_package
     options = InstallOptions(library="Atomic_Brand_New", description=UL_DESCRIPTION)
