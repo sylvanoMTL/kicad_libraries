@@ -30,15 +30,15 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### Library Naming
 
-- [ ] **LIB-04**: The importer suggests `Atomic_<official KiCad library stem>` from what the device is:
+- [x] **LIB-04**: The importer suggests `Atomic_<official KiCad library stem>` from what the device is:
   1. a sibling family or MPN prefix in KiCad's installed libraries;
   2. otherwise, a category map that includes vendor and distributor categories;
   3. otherwise, it asks.
 
   A manufacturer name is never part of the suggestion.
-- [ ] **LIB-05**: User can pick an existing `Atomic_` library or type a new one. A name equal to an official KiCad library name, or one using a manufacturer name as the token, is refused.
-- [ ] **LIB-06**: Footprints install into the shared `Atomic_Footprints.pretty`, or into an official KiCad footprint the user picks instead. The symbol's Footprint field reads `Atomic_Footprints:<FP>`. A new symbol library no longer creates a matching `.pretty`, because the 1:1 pairing of LIB-02 is dropped.
-- [ ] **LIB-07**: Install into an `Atomic_` library is blocked until the incoming part passes the atomic check. Each failure is a clickable reason that jumps to its field. Value defaults to the MPN, and Datasheet, Description and 3D model are editable in the preview.
+- [x] **LIB-05**: User can pick an existing `Atomic_` library or type a new one. A name equal to an official KiCad library name, or one using a manufacturer name as the token, is refused.
+- [x] **LIB-06**: Footprints install into the shared `Atomic_Footprints.pretty`, or into an official KiCad footprint the user picks instead. The symbol's Footprint field reads `Atomic_Footprints:<FP>`. A new symbol library no longer creates a matching `.pretty`, because the 1:1 pairing of LIB-02 is dropped.
+- [x] **LIB-07**: Install into an `Atomic_` library is blocked until the incoming part passes the atomic check. Each failure is a clickable reason that jumps to its field. Value defaults to the MPN, and Datasheet, Description and 3D model are editable in the preview.
 
 ### Scan Detection
 
@@ -54,9 +54,9 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### Part Metadata
 
-- [ ] **FLD-01**: The importer and the migration generate `ki_keywords`: function words, interfaces, package codes, manufacturer aliases and MPN variants. They're editable in the preview.
+- [x] **FLD-01**: The importer and the migration generate `ki_keywords`: function words, interfaces, package codes, manufacturer aliases and MPN variants. They're editable in the preview.
 - [x] **FLD-02**: One canonical manufacturer table (a name plus its aliases) is used by the importer, the check and the migration. An alias is reported and fixable.
-- [ ] **FLD-03**: Footprints written by the importer or the migration get a description and tags: package, IPC name, vendor package code and pitch.
+- [x] **FLD-03**: Footprints written by the importer or the migration get a description and tags: package, IPC name, vendor package code and pitch.
 
 ### Library Tables and KiCad Setup
 
@@ -147,16 +147,16 @@ Which phases cover which requirements. Filled in during roadmap creation.
 | ATOM-01 | Phase 9 | Complete |
 | ATOM-02 | Phase 9 | Complete |
 | ATOM-03 | Phase 9 | Complete |
-| LIB-04 | Phase 10 | Pending |
-| LIB-05 | Phase 10 | Pending |
-| LIB-06 | Phase 10 | Pending |
-| LIB-07 | Phase 10 | Pending |
+| LIB-04 | Phase 10 | Complete |
+| LIB-05 | Phase 10 | Complete |
+| LIB-06 | Phase 10 | Complete |
+| LIB-07 | Phase 10 | Complete |
 | SCAN-01 | Phase 9 | Complete |
 | SCAN-02 | Phase 9 | Complete |
 | SCAN-03 | Phase 9 | Complete |
-| FLD-01 | Phase 10 | Pending |
+| FLD-01 | Phase 10 | Complete |
 | FLD-02 | Phase 9 | Complete |
-| FLD-03 | Phase 10 | Pending |
+| FLD-03 | Phase 10 | Complete |
 | TBL-01 | Phase 13 | Pending |
 | TBL-02 | Phase 13 | Pending |
 | MIG-01 | Phase 13 | Pending |

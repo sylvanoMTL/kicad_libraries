@@ -28,7 +28,7 @@ Phase 8 makes the suite green first, so every later phase starts from a baseline
 
 - [x] **Phase 8: Test Isolation and KiCad 10** - Tests build their own synthetic `Custom/`, kicad-cli tests expect KiCad 10, the deferred D-01 re-test passes, and `pytest` is green on the workstation (completed 2026-10-26)
 - [x] **Phase 9: Atomic Rule Check and Scan Detection** - One atomic rule check and one canonical manufacturer table, run on every scan, with tree marks, changed-part highlights and a check dialog of safe fixes (completed 2026-10-26)
-- [ ] **Phase 10: Importer on the Atomic Scheme** - Importer suggests `Atomic_<stem>`, installs footprints into `Atomic_Footprints`, generates keywords and footprint tags, and blocks Install until the part is atomic
+- [x] **Phase 10: Importer on the Atomic Scheme** - Importer suggests `Atomic_<stem>`, installs footprints into `Atomic_Footprints`, generates keywords and footprint tags, and blocks Install until the part is atomic (completed 2026-10-29)
 - [ ] **Phase 11: Commit Gate and Commit Panel Fixes** - Commit panel refuses non-atomic parts, reports what git really did, and follows the theme
 - [ ] **Phase 12: Import Flow Fixes and Case-Sensitive Re-test** - Post-install table step, import threading, `kicad_common.json` write and Help dialog fixed; case-twin rollback re-tested
 - [ ] **Phase 13: Atomic Migration and KiCad Setup** - Existing parts migrated into 9 `Atomic_` libraries in one previewed commit, tables regenerated with descriptions, KiCad's chooser set up, docs updated
@@ -113,7 +113,7 @@ Plans:
   4. Install stays disabled while the incoming part fails the atomic check. Each failure is a clickable reason that jumps to its field. Value defaults to the MPN, and filling in Datasheet, Description or the 3D model in the preview clears the matching reason.
   5. The preview shows generated `ki_keywords` (function words, interfaces, package codes, manufacturer aliases, MPN variants) and a footprint description and tags (package, IPC name, vendor package code, pitch). All of them are editable, and the installed files carry exactly what the preview showed.
 
-**Plans:** 30/30 plans executed (2 gap-closure plans planned)
+**Plans:** 30/30 plans complete (2 gap-closure plans planned)
 
 Plans:
 **Wave 1**
@@ -244,7 +244,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 |-------|-----------|----------------|--------|-----------|
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
-| 10. Importer on the Atomic Scheme | v2.0 | 30/30 | In Progress | - |
+| 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
