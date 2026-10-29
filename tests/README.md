@@ -60,10 +60,10 @@ These skip only on a machine that lacks something. None of them skip on the work
 - Git not on PATH: `git is not on PATH` (`tests/gitfixtures.py`, `tests/test_fixtures.py`, `tests/test_package_zip.py`).
 - A zipfile feature missing: `this Python's zipfile has no <name>` (`tests/test_package_zip.py`).
 - Licence-restricted vendor samples absent: `downloaded_examples/<file> not present (licence-restricted <vendor> sample, kept local)`
-  (`tests/test_real_vendor_samples.py`, `tests/test_vendorfixtures.py`, `tests/test_categories.py`, `tests/test_footprint_text.py`).
+  (`tests/test_real_vendor_samples.py`, `tests/test_vendorfixtures.py`, `tests/test_categories.py`, `tests/test_footprint_text.py`, `tests/test_atomic_targets.py`, `tests/test_gate_reasons.py`).
   Only `ul_CSD85301Q2.zip` is committed.
   The others are kept local: the SnapEDA, SamacSys and SnapEDA 3D model downloads, and the Ultra Librarian sample `ul_ATXK-H14-D-32-768KHZ-E50-T3.zip`.
-  `ul_ATXK-H14-D-32-768KHZ-E50-T3.zip` is used by `tests/test_real_vendor_samples.py` (prints `downloaded_examples/ul_ATXK-H14-D-32-768KHZ-E50-T3.zip not present`) and by `tests/test_footprint_text.py`.
+  `ul_ATXK-H14-D-32-768KHZ-E50-T3.zip` is used by `tests/test_real_vendor_samples.py`, `tests/test_atomic_targets.py` and `tests/test_gate_reasons.py` (each prints `downloaded_examples/ul_ATXK-H14-D-32-768KHZ-E50-T3.zip not present`) and by `tests/test_footprint_text.py`.
   `tests/test_suggest_atomic.py` prints `the licence-restricted Ultra Librarian sample is not present` when `ul_CSD85301Q2.zip` is missing.
 - No KiCad stock symbols folder: `no KiCad install with a stock symbols folder`
   (`tests/test_footprint_text.py`, `tests/test_install_verify.py`, `tests/test_official_footprint.py`, `tests/test_siblings.py`, `tests/test_stems.py`).
