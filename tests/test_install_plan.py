@@ -110,7 +110,8 @@ def test_refused_library_blocked_and_nothing_written(synthetic_custom, ul_packag
     plan = build_plan(candidate, InstallOptions(library="IC_SubCategory_TI"), synthetic_custom)
     assert plan.blocked
     assert not plan.ops
-    assert _codes(plan) == ["install.invalid_library"]
+    # The UL sample has no Description, so the gate's reason is listed with the refusal (G-10-11)
+    assert _codes(plan) == ["install.atomic.description", "install.invalid_library"]
     assert _error(plan, "install.invalid_library").text == name_verdict("IC_SubCategory_TI").reason
     result = apply_plan(plan)
     assert not result.ok
