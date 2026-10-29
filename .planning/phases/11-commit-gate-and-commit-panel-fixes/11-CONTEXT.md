@@ -47,6 +47,7 @@ Out of this phase:
   The stale rule still applies between the last check and the click: a change made after "Check again" is refused again. — **Reversibility:** reversible: a gate condition only.
 - **D-09:** **"Check again" is also offered after a plain D-11 stale refusal** that has nothing to do with the atomic rule, for example a pin-layout tweak in KiCad. There is one recovery path for every "changed after install" case.
 - **D-10:** **Files a fix created that a committed part links are added to the list.** If a committed part now links a new, untracked model or footprint file in `Custom` (for example the .step the check dialog's 3D fill-in copied into `Custom/3DModels/`), "Check again" adds that file to the commit list, marked "added by a fix". A commit never leaves a part pointing at an uncommitted file. Unrelated untracked files stay out (Phase 6 D-10).
+  - **Amended 2026-10-29 (plan-phase, research OQ2):** "Check again" also adds a **tracked** footprint file that a committed part links and that differs from `Custom`'s HEAD (for example a shared `Atomic_Footprints` footprint the 3D fix gave a model line), marked "added by a fix". Otherwise the commit would leave the part linking a committed footprint that lacks the model.
 - **D-11:** **The refusal text survives the re-probe (WR-05).** After a refusal, the panel re-probes, so the branch, file markers, other-change counts and parent state are fresh. A changed `Custom` branch is also picked up, because the next commit passes the fresh probe's `expected_branch`. The refusal text stays at the top of the outcome area until the next Commit, Check again or Switch click. If the fresh probe refuses on its own, its reason replaces the old one.
 
 ### Uncertain git outcomes (REV-06, REV-07, REV-09)
@@ -63,6 +64,7 @@ Out of this phase:
 
 ### Manual command and outcome look (REV-08, UI-02)
 - **D-16:** **The "Finish it by hand" command is written for PowerShell on Windows (WR-03).** Every argument is single-quoted with `''` doubling, so `"`, `$`, backticks and `\` in the subject paste safely. The label says "In PowerShell:". On POSIX, `shlex.quote` is used. The parent path and `custom_rel` are quoted the same way.
+  - **Amended 2026-10-29 (plan-phase, research OQ1):** Windows PowerShell 5.1 drops an embedded `"` from a native-command argument and a trailing `\` can eat the closing quote, so single quotes alone are not paste-safe there. Keep the single-quoted `-m` form for normal subjects. When the subject (or message) holds a `"` or ends in `\`, write the full parent message to a temporary file outside the repo and show `git commit -F '<file>'` instead (Windows file names cannot contain `"`). Success criterion 3 holds on both PowerShell 5.1 and 7.
 - **D-17:** **Parent-failed state.** The button is disabled and reads **"Committed in Custom only"**, not "Committed". The outcome shows a ✓ line for the Custom commit and a ✖ line for the parent failure, with the manual command.
 - **D-18:** **Outcome tint follows the strongest state.** The outcome area gets one tinted strip, like today's amber strip:
   - `SUCCESS_TINT` for a full success;
