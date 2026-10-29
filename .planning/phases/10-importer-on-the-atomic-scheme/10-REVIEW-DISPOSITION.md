@@ -31,6 +31,10 @@ findings:
     severity: warning
     disposition: fixed
     title: "A package family is still taken from a small leading-letters-only tie that has no pin check"
+  - id: WR-07
+    severity: warning
+    disposition: open
+    title: "A refused library name hides the install conflicts, although they do not depend on the library"
   - id: IN-01
     severity: info
     disposition: open
@@ -47,9 +51,17 @@ findings:
     severity: info
     disposition: open
     title: "Two keyword test rows cannot fail on the CAN rule, and two live-footprint tests depend on KiCad's file contents"
-open: 7
-total: 11
-recorded: 2026-10-28T12:25:22.771Z
+  - id: IN-05
+    severity: info
+    disposition: open
+    title: "After the refusal, `build_plan` mixes `library` and `target_library`"
+  - id: IN-06
+    severity: info
+    disposition: open
+    title: "New tests lean on another test module and on the UL sample's missing Description"
+open: 10
+total: 14
+recorded: 2026-10-29T16:46:10.876Z
 ---
 
 # Phase 10: Code Review Disposition
@@ -63,10 +75,13 @@ recorded: 2026-10-28T12:25:22.771Z
 | WR-04 | warning | open | - |
 | WR-05 | warning | fixed | 10-28-PLAN.md (01cd7da) |
 | WR-06 | warning | fixed | 10-29-PLAN.md (29e3834) |
+| WR-07 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
 | IN-04 | info | open | - |
+| IN-05 | info | open | - |
+| IN-06 | info | open | - |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
