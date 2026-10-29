@@ -29,6 +29,8 @@ _SCORE_LEADING_LETTERS = 30
 _SCORE_WORD = 5
 _SCORE_PAD_COUNT = 20
 _SCORE_PAD_NUMBERS = 20
+# A top score below this means the match rests on the code's leading letters alone
+FULL_CODE_SCORE = _SCORE_FULL_CODE
 DEFAULT_LIMIT = 200
 
 
