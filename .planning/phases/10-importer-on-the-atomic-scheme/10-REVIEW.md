@@ -1,35 +1,38 @@
 ---
 phase: 10-importer-on-the-atomic-scheme
-reviewed: 2026-10-28T00:00:00Z
+reviewed: 2026-10-29T00:00:00Z
 depth: standard
-files_reviewed: 8
+files_reviewed: 9
 files_reviewed_list:
   - kicad_lib_manager/importer/footprint_index.py
-  - kicad_lib_manager/importer/keywords.py
+  - kicad_lib_manager/importer/form.py
   - kicad_lib_manager/importer/planner.py
-  - kicad_lib_manager/main_window.py
   - tests/README.md
+  - tests/test_atomic_targets.py
+  - tests/test_gate_reasons.py
   - tests/test_generated_text.py
-  - tests/test_keywords.py
-  - tests/test_main_window_import.py
+  - tests/test_import_form.py
+  - tests/test_install_plan.py
 findings:
   critical: 1
-  warning: 6
-  info: 4
-  total: 11
+  warning: 7
+  info: 6
+  total: 14
 status: issues_found
 ---
 
 # Phase 10: Code Review Report
 
-**Reviewed:** 2026-10-28 (full phase 2026-10-27; incremental re-review 2026-10-28)
+**Reviewed:** 2026-10-29 (full phase 2026-10-27; incremental re-reviews 2026-10-28 and 2026-10-29)
 **Depth:** standard
-**Files Reviewed:** 8 (this run; the full-phase review covered 70)
+**Files Reviewed:** 9 (this run; the full-phase review covered 70)
 **Status:** issues_found
 
 ## Summary
 
-This is an incremental re-review since e1235002 of the 8 listed files, after gap-closure plans 10-26 (CR-01), 10-27 (WR-02) and 10-28 (WR-05). The three fixes do what they claim for the cases they name. One narrower residual of the CR-01 class remains (WR-06) and the new tests have two weak spots (IN-04). The 137 tests of the three changed test modules pass. The rest of this section is the original full-phase summary, kept as written.
+This is an incremental re-review of the gap-closure changes since be38bab: plan 10-29 (pad-count filter on a leading-letters-only family tie, WR-06) and plan 10-30 (a refused library name yields a blocked plan with no operations that lists every library-independent reason; the form lists the library reason first, G-10-11). The 258 tests of the five changed test modules pass with no skips (the licence-restricted ATXK sample is present). 10-29 does what it claims (WR-06 is resolved, see its re-review note). 10-30 keeps the safety property that matters: with a refused name no path is built from it, nothing is read under it and no operation is planned (traced through `build_plan`, including `../../../x`, `/x` and `D:x`). One gap remains: the claim "every library-independent reason" does not hold for the install conflicts (WR-07). Two small maintainability notes follow (IN-05, IN-06). Earlier summary, kept as written:
+
+Previous incremental re-review: since e1235002 of the 8 listed files, after gap-closure plans 10-26 (CR-01), 10-27 (WR-02) and 10-28 (WR-05). The three fixes do what they claim for the cases they name. One narrower residual of the CR-01 class remains (WR-06) and the new tests have two weak spots (IN-04). The 137 tests of the three changed test modules pass. The rest of this section is the original full-phase summary, kept as written.
 
 I read the diff since 99688315 for the 21 product modules and checked the suspicious paths against the live code, running small experiments with the project venv. The planner, the gate, the shared-footprint conflict logic, the official-footprint link validation (exact-case listing, so typed text never forms a path) and the stem/name rule hold up. The one defect I would not ship is the package-family guess in the planner, which writes wrong data into the library. The rest are robustness gaps and one inconsistency in the post-install table step.
 
@@ -144,6 +147,20 @@ def _agreed_family_texts(footprint_index, code, vendor_pads):
 ```
 The simpler alternative is to raise `_MIN_FAMILY_SCORE` to 50 so that only a full-code match counts; that also drops the unique `SOIC`-style case the owner chose to keep, so it is the owner's call. Add a test with a two-footprint `SON-8` folder and a 6-pad vendor footprint that asserts no family.
 
+**Re-review 2026-10-29:** Resolved by 29e3834 (plan 10-29). `_agreed_family_texts` now takes the vendor pad count and, when the top score is below `FULL_CODE_SCORE` (so the match rests on leading letters alone), keeps only tied footprints whose distinct pad count is readable and within one of the vendor's. Both counts come from `footprint_pad_numbers` (the vendor node directly, the official one through `_read_facts`), so empty-number and `np_thru_hole` pads are treated the same on both sides. With `words=()` and no `linked`, `rank` can only produce top scores of 30, 50 or 80, so the `< FULL_CODE_SCORE` test cleanly separates the two cases. The 6-pad `SON50P150X150X60-6N` and `SON65P200X200X80-6N` codes give no family; the boundary tests (5, 7, 8, 10, 11 pads) pass; `LQFP48` with 48 pads still gets `LQFP-48` on the live install. Nothing found that this change breaks.
+
+### WR-07: A refused library name hides the install conflicts, although they do not depend on the library
+
+**File:** `kicad_lib_manager/importer/planner.py:820-842` (`_refused` sets `conflicts=()`), `1534-1536` (the early return), `kicad_lib_manager/widgets/import_dialog.py:2066` (`carry_resolutions`)
+**Issue:** Plan 10-30 is meant to list "every library-independent reason" so the owner does not fix one reason only to meet the next (G-10-11). The footprint and 3D model conflicts are library-independent: their keys are `footprint:Atomic_Footprints:<name>` and `model:<file>`, and the planner computes them before the refusal return. But `refuse()` goes through `_refused`, which always builds the plan with `conflicts=()` and `renames=()`, so they are thrown away. Reproduced with the Ultra Librarian sample: install it once, change the installed footprint file so it differs, then plan again. With `Atomic_Transistor_FET` the blocking reasons are `Choose Overwrite, Rename or Skip for footprint DQK0006B`; with `x` or an empty library the only reason is the library one and `plan.conflicts` is empty. After the owner fixes the name the conflict reason appears, which is the one-at-a-time experience the plan set out to remove. Worse, the dialog calls `carry_resolutions(self._resolutions, plan)` on every accepted plan, which keeps only choices whose key the plan still has. Typing a library name passes through refused states (`A`, `At`, ...), so a footprint Overwrite or Rename the owner already chose is dropped the moment the name is edited into a refused state and must be chosen again. (The loss on a refused plan existed before 10-30; the new docstring and tests now claim completeness, so the gap is a defect of this change.)
+**Fix:** Keep the conflicts in the refused plan. Give `_refused` optional `conflicts` and `renames` arguments and pass the footprint and model conflicts (not the symbol ones, which need the target library) from the final `if name_refusal:` branch:
+```python
+if name_refusal:
+    return _refused(candidate, options, layout, tools, [*issues, *name_refusal],
+                    conflicts=tuple(c for c in conflicts if c.kind != "symbol"))
+```
+Add a test next to `test_an_empty_library_lists_every_reason_at_once` that plants a differing footprint in `Atomic_Footprints.pretty` and asserts the `Choose Overwrite, Rename or Skip` reason beside the library reason, and that a chosen resolution survives `carry_resolutions` for the refused plan.
+
 ## Info
 
 ### IN-01: Mutable and duplicated "no planned footprints" defaults
@@ -170,8 +187,20 @@ The simpler alternative is to raise `_MIN_FAMILY_SCORE` to 50 so that only a ful
 **Issue:** (1) `generate_keywords` appends `split_words(category)` as keywords. The `("category", "Interface CAN")` row therefore passes on the word taken from the category alone, whether or not `_cased_matched` reads the category. The `("category", "can")` row asserts `"CAN" not in words` against a list that holds `can` from the category (the check is case-sensitive, KiCad's search is not). Neither row tests the rule. (2) The two live tests assert exact equality with the plan built without a footprints folder and name KiCad 10 contents in a comment. They have no version guard, while `tests/README.md` lists the other KiCad-10-dependent tests as skipping on another version, so a KiCad release that renames or adds one footprint fails them with no code change.
 **Fix:** (1) Drop the two category rows, or put the word only in the description. (2) Skip them with the same `installed KiCad is not version 10` reason as `tests/test_stems.py`, or build the footprint folder from `stockfixtures` as the other tests of this block do.
 
+### IN-05: After the refusal, `build_plan` mixes `library` and `target_library`
+
+**File:** `kicad_lib_manager/importer/planner.py:881` (`target_library`), `1026`, `1409-1418`, `1456` (still use `library`)
+**Issue:** 10-30 introduces `target_library = library if verdict.ok else ""` and switches `related` (1117), the keywords (1121) and the `skip` of `_linking_symbols` (1301) to it, but the later messages and keys (`_existing_source`, `bad_rename`, `symbol:{library}:...`, `symbol_kept`) still read `library`. They are unreachable with a refused name today because `sym_exists` is forced false, so no behaviour is wrong, but the next edit that reaches one of them will put a refused (possibly path-like) name into a message or key. Two names for one concept after a guard is the pattern that breaks silently.
+**Fix:** After the verdict, rebind once (keep `options.library` for `_refused`) and delete `target_library`, or comment on `library` that every use below the refusal is only reachable when the name is allowed.
+
+### IN-06: New tests lean on another test module and on the UL sample's missing Description
+
+**File:** `tests/test_atomic_targets.py:8` (`from test_import_form import pairs`), `:50-52`, `:136` (exact error-code lists)
+**Issue:** The helper `pairs` is imported from a sibling test module, so `test_atomic_targets.py` fails at collection if `test_import_form.py` is renamed or fails to import, and it relies on pytest putting `tests/` on `sys.path`. Several assertions compare the whole error list to `["install.atomic.description", "install.invalid_library"]`, which is true only while the Ultra Librarian sample has no Description; a sample with one makes `_assert_refused`, `test_an_existing_v1_library_is_not_read_while_refused` and the `test_install_plan.py` check fail for a reason unrelated to the refusal.
+**Fix:** Move `pairs` to a shared helper module in `tests/` (as `installfixtures` is) and assert that `install.invalid_library` is last and the list holds nothing library-dependent, or pass `description=` in the options so the list is just the refusal.
+
 ---
 
-_Reviewed: 2026-10-28 (incremental re-review since e1235002; full phase 2026-10-27)_
+_Reviewed: 2026-10-29 (incremental re-review since be38bab; full phase 2026-10-27)_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
