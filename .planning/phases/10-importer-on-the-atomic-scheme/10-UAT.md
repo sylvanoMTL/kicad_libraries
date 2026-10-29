@@ -1,5 +1,5 @@
 ---
-status: complete
+status: diagnosed
 phase: 10-importer-on-the-atomic-scheme
 source: [10-VERIFICATION.md]
 started: 2026-10-28T12:32:24.473Z
@@ -108,24 +108,44 @@ blocked: 0
 
 - gap_id: G-10-1
   truth: "A package family is taken from tied KiCad footprint matches only when their pad count is within one of the vendor footprint's pad count (WR-06)"
-  status: failed
+  status: diagnosed
   reason: "User reported: fix (owner decision: fix WR-06 with the pad-count filter). A 6-pin vendor footprint (SON50P150X150X60-6N, SON65P200X200X80-6N) gets SON-8 from two score-30 tied KiCad matches, written into footprint description, tags and symbol keywords."
   severity: major
   test: 1
-  artifacts: []
+  root_cause: "_agreed_family_texts(footprint_index, code) (planner.py:91-107) never receives the vendor pad count, so a leading-letters-only tie (score 30, _SCORE_LEADING_LETTERS) whose members agree on one family passes it on whatever the vendor size. On KiCad 10 both SON codes tie on MicroCrystal_C7_SON-8_1.5x3.2mm_P0.9mm (8 pads) and SON-8-1EP_3x2mm_P0.5mm_EP1.4x1.6mm (9 pads). Its only caller is build_plan (planner.py:1089-1092); the result feeds facts.family, which drives describe(), generated_tags() and the symbol keywords."
+  artifacts:
+    - path: "kicad_lib_manager/importer/planner.py"
+      issue: "_agreed_family_texts has no vendor_pads parameter and no pad filter for score-30 ties; call site at 1089-1092 passes no pad count; _MIN_FAMILY_SCORE comment (82-84) describes the old rule"
+    - path: "kicad_lib_manager/importer/footprint_index.py"
+      issue: "_SCORE_FULL_CODE is private; pad_numbers(index, link) already gives the official distinct pad count from the cached parse"
+    - path: "tests/test_generated_text.py"
+      issue: "_vendor_zip has no pads argument (defaults to 2 pads), so family tests would break and no-family tests would pass for the wrong reason"
   missing:
-    - "Pad-count filter on leading-letters-only ties: count only footprints within one pad of the vendor footprint's pad count"
-    - "Test: two-footprint SON-8 folder plus a 6-pad vendor footprint asserts no family"
+    - "Filter leading-letters-only ties (score below _SCORE_FULL_CODE) to footprints whose distinct pad count (pad_numbers) is within one of the vendor's; unreadable footprints are excluded; [] if none remain; full-code matches stay unfiltered"
+    - "Vendor count = len(footprint_pad_numbers(fp_refs[0].node)) (distinct numbers, not FootprintFacts.pads or vendor_pads)"
+    - "_vendor_zip gains a pads argument; the two leading-letters family tests pass 8 pads; no-family tests (socket, CR-01 disagreement, lower-case) get pad counts within one so they still test their own branch"
+    - "New test: two-SON-8 stock tree plus SON50P150X150X60-6N and SON65P200X200X80-6N with 6 pads: text equals the plan without KiCad footprints, no SON- word in description, tags or keywords; boundary cases 5 pads (none), 8 pads (SON-8 kept), 7 and 10 pads pinned to the +-1 rule (SON-8 kept)"
+    - "CSD85301Q2 (DQK0006B, 8 pads vs Texas_DQK 8 pads) keeps WSON-6"
+  debug_session: .planning/debug/pad-count-family-filter.md
 
 - gap_id: G-10-11
   truth: "With the library field empty, the strip lists every reason Install is blocked at once: the library name, Enter the Manufacturer, The Datasheet must be a link or a file path, Type a Description and the 3D model reason"
-  status: failed
+  status: diagnosed
   reason: "User reported: fix. ATXK-H14 with no library shows only 'Pick or type a library name'; the other reasons appear only after a library is typed."
   severity: minor
   test: 11
+  root_cause: "build_plan (planner.py:870-872) returns refuse(_err('install.invalid_library', ...)) as soon as stems.name_verdict fails, before the library-independent steps and the incoming atomic check (incoming_context + incoming_issues, planner.py:1476-1495) run. blocking_reasons (form.py:258-319) then drops that ERROR as already explained by the form verdict and adds the single library Reason. Affects every refused name (empty, Atomic_TI, v1 names), not only the empty one."
   artifacts:
     - path: "kicad_lib_manager/importer/planner.py"
-      issue: "build_plan returns refuse(install.invalid_library) before the incoming atomic checks run, so the plan carries no other ERROR Issues"
+      issue: "early return at 871-872; library-dependent steps (case-twin 874-881, Symbols folder 907-917, sym_path 945, target read 947-961, sources 1008-1011, target_version 1019, related 1100, keywords library= 1102-1112, linking_parts 1284, symbol conflicts 1364-1440, sym_edits 1442-1459, rel_path 1494, symbol_lib FileOp 1525-1527) must be skipped or neutralised while the name is refused"
+    - path: "kicad_lib_manager/importer/form.py"
+      issue: "blocking_reasons puts the library reason after the plan ERRORs; owner-facing order should list it first (the library field is at the top of the form)"
+    - path: "tests/test_atomic_targets.py, tests/test_install_plan.py"
+      issue: "_assert_refused (test_atomic_targets.py:30-37) and its 8 users, test_the_form_does_not_list_the_plan_error_a_second_time (:101) and test_refused_library_blocked_and_nothing_written (test_install_plan.py:113) assert a refused name carries a single ERROR"
   missing:
-    - "Run the incoming checks (manufacturer, datasheet, description, 3D model) even when the library name is empty or refused, so blocking_reasons lists them all"
-    - "Test: ATXK-H14 with an empty library lists all reasons at once"
+    - "Keep the invalid_library Issue instead of returning; while refused, treat the target as a new library never read: target=None, sym_exists=False, skip case-twin, Symbols folder check and symbol conflicts, keywords with library '', no path built from the refused name, fixed placeholder rel_path for the check"
+    - "After the atomic check, return _refused with [*issues, invalid_library] and ops=() so a refused name never writes"
+    - "blocking_reasons lists the library reason first; docstring and test_import_form.py:435 updated to match"
+    - "New test: ATXK-H14 with library '' on atomic_custom: plan.blocked, no ops, ERROR codes include invalid_library and atomic.manufacturer/datasheet/description/model_3d; blocking_reasons gives targets library, manufacturer, datasheet, description, model with the five owner-facing texts; neighbour cases Atomic_TI, an existing v1 name (not read) and escaping names '/x', 'D:x' (no exception, no ops)"
+    - "Update the 10 single-ERROR tests to the new shape"
+  debug_session: .planning/debug/empty-library-all-reasons.md
