@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: complete
 phase: 10-importer-on-the-atomic-scheme
 source: [10-VERIFICATION.md]
 started: 2026-10-28T12:32:24.473Z
-updated: 2026-10-29T10:37:01.345Z
+updated: 2026-10-29T19:23:52.111Z
 ---
 
 ## Current Test
@@ -95,20 +95,38 @@ expected: A keep or change decision for each of the four behaviours.
 result: pass
 reported: "keep all (owner decision 2026-10-29: strict majority, ATXK-H14 asks for a library, measured 2.1x2.1 mm size, IPC-style tag all stay as built)"
 
+### 15. Check 8 re-run after plan 10-30 (empty library lists every reason)
+expected: Setup: Claude has rebuilt the scratch repo with the current code. From the repo root in PowerShell run `env\Scripts\python.exe $env:TEMP\kicad_atomic_uat\repo\kicad_lib_manager.py` (if it offers to change KiCad's path variables, click No). Check: Ctrl+I, pick downloaded_examples\ul_ATXK-H14-D-32-768KHZ-E50-T3.zip. Read the library field and the strip, hover the strip, then click the 3D model reason. Expected: the library field is empty with the grey hint 'Pick a library, or type Atomic_ and a KiCad library name'. The strip lists, in this order, 'Pick or type a library name', 'Enter the Manufacturer', 'The Datasheet must be a link or a file path', 'Type a Description' and a reason starting '3D model:'. All five fields have the amber frame. All five reasons are readable in the strip, or at least in its tooltip (the strip is capped at three lines). Clicking the 3D model reason moves the focus to the Add 3D model... button. Close the app afterwards.
+result: pass
+observed: "pass, I see all sections to be updated highlighted" (owner, after clearing the library field in the re-opened ATXK-H14 dialog; with a name filled in the strip also showed the symbol and footprint Overwrite/Rename/Skip choices, since the part had been installed into the scratch Atomic_Oscillator)
+
+### 16. Owner decision on WR-07 (conflicts hidden while the library name is refused)
+expected: Background: while the library name is empty or refused (for example 'A' or 'At' while typing), a footprint or 3D model that is already installed and differs is not listed in the strip ('Choose Overwrite, Rename or Skip for footprint ...'), and an Overwrite or Rename already chosen is dropped and asked again once the name is valid. Install stays blocked and nothing is written. Expected: a keep or fix decision. Keep: conflict choices are asked again after the name is fixed. Fix: a small gap-closure plan keeps the footprint and model conflicts (and the chosen resolutions) on a refused plan, with a test.
+result: pass
+reported: "pass (owner decision 2026-10-29: keep WR-07; conflict choices are asked again after the library name is fixed)"
+
 ## Summary
 
-total: 14
-passed: 12
+total: 16
+passed: 14
 issues: 2
 pending: 0
 skipped: 0
 blocked: 0
 
+## Deferred Follow-Ups
+
+- test: 15
+  idea: "A log panel inside the import dialog for debugging, similar to the one at the bottom of the main window"
+  deferred_at: 2026-10-29
+
 ## Gaps
 
 - gap_id: G-10-1
   truth: "A package family is taken from tied KiCad footprint matches only when their pad count is within one of the vendor footprint's pad count (WR-06)"
-  status: diagnosed
+  status: resolved
+  resolved_by: 10-29-PLAN.md
+  resolved_at: 2026-10-29
   reason: "User reported: fix (owner decision: fix WR-06 with the pad-count filter). A 6-pin vendor footprint (SON50P150X150X60-6N, SON65P200X200X80-6N) gets SON-8 from two score-30 tied KiCad matches, written into footprint description, tags and symbol keywords."
   severity: major
   test: 1
@@ -130,7 +148,9 @@ blocked: 0
 
 - gap_id: G-10-11
   truth: "With the library field empty, the strip lists every reason Install is blocked at once: the library name, Enter the Manufacturer, The Datasheet must be a link or a file path, Type a Description and the 3D model reason"
-  status: diagnosed
+  status: resolved
+  resolved_by: 10-30-PLAN.md
+  resolved_at: 2026-10-29
   reason: "User reported: fix. ATXK-H14 with no library shows only 'Pick or type a library name'; the other reasons appear only after a library is typed."
   severity: minor
   test: 11
