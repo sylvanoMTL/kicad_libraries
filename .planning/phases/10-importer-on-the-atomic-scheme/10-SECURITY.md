@@ -82,6 +82,13 @@ created: "2026-10-27"
 | T-10-49 | Repudiation | 10-REVIEW-DISPOSITION.md | low | mitigate | Each fixed row names its plan and fix commit (1276906, f35486b, 01cd7da), recorded after the combined `-m "not wurth"` run passed | closed |
 | T-10-50 | Denial of service | `_agreed_family_texts` over a large tie | low | mitigate | Stops at the first tied footprint whose family differs or whose score drops; reads are the existing size-capped, cached read (`importer/planner.py` `_agreed_family_texts`) | closed |
 | T-10-51 | Tampering | 10-VERIFICATION.md (check 6) | low | mitigate | Only check 6's expected text changed: `git diff --numstat 33347c9` reports 2 added, 2 deleted | closed |
+| T-10-52 | Tampering | `_agreed_family_texts` family source (pad count) | medium | mitigate | Below `FULL_CODE_SCORE` only tied footprints whose readable distinct pad count is within one of the vendor's are compared (`importer/planner.py:83-107,1108`; `test_generated_text.py` six-pad SON, within-one-pad boundary rows and installed KiCad 10 six-pad SON tests) | closed |
+| T-10-53 | Denial of service | pad counts read for tied footprints | low | accept | AR-10-07 | closed |
+| T-10-54 | Tampering | vendor pad numbers (a crafted package) | low | accept | AR-10-08 | closed |
+| T-10-55 | Tampering | `build_plan` with a refused library name | high | mitigate | Every refused return goes through `refuse()` with no ops, and `sym_path` is `None` while the name is refused (`importer/planner.py:880-884,962`; `test_atomic_targets.py` `_assert_refused` over every refused name) | closed |
+| T-10-56 | Tampering / Elevation | path built from typed text (`/x`, `D:x`, `../../../x`) | high | mitigate | No path is joined from a refused name (`importer/planner.py:962`; `test_a_refused_name_builds_no_path_and_writes_nothing`: no exception, no ops, tree unchanged) | closed |
+| T-10-57 | Information disclosure | existing v1 library read while its name is refused | low | mitigate | `sym_exists` is False while refused, so the file is never read (`importer/planner.py:964`; `test_an_existing_v1_library_is_not_read_while_refused`) | closed |
+| T-10-58 | Denial of service | full plan built for every refused name typed | low | accept | AR-10-09 | closed |
 | T-10-SC | Tampering | npm/pip/cargo installs | low | accept | AR-10-04 | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
@@ -100,6 +107,9 @@ created: "2026-10-27"
 | AR-10-04 | T-10-SC | Phase 10 adds no third-party package; dependency files unchanged since Phase 9 | plan-time register (all plans) | 2026-10-27 |
 | AR-10-05 | T-10-44 | The tie check reads official footprints through the unchanged size-capped, cached read of T-10-30; tests write only under tmp_path | plan-time register (10-26) | 2026-10-28 |
 | AR-10-06 | T-10-46 | `_cased_matched` is one linear `re.findall` over text already capped at intake; covered by the very-long-text generation test | plan-time register (10-27) | 2026-10-28 |
+| AR-10-07 | T-10-53 | `pad_numbers` reads the same size-capped, cached `_read_facts` entry the tie check already reads; the vendor count comes from the already parsed node | plan-time register (10-29) | 2026-10-29 |
+| AR-10-08 | T-10-54 | A crafted vendor pad count can only narrow the comparison to footprints of its own size; it cannot add a family no surviving official footprint names | plan-time register (10-29) | 2026-10-29 |
+| AR-10-09 | T-10-58 | A refused name costs one ordinary plan build on the existing coalescing rebuild worker; nothing new runs on the GUI thread | plan-time register (10-30) | 2026-10-29 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -118,6 +128,7 @@ created: "2026-10-27"
 |------------|---------------|--------|------|--------|
 | 2026-10-27 | 43 | 42 | 1 (low, non-blocking) | gsd-security-auditor |
 | 2026-10-28 | 52 | 51 | 1 (low, non-blocking, unchanged) | secure-phase L1 (gap closure 10-26..10-28: T-10-43..T-10-51 added, all closed) |
+| 2026-10-29 | 59 | 58 | 1 (low, non-blocking, unchanged) | secure-phase L1 (gap closure 10-29..10-30: T-10-52..T-10-58 added, all closed) |
 
 ---
 
@@ -144,4 +155,12 @@ created: "2026-10-27"
 |---|---|
 | Threats found | 52 |
 | Closed | 51 |
+| Open | 1 |
+
+## Security Audit 2026-10-29
+
+| Metric | Count |
+|---|---|
+| Threats found | 59 |
+| Closed | 58 |
 | Open | 1 |
