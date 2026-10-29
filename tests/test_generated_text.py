@@ -335,7 +335,15 @@ def _stock_tree(tmp_path, name: str, libraries: dict) -> Path:
     return write_stock_kicad(tmp_path / name, {}, rows)[1]
 
 
-TWO_SOIC = {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8), ("SOIC-20W_7.5x12.8mm_P1.27mm", 20))}
+# A 9-pad vendor footprint drops SOIC-20W by size; SOIC-8 and SOIC-10 are both within one pad and name two families,
+# so the CR-01 tests reach the disagreement branch and not the size filter
+SOIC_TIE = {
+    "Package_SO": (
+        ("SOIC-8_3.9x4.9mm_P1.27mm", 8),
+        ("SOIC-10_3.9x4.9mm_P1mm", 10),
+        ("SOIC-20W_7.5x12.8mm_P1.27mm", 20),
+    )
+}
 
 # The two KiCad 10 footprints that UAT test 1 tied with a 6-pad part: SON-8, with 8 and 9 pads
 TWO_SON_8 = {
@@ -384,10 +392,31 @@ def test_a_six_pad_part_takes_no_family_from_a_son_8_tie(atomic_custom, tmp_path
     assert vendor_texts(footprint_name(installed.root).node) == (bare.part_text.fp_description, bare.part_text.fp_tags)
 
 
+@pytest.mark.parametrize(
+    ("pads", "family"),
+    [
+        pytest.param(5, None, id="5 pads"),
+        pytest.param(7, "SON-8", id="7 pads"),
+        pytest.param(8, "SON-8", id="8 pads"),
+        pytest.param(10, "SON-8", id="10 pads"),
+        pytest.param(11, None, id="11 pads"),
+    ],
+)
+def test_a_leading_letters_tie_counts_only_footprints_within_one_pad(atomic_custom, tmp_path, pads, family):
+    # The 8-pad and 9-pad SON-8 footprints: 7 and 10 pads are still within one pad of one of them (owner decision 2026-10-29)
+    footprints = _stock_tree(tmp_path, "son", TWO_SON_8)
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, "SON50P150X150X60-6N", footprints, pads)
+    if family is None:
+        assert plan.part_text == bare.part_text
+        return
+    assert plan.part_text.fp_description.startswith(f"{family}, ")
+    assert family in plan.part_text.keywords.split()
+
+
 def test_an_ambiguous_package_code_supplies_no_family(atomic_custom, tmp_path):
-    footprints = _stock_tree(tmp_path, "two_soic", TWO_SOIC)
+    footprints = _stock_tree(tmp_path, "two_soic", SOIC_TIE)
     code = "SOIC127P600X175-8N"
-    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code))
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code, pads=9))
     try:
         options = InstallOptions(library=EXISTING)
         ambiguous = build_plan(candidate, options, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
@@ -417,6 +446,7 @@ def test_a_single_leading_letters_match_supplies_its_family(atomic_custom, tmp_p
 
 
 def test_a_unique_full_code_match_supplies_its_family(atomic_custom, tmp_path):
+    # A full-code tie is not pad-filtered: these footprints have 5 pads, the vendor footprint 2, and it still gets SOT-23-5
     footprints = _stock_tree(
         tmp_path, "sot", {"Package_TO_SOT_SMD": (("SOT-23-5", 5), ("TSOT-23-5", 5))}
     )
@@ -448,13 +478,13 @@ def test_a_tie_that_agrees_supplies_the_family(atomic_custom, tmp_path, librarie
 
 def test_a_tie_with_a_footprint_naming_no_family_supplies_no_family(atomic_custom, tmp_path):
     footprints = _stock_tree(tmp_path, "socket", {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8), ("SOIC_Socket", 8))})
-    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints)
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints, pads=8)
     assert plan.part_text == bare.part_text
 
 
 def test_a_lower_case_code_ties_the_same_footprints(atomic_custom, tmp_path):
-    footprints = _stock_tree(tmp_path, "two_soic", TWO_SOIC)
-    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE.lower(), footprints)
+    footprints = _stock_tree(tmp_path, "two_soic", SOIC_TIE)
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE.lower(), footprints, pads=9)
     assert plan.part_text == bare.part_text
 
 
@@ -477,6 +507,27 @@ def test_kicad_footprints_give_no_family_to_an_ambiguous_code(atomic_custom, tmp
     assert plan.part_text == bare.part_text
     text = plan.part_text
     assert wrong_family not in " ".join((text.keywords, text.fp_description, text.fp_tags))
+
+
+@needs_kicad_footprints
+@pytest.mark.parametrize("code", ["SON50P150X150X60-6N", "SON65P200X200X80-6N"])
+def test_kicad_footprints_give_no_family_to_a_six_pad_son(atomic_custom, tmp_path, code):
+    # UAT test 1 on the real install: the two SON-8 footprints of the tie are 8 and 9 pads, too far from 6
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, code, _LIVE_FP_DIR, pads=6)
+    text = plan.part_text
+    assert text == bare.part_text
+    for field in (text.fp_description, text.fp_tags, text.keywords):
+        assert not any(word.startswith("SON-") for word in _words(field)), field
+
+
+@needs_kicad_footprints
+def test_kicad_footprints_give_a_48_pad_lqfp48_its_family(atomic_custom, tmp_path):
+    # The LQFP-48 footprints have 48 and 49 pads and agree; LQFP-100 is dropped by size
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, "LQFP48", _LIVE_FP_DIR, pads=48)
+    text = plan.part_text
+    assert text.fp_description.startswith("LQFP-48, ")
+    assert "LQFP-48" in text.keywords.split()
+    assert "LQFP-100" not in " ".join((text.keywords, text.fp_description, text.fp_tags))
 
 
 @needs_kicad_footprints
