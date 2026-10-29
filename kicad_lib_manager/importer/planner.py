@@ -864,27 +864,33 @@ def build_plan(
 
     candidate.issues already carries the package's own Issues (detect_candidate folds them in),
     so package_issues is only for a caller holding extra Issues; an Issue in both appears once.
+
+    A refused library name comes back blocked with no operations, listing every library-independent
+    reason before the refusal (G-10-11).
     """
     # WR-03: extra, package and candidate Issues lead the plan's Issues, an exact duplicate appearing once
     issues: list[Issue] = list(dict.fromkeys([*package_issues, *candidate.issues]))
-
-    def refuse(*problems: Issue) -> InstallPlan:
-        return _refused(candidate, options, layout, tools, [*issues, *problems])
-
-    def step(message: str, current: int) -> None:
-        if progress is not None:
-            progress(message, current, 5)
 
     library = options.library
     is_official = options.footprint_target == "official"
     # D-08, D-11, D-13: only Atomic_ plus an allowed KiCad library name is installed into, whatever the caller passes
     verdict = stems.name_verdict(library, tools.allowed_stems or None)
-    if not verdict.ok:
-        return refuse(_err("install.invalid_library", verdict.reason))
+    # A refused name is reported last, with every reason that does not depend on the library: nothing is read from,
+    # built on or written under it, so the plan is planned as for a new library that is never read (G-10-11)
+    name_refusal = [] if verdict.ok else [_err("install.invalid_library", verdict.reason)]
+    target_library = library if verdict.ok else ""
+
+    def refuse(*problems: Issue) -> InstallPlan:
+        return _refused(candidate, options, layout, tools, [*issues, *problems, *name_refusal])
+
+    def step(message: str, current: int) -> None:
+        if progress is not None:
+            progress(message, current, 5)
+
     # D-10: a name that differs from a library on disk only by letter case is a second library on Linux and the same one on Windows
     sym_libs = list_symbol_libs(layout)
     pretty_libs = list_footprint_libs(layout)
-    twins = [name for name in sym_libs if name != library and name.casefold() == library.casefold()]
+    twins = [name for name in sym_libs if name != library and name.casefold() == library.casefold()] if verdict.ok else []
     if twins:
         return refuse(_err(
             "install.library_case_clash",
@@ -916,7 +922,7 @@ def build_plan(
         official_name = official_link.partition(":")[2]
     # WR-02: creating a library needs its Custom folder; say so before anything is read or written
     for exists, folder, code, created in (
-        (library in sym_libs, layout.symbols_dir, "install.symbols_dir_missing", library),
+        (library in sym_libs or not verdict.ok, layout.symbols_dir, "install.symbols_dir_missing", library),
         # An official footprint writes nothing into the shared library, so its folder is not needed
         (shared in pretty_libs or is_official, layout.footprints_dir, "install.footprints_dir_missing", shared),
     ):
@@ -953,9 +959,9 @@ def build_plan(
         fp_items = []
 
     step("Reading the target library", 2)
-    sym_path = layout.symbols_dir / f"{library}.kicad_sym"
+    sym_path = layout.symbols_dir / f"{library}.kicad_sym" if verdict.ok else None
     pretty = layout.footprints_dir / f"{shared}.pretty"
-    sym_exists = library in sym_libs
+    sym_exists = verdict.ok and library in sym_libs
     pretty_exists = shared in pretty_libs
     target: LoadedFile | None = None
     target_bytes = b""
@@ -1108,11 +1114,11 @@ def build_plan(
         written_description = options.fp_description if options.fp_description is not None else generated_description
         written_fp_tags = options.fp_tags if options.fp_tags is not None else generated_fp_tags
     package_words = [word for word in (facts.family, code) if word]
-    related = [stem for stem in options.related_stems if stems.ATOMIC_PREFIX + stem != library]
+    related = [stem for stem in options.related_stems if stems.ATOMIC_PREFIX + stem != target_library]
 
     def keyword_words(description: str, mpn: str, symbol_name: str) -> list[str]:
         return generate_keywords(
-            library=library,
+            library=target_library,
             description=description,
             category=meta.category,
             package_words=package_words,
@@ -1292,7 +1298,7 @@ def build_plan(
         """The other Custom/ parts whose Footprint field links name in the shared library, looked up once per name."""
         if name not in linking:
             linking[name] = _linking_symbols(
-                layout, f"{shared}:{name}", skip=(library, new_names.get(sym_item.name, sym_item.name))
+                layout, f"{shared}:{name}", skip=(target_library, new_names.get(sym_item.name, sym_item.name))
             )
         return linking[name]
 
@@ -1501,9 +1507,9 @@ def build_plan(
             planned_footprints=planned_footprints,
             planned_models=planned_models,
         )
-        issues.extend(incoming_issues(
-            edited.root, written, rel_path=sym_path.relative_to(layout.repo_root).as_posix(), ctx=gate_context
-        ))
+        # rel_path only feeds FixSpecs, which incoming_issues never builds (fixable=False), so a refused name passes ""
+        gate_path = sym_path.relative_to(layout.repo_root).as_posix() if sym_path is not None else ""
+        issues.extend(incoming_issues(edited.root, written, rel_path=gate_path, ctx=gate_context))
 
     if is_official and states[-1].kind != "skip":
         # D-18: a difference between the pads is a warning, never a block
@@ -1524,6 +1530,10 @@ def build_plan(
                     "install.pad_mismatch",
                     f"{official_link} has different pads from the vendor footprint {vendor_fp_name}: {'; '.join(parts)}",
                 ))
+
+    # G-10-11: a refused name ends here, blocked, with no operation and no path built from it
+    if name_refusal:
+        return refuse()
 
     ops: list[FileOp] = []
     if not pretty_exists and not is_official:

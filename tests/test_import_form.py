@@ -432,11 +432,30 @@ def test_blocking_reasons_order():
         ("Choose Overwrite, Rename or Skip for footprint F1", "conflict:footprint:Lib:f1"),
         ("Choose Overwrite, Rename or Skip for 3D model m.step", "conflict:model:m.step"),
     ]
-    # the library and MPN reasons follow the plan Issues
+    # with no plan the library reason leads and MPN follows
     reasons = blocking_reasons(status(library="", mpn_text="  "), None)
     assert pairs(reasons) == [("Pick or type a library name", "library"), ("MPN is empty - it names the 3D model file", "mpn")]
     assert blocking_reasons(status(), fake_plan()) == []
     assert blocking_reasons(status(), None) == []
+
+
+def test_blocking_reasons_put_the_library_reason_first():
+    """The library field is at the top of the form, so its reason leads the plan's (G-10-11)."""
+    plan = fake_plan(issues=(
+        Issue(ERR, "install.atomic.description", "no description"),
+        Issue(ERR, "install.invalid_library", name_verdict("").reason),
+    ))
+    assert pairs(blocking_reasons(status(library="", mpn_text=""), plan)) == [
+        ("Pick or type a library name", "library"),
+        ("Type a Description", "description"),
+        ("MPN is empty - it names the 3D model file", "mpn"),
+    ]
+    failed = fake_plan(issues=(Issue(ERR, "install.no_symbol", "x"),))
+    assert pairs(blocking_reasons(status(library="Atomic_TI", build_failed=True), failed)) == [
+        (name_verdict("Atomic_TI").reason, "library"),
+        ("Error: Preview could not be built - see the log", "plan"),
+    ]
+    assert pairs(blocking_reasons(status(updating=True, library=""), plan)) == [("Updating preview...", "plan")]
 
 
 def test_blocking_reasons_model_error():

@@ -1,20 +1,35 @@
 """The Atomic_ name rule through build_plan and the form: a refused library name stops the plan with its plain reason (Phase 10, LIB-05)."""
 
+from pathlib import Path
+
 import customfixtures
 import pytest
 from installfixtures import UL_DESCRIPTION
+from test_import_form import pairs
 from zipfixtures import CURRENT_ATOMIC_SYMBOL_LIBS
 
 from kicad_lib_manager.importer import stems
 from kicad_lib_manager.importer.applier import apply_plan
+from kicad_lib_manager.importer.detect import detect_candidate
 from kicad_lib_manager.importer.form import FormStatus, blocking_reasons
+from kicad_lib_manager.importer.package import open_package
 from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
 from kicad_lib_manager.importer.planner import build_plan, detect_tools
 from kicad_lib_manager.models import Severity
 
+REPO_ROOT = Path(__file__).resolve().parent.parent
+ATXK_ZIP = REPO_ROOT / "downloaded_examples" / "ul_ATXK-H14-D-32-768KHZ-E50-T3.zip"
+NO_MODEL = "3D model: the footprint has no 3D model. Use Add 3D model... or an official KiCad footprint"
+requires_atxk = pytest.mark.skipif(not ATXK_ZIP.exists(), reason="downloaded_examples/ul_ATXK-H14-D-32-768KHZ-E50-T3.zip not present")
+
 
 def _errors(plan):
     return [i for i in plan.issues if i.severity is Severity.ERROR]
+
+
+def _refusal(plan):
+    """The install.invalid_library Issue of a plan built for a refused name."""
+    return next(i for i in plan.issues if i.code == "install.invalid_library")
 
 
 def _status(library):
@@ -32,9 +47,9 @@ def _assert_refused(plan, library):
     assert not verdict.ok
     assert plan.blocked
     assert not plan.ops
-    errors = _errors(plan)
-    assert [i.code for i in errors] == ["install.invalid_library"]
-    assert errors[0].text == verdict.reason
+    # The UL sample has no Description, so the gate's reason is listed with the refusal (G-10-11)
+    assert [i.code for i in _errors(plan)] == ["install.atomic.description", "install.invalid_library"]
+    assert _refusal(plan).text == verdict.reason
 
 
 def test_a_bare_kicad_name_is_refused_with_its_reason(synthetic_custom, ul_package, snapshot):
@@ -42,7 +57,7 @@ def test_a_bare_kicad_name_is_refused_with_its_reason(synthetic_custom, ul_packa
     before = snapshot(synthetic_custom.custom_dir)
     plan = build_plan(candidate, InstallOptions(library="Transistor_FET"), synthetic_custom)
     _assert_refused(plan, "Transistor_FET")
-    assert "Atomic_Transistor_FET" in _errors(plan)[0].text
+    assert "Atomic_Transistor_FET" in _refusal(plan).text
     assert not apply_plan(plan).ok
     assert snapshot(synthetic_custom.custom_dir) == before
 
@@ -70,7 +85,7 @@ def test_a_case_variant_is_refused_naming_the_official_spelling(synthetic_custom
     _, candidate = ul_package
     plan = build_plan(candidate, InstallOptions(library="atomic_transistor_fet"), synthetic_custom)
     _assert_refused(plan, "atomic_transistor_fet")
-    assert "Atomic_Transistor_FET" in _errors(plan)[0].text
+    assert "Atomic_Transistor_FET" in _refusal(plan).text
     assert not any(op.path.name.lower() == "atomic_transistor_fet.kicad_sym" for op in plan.ops)
 
 
@@ -78,6 +93,67 @@ def test_an_empty_name_is_refused(synthetic_custom, ul_package):
     _, candidate = ul_package
     plan = build_plan(candidate, InstallOptions(library=""), synthetic_custom)
     _assert_refused(plan, "")
+
+
+@requires_atxk
+def test_an_empty_library_lists_every_reason_at_once(atomic_custom, snapshot):
+    before = snapshot(atomic_custom.custom_dir)
+    with open_package(ATXK_ZIP, REPO_ROOT) as package:
+        candidate, _ = detect_candidate(package)
+        plan = build_plan(candidate, InstallOptions(library=""), atomic_custom)
+        result = apply_plan(plan)
+    assert plan.blocked
+    assert plan.ops == ()
+    assert [i.code for i in _errors(plan)] == [
+        "install.atomic.manufacturer",
+        "install.atomic.datasheet",
+        "install.atomic.description",
+        "install.atomic.model_3d",
+        "install.invalid_library",
+    ]
+    assert _refusal(plan).text == "Pick or type a library name"
+    assert pairs(blocking_reasons(_status(""), plan)) == [
+        ("Pick or type a library name", "library"),
+        ("Enter the Manufacturer", "manufacturer"),
+        ("The Datasheet must be a link or a file path", "datasheet"),
+        ("Type a Description", "description"),
+        (NO_MODEL, "model"),
+    ]
+    assert not result.ok
+    assert snapshot(atomic_custom.custom_dir) == before
+
+
+@pytest.mark.parametrize("library", ["Atomic_TI", "/x", "D:x", "../../../x"])
+def test_a_refused_name_builds_no_path_and_writes_nothing(synthetic_custom, ul_package, snapshot, library):
+    _, candidate = ul_package
+    before = snapshot(synthetic_custom.custom_dir)
+    plan = build_plan(candidate, InstallOptions(library=library), synthetic_custom)
+    _assert_refused(plan, library)
+    assert not apply_plan(plan).ok
+    assert snapshot(synthetic_custom.custom_dir) == before
+
+
+def test_an_existing_v1_library_is_not_read_while_refused(synthetic_custom, ul_package):
+    _, candidate = ul_package
+    name = customfixtures.V1_LIBRARY_NAMES[0]
+    path = synthetic_custom.symbols_dir / f"{name}.kicad_sym"
+    path.write_bytes(b"(not a symbol library")
+    plan = build_plan(candidate, InstallOptions(library=name), synthetic_custom)
+    # A read of the file would add install.target_unreadable or a parse ERROR
+    assert [i.code for i in _errors(plan)] == ["install.atomic.description", "install.invalid_library"]
+    assert not apply_plan(plan).ok
+    assert path.read_bytes() == b"(not a symbol library"
+
+
+def test_a_refused_name_with_an_empty_mpn_lists_both(synthetic_custom, ul_package):
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library="Atomic_TI", cleared=frozenset({"mpn"})), synthetic_custom)
+    assert [i.code for i in _errors(plan)] == ["install.empty_required", "install.invalid_library"]
+    status = FormStatus(updating=False, build_failed=False, library="Atomic_TI", mpn_text="", resolutions={})
+    assert pairs(blocking_reasons(status, plan)) == [
+        (stems.name_verdict("Atomic_TI").reason, "library"),
+        ("MPN is empty - it names the 3D model file", "mpn"),
+    ]
 
 
 def test_the_tools_allowed_stems_decide_the_name(synthetic_custom, ul_package):
@@ -98,8 +174,11 @@ def test_the_form_does_not_list_the_plan_error_a_second_time(synthetic_custom, u
     _, candidate = ul_package
     plan = build_plan(candidate, InstallOptions(library="Atomic_TI"), synthetic_custom)
     reasons = blocking_reasons(_status("Atomic_TI"), plan)
-    assert [r.target for r in reasons] == ["library"]
+    assert [r.target for r in reasons] == ["library", "description"]
     assert reasons[0].text == stems.name_verdict("Atomic_TI").reason
+    texts = [r.text for r in reasons]
+    assert texts.count(stems.name_verdict("Atomic_TI").reason) == 1
+    assert not any(text.startswith("Error:") for text in texts)
 
 
 def test_the_form_has_no_name_reason_for_an_allowed_name():

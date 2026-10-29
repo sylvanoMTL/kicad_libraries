@@ -258,9 +258,9 @@ def _issue_target(issue: Issue) -> str:
 def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reason]:
     """Every reason Install is off, in the UI-SPEC order, without repeating one a form reason already gives.
 
-    Order: Updating (alone, the others could be stale); the build failure or the plan's ERROR Issues;
-    a rejected 3D model source; the library name; MPN; unresolved conflicts in plan order;
-    empty rename names. A plan ERROR is dropped when the form reason beside it says the same thing
+    Order: Updating (alone, the others could be stale); the library name; the build failure or the plan's
+    ERROR Issues; a rejected 3D model source; MPN; unresolved conflicts in plan order; empty rename names.
+    A plan ERROR is dropped when the form reason beside it says the same thing
     (refused library name, empty MPN, empty rename).
     """
     if status.updating:
@@ -285,6 +285,9 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
         return False
 
     reasons: list[Reason] = []
+    # The library field is at the top of the form, so its reason leads (G-10-11)
+    if not verdict.ok:
+        reasons.append(Reason(verdict.reason, "library"))
     if status.build_failed:
         reasons.append(Reason(BUILD_FAILED_REASON, "plan"))
     elif plan is not None:
@@ -300,8 +303,6 @@ def blocking_reasons(status: FormStatus, plan: InstallPlan | None) -> list[Reaso
                 reasons.append(Reason(f"Error: {issue.text}", _issue_target(issue)))
     if status.model_error.strip():
         reasons.append(Reason(f"Error: {status.model_error}", "model_rejected"))
-    if not verdict.ok:
-        reasons.append(Reason(verdict.reason, "library"))
     if mpn_blank:
         reasons.append(Reason("MPN is empty - it names the 3D model file", "mpn"))
     if plan is not None:

@@ -125,7 +125,7 @@ human_verification:
     expected: "The library field reads Atomic_Converter_DCDC_Isolated; tooltip \"Suggested from the vendor category Power Supply and the description.\" Field changes shows \"Set Manufacturer\" with \"RECOM Power → RECOM: canonical spelling\". Install Part enables without typing anything."
     why_human: "Category-map suggestion text and the Field changes row on a real SamacSys/LIB sample."
   - test: "Check 8 [criteria 1, 4]: Click Change..., pick downloaded_examples\\ul_ATXK-H14-D-32-768KHZ-E50-T3.zip. Read the library field and the strip, then click the 3D model reason."
-    expected: "The library field is empty with the grey hint \"Pick a library, or type Atomic_ and a KiCad library name\". The strip lists \"Pick or type a library name\", \"Enter the Manufacturer\", \"The Datasheet must be a link or a file path\" and a reason starting \"3D model:\". Clicking the 3D model reason moves the focus to the Add 3D model... button."
+    expected: "The library field is empty with the grey hint \"Pick a library, or type Atomic_ and a KiCad library name\". The strip lists, in this order, \"Pick or type a library name\", \"Enter the Manufacturer\", \"The Datasheet must be a link or a file path\", \"Type a Description\" and a reason starting \"3D model:\". Clicking the 3D model reason moves the focus to the Add 3D model... button."
     why_human: "The importer asking instead of guessing, and the focus jump, are GUI behaviour."
   - test: "Check 9 [criterion 4]: Click Change..., pick downloaded_examples\\USB4145-03-0170-C_REVA2.zip. Read the library field and the strip. Click Add 3D model..., pick downloaded_examples\\194150990-659-usb4145-03-0170-c.zip."
     expected: "The library field reads Atomic_Connector. The strip lists \"Enter a Datasheet link\" and a reason starting \"3D model:\". After adding the model, the 3D model reason goes away."
@@ -313,7 +313,7 @@ The output holds a line "Run the app on it: <command>". The "Check in the app:" 
    Expected: the library field reads `Atomic_Converter_DCDC_Isolated`; hover it: "Suggested from the vendor category Power Supply and the description." Field changes shows "Set Manufacturer" with "RECOM Power → RECOM: canonical spelling". Install Part enables without typing anything.
 
 8. **[1, 4] Importer asks when it cannot place a part.** Click Change..., pick `downloaded_examples\ul_ATXK-H14-D-32-768KHZ-E50-T3.zip`.
-   Expected: the library field is empty with the grey hint "Pick a library, or type Atomic_ and a KiCad library name". The strip lists "Pick or type a library name", "Enter the Manufacturer", "The Datasheet must be a link or a file path" and a reason starting "3D model:". Click the 3D model reason: the focus goes to the Add 3D model... button.
+   Expected: the library field is empty with the grey hint "Pick a library, or type Atomic_ and a KiCad library name". The strip lists, in this order, "Pick or type a library name", "Enter the Manufacturer", "The Datasheet must be a link or a file path", "Type a Description" and a reason starting "3D model:". Click the 3D model reason: the focus goes to the Add 3D model... button.
 
 9. **[4] 3D model clears its reason.** Click Change..., pick `downloaded_examples\USB4145-03-0170-C_REVA2.zip`.
    Expected: the library field reads `Atomic_Connector`. The strip lists "Enter a Datasheet link" and a reason starting "3D model:". Click Add 3D model..., pick `downloaded_examples\194150990-659-usb4145-03-0170-c.zip`: the 3D model reason goes away.

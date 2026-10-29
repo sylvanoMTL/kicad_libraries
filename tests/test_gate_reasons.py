@@ -21,6 +21,8 @@ from kicad_lib_manager.widgets.import_dialog import ImportDialog
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UL_ZIP = REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip"
+ATXK_ZIP = REPO_ROOT / "downloaded_examples" / "ul_ATXK-H14-D-32-768KHZ-E50-T3.zip"
+requires_atxk = pytest.mark.skipif(not ATXK_ZIP.exists(), reason="downloaded_examples/ul_ATXK-H14-D-32-768KHZ-E50-T3.zip not present")
 LIBRARY = "Atomic_Battery_Management"
 NO_MODEL = "3D model: the footprint has no 3D model. Use Add 3D model... or an official KiCad footprint"
 
@@ -234,6 +236,31 @@ def test_the_missing_model_reason_focuses_the_visible_add_button_and_frames_it(q
     assert button.hasFocus()
     assert dialog._reason_targets["model"] is button
     assert dialog._reason_targets["model_rejected"] is dialog._remove_model_btn
+
+
+@requires_atxk
+def test_an_empty_library_lists_every_reason_and_the_model_reason_focuses_add_3d_model(qtbot, atomic_custom, tmp_path):
+    dialog = ImportDialog(atomic_custom.repo_root, atomic_custom, core=core_with(), backup_root=tmp_path / "backups")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.open_path(ATXK_ZIP)
+    wait_plan(qtbot, dialog)
+
+    # ATXK-H14 asks for a library (owner decision of UAT test 14), so the field stays empty
+    assert dialog._library_combo.currentText() == ""
+    assert [(r.text, r.target) for r in dialog._strip_reasons] == [
+        ("Pick or type a library name", "library"),
+        ("Enter the Manufacturer", "manufacturer"),
+        ("The Datasheet must be a link or a file path", "datasheet"),
+        ("Type a Description", "description"),
+        (NO_MODEL, "model"),
+    ]
+    assert not dialog._install_btn.isEnabled()
+    for target in ("library", "manufacturer", "datasheet", "description", "model"):
+        assert frame_blocked(dialog, target), target
+
+    dialog._on_reason_link(strip_links(dialog)[NO_MODEL])
+    assert dialog._add_model_btn.hasFocus()
 
 
 def test_manufacturer_and_datasheet_reasons_focus_their_fields_and_clear_as_typed(qtbot, atomic_custom, tmp_path):
