@@ -202,7 +202,36 @@ Plans:
   4. The parent checkbox keeps the user's choice across probes. The dialog and the main window can be closed while the read-only probe runs. A user whose git identity comes from `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables can commit from the panel.
   5. The Commit button is styled as the primary action, error and success outcomes are tinted, the parent-failed state is no longer labelled "Committed", and the panel's sizes come from the theme scale.
 
-**Plans**: TBD
+**Plans**: 13 plans
+
+Plans:
+**Wave 1**
+- [ ] 11-01-PLAN.md — run_git keeps the six GIT_AUTHOR_*/GIT_COMMITTER_* variables, two-ident identity check, stdin_data rename (REV-11)
+- [ ] 11-02-PLAN.md — Qt-free commit gate for new/changed symbols in committed Atomic_ libraries, symbol_changes extracted (GIT-06, D-01/D-02/D-05)
+- [ ] 11-03-PLAN.md — one parent-message builder for preview and commit; CommitFile note/installed, rebaseline, with_added_files (REV-07, D-08/D-10 data)
+- [ ] 11-04-PLAN.md — panel keeps the refusal and the user's input across re-probes; primary Commit, tinted outcomes, theme sizes (REV-10, IN-01, UI-02)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 11-05-PLAN.md — gate checks symbols linked to committed footprints and models with a HEAD view (GIT-06, D-04)
+- [ ] 11-06-PLAN.md — late commit reported via HEAD before/after, identical-to-HEAD INFO, parent-only bump, stale and cancel in the probe (REV-06, REV-09, D-14)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 11-07-PLAN.md — PowerShell-safe manual command with the -F fallback, identity message, env-identity commit (REV-08, REV-11)
+- [ ] 11-09-PLAN.md — probe no longer locks Close (cancel Event), re-probe after a refusal, primary Install Part (REV-10, IN-02, D-19)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 11-08-PLAN.md — gate in probe and click, Check again service (re-baseline, gate re-run), changed-file diff (GIT-06, D-03, D-08, D-09)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 11-10-PLAN.md — gated panel state, Open Check Atomic Parts… and Check again, markers, nothing-to-commit / parent-only (GIT-06, D-06/D-07, D-14)
+- [ ] 11-12-PLAN.md — Check again adds the files a fix created that a committed part links (GIT-06, D-10 and its amendment)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 11-11-PLAN.md — Check again and Open Check Atomic Parts… in the import dialog, end to end against real git, Help text (GIT-06, REV-10)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 11-13-PLAN.md — applied fixes rescan and re-check, changed-file diff, D-14 log rule, main-window wiring, Phase 6 review dispositions, full suite (GIT-06, REV-09)
+
 **UI hint**: yes
 
 ### Phase 12: Import Flow Fixes and Case-Sensitive Re-test
