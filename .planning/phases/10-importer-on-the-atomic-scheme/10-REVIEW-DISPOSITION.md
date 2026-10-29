@@ -29,7 +29,7 @@ findings:
     title: "After a new symbol library is installed, the shared footprint library is never checked against fp-lib-table"
   - id: WR-06
     severity: warning
-    disposition: open
+    disposition: fixed
     title: "A package family is still taken from a small leading-letters-only tie that has no pin check"
   - id: IN-01
     severity: info
@@ -47,7 +47,7 @@ findings:
     severity: info
     disposition: open
     title: "Two keyword test rows cannot fail on the CAN rule, and two live-footprint tests depend on KiCad's file contents"
-open: 8
+open: 7
 total: 11
 recorded: 2026-10-28T12:25:22.771Z
 ---
@@ -62,7 +62,7 @@ recorded: 2026-10-28T12:25:22.771Z
 | WR-03 | warning | open | - |
 | WR-04 | warning | open | - |
 | WR-05 | warning | fixed | 10-28-PLAN.md (01cd7da) |
-| WR-06 | warning | open | - |
+| WR-06 | warning | fixed | 10-29-PLAN.md (29e3834) |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |

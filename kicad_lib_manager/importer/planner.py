@@ -56,7 +56,7 @@ from . import package as _package
 from . import stems
 from .candidate import FootprintItem, ImportCandidate, ModelItem, SymbolItem
 from .fieldrules import DESCRIPTION_FIELDS, FieldRules, clean_description, is_placeholder, is_protected, is_volatile
-from .footprint_index import FootprintIndex, build_index, footprint_texts, pad_numbers, rank
+from .footprint_index import FULL_CODE_SCORE, FootprintIndex, build_index, footprint_texts, pad_numbers, rank
 from .footprint_text import FootprintFacts, describe, footprint_facts, generated_tags, package_family, vendor_texts
 from .incoming import incoming_context, incoming_issues
 from .keywords import generate_keywords, manufacturer_words, merge_words
@@ -80,7 +80,8 @@ from .verify import footprint_pad_numbers, natural_order, pin_pad_issues, symbol
 
 _LISTED_NAMES = 20
 # An official footprint supplies the package family only when every footprint at the top rank score (30 or more)
-# names the same family, so rank()'s alphabetical tie order never picks one (owner decision 2026-10-28, D-28, CR-01)
+# names the same family. At the leading-letters score only footprints within one pad of the vendor footprint take
+# part (owner decisions 2026-10-28 and 2026-10-29, D-28, CR-01, WR-06)
 _MIN_FAMILY_SCORE = 30
 
 
@@ -88,16 +89,26 @@ def _err(code: str, text: str) -> Issue:
     return Issue(Severity.ERROR, code, text)
 
 
-def _agreed_family_texts(footprint_index: FootprintIndex, code: str) -> list[str]:
-    """The texts of the best official footprint for this code when every footprint at the top score names one family."""
+def _within_one_pad(footprint_index: FootprintIndex, link: str, vendor_pads: int) -> bool:
+    """Whether the official footprint's distinct pad count is readable and within one of the vendor's."""
+    numbers = pad_numbers(footprint_index, link)
+    return numbers is not None and abs(len(numbers) - vendor_pads) <= 1
+
+
+def _agreed_family_texts(footprint_index: FootprintIndex, code: str, vendor_pads: int) -> list[str]:
+    """The texts of the best official footprint for this code when every footprint at the top score names one family.
+
+    At the leading-letters score only footprints within one pad of the vendor's count are compared.
+    """
     ranked = rank(footprint_index, package_code=code, limit=None)
     if not ranked or ranked[0].score < _MIN_FAMILY_SCORE:
         return []
+    tied = [entry for entry in ranked if entry.score == ranked[0].score]
+    if ranked[0].score < FULL_CODE_SCORE:
+        tied = [entry for entry in tied if _within_one_pad(footprint_index, entry.link, vendor_pads)]
     first_texts: list[str] = []
     first_family: str | None = None
-    for entry in ranked:
-        if entry.score != ranked[0].score:
-            break
+    for entry in tied:
         texts = [*footprint_texts(footprint_index, entry.link), entry.link.partition(":")[2]]
         family = package_family(texts)
         if family is None or (first_texts and family != first_family):
@@ -1088,7 +1099,7 @@ def build_plan(
         official_texts: list[str] = []
         if tools.kicad_footprints_dir is not None:
             footprint_index = build_index(tools.kicad_footprints_dir)
-            official_texts = _agreed_family_texts(footprint_index, code)
+            official_texts = _agreed_family_texts(footprint_index, code, len(footprint_pad_numbers(fp_refs[0].node)))
         facts = footprint_facts(fp_refs[0].node, code=code, maker=maker_words[0] if maker_words else "", texts=official_texts)
         vendor_fp_texts = [vendor_texts(ref.node) for ref in fp_refs]
         # D-28, D-29: the sentence is always the generated one, the tags are the vendor's with the generated ones after
