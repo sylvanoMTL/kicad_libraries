@@ -245,11 +245,11 @@ VENDOR = "PART"
 EXISTING = "Atomic_Battery_Management"
 
 
-def _vendor_zip(tmp_path, *, keywords="", descr="", tags="", footprint="FP"):
+def _vendor_zip(tmp_path, *, keywords="", descr="", tags="", footprint="FP", pads: int = 2):
     from installfixtures import ATOMIC_PROPS, vendor_footprint, vendor_symbol_lib
     from zipfixtures import STEP_BYTES, make_zip
 
-    footprint_data = vendor_footprint(footprint)
+    footprint_data = vendor_footprint(footprint, pads=_pads(pads))
     extra = (f'  (descr "{descr}")\r\n' if descr else "") + (f'  (tags "{tags}")\r\n' if tags else "")
     footprint_data = footprint_data.replace(b'  (layer "F.Cu")\r\n', b'  (layer "F.Cu")\r\n' + extra.encode(), 1)
     symbol = vendor_symbol_lib(
@@ -337,10 +337,15 @@ def _stock_tree(tmp_path, name: str, libraries: dict) -> Path:
 
 TWO_SOIC = {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8), ("SOIC-20W_7.5x12.8mm_P1.27mm", 20))}
 
+# The two KiCad 10 footprints that UAT test 1 tied with a 6-pad part: SON-8, with 8 and 9 pads
+TWO_SON_8 = {
+    "Package_SON": (("MicroCrystal_C7_SON-8_1.5x3.2mm_P0.9mm", 8), ("SON-8-1EP_3x2mm_P0.5mm_EP1.4x1.6mm", 9))
+}
 
-def _plans_with_and_without(atomic_custom, tmp_path, code: str, footprints: Path):
+
+def _plans_with_and_without(atomic_custom, tmp_path, code: str, footprints: Path, pads: int = 2):
     """The plan for this vendor footprint code with the given KiCad footprints folder, and the same plan with none."""
-    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code))
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code, pads=pads))
     try:
         options = InstallOptions(library=EXISTING)
         with_folder = build_plan(candidate, options, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
@@ -354,6 +359,29 @@ def _plans_with_and_without(atomic_custom, tmp_path, code: str, footprints: Path
 
 def _words(text: str) -> list[str]:
     return [word.rstrip(",") for word in text.split()]
+
+
+@pytest.mark.parametrize("code", ["SON50P150X150X60-6N", "SON65P200X200X80-6N"])
+def test_a_six_pad_part_takes_no_family_from_a_son_8_tie(atomic_custom, tmp_path, code):
+    footprints = _stock_tree(tmp_path, "son", TWO_SON_8)
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code, pads=6))
+    try:
+        options = InstallOptions(library=EXISTING)
+        with_folder = build_plan(candidate, options, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+        bare = build_plan(candidate, options, atomic_custom, ToolContext())
+        assert not with_folder.blocked, with_folder.issues
+        assert not bare.blocked, bare.issues
+        text = with_folder.part_text
+        assert text == bare.part_text
+        assert bare.part_text.fp_description == f"1.5 mm pitch, TI {code}"
+        for field in (text.fp_description, text.fp_tags, text.keywords):
+            assert not any(word.startswith("SON-") for word in _words(field)), field
+        result = apply_plan(with_folder, backup_root=tmp_path / "bk")
+    finally:
+        package.close()
+    assert result.ok, result.issues
+    installed = load(atomic_custom.footprints_dir / "Atomic_Footprints.pretty" / f"{code}.kicad_mod")
+    assert vendor_texts(footprint_name(installed.root).node) == (bare.part_text.fp_description, bare.part_text.fp_tags)
 
 
 def test_an_ambiguous_package_code_supplies_no_family(atomic_custom, tmp_path):
@@ -383,7 +411,7 @@ SOIC_CODE = "SOIC127P600X175-8N"
 
 def test_a_single_leading_letters_match_supplies_its_family(atomic_custom, tmp_path):
     footprints = _stock_tree(tmp_path, "one_soic", {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8),)})
-    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints)
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints, pads=8)
     assert plan.part_text.fp_description.startswith("SOIC-8, ")
     assert "SOIC-8" in plan.part_text.keywords.split()
 
@@ -397,22 +425,23 @@ def test_a_unique_full_code_match_supplies_its_family(atomic_custom, tmp_path):
 
 
 @pytest.mark.parametrize(
-    ("libraries", "code", "family"),
+    ("libraries", "code", "family", "pads"),
     [
         pytest.param(
-            {"Package_TO_SOT_SMD": (("SOT-23-5", 5), ("SOT-23-5_HandSoldering", 5))}, "SOT-23-5", "SOT-23-5", id="full code"
+            {"Package_TO_SOT_SMD": (("SOT-23-5", 5), ("SOT-23-5_HandSoldering", 5))}, "SOT-23-5", "SOT-23-5", 2, id="full code"
         ),
         pytest.param(
             {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8), ("SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.29x3mm", 9))},
             SOIC_CODE,
             "SOIC-8",
+            8,
             id="leading letters",
         ),
     ],
 )
-def test_a_tie_that_agrees_supplies_the_family(atomic_custom, tmp_path, libraries, code, family):
+def test_a_tie_that_agrees_supplies_the_family(atomic_custom, tmp_path, libraries, code, family, pads):
     footprints = _stock_tree(tmp_path, "agree", libraries)
-    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, code, footprints)
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, code, footprints, pads)
     assert plan.part_text.fp_description.startswith(f"{family}, ")
     assert family in plan.part_text.keywords.split()
 
