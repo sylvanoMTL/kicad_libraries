@@ -647,6 +647,94 @@ def test_unavailable_probe_leaves_defaults(tmp_path):
 
     assert probe.state == "unavailable"
     assert probe.dirty_before == frozenset() and probe.other_changes == 0 and probe.earlier == ()
+    assert probe.stale == () and probe.identical == frozenset() and probe.all_identical is False and probe.gate is None
+
+
+# -- stale and identical files, and the cancel hook, known before any click (D-08, D-09, D-13, IN-02) -------
+
+
+@requires_git
+def test_probe_stale_file_is_gated(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    (repos.custom / FP_NEW).write_bytes(b"edited in KiCad after the install\n")
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.state == "gated"
+    assert probe.stale == (f"Custom/{FP_NEW}",)
+    assert probe.branch == "main" and probe.head == _head(repos) and probe.parent_ok
+    assert probe.reason == commit_step.stale_text(probe.stale)
+    assert f"Custom/{FP_NEW}" in probe.reason and "Click Check again" in probe.reason
+
+
+@requires_git
+def test_probe_unchanged_files_are_not_gated(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "ready" and probe.stale == ()
+
+
+@requires_git
+@pytest.mark.parametrize("autocrlf", [True, False])
+def test_probe_reports_identical_files(tmp_path, autocrlf):
+    repos = make_superproject(tmp_path / "git", autocrlf=autocrlf)
+    plan = import_files(repos, {FP_NEW: b'(footprint "FP1")\n', SYM_FFC: _same_as_head(repos)})
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.state == "ready"
+    assert probe.identical == frozenset({SYM_FFC}) and probe.all_identical is False
+
+
+@requires_git
+@pytest.mark.parametrize("autocrlf", [True, False])
+def test_probe_all_identical(tmp_path, autocrlf):
+    repos = make_superproject(tmp_path / "git", autocrlf=autocrlf)
+    plan = import_files(repos, {SYM_FFC: _same_as_head(repos)})
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.identical == frozenset({SYM_FFC}) and probe.all_identical is True
+
+
+@requires_git
+def test_probe_cancelled_returns_unavailable(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    ctx, calls = _recording_ctx()
+
+    probe = commit_step.probe_commit(_plan(repos), git=ctx, cancelled=lambda: True)
+
+    assert probe.state == "unavailable" and probe.reason == "The check was cancelled"
+    assert commit_step.CANCELLED_REASON == "The check was cancelled"
+    assert not {"status", "cat-file"} & set(_subcommands(calls))
+
+
+@requires_git
+def test_probe_cancelled_after_three_git_calls_stops_early(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    ctx, calls = _recording_ctx()
+
+    probe = commit_step.probe_commit(_plan(repos), git=ctx, cancelled=lambda: len(calls) >= 3)
+
+    assert probe.state == "unavailable" and probe.reason == "The check was cancelled"
+    assert not {"status", "cat-file"} & set(_subcommands(calls))
+    full, full_calls = _recording_ctx()
+    assert commit_step.probe_commit(_plan(repos), git=full).state == "ready"
+    assert len(calls) < len(full_calls)
+
+
+@requires_git
+def test_probe_cancelled_between_preexisting_reads(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    ctx, calls = _recording_ctx()
+
+    probe = commit_step.probe_commit(_plan(repos), git=ctx, cancelled=lambda: "status" in _subcommands(calls))
+
+    assert probe.state == "unavailable" and probe.reason == "The check was cancelled"
+    assert "cat-file" not in _subcommands(calls)
 
 
 # -- refusals before any git write, and clean failures (D-03, D-06, D-11, D-16) -----------------------
