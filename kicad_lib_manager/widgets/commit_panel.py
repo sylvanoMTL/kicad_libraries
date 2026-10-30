@@ -120,7 +120,8 @@ class CommitPanel(QWidget):
 
     offer_switch goes through switching and back to probing (the dialog probes again) or to offer_switch
     again when the switch failed. An outcome with nothing committed goes to probing and keeps its refusal
-    text on top: the dialog probes again, and only a fresh probe can enable Commit once more (D-11).
+    text, git's output and the manual command on top until the next Commit, Check again or Switch click:
+    the dialog probes again, and only a fresh probe can enable Commit once more (D-11, D-16, D-17).
     """
 
     commit_requested = Signal(str, bool)  # the message, whether to commit the Custom ref in the parent too
@@ -139,6 +140,8 @@ class CommitPanel(QWidget):
         self._outcome_labels: list[QLabel] = []
         self._outcome_severities: list[Severity] = []
         self._pending_refusal: tuple[Issue, ...] = ()  # shown again on top of the next probe (D-11)
+        self._pending_output: tuple[str, ...] = ()  # the output-box lines of that refusal (D-16, D-17)
+        self._pending_manual: str = ""  # the manual-command label text of that refusal, empty when none
         self._parent_wanted: bool | None = None  # the user's parent choice; None until the first probe
         self._updating = False  # True while the panel itself changes the parent box
 
@@ -311,7 +314,7 @@ class CommitPanel(QWidget):
         self._plan = cplan
         self._probe = None
         self._parent_wanted = None
-        self._pending_refusal = ()
+        self._drop_pending()
         self._fill_files(cplan)
         self._dirty_hint.hide()
         self._changed_hint.hide()
@@ -335,7 +338,7 @@ class CommitPanel(QWidget):
         self._branch_label.setText("Custom branch: checking...")
         self._branch_label.setStyleSheet("")
         self._clear_outcome()
-        self._render_issues(self._pending_refusal)
+        self._show_pending()
         self._set_state("probing")
 
     def _fill_files(self, cplan: CommitPlan):
@@ -357,9 +360,9 @@ class CommitPanel(QWidget):
         self._probe = probe
         self._clear_outcome()
         if probe.state in ("refused", "unavailable"):
-            self._pending_refusal = ()  # the probe's own reason replaces the old refusal
+            self._drop_pending()  # the probe's own reason replaces the old refusal
         else:
-            self._render_issues(self._pending_refusal)
+            self._show_pending()
         self._show_custom_line(probe)
         self._show_gate(probe)
         if probe.parent_dir is not None:
@@ -431,18 +434,37 @@ class CommitPanel(QWidget):
         # a parent-only bump (D-14) has no Custom commit; its parent commit counts as the commit
         self._committed = outcome.committed or (outcome.parent_only and outcome.parent_commit is not None)
         # the late-commit warning (D-12) and the parent-only failure carry a manual command too (D-16, D-17)
+        manual = ""
         if outcome.manual_command and (outcome.committed or outcome.parent_only):
-            self._manual_label.setText(f"{outcome.manual_label or MANUAL_LABEL} {outcome.manual_command}")
+            manual = f"{outcome.manual_label or MANUAL_LABEL} {outcome.manual_command}"
+            self._manual_label.setText(manual)
             self._manual_label.show()
         if self._committed:
-            self._pending_refusal = ()
+            self._drop_pending()
             self._set_state("failed" if outcome.failed else "done")
         else:
             # nothing was committed: never show a stale "ready"; the dialog probes again (D-11, REV-10)
+            # the refusal, git's output and the manual command are kept together and shown again (D-16, D-17)
             self._pending_refusal = tuple(outcome.issues)
+            self._pending_output = tuple(output)
+            self._pending_manual = manual
             self._set_state("probing")
 
     # -- internals -------------------------------------------------------------------------------
+
+    def _drop_pending(self):
+        """Forget the kept refusal, its git output and its manual command together."""
+        self._pending_refusal = ()
+        self._pending_output = ()
+        self._pending_manual = ""
+
+    def _show_pending(self):
+        """Show the kept refusal, git's output and the manual command again; display only, Commit follows the probe."""
+        self._render_issues(self._pending_refusal)
+        self._set_output(self._pending_output)
+        if self._pending_manual:
+            self._manual_label.setText(self._pending_manual)
+            self._manual_label.show()
 
     def _render_issues(self, issues) -> list[str]:
         """Outcome lines for issues; returns the detail lines of error issues, for the output box."""
@@ -694,12 +716,12 @@ class CommitPanel(QWidget):
 
     def _on_commit_clicked(self):
         if self._state == "ready" and self.commit_button.isEnabled():
-            self._pending_refusal = ()
+            self._drop_pending()
             self.commit_requested.emit(self._message.toPlainText(), self.bump_parent())
 
     def _on_check_again_clicked(self):
         if self._state == "gated":
-            self._pending_refusal = ()
+            self._drop_pending()
             self.check_again_requested.emit()
 
     def _on_open_check_clicked(self):
@@ -710,7 +732,7 @@ class CommitPanel(QWidget):
 
     def _on_switch_clicked(self):
         if self._state == "offer_switch":
-            self._pending_refusal = ()
+            self._drop_pending()
             self.switch_requested.emit()
 
     def _on_item_activated(self, item: QListWidgetItem):
