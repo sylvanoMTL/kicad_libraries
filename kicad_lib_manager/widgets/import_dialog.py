@@ -34,9 +34,11 @@ from PySide6.QtWidgets import (
 from ..importer.adapters.base import attach_models
 from ..importer.applier import apply_plan
 from ..importer.candidate import ImportCandidate
+from ..importer.commit_gate import scan_result_for
 from ..importer.commit_plan import CommitPlan, build_commit_plan
 from ..importer.commit_step import (
-    CommitOutcome, CommitProbe, SwitchOutcome, pre_import_diff, probe_commit, run_commit, switch_to_main,
+    CommitOutcome, CommitProbe, SwitchOutcome, pre_import_diff, probe_commit, recheck_commit, run_commit,
+    switch_to_main,
 )
 from ..importer.content import ContentText, op_content, unchanged_content
 from ..importer.detect import detect_candidate
@@ -60,6 +62,7 @@ from ..kicad_files import footprint_name, parse_bytes
 from ..kicad_process import kicad_running
 from ..models import Issue, Severity
 from ..settings import load_import_dir, save_import_dir
+from .atomic_check_dialog import AtomicCheckDialog
 from .commit_panel import CommitPanel
 from .conflict_row import ConflictRow
 from .content_view import ContentViewDialog
@@ -296,6 +299,7 @@ class ImportCore:
     op_content: Callable = op_content
     unchanged_content: Callable = unchanged_content
     probe_commit: Callable = probe_commit
+    recheck_commit: Callable = recheck_commit
     run_commit: Callable = run_commit
     switch_to_main: Callable = switch_to_main
     pre_import_diff: Callable = pre_import_diff
@@ -352,6 +356,7 @@ class ImportDialog(QDialog):
         package_path: Path | None = None,
         core: ImportCore | None = None,
         backup_root: Path | None = None,
+        atomic_backup_root: Path | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -360,6 +365,9 @@ class ImportDialog(QDialog):
         self._kicad_fp_dir = kicad_fp_dir
         self._core = core or ImportCore()
         self._backup_root = backup_root
+        # Where the Check Atomic Parts dialog keeps the backups of the fixes it applies; None = its own default
+        self._atomic_backup_root = atomic_backup_root
+        self._atomic_dialog: AtomicCheckDialog | None = None
 
         # Public: the successful InstallResult. Shadows QDialog.result() on this instance (by design).
         self.result: InstallResult | None = None
@@ -2842,6 +2850,8 @@ class ImportDialog(QDialog):
         panel.commit_requested.connect(self._on_commit_requested)
         panel.switch_requested.connect(self._on_switch_requested)
         panel.file_activated.connect(self._on_commit_file_activated)
+        panel.check_again_requested.connect(self._on_check_again)
+        panel.open_check_requested.connect(self._on_open_atomic_check)
         self._commit_panel, self._commit_plan = panel, cplan
         self._result_view.set_commit_panel(panel)
         self._start_probe()
@@ -2864,8 +2874,10 @@ class ImportDialog(QDialog):
             panel.begin_reprobe()
         else:
             panel.show_plan(cplan)
-        core = self._core
-        worker = self._spawn(lambda progress, cp=cplan, ev=event: core.probe_commit(cp, cancelled=ev.is_set))
+        core, fp_dir = self._core, self._kicad_fp_dir
+        worker = self._spawn(
+            lambda progress, cp=cplan, ev=event: core.probe_commit(cp, kicad_fp_dir=fp_dir, cancelled=ev.is_set)
+        )
         self._probe_worker = worker
         worker.result.connect(lambda probe, w=worker: self._on_probe_done(w, probe))
         worker.failed.connect(lambda text, w=worker: self._on_probe_failed(w, text))
@@ -2875,6 +2887,10 @@ class ImportDialog(QDialog):
         if worker is not self._probe_worker:
             return  # a superseded probe
         self._probe_worker = None
+        self._apply_probe_result(probe)
+
+    def _apply_probe_result(self, probe: CommitProbe):
+        """Show a probe that is still current: the panel takes it and its issues go to the log."""
         if self._closing or self._commit_panel is None:
             return
         self._commit_probe = probe
@@ -2891,6 +2907,71 @@ class ImportDialog(QDialog):
         issue = Issue(Severity.ERROR, "commit.step_failed", f"Commit step failed: {text}")
         self.issues_logged.emit([issue])
         self._commit_panel.apply_probe(CommitProbe(state="unavailable", reason=text))
+
+    def _on_check_again(self):
+        """Check again (D-08): take the files as they are now and probe the new plan; it never commits.
+
+        The check only reads, so it takes no Close lock. It replaces any older probe exactly as
+        _start_probe does, and the plan it returns replaces the dialog's plan.
+        """
+        panel, cplan = self._commit_panel, self._commit_plan
+        if self._closing or self._git_worker is not None or self._probe_worker is not None:
+            return
+        if panel is None or cplan is None:
+            return
+        for older in self._probe_cancels:
+            older.set()
+        event = threading.Event()
+        self._probe_cancels = [event]
+        self._commit_probe = None
+        panel.begin_reprobe()
+        core, fp_dir = self._core, self._kicad_fp_dir
+        worker = self._spawn(
+            lambda progress, cp=cplan, ev=event: core.recheck_commit(cp, kicad_fp_dir=fp_dir, cancelled=ev.is_set)
+        )
+        self._probe_worker = worker
+        worker.result.connect(lambda result, w=worker: self._on_recheck_done(w, result))
+        worker.failed.connect(lambda text, w=worker: self._on_probe_failed(w, text))
+        worker.start()
+
+    def _on_recheck_done(self, worker: TaskWorker, result: tuple):
+        if worker is not self._probe_worker:
+            return  # a superseded check
+        self._probe_worker = None
+        if self._closing or self._commit_panel is None:
+            return
+        new_plan, probe = result
+        self._commit_plan = new_plan
+        self._commit_panel.begin_reprobe(new_plan)  # the file list now shows the re-read files
+        self._apply_probe_result(probe)
+
+    def _on_open_atomic_check(self, rel_path: str, name: str):
+        """Open Check Atomic Parts over this dialog, on the parts the commit check refused (D-07)."""
+        if self._closing:
+            return
+        if self._atomic_dialog is not None:
+            self._atomic_dialog.raise_()
+            self._atomic_dialog.activateWindow()
+            return
+        probe = self._commit_probe
+        if probe is None or probe.gate is None:
+            return
+        dialog = AtomicCheckDialog(
+            scan_result_for(probe.gate),
+            self._repo_root,
+            focus=(rel_path, name),
+            backup_root=self._atomic_backup_root,
+            parent=self,
+        )
+        dialog.issues_logged.connect(self.issues_logged.emit)
+        dialog.finished.connect(self._on_atomic_dialog_finished)
+        self._atomic_dialog = dialog
+        dialog.open()
+
+    def _on_atomic_dialog_finished(self, _result: int):
+        dialog, self._atomic_dialog = self._atomic_dialog, None
+        if dialog is not None:
+            dialog.deleteLater()
 
     def _on_switch_requested(self):
         """Switch Custom to main on a worker (D-15); only the click on Switch to main gets here."""
@@ -2940,12 +3021,12 @@ class ImportDialog(QDialog):
             return
         if self._closing or panel is None or cplan is None or probe is None:
             return
-        core = self._core
+        core, fp_dir = self._core, self._kicad_fp_dir
         panel.set_committing()
         # The message goes through exactly as typed (D-20); expected_branch is the branch the probe showed
         worker = self._spawn(
             lambda progress, cp=cplan, m=message, b=bump_parent, br=probe.branch: core.run_commit(
-                cp, m, b, expected_branch=br, progress=progress
+                cp, m, b, expected_branch=br, progress=progress, kicad_fp_dir=fp_dir
             )
         )
         self._set_git_worker(worker)
@@ -3063,6 +3144,9 @@ class ImportDialog(QDialog):
         self._closing = True
         for event in self._probe_cancels:
             event.set()  # the probe stops between git calls, so the wait below is short (IN-02)
+        atomic, self._atomic_dialog = self._atomic_dialog, None
+        if atomic is not None:
+            atomic.reject()  # a check dialog open over this one closes with it
         self._debounce.stop()
         self._busy_timer.stop()
         self._oneoff_jobs.clear()
