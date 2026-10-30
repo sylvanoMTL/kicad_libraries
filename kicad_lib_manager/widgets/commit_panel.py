@@ -26,13 +26,11 @@ _MESSAGE_LINES = 7
 _PREVIEW_LINES = 5
 _OUTPUT_LINES = 8  # lines of git output shown before the box scrolls
 _EARLIER_SHOWN = 10  # earlier Custom commits listed before "...and k more"
+_GATE_LINES_SHOWN = 10  # refusal lines listed before "...and k more"
 _PARENT_TEXT = "Also commit the Custom ref in the parent repo"
 _COMMITTED_CUSTOM_ONLY = "Committed in Custom only"  # the button text after a partial result (D-17)
 _MANUAL_PREFIX = "Finish it by hand"  # starts both manual labels (with and without the PowerShell words)
-_WARNING_NOISE ="warning: in the working copy of"  # line-ending notices git prints for every file (Pitfall 6)
-_STATES = (
-    "probing", "unavailable", "refused", "gated", "offer_switch", "switching", "ready", "committing", "done", "failed"
-)
+_WARNING_NOISE = "warning: in the working copy of"  # line-ending notices git prints for every file (Pitfall 6)
 _GLYPHS = {Severity.SUCCESS: "✓ ", Severity.ERROR: "✖ ", Severity.WARNING: "⚠ "}
 _STRIP_PREFIX = {"unavailable": "Commit unavailable: ", "refused": "Commit refused: ", "gated": "Commit refused: "}
 _PARENT_ONLY_LABEL = "Commit parent ref"  # the button when only the parent's Custom ref can be committed (D-14)
@@ -561,8 +559,8 @@ class CommitPanel(QWidget):
         gated = probe.state == "gated"
         gate = probe.gate
         lines = failure_lines(gate) if gated and gate is not None and gate.refused else []
-        if len(lines) > _EARLIER_SHOWN:
-            lines = [*lines[:_EARLIER_SHOWN], f"…and {len(lines) - _EARLIER_SHOWN} more"]
+        if len(lines) > _GATE_LINES_SHOWN:
+            lines = [*lines[:_GATE_LINES_SHOWN], f"…and {len(lines) - _GATE_LINES_SHOWN} more"]
         self._gate_lines.setText("\n".join(lines))
         self._gate_lines.setVisible(bool(lines))
         self._check_again_button.setVisible(gated)
@@ -656,7 +654,6 @@ class CommitPanel(QWidget):
 
     def _set_state(self, state: str):
         self._state = state
-        ready = state == "ready"
         editable = state in ("ready", "gated")  # a refused commit still lets the user prepare the message (D-06)
         self._message.setReadOnly(not editable)
         self._parent_check.setEnabled(editable and self._probe is not None and self._probe.parent_ok)
@@ -747,7 +744,7 @@ class CommitPanel(QWidget):
     def _on_open_check_clicked(self):
         gate = self._probe.gate if self._probe is not None else None
         if self._state == "gated" and gate is not None and gate.blocking:
-            first = gate.blocking[0]
+            first = gate.first_failure
             self.open_check_requested.emit(first.rel_path, first.part)
 
     def _on_switch_clicked(self):
