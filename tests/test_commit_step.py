@@ -415,7 +415,7 @@ def test_probe_identity_unknown_unavailable(tmp_path):
     probe = commit_step.probe_commit(_plan(repos), git=_answering({"var": (128, b"")}))
 
     assert probe.state == "unavailable"
-    assert probe.reason == "git does not know who you are: set user.name and user.email"
+    assert probe.reason == IDENTITY_REASON
     assert _issue_triples(probe) == _unavailable_issue(probe.reason)
 
 
@@ -424,6 +424,75 @@ def test_probe_identity_known_by_default(tmp_path):
     repos = make_superproject(tmp_path / "git")
 
     assert commit_step.probe_commit(_plan(repos), git=_ctx()).state == "ready"
+
+
+IDENTITY_REASON = (
+    "git does not know who you are: set user.name and user.email, or "
+    "GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME and GIT_COMMITTER_EMAIL"
+)
+_IDENTITY_VARS = (
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+)  # fmt: skip
+_ENV_AUTHOR = {"GIT_AUTHOR_NAME": "Env Author", "GIT_AUTHOR_EMAIL": "author@example.invalid"}
+_ENV_COMMITTER = {"GIT_COMMITTER_NAME": "Env Committer", "GIT_COMMITTER_EMAIL": "committer@example.invalid"}
+
+
+def _isolate_identity(monkeypatch, repos, home):
+    """No identity in any config: the repo-local one is removed, HOME is empty and the variables are unset."""
+    home.mkdir(parents=True, exist_ok=True)
+    repos.git(repos.custom, "config", "--unset", "user.name")
+    repos.git(repos.custom, "config", "--unset", "user.email")
+    repos.git(repos.custom, "config", "user.useConfigOnly", "true")
+    for name in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME"):
+        monkeypatch.setenv(name, str(home))
+    monkeypatch.delenv("EMAIL", raising=False)
+    for name in _IDENTITY_VARS:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+
+
+@requires_git
+def test_probe_identity_message_names_variables(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "unavailable"
+    assert probe.reason == IDENTITY_REASON
+    assert "GIT_AUTHOR_NAME" in probe.reason and "user.name" in probe.reason
+
+
+@requires_git
+def test_env_identity_probe_and_commit(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+    for name, value in {**_ENV_AUTHOR, **_ENV_COMMITTER}.items():
+        monkeypatch.setenv(name, value)
+    plan = _plan(repos)
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=_ctx())
+
+    assert probe.state == "ready", probe.reason
+    assert not outcome.failed, outcome.issues
+    assert outcome.custom_commit is not None and outcome.parent_commit is not None
+    assert repos.git(repos.custom, "log", "-1", "--format=%an <%ae>").strip() == "Env Author <author@example.invalid>"
+    assert repos.git(repos.parent, "log", "-1", "--format=%an <%ae>").strip() == "Env Author <author@example.invalid>"
+
+
+@requires_git
+def test_probe_with_only_committer_variables_is_unavailable(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+    for name, value in _ENV_COMMITTER.items():
+        monkeypatch.setenv(name, value)
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "unavailable"
+    assert probe.reason == IDENTITY_REASON  # no more "ready" followed by a failed commit
 
 
 # -- the parent repo: reported, never blocking the Custom commit (D-16, D-17a) ---
