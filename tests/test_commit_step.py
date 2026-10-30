@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
-from customfixtures import atomic_lib, atomic_part, write_atomic_files
+from customfixtures import atomic_lib, atomic_part, digest_custom, write_atomic_files
 from gitfixtures import (
     GIT,
     advance_remote_main,
@@ -37,7 +37,7 @@ from zipfixtures import footprint_library_for
 
 from kicad_lib_manager import gitops
 from kicad_lib_manager.gitops import GitContext
-from kicad_lib_manager.importer import commit_step
+from kicad_lib_manager.importer import commit_plan, commit_step
 from kicad_lib_manager.importer.commit_plan import NEW_PLACEHOLDER, default_message, parent_preview, subject_of
 from kicad_lib_manager.models import Severity
 
@@ -1696,3 +1696,144 @@ def test_precheck_stale_points_to_check_again(tmp_path):
     issue = _single_error(outcome, "commit.stale_file")
     assert "Click Check again" in issue.text and "commit by hand" not in issue.text
     assert f"Custom/{FP_NEW}" in issue.text
+
+
+# -- Check again: re-baseline the changed files, judge the new content, show what changed (D-08, D-09) ----
+
+
+def _edited_plan(tmp_path):
+    """An atomic superproject whose install wrote one new part; returns (repos, good part, plan)."""
+    repos = _atomic_repos(tmp_path)
+    good = atomic_part("PASSING-1")
+    plan = _gate_plan(repos, good, atomic_part("NEW-A"), head_parts=(good,))
+    return repos, good, plan
+
+
+def _planned(plan, rel=GATE_REL):
+    return next(f for f in plan.files if f.rel == rel)
+
+
+@requires_git
+def test_recheck_rebaselines_then_commits(tmp_path):
+    repos, good, plan = _edited_plan(tmp_path)
+    edited = atomic_lib((good, atomic_part("NEW-B")))
+    (repos.custom / GATE_REL).write_bytes(edited)
+    ctx = _ctx()
+    assert commit_step.probe_commit(plan, git=ctx).state == "gated"
+
+    new_plan, probe = commit_step.recheck_commit(plan, git=ctx)
+
+    changed = _planned(new_plan)
+    assert changed.note == "changed" and changed.expected_sha256 == hashlib.sha256(edited).hexdigest()
+    assert changed.installed == _planned(plan).installed
+    assert probe.state == "ready" and probe.stale == ()
+    outcome = commit_step.run_commit(new_plan, MESSAGE, False, git=ctx)
+    assert outcome.committed and not outcome.failed
+    assert gitops.head_blob(ctx, repos.custom, GATE_REL) == edited
+
+
+@requires_git
+def test_recheck_gate_runs_on_new_content(tmp_path):
+    repos, good, plan = _edited_plan(tmp_path)
+    (repos.custom / GATE_REL).write_bytes(atomic_lib((good, atomic_part("NEW-B", drop=("Datasheet",)))))
+
+    _, probe = commit_step.recheck_commit(plan, git=_ctx())
+
+    assert probe.state == "gated" and probe.stale == ()
+    assert probe.gate is not None and [f.part for f in probe.gate.blocking] == ["NEW-B"]
+
+
+@requires_git
+def test_change_after_recheck_refused_again(tmp_path):
+    repos, good, plan = _edited_plan(tmp_path)
+    (repos.custom / GATE_REL).write_bytes(atomic_lib((good, atomic_part("NEW-B"))))
+    ctx, calls = _recording_ctx()
+    new_plan, probe = commit_step.recheck_commit(plan, git=ctx)
+    assert probe.state == "ready"
+
+    (repos.custom / GATE_REL).write_bytes(atomic_lib((good, atomic_part("NEW-C"))))
+    outcome = commit_step.run_commit(new_plan, MESSAGE, True, git=ctx)
+
+    issue = _single_error(outcome, "commit.stale_file")
+    assert "Click Check again" in issue.text
+    assert _writes(calls) == []
+
+
+@requires_git
+def test_recheck_writes_nothing(tmp_path):
+    repos, good, plan = _edited_plan(tmp_path)
+    (repos.custom / GATE_REL).write_bytes(atomic_lib((good, atomic_part("NEW-B"))))
+    before = digest_custom(repos.custom)
+    heads = (_head(repos), repos.git(repos.parent, "rev-parse", "HEAD").strip())
+    ctx, calls = _recording_ctx()
+
+    commit_step.recheck_commit(plan, git=ctx)
+
+    assert not {"add", "reset", "commit", "switch"} & set(_subcommands(calls))
+    assert digest_custom(repos.custom) == before
+    assert (_head(repos), repos.git(repos.parent, "rev-parse", "HEAD").strip()) == heads
+
+
+@requires_git
+def test_recheck_without_git_returns_the_plan_and_an_unavailable_probe(tmp_path, monkeypatch):
+    _, _, plan = _edited_plan(tmp_path)
+    monkeypatch.setattr("kicad_lib_manager.gitops.shutil.which", lambda name: None)
+
+    new_plan, probe = commit_step.recheck_commit(plan)
+
+    assert probe.state == "unavailable" and new_plan is plan
+
+
+@requires_git
+def test_changed_diff_text_file(tmp_path):
+    repos, good, plan = _edited_plan(tmp_path)
+    (repos.custom / GATE_REL).write_bytes(atomic_lib((good, atomic_part("NEW-B"))))
+    new_plan, _ = commit_step.recheck_commit(plan, git=_ctx())
+
+    content = commit_step.changed_diff(new_plan, GATE_REL, git=_ctx())
+
+    assert content.kind == "diff"
+    assert content.title == f"Custom/{GATE_REL} - as installed vs now"
+    lines = content.body.splitlines()
+    assert any(line.startswith("+") and "NEW-B" in line for line in lines)
+    assert any(line.startswith("-") and "NEW-A" in line for line in lines)
+
+
+@requires_git
+def test_changed_diff_model_is_binary(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = import_files(repos, {MODEL_OLD: b"installed model\n"})
+    (repos.custom / MODEL_OLD).write_bytes(b"edited model bytes\n")
+    new_plan, _ = commit_step.recheck_commit(plan, git=_ctx())
+
+    content = commit_step.changed_diff(new_plan, MODEL_OLD, git=_ctx())
+
+    assert content.kind == "binary"
+    assert content.title == f"Custom/{MODEL_OLD} - as installed vs now"
+    assert hashlib.sha256(b"edited model bytes\n").hexdigest() in content.body
+    assert "KiB" in content.body
+
+
+@requires_git
+def test_changed_diff_added_file_shows_head_against_now(tmp_path):
+    repos = _atomic_repos(tmp_path)
+    good = atomic_part("PASSING-1")
+    plan = _gate_plan(repos, good, atomic_part("NEW-A"), head_parts=(good,))
+    other = f"Symbols/{LIB}.kicad_sym"
+    head_bytes = (repos.custom / other).read_bytes()
+    (repos.custom / other).write_bytes(head_bytes + b"; a fix wrote this\n")
+    added = commit_plan.with_added_files(plan, [(other, "symbol_lib", hashlib.sha256(head_bytes).hexdigest())])
+
+    content = commit_step.changed_diff(added, other, git=_ctx())
+
+    assert content.kind == "diff" and content.title == f"Custom/{other} - HEAD vs now"
+    assert any(line.startswith("+") and "a fix wrote this" in line for line in content.body.splitlines())
+
+
+@requires_git
+def test_changed_diff_unknown_file_is_an_error(tmp_path):
+    _, _, plan = _edited_plan(tmp_path)
+
+    content = commit_step.changed_diff(plan, "Symbols/Nope.kicad_sym", git=_ctx())
+
+    assert content.kind == "error"
