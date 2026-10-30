@@ -167,6 +167,61 @@ def test_only_known_modules_import_subprocess():
 # -- a whole commit, against real git ------------------------------------------
 
 
+IDENTITY_NAMES = (
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+)  # fmt: skip
+ENV_IDENTITY = {
+    "GIT_AUTHOR_NAME": "Env Author",
+    "GIT_AUTHOR_EMAIL": "author@example.invalid",
+    "GIT_COMMITTER_NAME": "Env Committer",
+    "GIT_COMMITTER_EMAIL": "committer@example.invalid",
+}
+ATOMIC_FP = "Footprints/Atomic_Footprints.pretty/ENV1.kicad_mod"
+
+
+def _clear_identity(monkeypatch):
+    for name in IDENTITY_NAMES:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+
+
+def _isolate_identity(monkeypatch, repos, home):
+    """Leave no identity in any config: the repo-local one is removed, HOME is empty and the variables are unset."""
+    home.mkdir(parents=True, exist_ok=True)
+    repos.git(repos.custom, "config", "--unset", "user.name")
+    repos.git(repos.custom, "config", "--unset", "user.email")
+    repos.git(repos.custom, "config", "user.useConfigOnly", "true")
+    for name in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME"):
+        monkeypatch.setenv(name, str(home))
+    monkeypatch.delenv("EMAIL", raising=False)
+    _clear_identity(monkeypatch)
+
+
+def _set_identity(monkeypatch, **values):
+    for name, value in values.items():
+        monkeypatch.setenv(name, value)
+
+
+@requires_git
+def test_commit_with_identity_from_environment_only(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+    ctx = GitContext(Path(GIT))
+    import_files(repos, {ATOMIC_FP: b'(footprint "ENV1")\n'})
+    assert gitops.add_intent(ctx, repos.custom, [ATOMIC_FP]).returncode == 0  # commit --only knows new files by intent
+
+    refused = gitops.commit_paths(ctx, repos.custom, "Env identity", [ATOMIC_FP])
+    assert isinstance(refused, Issue) or refused.returncode != 0, "no identity anywhere, so the commit must fail"
+
+    _set_identity(monkeypatch, **ENV_IDENTITY)
+    done = gitops.commit_paths(ctx, repos.custom, "Env identity", [ATOMIC_FP])
+
+    assert not isinstance(done, Issue) and done.returncode == 0, getattr(done, "output", done)
+    line = repos.git(repos.custom, "log", "-1", "--format=%an <%ae>|%cn <%ce>").strip()
+    assert line == "Env Author <author@example.invalid>|Env Committer <committer@example.invalid>"
+
+
 @requires_git
 def test_full_commit_never_contacts_a_remote(tmp_path):
     repos = make_superproject(tmp_path / "git")

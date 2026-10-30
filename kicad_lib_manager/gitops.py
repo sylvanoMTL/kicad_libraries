@@ -1,6 +1,6 @@
 """The only module that starts a git process (Phase 6, GIT-05).
 
-Every git call goes through run_git: a fixed argv shape, no shell, no inherited GIT_* variables
+Every git call goes through run_git: a fixed argv shape, no shell, no inherited GIT_* variable except the author and committer identity
 and a subcommand allow-list that holds nothing which talks to another repository.
 Hooks always run and --no-verify is never passed (D-06). Decisions use exit codes and plumbing
 output, never stderr text. Qt-free; imports only models.
@@ -34,6 +34,15 @@ _BUSY_MARKERS = (
     ("BISECT_LOG", "a bisect"),
 )
 _VERSION_RE = re.compile(r"git version (\d+(?:\.\d+)*)")
+# the only GIT_* variables handed on from the user's session: the ones git-commit documents as its identity inputs
+_IDENTITY_VARS = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
 
 
 @dataclass(frozen=True)
@@ -72,8 +81,10 @@ def find_git(repo_root: Path, *, which: Callable[[str], str | None] | None = Non
 
 
 def _env() -> dict[str, str]:
-    """The app's environment without any GIT_* variable (a stray GIT_DIR or GIT_INDEX_FILE would redirect every call)."""
+    """The app's environment: the author and committer identity is kept, every other GIT_* variable is stripped."""
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    # a stray GIT_DIR or GIT_INDEX_FILE would redirect every call, so only the identity comes back
+    env.update({k.upper(): v for k, v in os.environ.items() if k.upper() in _IDENTITY_VARS})
     env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_EDITOR": "true", "LC_ALL": "C"})
     return env
 
