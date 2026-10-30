@@ -330,7 +330,7 @@ def test_panel_committing_locks_inputs(qtbot, tmp_path):
     assert not panel._step_row.isHidden()
     bar = panel._step_row.findChild(QProgressBar)
     assert bar.minimum() == bar.maximum() == 0
-    assert bar.minimumSize() == bar.maximumSize() == QSize(240, 16)
+    assert bar.minimumSize() == bar.maximumSize() == QSize(theme.SP_XL * 8, theme.SP_MD)
     panel.commit_button.click()
     panel._on_commit_clicked()
     assert len(requests) == 1
@@ -398,6 +398,7 @@ def test_panel_partial_failure_keeps_hash_no_retry(qtbot, tmp_path):
     panel.show_outcome(outcome)
 
     assert panel.state() == "failed"
+    assert panel.commit_button.text() == "Committed in Custom only"
     lines = panel.outcome_lines()
     assert "✓ Committed abc1234 on main in Custom" in lines
     assert "✖ The Custom commit abc1234 was kept, but the parent commit failed (git exit 1)." in lines
@@ -585,3 +586,108 @@ def test_panel_long_paths_elide_with_tooltip(qtbot, tmp_path):
     assert panel._parent_label.full_text().startswith("Parent repo: ") and "p" * 200 in panel._parent_label.full_text()
     assert "p" * 200 in panel._parent_label.toolTip()
     assert long_name in panel._files_list.item(0).toolTip()
+
+
+# -- UI-02: primary Commit, tinted outcome strip, honest partial label, theme sizes ----------------
+
+
+def partial_outcome():
+    manual = 'git -C "C:/x" commit -m "Update Custom: Add P to L" -- Custom'
+    return make_outcome(
+        custom_commit="abc1234",
+        manual_command=manual,
+        output="hook said no",
+        issues=(
+            issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom"),
+            issue(Severity.ERROR, "commit.parent_failed", "The Custom commit abc1234 was kept, but the parent commit failed"),
+        ),
+    )
+
+
+def test_panel_commit_button_primary(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+
+    assert panel.commit_button.styleSheet() == theme.PRIMARY_BUTTON_QSS
+    assert panel._switch_button.styleSheet() == ""
+
+
+def test_panel_outcome_tint_success(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+
+    panel.show_outcome(make_outcome(issues=(
+        issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom"),
+        issue(Severity.INFO, "commit.not_pushed", "Not pushed"),
+    )))
+
+    assert theme.SUCCESS_TINT in panel._outcome_frame.styleSheet()
+    assert not panel._outcome_frame.isHidden()
+    assert theme.SUCCESS in panel._outcome_labels[0].styleSheet()
+
+
+def test_panel_outcome_tint_error(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+    panel.show_outcome(partial_outcome())
+    assert theme.ERROR_TINT in panel._outcome_frame.styleSheet()
+    assert panel._outcome_frame.objectName() == "outcomeStrip"
+
+    refused, _ = ready_panel(qtbot, tmp_path)
+    refused.set_committing()
+    refused.show_outcome(make_outcome(issues=(issue(Severity.ERROR, "commit.stale_file", "Not committed: x"),)))
+    assert theme.ERROR_TINT in refused._outcome_frame.styleSheet()
+
+    switching = CommitProbe(state="offer_switch", head="abc1234def", reason="Custom is on a detached HEAD at abc1234.")
+    other, _ = new_panel(qtbot, tmp_path, switching)
+    other.show_switch_failed("git refused to switch Custom to main\nerror: x")
+    assert theme.ERROR_TINT in other._outcome_frame.styleSheet()
+
+
+def test_panel_outcome_tint_warning(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+
+    panel.show_outcome(make_outcome(issues=(
+        issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom"),
+        issue(Severity.WARNING, "commit.parent_skipped", "The parent repo was left alone"),
+    )))
+
+    assert theme.AMBER_TINT in panel._outcome_frame.styleSheet()
+    assert theme.ERROR_TINT not in panel._outcome_frame.styleSheet()
+
+
+def test_panel_outcome_frame_hidden_when_empty(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    assert panel._outcome_frame.isHidden()
+    panel.set_committing()
+    panel.show_outcome(partial_outcome())
+    assert not panel._outcome_frame.isHidden()
+
+    panel.show_plan(make_cplan(tmp_path))
+
+    assert panel._outcome_frame.isHidden()
+    assert panel._outcome_frame.styleSheet() == ""
+
+
+def test_panel_failed_label_custom_only(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+
+    panel.show_outcome(partial_outcome())
+
+    assert panel.state() == "failed"
+    assert not panel.commit_button.isEnabled()
+    assert panel.commit_button.text() == "Committed in Custom only"
+    lines = panel.outcome_lines()
+    assert lines[0].startswith("✓ ") and lines[1].startswith("✖ ")
+
+
+def test_panel_sizes_on_theme_scale(qtbot, tmp_path):
+    panel = CommitPanel()
+    qtbot.addWidget(panel)
+
+    assert panel._progress.width() == theme.SP_XL * 8
+    assert panel._progress.height() == theme.SP_MD
+    panel.show_plan(make_cplan(tmp_path, 0))
+    files = panel._files_list
+    assert files.height() == files.fontMetrics().height() + theme.SP_SM + 2 * files.frameWidth()
