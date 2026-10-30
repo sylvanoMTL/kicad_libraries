@@ -14,6 +14,7 @@ from pathlib import Path
 from .. import gitops
 from ..gitops import GitContext, GitRun
 from ..models import Issue, Severity
+from .commit_gate import CANCELLED, GateResult
 from .commit_plan import (
     CommitPlan,
     changed_since_install,
@@ -24,10 +25,16 @@ from .commit_plan import (
 )
 from .content import ContentText, binary_text, diff_text
 
+CANCELLED_REASON = CANCELLED
+
 
 @dataclass(frozen=True)
 class CommitProbe:
-    """What the probe found. state: "ready" | "unavailable" | "refused" | "offer_switch"."""
+    """What the probe found. state: "ready" | "gated" | "unavailable" | "refused" | "offer_switch".
+
+    "gated" means Custom could be committed to, but a planned file changed after the install (stale names
+    them): the panel asks for Check again before anything else.
+    """
 
     state: str
     reason: str = ""
@@ -46,6 +53,10 @@ class CommitProbe:
     dirty_before: frozenset[str] = frozenset()
     other_changes: int = 0
     issues: tuple[Issue, ...] = ()
+    stale: tuple[str, ...] = ()  # display paths of planned files that changed after the install (D-08, D-09)
+    identical: frozenset[str] = frozenset()  # planned rels whose bytes already equal HEAD (D-13)
+    all_identical: bool = False  # every planned file equals HEAD: no Custom commit is possible (D-14)
+    gate: GateResult | None = None  # filled by the panel's atomic gate (plan 11-08)
 
 
 @dataclass(frozen=True)
@@ -191,14 +202,29 @@ def _identical_to_head(ctx: GitContext, cplan: CommitPlan, cancelled: Callable[[
     return frozenset(found)
 
 
-def _dirty_before(ctx: GitContext, cplan: CommitPlan) -> frozenset[str]:
+def _is_cancelled(cancelled: Callable[[], bool] | None) -> bool:
+    return cancelled is not None and bool(cancelled())
+
+
+def stale_text(stale: tuple[str, ...]) -> str:
+    """The plain-language reason for files that changed after the install (D-08, D-09)."""
+    return (
+        f"{', '.join(stale)} changed after the install or the last check (for example, edited in KiCad). "
+        "Click Check again to use the current content."
+    )
+
+
+def _dirty_before(ctx: GitContext, cplan: CommitPlan, cancelled: Callable[[], bool] | None = None) -> frozenset[str]:
     """Files the install changed that already differed from HEAD, or were not in HEAD, before it ran (D-09).
 
     base_sha256 None means the install created the file: never dirty. Otherwise the hash of what HEAD
-    would put in the work tree is compared with the content the install replaced.
+    would put in the work tree is compared with the content the install replaced. Stops early and
+    returns what is known once cancelled() is True.
     """
     dirty = set()
     for file in cplan.files:
+        if _is_cancelled(cancelled):
+            break
         if file.base_sha256 is None:
             continue
         blob = gitops.head_blob(ctx, cplan.custom_dir, file.rel)
@@ -231,11 +257,28 @@ def _earlier(
     return (tuple(pairs), True) if pairs is not None else ((), False)
 
 
-def _preexisting(ctx: GitContext, cplan: CommitPlan, head: str) -> dict:
-    """The probe fields about the parent repo and about what was already there before the import."""
+def _preexisting(
+    ctx: GitContext, cplan: CommitPlan, head: str, cancelled: Callable[[], bool] | None = None
+) -> dict | None:
+    """The probe fields about the parent repo and about what was already there before the import.
+
+    None when cancelled() turned True: the caller then reports the probe as cancelled.
+    """
     parent_ok, parent_reason, parent_branch, gitlink_old = _parent_state(ctx, cplan)
+    if _is_cancelled(cancelled):
+        return None
     others, issues = _other_changes(ctx, cplan)
+    if _is_cancelled(cancelled):
+        return None
     earlier, listed = _earlier(ctx, cplan, gitlink_old, head)
+    if _is_cancelled(cancelled):
+        return None
+    dirty = _dirty_before(ctx, cplan, cancelled)
+    if _is_cancelled(cancelled):
+        return None
+    identical = _identical_to_head(ctx, cplan, cancelled)
+    if _is_cancelled(cancelled):
+        return None
     return dict(
         parent_dir=cplan.repo_root,
         parent_ok=parent_ok,
@@ -244,23 +287,38 @@ def _preexisting(ctx: GitContext, cplan: CommitPlan, head: str) -> dict:
         gitlink_old=gitlink_old,
         earlier=earlier,
         earlier_listed=listed,
-        dirty_before=_dirty_before(ctx, cplan),
+        dirty_before=dirty,
         other_changes=others,
         issues=issues,
+        stale=changed_since_install(cplan),
+        identical=identical,
+        all_identical=bool(cplan.files) and identical == {f.rel for f in cplan.files},
     )
 
 
-def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitProbe:
-    """Read the git state of Custom and the parent repo; nothing is changed."""
+def probe_commit(
+    cplan: CommitPlan, *, git: GitContext | None = None, cancelled: Callable[[], bool] | None = None
+) -> CommitProbe:
+    """Read the git state of Custom and the parent repo; nothing is changed.
+
+    cancelled is checked between the git steps, so a closing dialog waits for at most one running git
+    call; once it is True the probe returns state "unavailable" with CANCELLED_REASON.
+    """
     ctx = _context(cplan, git)
     if isinstance(ctx, Issue):
         return _unavailable("unavailable", ctx.text)
+    if _is_cancelled(cancelled):
+        return _unavailable("unavailable", CANCELLED_REASON)
     reason = _custom_unavailable(ctx, cplan)
     if reason:
         return _unavailable("unavailable", reason)
+    if _is_cancelled(cancelled):
+        return _unavailable("unavailable", CANCELLED_REASON)
     custom = cplan.custom_dir
     branch = gitops.current_branch(ctx, custom)
     head = gitops.head_commit(ctx, custom) or ""
+    if _is_cancelled(cancelled):
+        return _unavailable("unavailable", CANCELLED_REASON)
     if branch is None:
         short = gitops.short_hash(ctx, custom) or head[:7] or "unknown"
         state, reason, ref, ahead = _detached_state(ctx, cplan, short)
@@ -269,16 +327,22 @@ def probe_commit(cplan: CommitPlan, *, git: GitContext | None = None) -> CommitP
                 state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead,
                 issues=(_probe_issue(state, reason),),
             )
-        return CommitProbe(
-            state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead, **_preexisting(ctx, cplan, head)
-        )
+        fields = _preexisting(ctx, cplan, head, cancelled)
+        if fields is None:
+            return _unavailable("unavailable", CANCELLED_REASON)
+        return CommitProbe(state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead, **fields)
 
+    fields = _preexisting(ctx, cplan, head, cancelled)
+    if fields is None:
+        return _unavailable("unavailable", CANCELLED_REASON)
+    stale = fields["stale"]
     return CommitProbe(
-        state="ready",
+        state="gated" if stale else "ready",  # a stale file is known before any click (D-08, D-09)
+        reason=stale_text(stale) if stale else "",
         branch=branch,
         head=head,
         not_main=branch != "main",  # a named branch is committed on as it is (D-14)
-        **_preexisting(ctx, cplan, head),
+        **fields,
     )
 
 
