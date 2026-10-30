@@ -472,26 +472,33 @@ Not a rename/refactor/migration phase. None of the five categories applies: no s
 | A5 | Refusing (not passing) when a committed `Atomic_` library cannot be read or parsed is the right default | Pattern 1 `problems` | A user with a corrupt library cannot commit that file from the panel; they can fix and Check again |
 | A6 | `%h` can be longer than 7 characters in a large repo while `_short()` uses `[:7]` | Pitfall 6 | Preview/commit text could differ only in the abbreviation length |
 
-## Open Questions
+## Open Questions (RESOLVED)
 
-1. **D-16 versus Windows PowerShell 5.1 (needs a user decision before the plan locks it)**
+All five questions were settled before or during execution. Each resolution below cites where it was decided and where it was built; none is new here.
+
+1. **D-16 versus Windows PowerShell 5.1** — RESOLVED
    - What we know: single quotes with `''` doubling are correct for `$`, backtick, `'` and mid-string `\` (E1 case A). They are **not** correct for `"` or a trailing `\` on 5.1 (E1 B, C). The success criterion says a subject with quotes "runs as shown when pasted".
    - What's unclear: which PowerShell the user pastes into (this machine: 5.1 only; Windows Terminal may default to 5.1 here).
    - Recommendation: build the command as D-16 says, but when the subject contains `"` (or any argument ends in `\`) write the full parent message to a file the app keeps (for example under the existing `%APPDATA%/KiCadExtLibManager/` area or the install backup folder) and print `git -C '<parent>' commit -F '<file>' -- 'Custom'`. Windows file names cannot contain `"`, so this form is safe on 5.1 and 7. It also fixes a second latent mismatch: the current manual command commits only the first line of the generated parent message. If the user prefers D-16 literally, document the 5.1 limitation in the "In PowerShell:" help text.
+   - **Resolution:** decided by the user in 11-CONTEXT.md D-16, "Amended 2026-10-29 (plan-phase, research OQ1)": single-quoted `-m` for normal subjects, `git commit -F '<file>'` with the message in a temporary file outside the repo when the subject holds `"` or ends in `\`. Built by plan 11-07 (11-07-SUMMARY.md: `manual_command(parent, custom_rel, message, *, windows=None, message_dir=None)`, the file written with `tempfile.mkstemp`).
 
-2. **D-10 scope: modified tracked footprints**
+2. **D-10 scope: modified tracked footprints** — RESOLVED
    - What we know: the check dialog's 3D fix edits a footprint file (adds the model line) and copies the `.step` into `Custom/3DModels/`. D-10 names "new, untracked" files; a **tracked, modified** footprint outside the list is also needed or the committed symbol links a footprint at HEAD that still lacks the model.
    - Recommendation: include tracked footprint files that a committed symbol links and that differ from `head_blob`, marked "added by a fix". Ask the user to confirm, since it widens D-10.
+   - **Resolution:** decided by the user in 11-CONTEXT.md D-10, "Amended 2026-10-29 (plan-phase, research OQ2)": "Check again" also adds a tracked footprint that a committed part links and that differs from HEAD. Built by plan 11-12 (11-12-SUMMARY.md, Task 2: tracked footprints that differ from HEAD join, with the HEAD blob's hash as base). The marker wording was later changed by gap plan 11-14 (IN-05).
 
-3. **Probe-time stale marker**
+3. **Probe-time stale marker** — RESOLVED
    - What we know: the probe does not call `changed_since_install` today; only `_precheck` does, so a stale file is discovered at the click.
    - Recommendation: compute it in the probe (cheap hash reads) so the "changed since install" amber marker and the Check again button appear before the click, matching D-08's "in the file list". Disable Commit with the reason in that case.
+   - **Resolution:** decided under Claude's discretion (11-CONTEXT.md, "Claude's Discretion") and recorded in plan 11-06 (11-06-PLAN.md truth "OQ3: the stale check moves into the probe"); built there (11-06-SUMMARY.md: "The stale check moved into the probe as state 'gated' (OQ3); _precheck keeps its own stale refusal").
 
-4. **New commit line when `gitlink_old` is None**
+4. **New commit line when `gitlink_old` is None** — RESOLVED
    - D-15 says "nothing earlier is listed" but is silent on the new commit's own line. Recommendation: list it (consistent with the `old`-present case). Confirm or drop.
+   - **Resolution:** decided under Claude's discretion and recorded in plan 11-03 ("Choice recorded (research Open Question 4, Claude's discretion)"); built there (11-03-SUMMARY.md: "No previous gitlink: the new Custom commit's own line is listed, matching the gitlink-present case (research OQ4)").
 
-5. **Parent-only bump semantics**
+5. **Parent-only bump semantics** — RESOLVED
    - Needs `CommitOutcome.parent_only` and a decision for `ImportDialog._log_not_committed` (which keys on `panel.committed()`), the button label ("Commit parent ref" suggested) and the panel's done state.
+   - **Resolution:** decided under Claude's discretion (D-14 leaves the label to Claude) across three executed plans. Plan 11-06: a parent-only bump keeps `committed` False and sets `parent_only` True (11-06-SUMMARY.md, "OQ5"). Plan 11-10: the button reads "Commit parent ref", and a parent-only outcome with a parent commit ends in the done state with `committed()` True (11-10-SUMMARY.md). Plan 11-13: `_log_not_committed` logs nothing for a parent-only or all-identical outcome (11-13-SUMMARY.md, `test_parent_only_bump_not_logged_and_not_reprobed`).
 
 ## Environment Availability
 
