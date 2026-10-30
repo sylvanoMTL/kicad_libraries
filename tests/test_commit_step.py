@@ -647,6 +647,94 @@ def test_unavailable_probe_leaves_defaults(tmp_path):
 
     assert probe.state == "unavailable"
     assert probe.dirty_before == frozenset() and probe.other_changes == 0 and probe.earlier == ()
+    assert probe.stale == () and probe.identical == frozenset() and probe.all_identical is False and probe.gate is None
+
+
+# -- stale and identical files, and the cancel hook, known before any click (D-08, D-09, D-13, IN-02) -------
+
+
+@requires_git
+def test_probe_stale_file_is_gated(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    (repos.custom / FP_NEW).write_bytes(b"edited in KiCad after the install\n")
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.state == "gated"
+    assert probe.stale == (f"Custom/{FP_NEW}",)
+    assert probe.branch == "main" and probe.head == _head(repos) and probe.parent_ok
+    assert probe.reason == commit_step.stale_text(probe.stale)
+    assert f"Custom/{FP_NEW}" in probe.reason and "Click Check again" in probe.reason
+
+
+@requires_git
+def test_probe_unchanged_files_are_not_gated(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "ready" and probe.stale == ()
+
+
+@requires_git
+@pytest.mark.parametrize("autocrlf", [True, False])
+def test_probe_reports_identical_files(tmp_path, autocrlf):
+    repos = make_superproject(tmp_path / "git", autocrlf=autocrlf)
+    plan = import_files(repos, {FP_NEW: b'(footprint "FP1")\n', SYM_FFC: _same_as_head(repos)})
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.state == "ready"
+    assert probe.identical == frozenset({SYM_FFC}) and probe.all_identical is False
+
+
+@requires_git
+@pytest.mark.parametrize("autocrlf", [True, False])
+def test_probe_all_identical(tmp_path, autocrlf):
+    repos = make_superproject(tmp_path / "git", autocrlf=autocrlf)
+    plan = import_files(repos, {SYM_FFC: _same_as_head(repos)})
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.identical == frozenset({SYM_FFC}) and probe.all_identical is True
+
+
+@requires_git
+def test_probe_cancelled_returns_unavailable(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    ctx, calls = _recording_ctx()
+
+    probe = commit_step.probe_commit(_plan(repos), git=ctx, cancelled=lambda: True)
+
+    assert probe.state == "unavailable" and probe.reason == "The check was cancelled"
+    assert commit_step.CANCELLED_REASON == "The check was cancelled"
+    assert not {"status", "cat-file"} & set(_subcommands(calls))
+
+
+@requires_git
+def test_probe_cancelled_after_three_git_calls_stops_early(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    ctx, calls = _recording_ctx()
+
+    probe = commit_step.probe_commit(_plan(repos), git=ctx, cancelled=lambda: len(calls) >= 3)
+
+    assert probe.state == "unavailable" and probe.reason == "The check was cancelled"
+    assert not {"status", "cat-file"} & set(_subcommands(calls))
+    full, full_calls = _recording_ctx()
+    assert commit_step.probe_commit(_plan(repos), git=full).state == "ready"
+    assert len(calls) < len(full_calls)
+
+
+@requires_git
+def test_probe_cancelled_between_preexisting_reads(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    ctx, calls = _recording_ctx()
+
+    probe = commit_step.probe_commit(_plan(repos), git=ctx, cancelled=lambda: "status" in _subcommands(calls))
+
+    assert probe.state == "unavailable" and probe.reason == "The check was cancelled"
+    assert "cat-file" not in _subcommands(calls)
 
 
 # -- refusals before any git write, and clean failures (D-03, D-06, D-11, D-16) -----------------------
@@ -829,6 +917,84 @@ def test_commit_timeout_reported(tmp_path):
     assert _subcommands(calls).count("commit") == 1 and _subcommands(calls).count("reset") == 1
     assert _head(repos) == before
     assert f"?? {FP_NEW}" in repos.git(repos.custom, "status", "--porcelain=v1", "-uall").splitlines()
+
+
+def _late_timeout_ctx():
+    """A context whose commit runs for real and then reports a timeout, like a hook that outlived the limit."""
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        done = subprocess.run(argv, **kwargs)
+        if argv[6] == "commit" and "-F" in argv and "--pathspec-from-file=-" in argv:
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+        return done
+
+    return GitContext(Path(GIT), runner), calls
+
+
+UNFINISHED = "Committed {short} in Custom, but git did not finish in time (a hook or signing step may still be running)"
+
+
+@requires_git
+def test_commit_timeout_after_head_moved_reports_commit(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    ctx, calls = _late_timeout_ctx()
+    parent_before = repos.git(repos.parent, "rev-parse", "HEAD").strip()
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=ctx)
+
+    assert outcome.committed and outcome.custom_commit == _short(repos)
+    assert not outcome.failed
+    (warning,) = [i for i in outcome.issues if i.code == "commit.custom_unfinished"]
+    assert warning.severity is Severity.WARNING
+    assert warning.text == UNFINISHED.format(short=_short(repos))
+    first_commit = _subcommands(calls).index("commit")
+    assert "reset" not in _subcommands(calls)[first_commit:]
+    assert repos.git(repos.parent, "rev-parse", "HEAD").strip() == parent_before
+    assert outcome.parent_commit is None and "commit" not in _subcommands(calls)[first_commit + 1 :]
+    assert outcome.manual_command and outcome.manual_command.endswith("-- Custom")
+    assert outcome.parent_message.startswith("Update Custom: ")
+    parent_warning = next(i for i in outcome.issues if i.code == "commit.parent_not_started")
+    assert parent_warning.severity is Severity.WARNING and outcome.manual_command in parent_warning.text
+
+
+@requires_git
+def test_commit_timeout_after_head_moved_without_parent(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    ctx, _ = _late_timeout_ctx()
+
+    outcome = commit_step.run_commit(_plan(repos), MESSAGE, False, git=ctx)
+
+    assert outcome.committed and not outcome.failed
+    assert outcome.manual_command == "" and outcome.parent_message == ""
+    assert [i.code for i in outcome.issues if i.severity is Severity.WARNING] == ["commit.custom_unfinished"]
+
+
+@requires_git
+def test_commit_slow_post_commit_hook_reports_commit(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    write_hook(repos, repos.custom, "post-commit", "#!/bin/sh\nsleep 5\n")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[6] == "commit" and "-F" in argv and "--pathspec-from-file=-" in argv:
+            kwargs["timeout"] = 2  # a real timeout while the hook still sleeps
+        return subprocess.run(argv, **kwargs)
+
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, False, git=GitContext(Path(GIT), runner))
+
+    assert _head(repos) != before
+    assert outcome.committed and outcome.custom_commit == _short(repos)
+    (warning,) = [i for i in outcome.issues if i.code == "commit.custom_unfinished"]
+    assert warning.text == UNFINISHED.format(short=_short(repos))
+    first_commit = _subcommands(calls).index("commit")
+    assert "reset" not in _subcommands(calls)[first_commit:]
 
 
 @requires_git
@@ -1017,6 +1183,85 @@ def test_post_commit_file_check_reports_mismatch(tmp_path):
     assert issue.severity is Severity.ERROR
     assert "Symbols/extra.kicad_sym" in issue.text and "was made" in issue.text
     assert outcome.custom_commit in issue.text or _short(repos) in issue.text
+
+
+ALREADY = "Already identical to HEAD, not in the commit: "
+
+
+def _same_as_head(repos, rel=SYM_FFC):
+    """The install rewrote this file with the very bytes HEAD holds."""
+    return (repos.custom / rel).read_bytes()
+
+
+@requires_git
+def test_identical_planned_file_is_info_and_parent_bumps(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = import_files(repos, {FP_NEW: b'(footprint "FP1")\n', SYM_FFC: _same_as_head(repos)})
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=_ctx())
+
+    assert not outcome.failed, outcome.issues
+    info = next(i for i in outcome.issues if i.code == "commit.already_in_head")
+    assert info.severity is Severity.INFO and info.text == ALREADY + f"Custom/{SYM_FFC}"
+    assert any(i.code == "commit.custom_done" and i.severity is Severity.SUCCESS for i in outcome.issues)
+    assert outcome.committed and outcome.parent_commit is not None and outcome.parent_only is False
+    assert repos.git(repos.custom, "show", "--name-only", "--format=", "HEAD").split() == [FP_NEW]
+
+
+@requires_git
+def test_all_identical_without_parent_refuses(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = import_files(repos, {SYM_FFC: _same_as_head(repos)})
+    ctx, calls = _recording_ctx()
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, False, git=ctx)
+
+    issue = _single_error(outcome, "commit.nothing_to_commit")
+    assert issue.text == "Not committed: Custom already holds these files."
+    assert outcome.custom_commit is None and _head(repos) == before
+    assert [name for name in _subcommands(calls) if name in ("add", "commit", "reset")] == []
+
+
+@requires_git
+def test_all_identical_parent_only_bump(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    old = repos.git(repos.parent, "rev-parse", "HEAD:Custom").strip()
+    commit_file(repos, repos.custom, "late.txt", b"late\n", "Late commit")
+    plan = import_files(repos, {SYM_FFC: _same_as_head(repos)})
+    ctx, calls = _recording_ctx()
+    custom_before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=ctx)
+
+    assert not outcome.failed, outcome.issues
+    assert outcome.parent_only is True and outcome.custom_commit is None and not outcome.committed
+    assert outcome.parent_commit is not None
+    assert _head(repos) == custom_before
+    assert _subcommands(calls).count("commit") == 1 and "add" not in _subcommands(calls)
+    assert any(i.code == "commit.already_in_head" and i.severity is Severity.INFO for i in outcome.issues)
+    assert outcome.parent_message.splitlines() == [
+        f"Update Custom: {MESSAGE}",
+        "",
+        f"Custom {old[:7]}..{_head(repos)[:7]}",
+        f"- {_short(repos)} Late commit",
+    ]
+    assert _body(repos, repos.parent) == outcome.parent_message.strip()
+
+
+@requires_git
+def test_all_identical_parent_only_failure_has_manual_command(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    commit_file(repos, repos.custom, "late.txt", b"late\n", "Late commit")
+    plan = import_files(repos, {SYM_FFC: _same_as_head(repos)})
+    write_hook(repos, repos.parent, "pre-commit", "#!/bin/sh\necho 'parent hook says no'\nexit 1\n")
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=_ctx())
+
+    issue = next(i for i in outcome.issues if i.code == "commit.parent_failed")
+    assert issue.text.startswith("The parent commit failed (") and "Finish it by hand: git -C" in issue.text
+    assert "was kept" not in issue.text and outcome.parent_only is True
+    assert outcome.manual_command.endswith("-- Custom")
 
 
 @requires_git
