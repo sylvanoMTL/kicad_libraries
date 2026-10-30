@@ -6,7 +6,11 @@ puts Custom in the state under test. Nothing here touches the real repository.
 
 import dataclasses
 import hashlib
+import json
+import os
+import re
 import shlex
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -925,6 +929,108 @@ def test_manual_command_posix_uses_shlex():
     q = shlex.quote
     assert command == f"git -C {q(parent.as_posix())} commit -m {q(_TRICKY_SUBJECT)} -- {q('Custom')}"
     assert shlex.split(command) == ["git", "-C", parent.as_posix(), "commit", "-m", _TRICKY_SUBJECT, "--", "Custom"]
+
+
+_DQUOTE_MESSAGE = 'Update Custom: Add "Foo"\n\nCustom abc..def\n- abc Add "Foo"'
+
+
+def test_manual_command_uses_message_file_for_double_quote(tmp_path):
+    parent = Path("C:/Repo")
+
+    command = commit_step.manual_command(parent, "Custom", _DQUOTE_MESSAGE, windows=True, message_dir=tmp_path)
+
+    match = re.fullmatch(r"git -C 'C:/Repo' commit -F '([^']+)' -- 'Custom'", command)
+    assert match, command
+    written = Path(match.group(1))
+    assert "\\" not in match.group(1) and written.suffix == ".txt" and written.parent == tmp_path
+    assert written.read_bytes() == _DQUOTE_MESSAGE.encode("utf-8")
+    assert '"' not in command
+
+
+def test_manual_command_uses_message_file_for_trailing_backslash(tmp_path):
+    message = "Update Custom: copy to C:\\data\\\n\nbody line"
+
+    command = commit_step.manual_command(Path("C:/Repo"), "Custom", message, windows=True, message_dir=tmp_path)
+
+    assert " -F '" in command and " -m " not in command
+    (written,) = tmp_path.iterdir()
+    assert written.read_bytes() == message.encode("utf-8")
+
+
+def test_manual_command_unicode_message_is_written_as_utf8(tmp_path):
+    message = 'Update Custom: Add "Zürich" \u2713'
+
+    command = commit_step.manual_command(Path("C:/Repo"), "Custom", message, windows=True, message_dir=tmp_path)
+
+    assert " -F '" in command
+    (written,) = tmp_path.iterdir()
+    assert written.read_bytes().decode("utf-8") == message
+
+
+def test_manual_command_posix_never_writes_a_file(tmp_path):
+    command = commit_step.manual_command(
+        Path("/repo"), "Custom", _DQUOTE_MESSAGE, windows=False, message_dir=tmp_path
+    )
+
+    assert " -m " in command and " -F " not in command
+    assert shlex.split(command)[5] == 'Update Custom: Add "Foo"'
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_manual_command_falls_back_to_m_form_when_the_file_cannot_be_written(tmp_path):
+    missing = tmp_path / "no" / "such" / "folder"
+
+    command = commit_step.manual_command(Path("C:/Repo"), "Custom", _DQUOTE_MESSAGE, windows=True, message_dir=missing)
+
+    assert " -m " in command and " -F " not in command
+
+
+_ECHO_SCRIPT = (
+    "import json, os, sys\n"
+    "with open(os.environ['KICAD_ECHO_OUT'], 'w', encoding='utf-8') as handle:\n"
+    "    json.dump(sys.argv[1:], handle)\n"
+)
+_POWERSHELL_SUBJECTS = (
+    "Update Custom: it's here",
+    "Update Custom: cost $x and $(calc)",
+    "Update Custom: a `tick` here",
+    "Update Custom: back\\slash in the middle",
+    'Update Custom: Add "Foo" part',
+    "Update Custom: ends with a slash\\",
+    "Update Custom: it\u2019s typographic",
+)
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="Windows PowerShell not found (the paste-safety test runs the generated command in it)",
+)
+@pytest.mark.parametrize("subject", _POWERSHELL_SUBJECTS)
+def test_manual_command_survives_real_powershell(subject, tmp_path):
+    parent = tmp_path / "parent repo"
+    message = f"{subject}\n\nCustom abc1234..def5678\n- def5678 {subject}"
+    script = tmp_path / "echo_args.py"
+    script.write_text(_ECHO_SCRIPT, encoding="utf-8")
+    out = tmp_path / "received.json"
+    command = commit_step.manual_command(parent, "Custom", message, windows=True, message_dir=tmp_path)
+    assert command.startswith("git ")
+    line = f"& {commit_step._ps_quote(sys.executable)} {commit_step._ps_quote(str(script))} {command[len('git '):]}"
+
+    done = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", line],
+        env={**os.environ, "KICAD_ECHO_OUT": str(out)},
+        capture_output=True, timeout=60,
+    )
+
+    assert done.returncode == 0, done.stderr.decode("utf-8", errors="replace")
+    received = json.loads(out.read_text(encoding="utf-8"))
+    if "-F" in received:
+        file = Path(received[received.index("-F") + 1])
+        assert received == ["-C", parent.as_posix(), "commit", "-F", file.as_posix(), "--", "Custom"]
+        assert file.read_bytes().decode("utf-8") == message
+        assert file.parent != parent and not file.is_relative_to(parent)
+    else:
+        assert received == ["-C", parent.as_posix(), "commit", "-m", subject, "--", "Custom"]
 
 
 def test_manual_label_names_the_shell():
