@@ -1,6 +1,6 @@
 """The only module that starts a git process (Phase 6, GIT-05).
 
-Every git call goes through run_git: a fixed argv shape, no shell, no inherited GIT_* variable except the author and committer identity
+Every git call goes through run_git: a fixed argv shape, no shell, no inherited GIT_* variable except the author and committer name and email
 and a subcommand allow-list that holds nothing which talks to another repository.
 Hooks always run and --no-verify is never passed (D-06). Decisions use exit codes and plumbing
 output, never stderr text. Qt-free; imports only models.
@@ -10,8 +10,9 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,14 +35,14 @@ _BUSY_MARKERS = (
     ("BISECT_LOG", "a bisect"),
 )
 _VERSION_RE = re.compile(r"git version (\d+(?:\.\d+)*)")
-# the only GIT_* variables handed on from the user's session: the ones git-commit documents as its identity inputs
+# the only GIT_* variables handed on from the user's session: the identity inputs git-commit reads.
+# The author and committer dates are not identity, and a stale exported date would stamp every commit
+# the app makes, so they are stripped like every other GIT_* variable.
 _IDENTITY_VARS = (
     "GIT_AUTHOR_NAME",
     "GIT_AUTHOR_EMAIL",
-    "GIT_AUTHOR_DATE",
     "GIT_COMMITTER_NAME",
     "GIT_COMMITTER_EMAIL",
-    "GIT_COMMITTER_DATE",
 )
 
 
@@ -80,11 +81,23 @@ def find_git(repo_root: Path, *, which: Callable[[str], str | None] | None = Non
     return path
 
 
-def _env() -> dict[str, str]:
-    """The app's environment: the author and committer identity is kept, every other GIT_* variable is stripped."""
-    env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+def _env(environ: Mapping[str, str] | None = None, *, windows: bool | None = None) -> dict[str, str]:
+    """The app's environment: the author and committer name and email are kept, every other GIT_* variable is stripped.
+
+    A differently cased identity name is promoted only on Windows, where the environment is case-insensitive;
+    elsewhere git ignores it, so it is dropped. An exact upper-case key always wins.
+    """
+    source = os.environ if environ is None else environ
+    fold_case = (sys.platform == "win32") if windows is None else windows
+    env = {k: v for k, v in source.items() if not k.upper().startswith("GIT_")}
     # a stray GIT_DIR or GIT_INDEX_FILE would redirect every call, so only the identity comes back
-    env.update({k.upper(): v for k, v in os.environ.items() if k.upper() in _IDENTITY_VARS})
+    for name in _IDENTITY_VARS:
+        if name in source:
+            env[name] = source[name]
+        elif fold_case:
+            folded = next((k for k in source if k.upper() == name), None)
+            if folded is not None:
+                env[name] = source[folded]
     env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_EDITOR": "true", "LC_ALL": "C"})
     return env
 

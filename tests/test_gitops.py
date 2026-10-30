@@ -113,16 +113,53 @@ def test_run_git_keeps_only_identity_variables(monkeypatch):
     _clear_identity(monkeypatch)
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_PARAMETERS"):
         monkeypatch.setenv(name, "elsewhere")
-    for name in IDENTITY_NAMES:
-        # two of the six arrive in lower case, which is how a Windows shell may spell them
-        key = name.lower() if name in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_DATE") else name
-        monkeypatch.setenv(key, f"value of {name}")
+    for name in IDENTITY_NAMES:  # the four name and email variables and both DATE variables
+        monkeypatch.setenv(name, f"value of {name}")
     runner, calls = _recorder()
     run_git(GitContext(Path("git"), runner), REPO, "--version")
     env = calls[0][1]["env"]
     git_keys = {key for key in env if key.upper().startswith("GIT_")}
-    assert git_keys == {*IDENTITY_NAMES, "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_EDITOR"}
-    assert all(env[name] == f"value of {name}" for name in IDENTITY_NAMES)
+    assert git_keys == {*KEPT_IDENTITY_NAMES, "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_EDITOR"}
+    assert all(env[name] == f"value of {name}" for name in KEPT_IDENTITY_NAMES)
+
+
+@pytest.mark.parametrize("windows", [True, False])
+def test_env_keeps_four_identity_names(windows):
+    environ = {
+        **{name: f"value of {name}" for name in KEPT_IDENTITY_NAMES},
+        "GIT_AUTHOR_DATE": "2001-02-03T04:05:06+0000",
+        "git_committer_date": "2001-02-03T04:05:06+0000",
+        "GIT_DIR": "elsewhere",
+        "GIT_INDEX_FILE": "elsewhere",
+        "git_work_tree": "elsewhere",
+        "GIT_CONFIG_GLOBAL": "elsewhere",
+        "PATH": "somewhere",
+    }
+    env = gitops._env(environ, windows=windows)
+    git_keys = {key for key in env if key.upper().startswith("GIT_")}
+    assert git_keys == {*KEPT_IDENTITY_NAMES, "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_EDITOR"}
+    assert all(env[name] == f"value of {name}" for name in KEPT_IDENTITY_NAMES)
+    assert env["PATH"] == "somewhere"
+
+
+def test_env_folds_case_only_on_windows():
+    environ = {"git_author_name": "low", "Git_Committer_Email": "c@example.invalid"}
+
+    folded = gitops._env(environ, windows=True)
+    assert folded["GIT_AUTHOR_NAME"] == "low" and folded["GIT_COMMITTER_EMAIL"] == "c@example.invalid"
+    assert not [k for k in folded if k.upper().startswith("GIT_") and k != k.upper()]
+
+    kept = gitops._env(environ, windows=False)
+    assert "GIT_AUTHOR_NAME" not in kept and "GIT_COMMITTER_EMAIL" not in kept
+    assert not [k for k in kept if k.upper().startswith("GIT_") and k != k.upper()]
+
+
+@pytest.mark.parametrize("windows", [True, False])
+@pytest.mark.parametrize("upper_first", [True, False])
+def test_env_exact_upper_case_wins(windows, upper_first):
+    pairs = [("GIT_AUTHOR_NAME", "UP"), ("git_author_name", "low")]
+    environ = dict(pairs if upper_first else reversed(pairs))
+    assert gitops._env(environ, windows=windows)["GIT_AUTHOR_NAME"] == "UP"
 
 
 def test_run_git_has_no_input_keyword():
@@ -195,6 +232,9 @@ IDENTITY_NAMES = (
     "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
     "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
 )  # fmt: skip
+KEPT_IDENTITY_NAMES = (
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
+)  # fmt: skip
 ENV_IDENTITY = {
     "GIT_AUTHOR_NAME": "Env Author",
     "GIT_AUTHOR_EMAIL": "author@example.invalid",
@@ -244,6 +284,27 @@ def test_commit_with_identity_from_environment_only(tmp_path, monkeypatch):
     assert not isinstance(done, Issue) and done.returncode == 0, getattr(done, "output", done)
     line = repos.git(repos.custom, "log", "-1", "--format=%an <%ae>|%cn <%ce>").strip()
     assert line == "Env Author <author@example.invalid>|Env Committer <committer@example.invalid>"
+
+
+@requires_git
+def test_commit_ignores_exported_dates(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+    ctx = GitContext(Path(GIT))
+    import_files(repos, {ATOMIC_FP: b'(footprint "ENV1")\n'})
+    assert gitops.add_intent(ctx, repos.custom, [ATOMIC_FP]).returncode == 0
+
+    _set_identity(monkeypatch, **ENV_IDENTITY)
+    _set_identity(monkeypatch, GIT_AUTHOR_DATE="2001-02-03T04:05:06+0000", GIT_COMMITTER_DATE="2001-02-03T04:05:06+0000")
+    done = gitops.commit_paths(ctx, repos.custom, "Env identity", [ATOMIC_FP])
+
+    assert not isinstance(done, Issue) and done.returncode == 0, getattr(done, "output", done)
+    line = repos.git(
+        repos.custom, "log", "-1", "--format=%an <%ae>|%cn <%ce>|%ad|%cd", "--date=format:%Y"
+    ).strip()
+    identity, author_year, committer_year = line.rsplit("|", 2)
+    assert identity == "Env Author <author@example.invalid>|Env Committer <committer@example.invalid>"
+    assert author_year != "2001" and committer_year != "2001", line
 
 
 @requires_git
