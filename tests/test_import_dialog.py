@@ -3957,6 +3957,37 @@ def test_changed_file_opens_changed_diff(qtbot, make_install_dialog):
     assert seen[2][:2] == ("changed", model_rel)
 
 
+def test_changed_and_dirty_file_opens_both_views(qtbot, make_install_dialog):
+    sym_rel = f"Symbols/{LIB}.kicad_sym"
+    seen: list[tuple[str, str, int]] = []
+
+    def changed(cplan, path, **kwargs):
+        seen.append(("changed", path, threading.get_ident()))
+        return ContentText(title=f"{path} - as installed vs now", header=path, body="-a\n+b", kind="diff")
+
+    def before_import(cplan, path, **kwargs):
+        seen.append(("before", path, threading.get_ident()))
+        return ContentText(title=f"{path} - HEAD vs before this import", header=path, body="-x\n+y", kind="diff")
+
+    probe = fake_ready_probe(stale=(f"Custom/{sym_rel}",), dirty_before=frozenset({sym_rel}))
+    dialog = make_install_dialog(probe_commit=probe, changed_diff=changed, pre_import_diff=before_import)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    files = panel._files_list
+    item = next(files.item(i) for i in range(files.count()) if files.item(i).data(Qt.ItemDataRole.UserRole) == sym_rel)
+    assert item.text() == f"⚠ Custom/{sym_rel} (changed since install; also changed before this import)"
+    files.itemActivated.emit(item)
+
+    view = wait_view(qtbot, dialog)
+    assert len(dialog._content_views) == 1
+    assert [(kind, path) for kind, path, _ in seen] == [("changed", sym_rel), ("before", sym_rel)]
+    assert seen[0][2] == seen[1][2] != threading.get_ident()
+    assert view.windowTitle() == f"{sym_rel} - changed since install and before this import"
+    text = view._text.toPlainText()
+    assert text.index("-a\n+b") < text.index("-x\n+y")
+
+
 def test_no_commit_step_for_noop_plan(qtbot, make_install_dialog, tmp_path):
     dialog = make_install_dialog()
     dialog._start_commit_step(types.SimpleNamespace(is_noop=True), fake_result(tmp_path))

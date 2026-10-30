@@ -1943,3 +1943,27 @@ def test_changed_diff_unknown_file_is_an_error(tmp_path):
     content = commit_step.changed_diff(plan, "Symbols/Nope.kicad_sym", git=_ctx())
 
     assert content.kind == "error"
+
+
+def test_combined_view_holds_both_sections():
+    from kicad_lib_manager.importer.content import ContentText
+
+    a = ContentText("X - as installed vs now", "X", "-a\n+b", "diff")
+    b = ContentText("X - HEAD vs before this import", "X", "The file matched HEAD before this import.", "unchanged")
+
+    both = commit_step.combined_view(a, b)
+
+    assert both.title == "X - changed since install and before this import"
+    assert both.header == "X"
+    assert both.body == (
+        "X - as installed vs now\n\n-a\n+b\n\nX - HEAD vs before this import\n\n"
+        "The file matched HEAD before this import."
+    )
+    assert both.kind == "diff"
+
+    binary = ContentText("t", "H", "bin", "binary")
+    assert commit_step.combined_view(binary, binary).kind == "binary"
+    error = ContentText("t", "H", "oops", "error")
+    unchanged = ContentText("t", "H", "same", "unchanged")
+    assert commit_step.combined_view(error, unchanged).kind == "text"
+    assert commit_step.combined_view(ContentText("t", "", "x", "text"), unchanged).header == "H"
