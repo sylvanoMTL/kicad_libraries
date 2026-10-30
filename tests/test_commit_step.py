@@ -1097,6 +1097,85 @@ def test_post_commit_file_check_reports_mismatch(tmp_path):
     assert outcome.custom_commit in issue.text or _short(repos) in issue.text
 
 
+ALREADY = "Already identical to HEAD, not in the commit: "
+
+
+def _same_as_head(repos, rel=SYM_FFC):
+    """The install rewrote this file with the very bytes HEAD holds."""
+    return (repos.custom / rel).read_bytes()
+
+
+@requires_git
+def test_identical_planned_file_is_info_and_parent_bumps(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = import_files(repos, {FP_NEW: b'(footprint "FP1")\n', SYM_FFC: _same_as_head(repos)})
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=_ctx())
+
+    assert not outcome.failed, outcome.issues
+    info = next(i for i in outcome.issues if i.code == "commit.already_in_head")
+    assert info.severity is Severity.INFO and info.text == ALREADY + f"Custom/{SYM_FFC}"
+    assert any(i.code == "commit.custom_done" and i.severity is Severity.SUCCESS for i in outcome.issues)
+    assert outcome.committed and outcome.parent_commit is not None and outcome.parent_only is False
+    assert repos.git(repos.custom, "show", "--name-only", "--format=", "HEAD").split() == [FP_NEW]
+
+
+@requires_git
+def test_all_identical_without_parent_refuses(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = import_files(repos, {SYM_FFC: _same_as_head(repos)})
+    ctx, calls = _recording_ctx()
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, False, git=ctx)
+
+    issue = _single_error(outcome, "commit.nothing_to_commit")
+    assert issue.text == "Not committed: Custom already holds these files."
+    assert outcome.custom_commit is None and _head(repos) == before
+    assert [name for name in _subcommands(calls) if name in ("add", "commit", "reset")] == []
+
+
+@requires_git
+def test_all_identical_parent_only_bump(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    old = repos.git(repos.parent, "rev-parse", "HEAD:Custom").strip()
+    commit_file(repos, repos.custom, "late.txt", b"late\n", "Late commit")
+    plan = import_files(repos, {SYM_FFC: _same_as_head(repos)})
+    ctx, calls = _recording_ctx()
+    custom_before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=ctx)
+
+    assert not outcome.failed, outcome.issues
+    assert outcome.parent_only is True and outcome.custom_commit is None and not outcome.committed
+    assert outcome.parent_commit is not None
+    assert _head(repos) == custom_before
+    assert _subcommands(calls).count("commit") == 1 and "add" not in _subcommands(calls)
+    assert any(i.code == "commit.already_in_head" and i.severity is Severity.INFO for i in outcome.issues)
+    assert outcome.parent_message.splitlines() == [
+        f"Update Custom: {MESSAGE}",
+        "",
+        f"Custom {old[:7]}..{_head(repos)[:7]}",
+        f"- {_short(repos)} Late commit",
+    ]
+    assert _body(repos, repos.parent) == outcome.parent_message.strip()
+
+
+@requires_git
+def test_all_identical_parent_only_failure_has_manual_command(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    commit_file(repos, repos.custom, "late.txt", b"late\n", "Late commit")
+    plan = import_files(repos, {SYM_FFC: _same_as_head(repos)})
+    write_hook(repos, repos.parent, "pre-commit", "#!/bin/sh\necho 'parent hook says no'\nexit 1\n")
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=_ctx())
+
+    issue = next(i for i in outcome.issues if i.code == "commit.parent_failed")
+    assert issue.text.startswith("The parent commit failed (") and "Finish it by hand: git -C" in issue.text
+    assert "was kept" not in issue.text and outcome.parent_only is True
+    assert outcome.manual_command.endswith("-- Custom")
+
+
 @requires_git
 def test_parent_step_skipped_when_gitlink_equal(tmp_path):
     repos = make_superproject(tmp_path / "git")
