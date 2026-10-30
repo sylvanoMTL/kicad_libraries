@@ -410,6 +410,70 @@ def test_panel_partial_failure_keeps_hash_no_retry(qtbot, tmp_path):
     assert panel._output.toPlainText() == "hook said no"
 
 
+_PS_LABEL = "Finish it by hand. In PowerShell:"
+_PS_MANUAL = "git -C 'C:/x' commit -m 'Update Custom: Add P to L' -- 'Custom'"
+
+
+def test_panel_manual_label_partial_failure(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+    failure = f"The Custom commit abc1234 was kept, but the parent commit failed (git exit 1).\nhook said no\n{_PS_LABEL} {_PS_MANUAL}"
+    outcome = make_outcome(
+        custom_commit="abc1234",
+        manual_command=_PS_MANUAL,
+        manual_label=_PS_LABEL,
+        output="",
+        issues=(
+            issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom"),
+            issue(Severity.ERROR, "commit.parent_failed", failure),
+        ),
+    )
+
+    panel.show_outcome(outcome)
+
+    assert panel._manual_label.text() == f"{_PS_LABEL} {_PS_MANUAL}"
+    assert not panel._manual_label.isHidden()
+    assert not any(line.startswith("Finish it by hand") for line in panel._output.toPlainText().splitlines())
+    assert panel._output.toPlainText() == "hook said no"
+
+
+def test_panel_manual_label_late_commit(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+    outcome = make_outcome(
+        custom_commit="abc1234",
+        manual_command=_PS_MANUAL,
+        manual_label=_PS_LABEL,
+        issues=(
+            issue(Severity.WARNING, "commit.custom_unfinished", "Committed abc1234 in Custom, but git did not finish in time"),
+            issue(
+                Severity.WARNING, "commit.parent_not_started",
+                f"The parent repo was not updated, because git may still be running in Custom.\n{_PS_LABEL} {_PS_MANUAL}",
+            ),
+        ),
+    )
+
+    panel.show_outcome(outcome)
+
+    assert panel.state() == "done"
+    assert panel._manual_label.text() == f"{_PS_LABEL} {_PS_MANUAL}"
+    assert not panel._manual_label.isHidden()
+    assert not any(_PS_MANUAL in line for line in panel.outcome_lines())  # shown once, in its own selectable line
+
+
+def test_panel_manual_label_falls_back_to_plain_label(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+    manual = "git -C /x commit -m msg -- Custom"
+
+    panel.show_outcome(make_outcome(
+        custom_commit="abc1234", manual_command=manual,
+        issues=(issue(Severity.ERROR, "commit.parent_failed", "The parent commit failed"),),
+    ))
+
+    assert panel._manual_label.text() == f"Finish it by hand: {manual}"
+
+
 _REFUSAL = "The Custom branch changed from main to feature/x since the preview; nothing was committed"
 
 

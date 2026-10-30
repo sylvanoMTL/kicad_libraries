@@ -6,7 +6,9 @@ puts Custom in the state under test. Nothing here touches the real repository.
 
 import dataclasses
 import hashlib
+import shlex
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -741,6 +743,7 @@ def test_probe_cancelled_between_preexisting_reads(tmp_path):
 
 HOOK_REJECT = "#!/bin/sh\necho 'hook says no'\necho 'on stderr' >&2\nexit 1\n"
 MESSAGE = f"Add FP1 to {LIB}"
+_CUSTOM_ARG = "-- 'Custom'" if sys.platform == "win32" else "-- Custom"  # the running platform's quoting
 
 
 def _subcommands(calls):
@@ -889,11 +892,45 @@ def test_parent_hook_rejection_keeps_custom_commit(tmp_path):
     assert outcome.parent_commit is None and repos.git(repos.parent, "rev-parse", "HEAD").strip() == parent_before
     issue = next(i for i in outcome.issues if i.code == "commit.parent_failed")
     assert issue.severity is Severity.ERROR
-    assert "was kept" in issue.text and "parent hook says no" in issue.text and "Finish it by hand: git -C" in issue.text
-    assert outcome.manual_command.endswith("-- Custom")
+    label = commit_step.manual_label()
+    assert "was kept" in issue.text and "parent hook says no" in issue.text
+    assert f"{label} git -C" in issue.text
+    assert outcome.manual_label == label
+    assert outcome.manual_command.endswith(_CUSTOM_ARG)
     assert outcome.manual_command in issue.text
     first_commit = _subcommands(calls).index("commit")
     assert "reset" not in _subcommands(calls)[first_commit:]
+
+
+# -- the "Finish it by hand" command, written for the shell it is pasted into (REV-08, D-16) ----------
+
+_TRICKY_SUBJECT = "Update Custom: it's $x, then a `tick`, a mid\\string and z $(calc)"
+_TRICKY_MESSAGE = f"{_TRICKY_SUBJECT}\n\nCustom abc1234..def5678\n- def5678 Add 'P'"
+
+
+def test_manual_command_powershell_quotes_every_argument():
+    parent = Path("C:/Repo O'Neil")
+
+    command = commit_step.manual_command(parent, "Custom", _TRICKY_MESSAGE, windows=True)
+
+    subject = _TRICKY_SUBJECT.replace("'", "''")
+    assert command == f"git -C 'C:/Repo O''Neil' commit -m '{subject}' -- 'Custom'"
+
+
+def test_manual_command_posix_uses_shlex():
+    parent = Path("/home/o'neil/Repo")
+
+    command = commit_step.manual_command(parent, "Custom", _TRICKY_MESSAGE, windows=False)
+
+    q = shlex.quote
+    assert command == f"git -C {q(parent.as_posix())} commit -m {q(_TRICKY_SUBJECT)} -- {q('Custom')}"
+    assert shlex.split(command) == ["git", "-C", parent.as_posix(), "commit", "-m", _TRICKY_SUBJECT, "--", "Custom"]
+
+
+def test_manual_label_names_the_shell():
+    assert commit_step.manual_label(windows=True) == "Finish it by hand. In PowerShell:"
+    assert commit_step.manual_label(windows=False) == "Finish it by hand:"
+    assert commit_step.manual_label() == commit_step.manual_label(windows=sys.platform == "win32")
 
 
 @requires_git
@@ -954,10 +991,12 @@ def test_commit_timeout_after_head_moved_reports_commit(tmp_path):
     assert "reset" not in _subcommands(calls)[first_commit:]
     assert repos.git(repos.parent, "rev-parse", "HEAD").strip() == parent_before
     assert outcome.parent_commit is None and "commit" not in _subcommands(calls)[first_commit + 1 :]
-    assert outcome.manual_command and outcome.manual_command.endswith("-- Custom")
+    assert outcome.manual_command and outcome.manual_command.endswith(_CUSTOM_ARG)
+    assert outcome.manual_label == commit_step.manual_label()
     assert outcome.parent_message.startswith("Update Custom: ")
     parent_warning = next(i for i in outcome.issues if i.code == "commit.parent_not_started")
-    assert parent_warning.severity is Severity.WARNING and outcome.manual_command in parent_warning.text
+    assert parent_warning.severity is Severity.WARNING
+    assert f"{outcome.manual_label} {outcome.manual_command}" in parent_warning.text
 
 
 @requires_git
@@ -1259,9 +1298,9 @@ def test_all_identical_parent_only_failure_has_manual_command(tmp_path):
     outcome = commit_step.run_commit(plan, MESSAGE, True, git=_ctx())
 
     issue = next(i for i in outcome.issues if i.code == "commit.parent_failed")
-    assert issue.text.startswith("The parent commit failed (") and "Finish it by hand: git -C" in issue.text
+    assert issue.text.startswith("The parent commit failed (") and f"{commit_step.manual_label()} git -C" in issue.text
     assert "was kept" not in issue.text and outcome.parent_only is True
-    assert outcome.manual_command.endswith("-- Custom")
+    assert outcome.manual_command.endswith(_CUSTOM_ARG)
 
 
 @requires_git

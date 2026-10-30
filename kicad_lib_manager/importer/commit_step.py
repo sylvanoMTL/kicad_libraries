@@ -7,6 +7,8 @@ path-limited (`commit --only` with the listed files), so unrelated changes stay 
 
 import hashlib
 import os
+import shlex
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,6 +73,7 @@ class CommitOutcome:
     parent_ahead: int | None = None
     parent_message: str = ""
     manual_command: str = ""
+    manual_label: str = ""  # the words shown before manual_command: which shell it is written for
     output: str = ""
     issues: tuple[Issue, ...] = ()
     parent_only: bool = False  # the D-14 bump: Custom already held the files, only the parent gitlink was committed
@@ -510,10 +513,39 @@ def commit_parent_ref(
     return gitops.short_hash(ctx, parent) or "?", message, None, ()
 
 
-def _manual_parent_command(parent: Path, custom_rel: str, message: str) -> str:
-    """The git command that makes the parent commit by hand; it carries the message's first line."""
-    subject = message.splitlines()[0].replace('"', '\\"')
-    return f'git -C "{parent.as_posix()}" commit -m "{subject}" -- {custom_rel}'
+MANUAL_LABEL_POWERSHELL = "Finish it by hand. In PowerShell:"
+MANUAL_LABEL = "Finish it by hand:"
+
+
+def _is_windows(windows: bool | None) -> bool:
+    return sys.platform == "win32" if windows is None else windows
+
+
+def manual_label(*, windows: bool | None = None) -> str:
+    """The words shown before the manual command: it says which shell the command is written for (D-16)."""
+    return MANUAL_LABEL_POWERSHELL if _is_windows(windows) else MANUAL_LABEL
+
+
+def _ps_quote(text: str) -> str:
+    """A PowerShell verbatim string: single quotes, each embedded single quote doubled."""
+    return "'" + text.replace("'", "''") + "'"
+
+
+def manual_command(
+    parent: Path, custom_rel: str, message: str, *, windows: bool | None = None, message_dir: Path | None = None
+) -> str:
+    """The git command that makes the parent commit by hand, written to be pasted into the user's shell (D-16).
+
+    Windows: every argument is a PowerShell single-quoted string, so `$`, `$(...)` and backticks are never
+    expanded. Elsewhere shlex.quote is safe for every character. `windows` exists so both branches can be
+    tested on one machine.
+    """
+    subject = subject_of(message)
+    if not _is_windows(windows):
+        q = shlex.quote
+        return f"git -C {q(parent.as_posix())} commit -m {q(subject)} -- {q(custom_rel)}"
+    q = _ps_quote
+    return f"git -C {q(parent.as_posix())} commit -m {q(subject)} -- {q(custom_rel)}"
 
 
 def _custom_fields(short: str, branch: str, upstream: tuple[str, int] | None) -> dict:
@@ -544,17 +576,18 @@ def _unfinished_outcome(
         text = f"Committed {short} in Custom, but git reported a failure afterwards ({_exit_text(run)})"
     issues = [Issue(Severity.WARNING, "commit.custom_unfinished", text), _not_pushed(upstream, "Custom", branch)]
     fields = _custom_fields(short, branch, upstream)
-    manual = ""
+    manual = label = ""
     if bump_parent:
         old = gitops.committed_gitlink(ctx, cplan.repo_root, cplan.custom_rel)
         fields["parent_message"] = _parent_text(ctx, cplan, subject_of(message), old, after)
-        manual = _manual_parent_command(cplan.repo_root, cplan.custom_rel, fields["parent_message"])
+        manual = manual_command(cplan.repo_root, cplan.custom_rel, fields["parent_message"])
+        label = manual_label()
         issues.append(Issue(
             Severity.WARNING, "commit.parent_not_started",
             "The parent repo was not updated, because git may still be running in Custom.\n"
-            f"Finish it by hand: {manual}",
+            f"{label} {manual}",
         ))
-    return CommitOutcome(manual_command=manual, output=output, issues=tuple(issues), **fields)
+    return CommitOutcome(manual_command=manual, manual_label=label, output=output, issues=tuple(issues), **fields)
 
 
 def pre_import_diff(cplan: CommitPlan, rel: str, *, git: GitContext | None = None) -> ContentText:
@@ -700,15 +733,17 @@ def _parent_step(
     fields["parent_message"] = text
     issues.extend(parent_issues)
     if parent_run is not None:
-        manual = _manual_parent_command(parent, cplan.custom_rel, text)
+        manual = manual_command(cplan.repo_root, cplan.custom_rel, text)
+        label = manual_label()
         output = parent_run.text if isinstance(parent_run, Issue) else parent_run.output
         what = (
             f"The parent commit failed ({_exit_text(parent_run)})." if parent_only
             else f"The Custom commit {short} was kept, but the parent commit failed ({_exit_text(parent_run)})."
         )
-        issues.append(Issue(Severity.ERROR, "commit.parent_failed", f"{what}\n{output}\nFinish it by hand: {manual}"))
+        issues.append(Issue(Severity.ERROR, "commit.parent_failed", f"{what}\n{output}\n{label} {manual}"))
         return CommitOutcome(
-            manual_command=manual, output=output, issues=tuple(issues), parent_only=parent_only, **fields
+            manual_command=manual, manual_label=label, output=output, issues=tuple(issues),
+            parent_only=parent_only, **fields,
         )
     if parent_short is None:  # the parent already points at Custom's HEAD: nothing to commit (D-13)
         return CommitOutcome(issues=tuple(issues), parent_only=parent_only, **fields)
