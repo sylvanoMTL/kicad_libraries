@@ -1,6 +1,6 @@
 """The only module that starts a git process (Phase 6, GIT-05).
 
-Every git call goes through run_git: a fixed argv shape, no shell, no inherited GIT_* variables
+Every git call goes through run_git: a fixed argv shape, no shell, no inherited GIT_* variable except the author and committer identity
 and a subcommand allow-list that holds nothing which talks to another repository.
 Hooks always run and --no-verify is never passed (D-06). Decisions use exit codes and plumbing
 output, never stderr text. Qt-free; imports only models.
@@ -34,6 +34,15 @@ _BUSY_MARKERS = (
     ("BISECT_LOG", "a bisect"),
 )
 _VERSION_RE = re.compile(r"git version (\d+(?:\.\d+)*)")
+# the only GIT_* variables handed on from the user's session: the ones git-commit documents as its identity inputs
+_IDENTITY_VARS = (
+    "GIT_AUTHOR_NAME",
+    "GIT_AUTHOR_EMAIL",
+    "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME",
+    "GIT_COMMITTER_EMAIL",
+    "GIT_COMMITTER_DATE",
+)
 
 
 @dataclass(frozen=True)
@@ -72,8 +81,10 @@ def find_git(repo_root: Path, *, which: Callable[[str], str | None] | None = Non
 
 
 def _env() -> dict[str, str]:
-    """The app's environment without any GIT_* variable (a stray GIT_DIR or GIT_INDEX_FILE would redirect every call)."""
+    """The app's environment: the author and committer identity is kept, every other GIT_* variable is stripped."""
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
+    # a stray GIT_DIR or GIT_INDEX_FILE would redirect every call, so only the identity comes back
+    env.update({k.upper(): v for k, v in os.environ.items() if k.upper() in _IDENTITY_VARS})
     env.update({"GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0", "GIT_EDITOR": "true", "LC_ALL": "C"})
     return env
 
@@ -88,7 +99,7 @@ def run_git(
     ctx: GitContext,
     repo: Path,
     *args: str,
-    input: bytes | None = None,
+    stdin_data: bytes | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     literal: bool = True,
 ) -> GitRun | Issue:
@@ -103,7 +114,7 @@ def run_git(
     pathspecs = "--literal-pathspecs" if literal else "--no-literal-pathspecs"
     argv = [str(ctx.exe), pathspecs, "-c", "core.quotepath=false", "-C", str(repo), *args]
     run = ctx.runner or subprocess.run
-    options = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+    options = {"input": stdin_data} if stdin_data is not None else {"stdin": subprocess.DEVNULL}
     try:
         done = run(
             argv,
@@ -152,8 +163,8 @@ def busy_operation(ctx: GitContext, repo: Path) -> str | None:
 
 
 def identity_known(ctx: GitContext, repo: Path) -> bool:
-    """True when git knows the committer (user.name and user.email); `var` exits non-zero otherwise."""
-    return _ok(run_git(ctx, repo, "var", "GIT_COMMITTER_IDENT"))
+    """True when git knows both the author and the committer (from config or the GIT_AUTHOR_*/GIT_COMMITTER_* variables)."""
+    return _ok(run_git(ctx, repo, "var", "GIT_AUTHOR_IDENT")) and _ok(run_git(ctx, repo, "var", "GIT_COMMITTER_IDENT"))
 
 
 def show_toplevel(ctx: GitContext, path: Path) -> Path | None:
@@ -235,7 +246,7 @@ def ignored_paths(ctx: GitContext, repo: Path, rels) -> list[str] | Issue:
     if not rels:
         return []
     # --no-index: rels are untracked, and without it git glob-matches each name against the index first
-    run = run_git(ctx, repo, "check-ignore", "--no-index", "-z", "--stdin", input=_nul_paths(rels), literal=False)
+    run = run_git(ctx, repo, "check-ignore", "--no-index", "-z", "--stdin", stdin_data=_nul_paths(rels), literal=False)
     if isinstance(run, Issue):
         return run
     if run.returncode == 1:
@@ -331,16 +342,20 @@ def _nul_paths(rels) -> bytes:
 
 def add_intent(ctx: GitContext, repo: Path, rels) -> GitRun | Issue:
     """Record intent-to-add for new files, so `commit --only` knows them."""
-    return run_git(ctx, repo, "add", "-N", "--pathspec-from-file=-", "--pathspec-file-nul", input=_nul_paths(rels))
+    return run_git(
+        ctx, repo, "add", "-N", "--pathspec-from-file=-", "--pathspec-file-nul", stdin_data=_nul_paths(rels)
+    )
 
 
 def unstage(ctx: GitContext, repo: Path, rels) -> GitRun | Issue:
     """Undo an intent-to-add for exactly these paths; the files on disk are untouched."""
-    return run_git(ctx, repo, "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", input=_nul_paths(rels))
+    return run_git(
+        ctx, repo, "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", stdin_data=_nul_paths(rels)
+    )
 
 
 def _commit_with_message(
-    ctx: GitContext, repo: Path, message: str, args: tuple[str, ...], input: bytes | None, timeout: float
+    ctx: GitContext, repo: Path, message: str, args: tuple[str, ...], stdin_data: bytes | None, timeout: float
 ) -> GitRun | Issue:
     """Run `git commit -F <message file> <args>`; the message goes through a temp file outside the repo."""
     try:
@@ -350,7 +365,7 @@ def _commit_with_message(
     except OSError as e:
         return Issue(Severity.ERROR, "git.not_run", f"Could not write the commit message: {e.strerror or e}")
     try:
-        return run_git(ctx, repo, "commit", "--only", "-F", name, *args, input=input, timeout=timeout)
+        return run_git(ctx, repo, "commit", "--only", "-F", name, *args, stdin_data=stdin_data, timeout=timeout)
     finally:
         try:
             os.unlink(name)
