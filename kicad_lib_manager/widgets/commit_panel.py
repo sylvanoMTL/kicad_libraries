@@ -37,9 +37,13 @@ _GLYPHS = {Severity.SUCCESS: "✓ ", Severity.ERROR: "✖ ", Severity.WARNING: "
 _STRIP_PREFIX = {"unavailable": "Commit unavailable: ", "refused": "Commit refused: ", "gated": "Commit refused: "}
 _PARENT_ONLY_LABEL = "Commit parent ref"  # the button when only the parent's Custom ref can be committed (D-14)
 _NOTHING_TO_COMMIT = "Nothing to commit: Custom already holds these files"
-_CHANGED_MARK = " (changed since install)"
-_ADDED_MARK = " (added by a fix)"
-_CHANGED_HINT = "⚠ Marked files changed after the install or were added by a fix. Double-click one to see it."
+_CHANGED_MARK = "changed since install"  # bare words; the row adds the parentheses
+_ADDED_MARK = "added: linked by a committed part"
+_DIRTY_MARK = "also changed before this import"
+_CHANGED_HINT = (
+    "⚠ Marked files changed after the install, or are committed because a committed part links them. "
+    "Double-click one to see it."
+)
 _DIRTY_HINT = (
     "⚠ Amber files also contain uncommitted changes made before this import. "
     "They are committed too; double-click one to see them."
@@ -569,7 +573,10 @@ class CommitPanel(QWidget):
         self._old_label.setVisible(bool(notes))
 
     def _mark_files(self, probe: CommitProbe):
-        """Mark the rows: changed since the install, added by a fix, or dirty before the import; others are plain."""
+        """Mark the rows: changed since the install, added because a committed part links it, or dirty before.
+
+        A changed or added row that also had changes before the import says so in the same row; others are plain.
+        """
         any_marked = any_dirty = False
         self._activatable = set()
         files = self._files_list
@@ -581,17 +588,30 @@ class CommitPanel(QWidget):
             display = cfile.display if cfile is not None else item.text()
             changed = cfile is not None and (cfile.note == NOTE_CHANGED or cfile.display in stale)
             added = cfile is not None and cfile.note == NOTE_ADDED
-            if changed:
+            dirty = rel in probe.dirty_before
+            if changed or added:
                 any_marked = True
-                item.setText(f"⚠ {display}{_CHANGED_MARK}")
+                any_dirty = any_dirty or dirty
+                glyph, mark = ("⚠", _CHANGED_MARK) if changed else ("+", _ADDED_MARK)
+                if dirty:
+                    item.setText(f"{glyph} {display} ({mark}; {_DIRTY_MARK})")
+                else:
+                    item.setText(f"{glyph} {display} ({mark})")
                 item.setForeground(QBrush(QColor(theme.AMBER)))
-                item.setToolTip(f"{display} changed after the install. Double-click to see the change.")
-            elif added:
-                any_marked = True
-                item.setText(f"+ {display}{_ADDED_MARK}")
-                item.setForeground(QBrush(QColor(theme.AMBER)))
-                item.setToolTip(f"{display} is committed because a committed part links it. Double-click to see it.")
-            elif rel in probe.dirty_before:
+                if changed:
+                    first = f"{display} changed after the install."
+                    last = "Double-click to see the change."
+                else:
+                    first = f"{display} is committed because a committed part links it."
+                    last = "Double-click to see it."
+                if dirty:
+                    item.setToolTip(
+                        f"{first} It also contains uncommitted changes made before this import, "
+                        "which are committed too. Double-click to see both."
+                    )
+                else:
+                    item.setToolTip(f"{first} {last}")
+            elif dirty:
                 any_dirty = True
                 item.setText(f"⚠ {display}")
                 item.setForeground(QBrush(QColor(theme.AMBER)))
@@ -603,7 +623,7 @@ class CommitPanel(QWidget):
                 item.setText(display)
                 item.setData(Qt.ItemDataRole.ForegroundRole, None)
                 item.setToolTip(display)
-            if rel is not None and (changed or added or rel in probe.dirty_before):
+            if rel is not None and (changed or added or dirty):
                 self._activatable.add(rel)
         self._changed_hint.setVisible(any_marked)
         self._dirty_hint.setVisible(any_dirty)
