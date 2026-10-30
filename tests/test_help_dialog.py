@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTreeWidgetI
 
 from zipfixtures import footprint_library_for
 
+from kicad_lib_manager.importer.commit_gate import AtomicFailure, GateResult
 from kicad_lib_manager.importer.commit_plan import CommitFile, CommitPlan
 from kicad_lib_manager.importer.commit_step import CommitProbe
 from kicad_lib_manager.importer.plan import Conflict, InstallResult
@@ -207,6 +208,19 @@ def test_help_import_page_describes_commit_step(qtbot, tmp_path):
     assert panel.commit_button.text() == "Commit"
     assert "<b>Commit</b>" in HELP_PAGES["importing"]  # the button, named as a button
     assert "<h3>Commit</h3>" in HELP_PAGES["importing"]
+
+    # the atomic refusal and its recovery: the page uses the words of a gated panel's buttons
+    panel.apply_probe(CommitProbe(
+        state="gated", reason="1 part breaks the atomic rule.", branch="main", parent_dir=tmp_path,
+        gate=GateResult(blocking=(AtomicFailure(LIBRARY, f"Custom/Symbols/{LIBRARY}.kicad_sym", "P1", "mpn", "no MPN"),)),
+    ))
+    assert panel.state() == "gated"
+    gated_buttons = [w.text() for w in panel.findChildren(QPushButton)]
+    for label in ("Check again", "Open Check Atomic Parts…"):
+        assert label in gated_buttons, f"the gated panel no longer shows {label!r}"
+        assert label in page, label
+    assert "atomic rule" in page
+    assert "changed since install" in page and "added by a fix" in page
 
     # the section sits right after "Install and result" and before "Library tables"
     raw = HELP_PAGES["importing"]

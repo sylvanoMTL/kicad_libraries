@@ -3549,7 +3549,7 @@ def test_commit_close_button_disabled_while_git_runs(qtbot, make_install_dialog,
 def test_commit_passes_expected_branch(qtbot, make_install_dialog):
     seen: list[tuple] = []
 
-    def record(cplan, message, bump, *, expected_branch=None, progress=None, git=None):
+    def record(cplan, message, bump, *, expected_branch=None, progress=None, git=None, kicad_fp_dir=None):
         seen.append((message, bump, expected_branch))
         return fake_committed()
 
@@ -3568,7 +3568,7 @@ def test_commit_step_texts_shown(qtbot, make_install_dialog, gates):
     started = threading.Event()
     block = gated(gates, started, fake_committed)
 
-    def stepping(cplan, message, bump, *, expected_branch=None, progress=None, git=None):
+    def stepping(cplan, message, bump, *, expected_branch=None, progress=None, git=None, kicad_fp_dir=None):
         progress("Committing in Custom...", 0, 2)
         return block()
 
@@ -4753,3 +4753,223 @@ def test_preview_column_drag_survives_rebuild(qtbot, make_item_dialog):
     qtbot.wait(50)
     assert tree.columnWidth(0) == dragged
     assert tree.columnWidth(1) > detail
+
+
+# -- Phase 11 plan 11-11: the gate's recovery path inside the import dialog (GIT-06, D-07, D-08) -------
+
+from kicad_lib_manager import kicad_files  # noqa: E402
+from kicad_lib_manager.importer.commit_gate import AtomicFailure, GateResult  # noqa: E402
+from kicad_lib_manager.models import SymbolEntry, Violation  # noqa: E402
+from kicad_lib_manager.sexpr import apply_edits  # noqa: E402
+from kicad_lib_manager.widgets.atomic_check_dialog import AtomicCheckDialog  # noqa: E402
+
+PART = "CSD85301Q2"
+SYM_REL = f"Custom/Symbols/{LIB}.kicad_sym"
+
+
+def blank_datasheet(data: bytes) -> bytes:
+    """The library bytes with the part's Datasheet value emptied: a KiCad-style edit of one property."""
+    loaded = kicad_files.parse_bytes(data, "lib.kicad_sym")
+    assert not isinstance(loaded, Issue)
+    ref = kicad_files.find_symbol(loaded.root, PART)
+    prop = kicad_files.find_property(ref.node, "Datasheet")
+    assert prop is not None and prop.value.strip() not in ("", "~")
+    return apply_edits(loaded.source.text, [kicad_files.set_property_edit(prop, "")]).encode("utf-8")
+
+
+def wait_idle_state(qtbot, dialog: ImportDialog, panel, state: str) -> None:
+    qtbot.waitUntil(lambda: panel.state() == state and not dialog.is_probing(), timeout=60000)
+
+
+@requires_git
+def test_gate_refusal_and_recovery_end_to_end(qtbot, tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    core = replace(
+        ImportCore(),
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        downloads_dir=lambda: None,
+        suggest_library=_good_suggestion,
+        kicad_running=lambda: [],
+    )
+    dialog = ImportDialog(
+        repos.parent, RepoLayout.for_repo(repos.parent), core=core, backup_root=tmp_path / "backups",
+        atomic_backup_root=tmp_path / "atomic_backups",
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "ready")
+
+    # a KiCad-style edit after the install empties the Datasheet of the installed part
+    lib_path = repos.custom / "Symbols" / f"{LIB}.kicad_sym"
+    installed = lib_path.read_bytes()
+    lib_path.write_bytes(blank_datasheet(installed))
+    refs = remote_refs(repos)
+    head_before = repos.git(repos.custom, "rev-parse", "HEAD")
+
+    # the click is refused (the file changed after the install) and the panel asks for a fresh check
+    panel.commit_button.click()
+    wait_idle_state(qtbot, dialog, panel, "gated")
+    assert panel._probe.stale
+    assert repos.git(repos.custom, "rev-parse", "HEAD") == head_before
+
+    # Check again takes the file as it is now and the gate names the part and the rule
+    panel._check_again_button.click()
+    qtbot.waitUntil(lambda: panel._probe is not None and not panel._probe.stale and not dialog.is_probing(), timeout=60000)
+    assert panel.state() == "gated"
+    assert panel._strip.text() == "⚠ Commit refused: 1 part breaks the atomic rule."
+    assert panel._gate_lines.text().startswith(f"{LIB} / {PART}: ")
+    assert repos.git(repos.custom, "rev-parse", "HEAD") == head_before  # Check again never commits
+
+    # Open Check Atomic Parts… opens the Phase 9 dialog over this one, on that part
+    panel._open_check_button.click()
+    check = dialog._atomic_dialog
+    assert isinstance(check, AtomicCheckDialog)
+    assert check._focus == (SYM_REL, PART)
+    assert check.parent() is dialog
+    check.reject()
+    qtbot.waitUntil(lambda: dialog._atomic_dialog is None, timeout=10000)
+
+    # the user fixes the file, then Check again: the part passes and the library reads as changed
+    lib_path.write_bytes(installed)
+    panel._check_again_button.click()
+    wait_idle_state(qtbot, dialog, panel, "ready")
+    assert f"⚠ {SYM_REL} (changed since install)" in panel_files(panel)
+    assert repos.git(repos.custom, "rev-parse", "HEAD") == head_before
+
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=60000)
+    committed = repos.git(repos.custom, "show", f"HEAD:Symbols/{LIB}.kicad_sym")
+    assert committed.encode("utf-8").replace(b"\r\n", b"\n") == installed.replace(b"\r\n", b"\n")
+    assert repos.git(repos.custom, "status", "--porcelain").strip() == ""
+    assert remote_refs(repos) == refs
+
+
+def gate_with_two_failures() -> GateResult:
+    rel = "Custom/Symbols/Atomic_A.kicad_sym"
+    rule = Violation("datasheet", "no datasheet")
+    return GateResult(
+        blocking=(
+            AtomicFailure("Atomic_A", rel, "P1", "datasheet", "no datasheet"),
+            AtomicFailure("Atomic_A", rel, "P2", "datasheet", "no datasheet"),
+        ),
+        entries=(
+            ("Atomic_A", rel, SymbolEntry("P1", violations=[rule])),
+            ("Atomic_A", rel, SymbolEntry("P2", violations=[rule])),
+        ),
+    )
+
+
+def gated_fake_probe(cplan, **kwargs):
+    return CommitProbe(
+        state="gated", reason="2 parts break the atomic rule.", branch="main", parent_dir=cplan.repo_root,
+        parent_ok=True, parent_branch="main", gate=gate_with_two_failures(),
+    )
+
+
+def test_open_check_dialog_focuses_first_failure(qtbot, make_install_dialog):
+    dialog = make_install_dialog(probe_commit=gated_fake_probe)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    panel._open_check_button.click()
+    check = dialog._atomic_dialog
+    assert isinstance(check, AtomicCheckDialog)
+    assert check._focus == ("Custom/Symbols/Atomic_A.kicad_sym", "P1")
+    assert check._problems.topLevelItemCount() == 2
+
+    panel._open_check_button.click()  # a second click raises the same dialog
+    assert dialog._atomic_dialog is check
+    assert dialog.findChildren(AtomicCheckDialog) == [check]
+
+    check.reject()
+    qtbot.waitUntil(lambda: dialog._atomic_dialog is None, timeout=10000)
+
+
+def test_close_rejects_open_check_dialog(qtbot, make_install_dialog):
+    dialog = make_install_dialog(probe_commit=gated_fake_probe)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+    panel._open_check_button.click()
+    check = dialog._atomic_dialog
+    assert check is not None and check.isVisible()
+
+    dialog.close()
+    assert not check.isVisible()
+    assert dialog._atomic_dialog is None
+
+
+def test_check_again_in_dialog_never_commits(qtbot, make_install_dialog):
+    rechecks: list[dict] = []
+    commits: list[int] = []
+
+    def recheck(cplan, **kwargs):
+        rechecks.append(kwargs)
+        return cplan, fake_ready_probe()(cplan)
+
+    def count_commit(*args, **kwargs):
+        commits.append(1)
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=gated_fake_probe, recheck_commit=recheck, run_commit=count_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    panel._check_again_button.click()
+    wait_idle_state(qtbot, dialog, panel, "ready")
+    assert len(rechecks) == 1 and callable(rechecks[0]["cancelled"])
+    assert commits == []  # the re-check leaves the commit to its own click
+    assert not dialog.is_committing()
+
+
+def test_kicad_folder_reaches_probe_recheck_and_commit(qtbot, item_layout, recorded, tmp_path):
+    seen: dict[str, Path | None] = {}
+    fp_dir = tmp_path / "kicad_footprints"
+
+    def probe(cplan, *, kicad_fp_dir=None, **kwargs):
+        seen["probe"] = kicad_fp_dir
+        return gated_fake_probe(cplan)
+
+    def recheck(cplan, *, kicad_fp_dir=None, **kwargs):
+        seen["recheck"] = kicad_fp_dir
+        return cplan, fake_ready_probe()(cplan)
+
+    def commit(cplan, message, bump, *, kicad_fp_dir=None, **kwargs):
+        seen["commit"] = kicad_fp_dir
+        return fake_committed()
+
+    core = replace(
+        ImportCore(),
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        downloads_dir=lambda: None,
+        build_plan=recording_build(recorded),
+        suggest_library=_good_suggestion,
+        kicad_running=lambda: [],
+        probe_commit=probe,
+        recheck_commit=recheck,
+        run_commit=commit,
+    )
+    dialog = ImportDialog(
+        item_layout.repo_root, item_layout, core=core, kicad_fp_dir=fp_dir, backup_root=tmp_path / "backups"
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    panel._check_again_button.click()
+    wait_idle_state(qtbot, dialog, panel, "ready")
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
+    assert seen == {"probe": fp_dir, "recheck": fp_dir, "commit": fp_dir}
