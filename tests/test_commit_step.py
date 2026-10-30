@@ -831,6 +831,84 @@ def test_commit_timeout_reported(tmp_path):
     assert f"?? {FP_NEW}" in repos.git(repos.custom, "status", "--porcelain=v1", "-uall").splitlines()
 
 
+def _late_timeout_ctx():
+    """A context whose commit runs for real and then reports a timeout, like a hook that outlived the limit."""
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        done = subprocess.run(argv, **kwargs)
+        if argv[6] == "commit" and "-F" in argv and "--pathspec-from-file=-" in argv:
+            raise subprocess.TimeoutExpired(argv, kwargs.get("timeout", 0))
+        return done
+
+    return GitContext(Path(GIT), runner), calls
+
+
+UNFINISHED = "Committed {short} in Custom, but git did not finish in time (a hook or signing step may still be running)"
+
+
+@requires_git
+def test_commit_timeout_after_head_moved_reports_commit(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    ctx, calls = _late_timeout_ctx()
+    parent_before = repos.git(repos.parent, "rev-parse", "HEAD").strip()
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=ctx)
+
+    assert outcome.committed and outcome.custom_commit == _short(repos)
+    assert not outcome.failed
+    (warning,) = [i for i in outcome.issues if i.code == "commit.custom_unfinished"]
+    assert warning.severity is Severity.WARNING
+    assert warning.text == UNFINISHED.format(short=_short(repos))
+    first_commit = _subcommands(calls).index("commit")
+    assert "reset" not in _subcommands(calls)[first_commit:]
+    assert repos.git(repos.parent, "rev-parse", "HEAD").strip() == parent_before
+    assert outcome.parent_commit is None and "commit" not in _subcommands(calls)[first_commit + 1 :]
+    assert outcome.manual_command and outcome.manual_command.endswith("-- Custom")
+    assert outcome.parent_message.startswith("Update Custom: ")
+    parent_warning = next(i for i in outcome.issues if i.code == "commit.parent_not_started")
+    assert parent_warning.severity is Severity.WARNING and outcome.manual_command in parent_warning.text
+
+
+@requires_git
+def test_commit_timeout_after_head_moved_without_parent(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    ctx, _ = _late_timeout_ctx()
+
+    outcome = commit_step.run_commit(_plan(repos), MESSAGE, False, git=ctx)
+
+    assert outcome.committed and not outcome.failed
+    assert outcome.manual_command == "" and outcome.parent_message == ""
+    assert [i.code for i in outcome.issues if i.severity is Severity.WARNING] == ["commit.custom_unfinished"]
+
+
+@requires_git
+def test_commit_slow_post_commit_hook_reports_commit(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    write_hook(repos, repos.custom, "post-commit", "#!/bin/sh\nsleep 5\n")
+    calls = []
+
+    def runner(argv, **kwargs):
+        calls.append(list(argv))
+        if argv[6] == "commit" and "-F" in argv and "--pathspec-from-file=-" in argv:
+            kwargs["timeout"] = 2  # a real timeout while the hook still sleeps
+        return subprocess.run(argv, **kwargs)
+
+    before = _head(repos)
+
+    outcome = commit_step.run_commit(plan, MESSAGE, False, git=GitContext(Path(GIT), runner))
+
+    assert _head(repos) != before
+    assert outcome.committed and outcome.custom_commit == _short(repos)
+    (warning,) = [i for i in outcome.issues if i.code == "commit.custom_unfinished"]
+    assert warning.text == UNFINISHED.format(short=_short(repos))
+    first_commit = _subcommands(calls).index("commit")
+    assert "reset" not in _subcommands(calls)[first_commit:]
+
+
 @requires_git
 def test_index_lock_reported(tmp_path):
     repos = make_superproject(tmp_path / "git")

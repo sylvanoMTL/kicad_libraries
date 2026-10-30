@@ -418,6 +418,53 @@ def commit_parent_ref(
     return gitops.short_hash(ctx, parent) or "?", message, None, ()
 
 
+def _manual_parent_command(parent: Path, custom_rel: str, message: str) -> str:
+    """The git command that makes the parent commit by hand; it carries the message's first line."""
+    subject = message.splitlines()[0].replace('"', '\\"')
+    return f'git -C "{parent.as_posix()}" commit -m "{subject}" -- {custom_rel}'
+
+
+def _custom_fields(short: str, branch: str, upstream: tuple[str, int] | None) -> dict:
+    return {
+        "custom_commit": short,
+        "custom_branch": branch,
+        "custom_upstream": upstream[0] if upstream else None,
+        "custom_ahead": upstream[1] if upstream else None,
+    }
+
+
+def _unfinished_outcome(
+    ctx: GitContext, cplan: CommitPlan, message: str, run: GitRun | Issue, after: str, bump_parent: bool
+) -> CommitOutcome:
+    """The outcome when git failed or timed out but Custom's HEAD moved: the commit exists and is reported (REV-06, D-12).
+
+    Nothing is unstaged or reset and no second git write starts: a leftover git process may still hold
+    index.lock, so the parent bump is left to the user with the manual command.
+    """
+    custom = cplan.custom_dir
+    short = gitops.short_hash(ctx, custom, after) or after[:7]
+    branch = gitops.current_branch(ctx, custom) or "HEAD"
+    upstream = gitops.upstream_ahead(ctx, custom)
+    output = run.text if isinstance(run, Issue) else run.output
+    if isinstance(run, Issue) and run.code == "git.timeout":
+        text = f"Committed {short} in Custom, but git did not finish in time (a hook or signing step may still be running)"
+    else:
+        text = f"Committed {short} in Custom, but git reported a failure afterwards ({_exit_text(run)})"
+    issues = [Issue(Severity.WARNING, "commit.custom_unfinished", text), _not_pushed(upstream, "Custom", branch)]
+    fields = _custom_fields(short, branch, upstream)
+    manual = ""
+    if bump_parent:
+        old = gitops.committed_gitlink(ctx, cplan.repo_root, cplan.custom_rel)
+        fields["parent_message"] = _parent_text(ctx, cplan, subject_of(message), old, after)
+        manual = _manual_parent_command(cplan.repo_root, cplan.custom_rel, fields["parent_message"])
+        issues.append(Issue(
+            Severity.WARNING, "commit.parent_not_started",
+            "The parent repo was not updated, because git may still be running in Custom.\n"
+            f"Finish it by hand: {manual}",
+        ))
+    return CommitOutcome(manual_command=manual, output=output, issues=tuple(issues), **fields)
+
+
 def pre_import_diff(cplan: CommitPlan, rel: str, *, git: GitContext | None = None) -> ContentText:
     """The D-09 view of one file: what HEAD holds against what the work tree held before the import.
 
@@ -487,8 +534,13 @@ def run_commit(
         if _run_failed(added):
             gitops.unstage(ctx, custom, new)
             return _custom_failure(added, committing=False)
+    before = gitops.head_commit(ctx, custom)
     run = gitops.commit_paths(ctx, custom, message, rels)
     if _run_failed(run):
+        # git may have made the commit and then failed or timed out (a slow hook or signing step): HEAD tells (D-12)
+        after = gitops.head_commit(ctx, custom)
+        if after and after != before:
+            return _unfinished_outcome(ctx, cplan, message, run, after, bump_parent)
         if new:
             gitops.unstage(ctx, custom, new)
         return _custom_failure(run, committing=True)
@@ -500,12 +552,7 @@ def run_commit(
         Issue(Severity.SUCCESS, "commit.custom_done", f"Committed {short} on {branch} in Custom"),
         _not_pushed(upstream, "Custom", branch),
     ]
-    fields = {
-        "custom_commit": short,
-        "custom_branch": branch,
-        "custom_upstream": upstream[0] if upstream else None,
-        "custom_ahead": upstream[1] if upstream else None,
-    }
+    fields = _custom_fields(short, branch, upstream)
     # the commit holds exactly the planned files, or the user is told it does not (RESEARCH Pitfall 1)
     planned = set(rels)
     committed_files = gitops.commit_files(ctx, custom)
@@ -527,8 +574,7 @@ def run_commit(
     fields["parent_message"] = text
     issues.extend(parent_issues)
     if parent_run is not None:
-        subject = text.splitlines()[0].replace('"', '\\"')
-        manual = f'git -C "{parent.as_posix()}" commit -m "{subject}" -- {cplan.custom_rel}'
+        manual = _manual_parent_command(parent, cplan.custom_rel, text)
         output = parent_run.text if isinstance(parent_run, Issue) else parent_run.output
         issues.append(Issue(
             Severity.ERROR, "commit.parent_failed",
