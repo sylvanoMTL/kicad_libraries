@@ -5,8 +5,20 @@ titles: json
 findings:
   - id: WR-01
     severity: warning
-    disposition: fixed
-    title: "A refused or failed commit loses its git output and the \"finish it by hand\" command immediately"
+    disposition: open
+    title: "A kept refusal survives the Check again that follows an atomic fix"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "`refusal_summary` finds the \"folder could not be listed\" problem by searching its text"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "`combined_view` reports \"diff\" when one half is an error"
+  - id: IN-03
+    severity: info
+    disposition: open
+    title: "The case-folding branch of `_env` cannot run in production"
   - id: WR-02
     severity: warning
     disposition: fixed
@@ -15,18 +27,6 @@ findings:
     severity: warning
     disposition: fixed
     title: "An unreadable Atomic_ library that links a committed file passes the gate with only an unseen INFO note"
-  - id: IN-01
-    severity: info
-    disposition: fixed
-    title: "Dead code left in the new and touched modules"
-  - id: IN-02
-    severity: info
-    disposition: fixed
-    title: "`_check_linked_symbols` takes 12 parameters, four of them output lists"
-  - id: IN-03
-    severity: info
-    disposition: fixed
-    title: "Probe supersede logic is duplicated and the two entry points disagree on a running probe"
   - id: IN-04
     severity: info
     disposition: fixed
@@ -39,24 +39,25 @@ findings:
     severity: info
     disposition: fixed
     title: "`gitops._env` promotes lower-case identity variables on every platform"
-open: 0
+open: 4
 total: 9
-recorded: 2026-10-30T12:10:49.926Z
+recorded: 2026-10-30T20:06:58.288Z
 ---
 
 # Phase 11: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | fixed | - |
-| WR-02 | warning | fixed | - |
-| WR-03 | warning | fixed | - |
-| IN-01 | info | fixed | - |
-| IN-02 | info | fixed | - |
-| IN-03 | info | fixed | - |
-| IN-04 | info | fixed | - |
-| IN-05 | info | fixed | - |
-| IN-06 | info | fixed | - |
+| WR-01 | warning | open | - |
+| IN-01 | info | open | - |
+| IN-02 | info | open | - |
+| IN-03 | info | open | - |
+| WR-02 | warning | fixed | - (not in the current review) |
+| WR-03 | warning | fixed | - (not in the current review) |
+| IN-04 | info | fixed | - (not in the current review) |
+| IN-05 | info | fixed | - (not in the current review) |
+| IN-06 | info | fixed | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
-Set `deferred` by hand and put the reason in the Source cell; both are preserved.
+Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
+Re-running the gate keeps every row it can. A row the current review no longer reports is kept and its Source cell flagged, so a finding does not leave this record silently. ONE exception: when a finding id is REUSED by a different finding, the earlier decision cannot keep a row — the id is taken — and it is dropped. A RECORDED decision (anything but `open`) is named on the console when that happens; a row still at `open` is replaced silently, because `open` records no decision to lose.
