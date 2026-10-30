@@ -247,6 +247,27 @@ def test_commit_with_identity_from_environment_only(tmp_path, monkeypatch):
 
 
 @requires_git
+def test_commit_ignores_exported_dates(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+    ctx = GitContext(Path(GIT))
+    import_files(repos, {ATOMIC_FP: b'(footprint "ENV1")\n'})
+    assert gitops.add_intent(ctx, repos.custom, [ATOMIC_FP]).returncode == 0
+
+    _set_identity(monkeypatch, **ENV_IDENTITY)
+    _set_identity(monkeypatch, GIT_AUTHOR_DATE="2001-02-03T04:05:06+0000", GIT_COMMITTER_DATE="2001-02-03T04:05:06+0000")
+    done = gitops.commit_paths(ctx, repos.custom, "Env identity", [ATOMIC_FP])
+
+    assert not isinstance(done, Issue) and done.returncode == 0, getattr(done, "output", done)
+    line = repos.git(
+        repos.custom, "log", "-1", "--format=%an <%ae>|%cn <%ce>|%ad|%cd", "--date=format:%Y"
+    ).strip()
+    identity, author_year, committer_year = line.rsplit("|", 2)
+    assert identity == "Env Author <author@example.invalid>|Env Committer <committer@example.invalid>"
+    assert author_year != "2001" and committer_year != "2001", line
+
+
+@requires_git
 def test_identity_known_needs_author_and_committer(tmp_path, monkeypatch):
     repos = make_superproject(tmp_path / "git")
     _isolate_identity(monkeypatch, repos, tmp_path / "home")
