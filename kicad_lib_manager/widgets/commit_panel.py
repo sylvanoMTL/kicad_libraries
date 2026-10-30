@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from ..importer.commit_gate import failure_lines, old_notes
 from ..importer.commit_plan import (
-    NOTE_ADDED, NOTE_CHANGED, CommitPlan, default_message, parent_preview, subject_of,
+    NOTE_ADDED, NOTE_CHANGED, CommitPlan, default_message, parent_only_preview, parent_preview, subject_of,
 )
 from ..importer.commit_step import MANUAL_LABEL, CommitOutcome, CommitProbe
 from ..models import Issue, Severity
@@ -35,6 +35,8 @@ _STATES = (
 )
 _GLYPHS = {Severity.SUCCESS: "✓ ", Severity.ERROR: "✖ ", Severity.WARNING: "⚠ "}
 _STRIP_PREFIX = {"unavailable": "Commit unavailable: ", "refused": "Commit refused: ", "gated": "Commit refused: "}
+_PARENT_ONLY_LABEL = "Commit parent ref"  # the button when only the parent's Custom ref can be committed (D-14)
+_NOTHING_TO_COMMIT = "Nothing to commit: Custom already holds these files"
 _CHANGED_MARK = " (changed since install)"
 _ADDED_MARK = " (added by a fix)"
 _CHANGED_HINT = "⚠ Marked files changed after the install or were added by a fix. Double-click one to see it."
@@ -426,12 +428,13 @@ class CommitPanel(QWidget):
         if not output:
             output = [line for line in extra if not line.startswith(_MANUAL_PREFIX)]
         self._set_output(output)
-        self._committed = outcome.committed
+        # a parent-only bump (D-14) has no Custom commit; its parent commit counts as the commit
+        self._committed = outcome.committed or (outcome.parent_only and outcome.parent_commit is not None)
         # the late-commit warning (D-12) and the parent-only failure carry a manual command too (D-16, D-17)
         if outcome.manual_command and (outcome.committed or outcome.parent_only):
             self._manual_label.setText(f"{outcome.manual_label or MANUAL_LABEL} {outcome.manual_command}")
             self._manual_label.show()
-        if outcome.committed:
+        if self._committed:
             self._pending_refusal = ()
             self._set_state("failed" if outcome.failed else "done")
         else:
@@ -595,6 +598,8 @@ class CommitPanel(QWidget):
             text, alert = f"⚠ {_STRIP_PREFIX[state]}{reason}", True
         elif state == "offer_switch":
             text, alert = f"⚠ {reason} Switch to main before committing.".replace("  ", " "), True
+        elif state == "ready" and probe is not None and probe.all_identical:
+            text, alert = f"⚠ {_NOTHING_TO_COMMIT}", True  # D-14
         else:
             self._strip.hide()
             return
@@ -636,12 +641,20 @@ class CommitPanel(QWidget):
             probe is not None and cplan is not None and self._parent_check.isChecked()
             and (self._parent_check.isEnabled() or locked_in)
         )
+        # every planned file already equals HEAD: only the parent's Custom ref can still be committed (D-14)
+        parent_only = probe is not None and probe.all_identical
         if show_parent:
             self._earlier_label.setText(self._earlier_text(probe))
-            preview = parent_preview(
-                subject_of(self._message.toPlainText()), cplan.custom_rel, probe.gitlink_old, probe.earlier,
-                listed=probe.earlier_listed,
-            )
+            subject = subject_of(self._message.toPlainText())
+            if parent_only:
+                preview = parent_only_preview(
+                    subject, cplan.custom_rel, probe.gitlink_old, probe.head, probe.earlier,
+                    listed=probe.earlier_listed,
+                )
+            else:
+                preview = parent_preview(
+                    subject, cplan.custom_rel, probe.gitlink_old, probe.earlier, listed=probe.earlier_listed
+                )
             if self._parent_preview.toPlainText() != preview:
                 self._parent_preview.setPlainText(preview)
         self._earlier_label.setVisible(show_parent and bool(self._earlier_label.text()))
@@ -649,7 +662,14 @@ class CommitPanel(QWidget):
         self._parent_preview.setVisible(show_parent)
         blank = not self._message.toPlainText().strip()
         self._blank_label.setVisible(self._state == "ready" and blank)
-        self.commit_button.setEnabled(self._state == "ready" and not blank)
+        ready = self._state == "ready" and not blank
+        if parent_only:
+            behind = bool(probe.head) and probe.gitlink_old != probe.head
+            bump = self._parent_check.isEnabled() and self._parent_check.isChecked() and behind
+            ready = ready and bump
+            if self._state == "ready":
+                self.commit_button.setText(_PARENT_ONLY_LABEL if bump else "Commit")
+        self.commit_button.setEnabled(ready)
 
     @staticmethod
     def _earlier_text(probe: CommitProbe) -> str:
