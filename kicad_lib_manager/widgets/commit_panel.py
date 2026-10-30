@@ -12,8 +12,10 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from ..importer.commit_gate import failure_lines
-from ..importer.commit_plan import CommitPlan, default_message, parent_preview, subject_of
+from ..importer.commit_gate import failure_lines, old_notes
+from ..importer.commit_plan import (
+    NOTE_ADDED, NOTE_CHANGED, CommitPlan, default_message, parent_preview, subject_of,
+)
 from ..importer.commit_step import MANUAL_LABEL, CommitOutcome, CommitProbe
 from ..models import Issue, Severity
 from . import theme
@@ -33,6 +35,9 @@ _STATES = (
 )
 _GLYPHS = {Severity.SUCCESS: "✓ ", Severity.ERROR: "✖ ", Severity.WARNING: "⚠ "}
 _STRIP_PREFIX = {"unavailable": "Commit unavailable: ", "refused": "Commit refused: ", "gated": "Commit refused: "}
+_CHANGED_MARK = " (changed since install)"
+_ADDED_MARK = " (added by a fix)"
+_CHANGED_HINT = "⚠ Marked files changed after the install or were added by a fix. Double-click one to see it."
 _DIRTY_HINT = (
     "⚠ Amber files also contain uncommitted changes made before this import. "
     "They are committed too; double-click one to see them."
@@ -127,6 +132,7 @@ class CommitPanel(QWidget):
         self._state = "probing"
         self._committed = False
         self._plan: CommitPlan | None = None
+        self._activatable: set[str] = set()  # CommitFile.rel of the rows that show a diff on double-click
         self._probe: CommitProbe | None = None
         self._outcome_labels: list[QLabel] = []
         self._outcome_severities: list[Severity] = []
@@ -190,6 +196,10 @@ class CommitPanel(QWidget):
         self._files_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._files_list.itemActivated.connect(self._on_item_activated)
         lay.addWidget(self._files_list)
+        self._changed_hint = _amber_label()
+        self._changed_hint.setText(_CHANGED_HINT)
+        self._changed_hint.hide()
+        lay.addWidget(self._changed_hint)
         self._dirty_hint = _amber_label()
         self._dirty_hint.setText(_DIRTY_HINT)
         self._dirty_hint.hide()
@@ -302,6 +312,8 @@ class CommitPanel(QWidget):
         self._pending_refusal = ()
         self._fill_files(cplan)
         self._dirty_hint.hide()
+        self._changed_hint.hide()
+        self._activatable = set()
         self._other_label.hide()
         self._message.setPlainText(default_message(cplan))
         self._branch_label.setText("Custom branch: checking...")
@@ -376,7 +388,7 @@ class CommitPanel(QWidget):
             self._parent_reason.show()
         else:
             self._parent_reason.hide()
-        self._mark_dirty_files(probe)
+        self._mark_files(probe)
         count = probe.other_changes
         if count > 0:
             if count == 1:
@@ -526,16 +538,35 @@ class CommitPanel(QWidget):
         self._gate_lines.setVisible(bool(lines))
         self._check_again_button.setVisible(gated)
         self._open_check_button.setVisible(gated and gate is not None and bool(gate.blocking))
+        # older failures are only noted; they never touch Commit (D-02)
+        notes = old_notes(gate) if gate is not None and probe.state in ("ready", "gated") else []
+        self._old_label.setText("\n".join(notes))
+        self._old_label.setVisible(bool(notes))
 
-    def _mark_dirty_files(self, probe: CommitProbe):
-        """Rows that had changes before the import show in amber; every other row is reset to plain."""
-        any_dirty = False
+    def _mark_files(self, probe: CommitProbe):
+        """Mark the rows: changed since the install, added by a fix, or dirty before the import; others are plain."""
+        any_marked = any_dirty = False
+        self._activatable = set()
         files = self._files_list
+        stale = set(probe.stale)
         for row in range(files.count()):
             item = files.item(row)
             rel = item.data(Qt.ItemDataRole.UserRole)
-            display = self._plan.files[row].display if self._plan is not None and row < len(self._plan.files) else item.text()
-            if rel in probe.dirty_before:
+            cfile = self._plan.files[row] if self._plan is not None and row < len(self._plan.files) else None
+            display = cfile.display if cfile is not None else item.text()
+            changed = cfile is not None and (cfile.note == NOTE_CHANGED or cfile.display in stale)
+            added = cfile is not None and cfile.note == NOTE_ADDED
+            if changed:
+                any_marked = True
+                item.setText(f"⚠ {display}{_CHANGED_MARK}")
+                item.setForeground(QBrush(QColor(theme.AMBER)))
+                item.setToolTip(f"{display} changed after the install. Double-click to see the change.")
+            elif added:
+                any_marked = True
+                item.setText(f"+ {display}{_ADDED_MARK}")
+                item.setForeground(QBrush(QColor(theme.AMBER)))
+                item.setToolTip(f"{display} is committed because a committed part links it. Double-click to see it.")
+            elif rel in probe.dirty_before:
                 any_dirty = True
                 item.setText(f"⚠ {display}")
                 item.setForeground(QBrush(QColor(theme.AMBER)))
@@ -547,6 +578,9 @@ class CommitPanel(QWidget):
                 item.setText(display)
                 item.setData(Qt.ItemDataRole.ForegroundRole, None)
                 item.setToolTip(display)
+            if rel is not None and (changed or added or rel in probe.dirty_before):
+                self._activatable.add(rel)
+        self._changed_hint.setVisible(any_marked)
         self._dirty_hint.setVisible(any_dirty)
 
     def _apply_strip(self):
@@ -582,6 +616,8 @@ class CommitPanel(QWidget):
         self._switch_button.setVisible(state in ("offer_switch", "switching"))
         self._switch_button.setEnabled(state == "offer_switch")
         self._step_row.setVisible(state == "committing")
+        if state == "probing":
+            self._old_label.hide()
         if state != "gated":  # _show_gate decides what a gated probe shows
             self._gate_lines.hide()
             self._check_again_button.hide()
@@ -659,6 +695,6 @@ class CommitPanel(QWidget):
 
     def _on_item_activated(self, item: QListWidgetItem):
         rel = item.data(Qt.ItemDataRole.UserRole)
-        if rel is not None and self._probe is not None and rel in self._probe.dirty_before:
+        if rel is not None and rel in self._activatable:
             self.file_activated.emit(rel)
 
