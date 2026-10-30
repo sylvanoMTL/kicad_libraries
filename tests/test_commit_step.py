@@ -33,7 +33,8 @@ from gitfixtures import (
     start_merge_conflict,
     write_hook,
 )
-from zipfixtures import footprint_library_for
+from installfixtures import vendor_footprint
+from zipfixtures import STEP_BYTES, footprint_library_for
 
 from kicad_lib_manager import gitops
 from kicad_lib_manager.gitops import GitContext
@@ -1772,6 +1773,74 @@ def test_recheck_writes_nothing(tmp_path):
     assert not {"add", "reset", "commit", "switch"} & set(_subcommands(calls))
     assert digest_custom(repos.custom) == before
     assert (_head(repos), repos.git(repos.parent, "rev-parse", "HEAD").strip()) == heads
+
+
+# -- Check again takes the files a fix created that a committed part links (Phase 11, D-10) -----------------
+
+NEWFP_REL = "Footprints/Atomic_Footprints.pretty/NEWFP.kicad_mod"
+NEWFP_STEP = "3DModels/NEWFP.step"
+
+
+def _newfp_plan(repos, *, with_model=True):
+    """An install that wrote a part linking the new footprint NEWFP, whose model line names NEWFP.step."""
+    good = atomic_part("PASSING-1")
+    commit_file(repos, repos.custom, GATE_REL, atomic_lib((good,)), "Add the first parts")
+    parts = (good, atomic_part("NEW-A", replace={"Footprint": "Atomic_Footprints:NEWFP"}))
+    footprint = vendor_footprint("NEWFP", models=("${CUSTOM_3DMODEL_DIR}/NEWFP.step",) if with_model else ())
+    return import_files(repos, {GATE_REL: atomic_lib(parts), NEWFP_REL: footprint}, library=GATE_LIB, symbol="NEW-A")
+
+
+@requires_git
+def test_recheck_adds_untracked_linked_model(tmp_path):
+    repos = _atomic_repos(tmp_path)
+    plan = _newfp_plan(repos)
+    # what the check dialog's 3D fill-in does: copy the .step into Custom
+    (repos.custom / NEWFP_STEP).write_bytes(STEP_BYTES)
+    ctx = _ctx()
+
+    new_plan, probe = commit_step.recheck_commit(plan, git=ctx)
+
+    model = _planned(new_plan, NEWFP_STEP)
+    assert model.note == "added" and model.base_sha256 is None and model.kind == "model"
+    assert model.expected_sha256 == hashlib.sha256(STEP_BYTES).hexdigest()
+    assert probe.state == "ready", probe.reason
+    outcome = commit_step.run_commit(new_plan, MESSAGE, False, git=ctx)
+    assert outcome.committed and not outcome.failed
+    assert gitops.head_blob(ctx, repos.custom, NEWFP_STEP) == STEP_BYTES
+    assert gitops.head_blob(ctx, repos.custom, NEWFP_REL) is not None
+
+
+@requires_git
+def test_recheck_adds_nothing_when_no_part_links_a_model(tmp_path):
+    repos = _atomic_repos(tmp_path)
+    plan = _newfp_plan(repos, with_model=False)
+    (repos.custom / NEWFP_STEP).write_bytes(STEP_BYTES)
+
+    new_plan, _ = commit_step.recheck_commit(plan, git=_ctx())
+
+    assert [f.rel for f in new_plan.files] == [f.rel for f in plan.files]
+
+
+@requires_git
+def test_recheck_leaves_tracked_unchanged_footprint_out(tmp_path):
+    _, _, plan = _edited_plan(tmp_path)
+
+    new_plan, _ = commit_step.recheck_commit(plan, git=_ctx())
+
+    assert [f.rel for f in new_plan.files] == [f.rel for f in plan.files]
+
+
+@requires_git
+def test_recheck_leaves_unrelated_untracked_files_out(tmp_path):
+    repos, _, plan = _edited_plan(tmp_path)
+    before = commit_step.probe_commit(plan, git=_ctx()).other_changes
+    (repos.custom / "3DModels" / "OTHER.step").write_bytes(STEP_BYTES)
+    (repos.custom / "Footprints" / "Atomic_Footprints.pretty" / "STRAY.kicad_mod").write_bytes(vendor_footprint("STRAY"))
+
+    new_plan, probe = commit_step.recheck_commit(plan, git=_ctx())
+
+    assert [f.rel for f in new_plan.files] == [f.rel for f in plan.files]
+    assert probe.other_changes == before + 2
 
 
 @requires_git

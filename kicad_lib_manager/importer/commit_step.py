@@ -28,6 +28,7 @@ from .commit_plan import (
     pre_install_bytes,
     rebaseline,
     subject_of,
+    with_added_files,
 )
 from .content import MAX_READ, ContentText, binary_text, diff_text
 
@@ -372,6 +373,27 @@ def probe_commit(
     )
 
 
+def _with_linked_files(
+    ctx: GitContext, cplan: CommitPlan, kicad_fp_dir: Path | None, cancelled: Callable[[], bool] | None
+) -> CommitPlan:
+    """The plan plus the untracked Custom files a committed part links, each noted "added" (D-10).
+
+    Only files and git state are read; nothing is staged or written. A file no committed part links
+    never enters, however untracked it is (Phase 6 D-10).
+    """
+    known = {cfile.rel.casefold() for cfile in cplan.files}
+    pairs = [
+        (rel, kind)
+        for rel, kind in commit_gate.linked_custom_files(ctx, cplan, kicad_fp_dir, cancelled=cancelled)
+        if rel.casefold() not in known and (cplan.custom_dir / rel).is_file()
+    ]
+    tracked = gitops.tracked_paths(ctx, cplan.custom_dir, [rel for rel, _ in pairs])
+    if isinstance(tracked, Issue):
+        return cplan
+    added = [(rel, kind, None) for rel, kind in pairs if rel not in tracked]
+    return with_added_files(cplan, added) if added else cplan
+
+
 def recheck_commit(
     cplan: CommitPlan,
     *,
@@ -389,7 +411,7 @@ def recheck_commit(
     ctx = _context(cplan, git)
     if isinstance(ctx, Issue):
         return cplan, _unavailable("unavailable", ctx.text)
-    new = rebaseline(cplan)
+    new = _with_linked_files(ctx, rebaseline(cplan), kicad_fp_dir, cancelled)
     probe = probe_commit(new, git=ctx, kicad_fp_dir=kicad_fp_dir, cancelled=cancelled)
     return new, probe
 
