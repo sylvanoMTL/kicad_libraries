@@ -123,6 +123,45 @@ def test_run_git_keeps_only_identity_variables(monkeypatch):
     assert all(env[name] == f"value of {name}" for name in KEPT_IDENTITY_NAMES)
 
 
+@pytest.mark.parametrize("windows", [True, False])
+def test_env_keeps_four_identity_names(windows):
+    environ = {
+        **{name: f"value of {name}" for name in KEPT_IDENTITY_NAMES},
+        "GIT_AUTHOR_DATE": "2001-02-03T04:05:06+0000",
+        "git_committer_date": "2001-02-03T04:05:06+0000",
+        "GIT_DIR": "elsewhere",
+        "GIT_INDEX_FILE": "elsewhere",
+        "git_work_tree": "elsewhere",
+        "GIT_CONFIG_GLOBAL": "elsewhere",
+        "PATH": "somewhere",
+    }
+    env = gitops._env(environ, windows=windows)
+    git_keys = {key for key in env if key.upper().startswith("GIT_")}
+    assert git_keys == {*KEPT_IDENTITY_NAMES, "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_EDITOR"}
+    assert all(env[name] == f"value of {name}" for name in KEPT_IDENTITY_NAMES)
+    assert env["PATH"] == "somewhere"
+
+
+def test_env_folds_case_only_on_windows():
+    environ = {"git_author_name": "low", "Git_Committer_Email": "c@example.invalid"}
+
+    folded = gitops._env(environ, windows=True)
+    assert folded["GIT_AUTHOR_NAME"] == "low" and folded["GIT_COMMITTER_EMAIL"] == "c@example.invalid"
+    assert not [k for k in folded if k.upper().startswith("GIT_") and k != k.upper()]
+
+    kept = gitops._env(environ, windows=False)
+    assert "GIT_AUTHOR_NAME" not in kept and "GIT_COMMITTER_EMAIL" not in kept
+    assert not [k for k in kept if k.upper().startswith("GIT_") and k != k.upper()]
+
+
+@pytest.mark.parametrize("windows", [True, False])
+@pytest.mark.parametrize("upper_first", [True, False])
+def test_env_exact_upper_case_wins(windows, upper_first):
+    pairs = [("GIT_AUTHOR_NAME", "UP"), ("git_author_name", "low")]
+    environ = dict(pairs if upper_first else reversed(pairs))
+    assert gitops._env(environ, windows=windows)["GIT_AUTHOR_NAME"] == "UP"
+
+
 def test_run_git_has_no_input_keyword():
     for function in (gitops.run_git, gitops._commit_with_message):
         parameters = inspect.signature(function).parameters
