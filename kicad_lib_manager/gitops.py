@@ -99,7 +99,7 @@ def run_git(
     ctx: GitContext,
     repo: Path,
     *args: str,
-    input: bytes | None = None,
+    stdin_data: bytes | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     literal: bool = True,
 ) -> GitRun | Issue:
@@ -114,7 +114,7 @@ def run_git(
     pathspecs = "--literal-pathspecs" if literal else "--no-literal-pathspecs"
     argv = [str(ctx.exe), pathspecs, "-c", "core.quotepath=false", "-C", str(repo), *args]
     run = ctx.runner or subprocess.run
-    options = {"input": input} if input is not None else {"stdin": subprocess.DEVNULL}
+    options = {"input": stdin_data} if stdin_data is not None else {"stdin": subprocess.DEVNULL}
     try:
         done = run(
             argv,
@@ -163,8 +163,8 @@ def busy_operation(ctx: GitContext, repo: Path) -> str | None:
 
 
 def identity_known(ctx: GitContext, repo: Path) -> bool:
-    """True when git knows the committer (user.name and user.email); `var` exits non-zero otherwise."""
-    return _ok(run_git(ctx, repo, "var", "GIT_COMMITTER_IDENT"))
+    """True when git knows both the author and the committer (from config or the GIT_AUTHOR_*/GIT_COMMITTER_* variables)."""
+    return _ok(run_git(ctx, repo, "var", "GIT_AUTHOR_IDENT")) and _ok(run_git(ctx, repo, "var", "GIT_COMMITTER_IDENT"))
 
 
 def show_toplevel(ctx: GitContext, path: Path) -> Path | None:
@@ -246,7 +246,7 @@ def ignored_paths(ctx: GitContext, repo: Path, rels) -> list[str] | Issue:
     if not rels:
         return []
     # --no-index: rels are untracked, and without it git glob-matches each name against the index first
-    run = run_git(ctx, repo, "check-ignore", "--no-index", "-z", "--stdin", input=_nul_paths(rels), literal=False)
+    run = run_git(ctx, repo, "check-ignore", "--no-index", "-z", "--stdin", stdin_data=_nul_paths(rels), literal=False)
     if isinstance(run, Issue):
         return run
     if run.returncode == 1:
@@ -342,16 +342,20 @@ def _nul_paths(rels) -> bytes:
 
 def add_intent(ctx: GitContext, repo: Path, rels) -> GitRun | Issue:
     """Record intent-to-add for new files, so `commit --only` knows them."""
-    return run_git(ctx, repo, "add", "-N", "--pathspec-from-file=-", "--pathspec-file-nul", input=_nul_paths(rels))
+    return run_git(
+        ctx, repo, "add", "-N", "--pathspec-from-file=-", "--pathspec-file-nul", stdin_data=_nul_paths(rels)
+    )
 
 
 def unstage(ctx: GitContext, repo: Path, rels) -> GitRun | Issue:
     """Undo an intent-to-add for exactly these paths; the files on disk are untouched."""
-    return run_git(ctx, repo, "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", input=_nul_paths(rels))
+    return run_git(
+        ctx, repo, "reset", "-q", "--pathspec-from-file=-", "--pathspec-file-nul", stdin_data=_nul_paths(rels)
+    )
 
 
 def _commit_with_message(
-    ctx: GitContext, repo: Path, message: str, args: tuple[str, ...], input: bytes | None, timeout: float
+    ctx: GitContext, repo: Path, message: str, args: tuple[str, ...], stdin_data: bytes | None, timeout: float
 ) -> GitRun | Issue:
     """Run `git commit -F <message file> <args>`; the message goes through a temp file outside the repo."""
     try:
@@ -361,7 +365,7 @@ def _commit_with_message(
     except OSError as e:
         return Issue(Severity.ERROR, "git.not_run", f"Could not write the commit message: {e.strerror or e}")
     try:
-        return run_git(ctx, repo, "commit", "--only", "-F", name, *args, input=input, timeout=timeout)
+        return run_git(ctx, repo, "commit", "--only", "-F", name, *args, stdin_data=stdin_data, timeout=timeout)
     finally:
         try:
             os.unlink(name)
