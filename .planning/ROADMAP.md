@@ -202,14 +202,14 @@ Plans:
   4. The parent checkbox keeps the user's choice across probes. The dialog and the main window can be closed while the read-only probe runs. A user whose git identity comes from `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables can commit from the panel.
   5. The Commit button is styled as the primary action, error and success outcomes are tinted, the parent-failed state is no longer labelled "Committed", and the panel's sizes come from the theme scale.
 
-**Plans**: 13 plans
+**Plans**: 4/13 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 11-01-PLAN.md — run_git keeps the six GIT_AUTHOR_*/GIT_COMMITTER_* variables, two-ident identity check, stdin_data rename (REV-11)
-- [ ] 11-02-PLAN.md — Qt-free commit gate for new/changed symbols in committed Atomic_ libraries, symbol_changes extracted (GIT-06, D-01/D-02/D-05)
-- [ ] 11-03-PLAN.md — one parent-message builder for preview and commit; CommitFile note/installed, rebaseline, with_added_files (REV-07, D-08/D-10 data)
-- [ ] 11-04-PLAN.md — panel keeps the refusal and the user's input across re-probes; primary Commit, tinted outcomes, theme sizes (REV-10, IN-01, UI-02)
+- [x] 11-01-PLAN.md — run_git keeps the six GIT_AUTHOR_*/GIT_COMMITTER_* variables, two-ident identity check, stdin_data rename (REV-11)
+- [x] 11-02-PLAN.md — Qt-free commit gate for new/changed symbols in committed Atomic_ libraries, symbol_changes extracted (GIT-06, D-01/D-02/D-05)
+- [x] 11-03-PLAN.md — one parent-message builder for preview and commit; CommitFile note/installed, rebaseline, with_added_files (REV-07, D-08/D-10 data)
+- [x] 11-04-PLAN.md — panel keeps the refusal and the user's input across re-probes; primary Commit, tinted outcomes, theme sizes (REV-10, IN-01, UI-02)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 11-05-PLAN.md — gate checks symbols linked to committed footprints and models with a HEAD view (GIT-06, D-04)
@@ -274,7 +274,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
-| 11. Commit Gate and Commit Panel Fixes | v2.0 | 0/TBD | Not started | - |
+| 11. Commit Gate and Commit Panel Fixes | v2.0 | 4/13 | In Progress | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
