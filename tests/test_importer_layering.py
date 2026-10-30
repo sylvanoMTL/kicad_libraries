@@ -154,7 +154,26 @@ ALLOWED: dict[str, set[str]] = {
     # gitops (a top-level foundation module). importer.content is a forward registration for
     # pre_import_diff in plan 06-07.
     "importer.commit_plan": {"models", "importer.plan"},
-    "importer.commit_step": {"models", "gitops", "importer.plan", "importer.commit_plan", "importer.content"},
+    "importer.commit_step": {
+        "models",
+        "gitops",
+        "importer.plan",
+        "importer.commit_plan",
+        "importer.content",
+        "importer.commit_gate",
+    },
+    # Phase 11 commit gate: the atomic rule applied to the parts being committed (reads HEAD through changes)
+    "importer.commit_gate": {
+        "models",
+        "gitops",
+        "kicad_files",
+        "sexpr",
+        "atomic_check",
+        "changes",
+        "importer.commit_plan",
+        "importer.incoming",
+        "importer.package",
+    },
     # Phase 10 forward registrations (plan 10-01 owns this file; the plans that create these modules
     # add nothing here). importer.stems is created by plan 10-01 and is the one name rule of the Atomic_
     # scheme; it reads the atomic prefix from atomic_check. The others are created by later Phase 10 plans.

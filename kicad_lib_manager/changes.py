@@ -77,15 +77,13 @@ def _head_symbols(root: sexpr.Node) -> dict[str, tuple]:
     return found
 
 
-def _mark_symbols(
-    ctx: gitops.GitContext, custom_dir: Path, lib: SymbolLibrary, rel: str
-) -> list[Issue]:
-    path = custom_dir / rel
-    if not path.is_file():
-        return []  # deleted since the last commit: there is no row for something that is gone
-    root, reason = _read_current(path)
-    if root is None:
-        return [_skipped_for(path, reason)]
+def symbol_changes(ctx: gitops.GitContext, custom_dir: Path, rel: str, root: sexpr.Node) -> dict[str, str]:
+    """The new or changed symbols of a work-tree library against HEAD, {name: status} in file order (Phase 9 D-21).
+
+    A file HEAD lacks has every symbol new; a HEAD copy that does not parse makes every symbol changed;
+    otherwise only a symbol whose token stream differs (or is absent from HEAD) is listed. The first of a
+    repeated name wins.
+    """
     in_head, head_root = _read_head(ctx, custom_dir, rel)
     if not in_head:
         before: dict[str, tuple] | None = {}  # a new file: every symbol is new
@@ -94,7 +92,7 @@ def _mark_symbols(
     else:
         before = _head_symbols(head_root)
 
-    issues: list[Issue] = []
+    found: dict[str, str] = {}
     seen: set[str] = set()
     for ref in kicad_files.find_symbols(root):
         if ref.name in seen:
@@ -108,14 +106,31 @@ def _mark_symbols(
             status = STATUS_CHANGED
         else:
             continue
-        entry = next((e for e in lib.symbols if e.name == ref.name), None)
+        found[ref.name] = status
+    return found
+
+
+def _mark_symbols(
+    ctx: gitops.GitContext, custom_dir: Path, lib: SymbolLibrary, rel: str
+) -> list[Issue]:
+    path = custom_dir / rel
+    if not path.is_file():
+        return []  # deleted since the last commit: there is no row for something that is gone
+    root, reason = _read_current(path)
+    if root is None:
+        return [_skipped_for(path, reason)]
+
+    issues: list[Issue] = []
+    refs = {ref.name: ref for ref in reversed(kicad_files.find_symbols(root))}  # the first of a repeated name
+    for name, status in symbol_changes(ctx, custom_dir, rel, root).items():
+        entry = next((e for e in lib.symbols if e.name == name), None)
         if entry is None:
             # A library without the Atomic_ prefix has no entries yet: it gets only the changed ones
-            entry = SymbolEntry(ref.name, extends=kicad_files.extends_name(ref.node))
+            entry = SymbolEntry(name, extends=kicad_files.extends_name(refs[name].node))
             lib.symbols.append(entry)
         entry.status = status
         code = "scan.symbol_new" if status == STATUS_NEW else "scan.symbol_changed"
-        issues.append(_info(code, f"Symbol {lib.nickname} / {ref.name}: {status} since the last Custom commit"))
+        issues.append(_info(code, f"Symbol {lib.nickname} / {name}: {status} since the last Custom commit"))
     return issues
 
 
