@@ -4,6 +4,8 @@ Every repo is a throwaway superproject under tmp_path; the live Custom/ is never
 gate is run with no KiCad folder, so the result never depends on the workstation's KiCad install.
 """
 
+import dataclasses
+import inspect
 from pathlib import Path
 
 from customfixtures import atomic_lib, atomic_part, write_atomic_files
@@ -16,7 +18,7 @@ from kicad_lib_manager.gitops import GitContext
 from kicad_lib_manager.importer import commit_gate
 from kicad_lib_manager.importer.commit_gate import CANCELLED, AtomicFailure, GateResult, run_gate
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR
-from kicad_lib_manager.models import STATUS_CHANGED, STATUS_NEW, Severity
+from kicad_lib_manager.models import STATUS_CHANGED, STATUS_NEW, Severity, SymbolEntry
 
 pytestmark = requires_git
 
@@ -180,8 +182,8 @@ def test_gate_texts():
         ),
         old=(_failure("Atomic_B", "P9", "mpn", "no MPN"), _failure("Atomic_B", "P9", "datasheet", "no datasheet")),
         problems=("Atomic_C: the library could not be checked (the file is damaged)",),
-        notes=("Atomic_B also holds 1 part that already failed before this import",),
     )
+    assert "notes" not in {f.name for f in dataclasses.fields(GateResult)}
     assert commit_gate.refusal_summary(gate) == "2 parts break the atomic rule; 1 library could not be checked"
     assert commit_gate.failure_lines(gate) == [
         "Atomic_A / P1: no datasheet",
@@ -197,8 +199,23 @@ def test_gate_texts():
         (Severity.WARNING, "commit.atomic_old.mpn", "Atomic_B / P9: no MPN"),
         (Severity.WARNING, "commit.atomic_old.datasheet", "Atomic_B / P9: no datasheet"),
         (Severity.ERROR, "commit.atomic_unreadable", "Atomic_C: the library could not be checked (the file is damaged)"),
-        (Severity.INFO, "commit.atomic_note", "Atomic_B also holds 1 part that already failed before this import"),
     ]
+
+
+def test_move_introduced_lists_a_part_once():
+    rel = "Custom/Symbols/Atomic_A.kicad_sym"
+    old = [_failure("Atomic_A", "P", "mpn", "no MPN"), _failure("Atomic_A", "Q", "mpn", "no MPN")]
+    entries = [("Atomic_A", rel, SymbolEntry("P")), ("Atomic_A", rel, SymbolEntry("Q"))]
+
+    kept_old, kept_entries = commit_gate._move_introduced(old, entries, frozenset({(rel, "P")}))
+
+    assert [f.part for f in kept_old] == ["Q"]
+    assert [entry.name for _, _, entry in kept_entries] == ["Q"]
+    assert [f.part for f in old] == ["P", "Q"]  # the inputs are left alone
+
+
+def test_check_linked_symbols_has_nine_parameters():
+    assert len(inspect.signature(commit_gate._check_linked_symbols).parameters) == 9
 
 
 def test_gate_texts_for_clean_and_problem_only_results():

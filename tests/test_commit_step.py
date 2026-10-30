@@ -38,7 +38,7 @@ from zipfixtures import STEP_BYTES, footprint_library_for
 
 from kicad_lib_manager import gitops
 from kicad_lib_manager.gitops import GitContext
-from kicad_lib_manager.importer import commit_plan, commit_step
+from kicad_lib_manager.importer import commit_gate, commit_plan, commit_step
 from kicad_lib_manager.importer.commit_plan import NEW_PLACEHOLDER, default_message, parent_preview, subject_of
 from kicad_lib_manager.models import Issue, Severity
 
@@ -786,7 +786,8 @@ def test_probe_cancelled_returns_unavailable(tmp_path):
     probe = commit_step.probe_commit(_plan(repos), git=ctx, cancelled=lambda: True)
 
     assert probe.state == "unavailable" and probe.reason == "The check was cancelled"
-    assert commit_step.CANCELLED_REASON == "The check was cancelled"
+    assert probe.reason == commit_gate.CANCELLED
+    assert not hasattr(commit_step, "CANCELLED_REASON")
     assert not {"status", "cat-file"} & set(_subcommands(calls))
 
 
