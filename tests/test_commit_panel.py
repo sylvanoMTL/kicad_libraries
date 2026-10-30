@@ -330,7 +330,7 @@ def test_panel_committing_locks_inputs(qtbot, tmp_path):
     assert not panel._step_row.isHidden()
     bar = panel._step_row.findChild(QProgressBar)
     assert bar.minimum() == bar.maximum() == 0
-    assert bar.minimumSize() == bar.maximumSize() == QSize(240, 16)
+    assert bar.minimumSize() == bar.maximumSize() == QSize(theme.SP_XL * 8, theme.SP_MD)
     panel.commit_button.click()
     panel._on_commit_clicked()
     assert len(requests) == 1
@@ -398,6 +398,7 @@ def test_panel_partial_failure_keeps_hash_no_retry(qtbot, tmp_path):
     panel.show_outcome(outcome)
 
     assert panel.state() == "failed"
+    assert panel.commit_button.text() == "Committed in Custom only"
     lines = panel.outcome_lines()
     assert "✓ Committed abc1234 on main in Custom" in lines
     assert "✖ The Custom commit abc1234 was kept, but the parent commit failed (git exit 1)." in lines
@@ -409,19 +410,124 @@ def test_panel_partial_failure_keeps_hash_no_retry(qtbot, tmp_path):
     assert panel._output.toPlainText() == "hook said no"
 
 
-def test_panel_refusal_returns_to_ready(qtbot, tmp_path):
-    panel, _ = ready_panel(qtbot, tmp_path)
-    panel.set_committing()
-    text = "Not committed: Custom/Symbols/A.kicad_sym changed after the install"
+_REFUSAL = "The Custom branch changed from main to feature/x since the preview; nothing was committed"
 
-    panel.show_outcome(make_outcome(issues=(issue(Severity.ERROR, "commit.stale_file", text),)))
+
+def refused_panel(qtbot, tmp_path):
+    """A ready panel whose user edited the message and unticked the parent box, then got a refusal."""
+    panel, _ = ready_panel(qtbot, tmp_path, parent_dir=tmp_path)
+    panel._message.setPlainText("My own message")
+    panel._parent_check.setChecked(False)
+    panel.set_committing()
+    panel.show_outcome(make_outcome(issues=(issue(Severity.ERROR, "commit.branch_changed", _REFUSAL),)))
+    return panel
+
+
+def test_panel_refusal_waits_for_reprobe(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+
+    assert panel.state() == "probing"
+    assert not panel.commit_button.isEnabled()
+    assert panel.outcome_lines() == [f"✖ {_REFUSAL}"]
+    assert panel.message() == "My own message"
+    assert panel.committed() is False
+
+
+def test_panel_reprobe_keeps_refusal_message_and_parent_choice(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+
+    panel.apply_probe(make_probe(branch="feature/x", not_main=True, parent_dir=tmp_path))
 
     assert panel.state() == "ready"
-    assert panel.outcome_lines() == [f"✖ {text}"]
-    assert not panel._message.isReadOnly()
-    assert panel._parent_check.isEnabled()
-    assert panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit"
-    assert not panel.committed()
+    assert panel._branch_label.text() == "Custom branch: feature/x (not main)"
+    assert panel.outcome_lines()[0] == f"✖ {_REFUSAL}"
+    assert panel.message() == "My own message"
+    assert panel._parent_check.isEnabled() and not panel._parent_check.isChecked()
+    assert panel.commit_button.isEnabled()
+
+
+def test_panel_own_refusal_replaces_pending(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+
+    panel.apply_probe(CommitProbe(state="refused", reason="R"))
+
+    assert panel.state() == "refused"
+    assert not panel.commit_button.isEnabled()
+    assert panel.outcome_lines() == []
+    assert panel._strip.text() == "⚠ Commit refused: R"
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.outcome_lines() == []
+
+
+def test_panel_pending_refusal_cleared_by_commit_click(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+    requests = []
+    panel.commit_requested.connect(lambda text, bump: requests.append((text, bump)))
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.outcome_lines() == [f"✖ {_REFUSAL}"]
+
+    panel.commit_button.click()
+
+    assert requests == [("My own message", False)]
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.outcome_lines() == []
+
+
+def test_panel_pending_refusal_cleared_by_switch_click(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+    requested = []
+    panel.switch_requested.connect(lambda: requested.append(True))
+    panel.apply_probe(CommitProbe(state="offer_switch", head="abc1234def", reason="Custom is on a detached HEAD."))
+
+    panel._switch_button.click()
+
+    assert requested == [True]
+    assert panel._pending_refusal == ()
+
+
+def test_panel_parent_choice_kept_across_probes(qtbot, tmp_path):
+    panel, _ = new_panel(qtbot, tmp_path, make_probe(parent_dir=tmp_path))
+    assert panel._parent_check.isChecked()
+
+    panel._parent_check.setChecked(False)
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert not panel._parent_check.isChecked() and panel._parent_check.isEnabled()
+
+    panel.apply_probe(make_probe(parent_ok=False, parent_reason="detached", parent_branch=None, parent_dir=tmp_path))
+    assert not panel._parent_check.isChecked() and not panel._parent_check.isEnabled()
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert not panel._parent_check.isChecked() and panel._parent_check.isEnabled()
+
+    panel.show_plan(make_cplan(tmp_path))
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel._parent_check.isChecked()
+
+
+def test_panel_ticked_choice_comes_back_after_disabled_probe(qtbot, tmp_path):
+    panel, _ = new_panel(qtbot, tmp_path, make_probe(parent_dir=tmp_path))
+
+    panel.apply_probe(make_probe(parent_ok=False, parent_reason="detached", parent_branch=None, parent_dir=tmp_path))
+    assert not panel._parent_check.isChecked()
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel._parent_check.isChecked()
+
+
+def test_panel_begin_reprobe_with_new_plan(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel._message.setPlainText("Keep me")
+
+    panel.begin_reprobe(make_cplan(tmp_path, 4))
+
+    assert panel.state() == "probing"
+    assert panel.message() == "Keep me"
+    assert panel._files_list.count() == 4
+    assert panel._files_heading.text() == "Files to commit (4)"
+    assert panel._branch_label.text() == "Custom branch: checking..."
+    assert not panel.commit_button.isEnabled()
+
+    panel.begin_reprobe()
+    assert panel._files_list.count() == 4 and panel.message() == "Keep me"
 
 
 def test_panel_hook_output_box_capped_and_filtered(qtbot, tmp_path):
@@ -480,3 +586,108 @@ def test_panel_long_paths_elide_with_tooltip(qtbot, tmp_path):
     assert panel._parent_label.full_text().startswith("Parent repo: ") and "p" * 200 in panel._parent_label.full_text()
     assert "p" * 200 in panel._parent_label.toolTip()
     assert long_name in panel._files_list.item(0).toolTip()
+
+
+# -- UI-02: primary Commit, tinted outcome strip, honest partial label, theme sizes ----------------
+
+
+def partial_outcome():
+    manual = 'git -C "C:/x" commit -m "Update Custom: Add P to L" -- Custom'
+    return make_outcome(
+        custom_commit="abc1234",
+        manual_command=manual,
+        output="hook said no",
+        issues=(
+            issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom"),
+            issue(Severity.ERROR, "commit.parent_failed", "The Custom commit abc1234 was kept, but the parent commit failed"),
+        ),
+    )
+
+
+def test_panel_commit_button_primary(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+
+    assert panel.commit_button.styleSheet() == theme.PRIMARY_BUTTON_QSS
+    assert panel._switch_button.styleSheet() == ""
+
+
+def test_panel_outcome_tint_success(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+
+    panel.show_outcome(make_outcome(issues=(
+        issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom"),
+        issue(Severity.INFO, "commit.not_pushed", "Not pushed"),
+    )))
+
+    assert theme.SUCCESS_TINT in panel._outcome_frame.styleSheet()
+    assert not panel._outcome_frame.isHidden()
+    assert theme.SUCCESS in panel._outcome_labels[0].styleSheet()
+
+
+def test_panel_outcome_tint_error(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+    panel.show_outcome(partial_outcome())
+    assert theme.ERROR_TINT in panel._outcome_frame.styleSheet()
+    assert panel._outcome_frame.objectName() == "outcomeStrip"
+
+    refused, _ = ready_panel(qtbot, tmp_path)
+    refused.set_committing()
+    refused.show_outcome(make_outcome(issues=(issue(Severity.ERROR, "commit.stale_file", "Not committed: x"),)))
+    assert theme.ERROR_TINT in refused._outcome_frame.styleSheet()
+
+    switching = CommitProbe(state="offer_switch", head="abc1234def", reason="Custom is on a detached HEAD at abc1234.")
+    other, _ = new_panel(qtbot, tmp_path, switching)
+    other.show_switch_failed("git refused to switch Custom to main\nerror: x")
+    assert theme.ERROR_TINT in other._outcome_frame.styleSheet()
+
+
+def test_panel_outcome_tint_warning(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+
+    panel.show_outcome(make_outcome(issues=(
+        issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom"),
+        issue(Severity.WARNING, "commit.parent_skipped", "The parent repo was left alone"),
+    )))
+
+    assert theme.AMBER_TINT in panel._outcome_frame.styleSheet()
+    assert theme.ERROR_TINT not in panel._outcome_frame.styleSheet()
+
+
+def test_panel_outcome_frame_hidden_when_empty(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    assert panel._outcome_frame.isHidden()
+    panel.set_committing()
+    panel.show_outcome(partial_outcome())
+    assert not panel._outcome_frame.isHidden()
+
+    panel.show_plan(make_cplan(tmp_path))
+
+    assert panel._outcome_frame.isHidden()
+    assert panel._outcome_frame.styleSheet() == ""
+
+
+def test_panel_failed_label_custom_only(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel.set_committing()
+
+    panel.show_outcome(partial_outcome())
+
+    assert panel.state() == "failed"
+    assert not panel.commit_button.isEnabled()
+    assert panel.commit_button.text() == "Committed in Custom only"
+    lines = panel.outcome_lines()
+    assert lines[0].startswith("✓ ") and lines[1].startswith("✖ ")
+
+
+def test_panel_sizes_on_theme_scale(qtbot, tmp_path):
+    panel = CommitPanel()
+    qtbot.addWidget(panel)
+
+    assert panel._progress.width() == theme.SP_XL * 8
+    assert panel._progress.height() == theme.SP_MD
+    panel.show_plan(make_cplan(tmp_path, 0))
+    files = panel._files_list
+    assert files.height() == files.fontMetrics().height() + theme.SP_SM + 2 * files.frameWidth()
