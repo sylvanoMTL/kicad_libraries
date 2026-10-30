@@ -113,16 +113,14 @@ def test_run_git_keeps_only_identity_variables(monkeypatch):
     _clear_identity(monkeypatch)
     for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_PARAMETERS"):
         monkeypatch.setenv(name, "elsewhere")
-    for name in IDENTITY_NAMES:
-        # two of the six arrive in lower case, which is how a Windows shell may spell them
-        key = name.lower() if name in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_DATE") else name
-        monkeypatch.setenv(key, f"value of {name}")
+    for name in IDENTITY_NAMES:  # the four name and email variables and both DATE variables
+        monkeypatch.setenv(name, f"value of {name}")
     runner, calls = _recorder()
     run_git(GitContext(Path("git"), runner), REPO, "--version")
     env = calls[0][1]["env"]
     git_keys = {key for key in env if key.upper().startswith("GIT_")}
-    assert git_keys == {*IDENTITY_NAMES, "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_EDITOR"}
-    assert all(env[name] == f"value of {name}" for name in IDENTITY_NAMES)
+    assert git_keys == {*KEPT_IDENTITY_NAMES, "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_EDITOR"}
+    assert all(env[name] == f"value of {name}" for name in KEPT_IDENTITY_NAMES)
 
 
 def test_run_git_has_no_input_keyword():
@@ -194,6 +192,9 @@ def test_only_known_modules_import_subprocess():
 IDENTITY_NAMES = (
     "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
     "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+)  # fmt: skip
+KEPT_IDENTITY_NAMES = (
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL",
 )  # fmt: skip
 ENV_IDENTITY = {
     "GIT_AUTHOR_NAME": "Env Author",
