@@ -7,7 +7,7 @@ probes run with no KiCad folder unless a test passes a stand-in one, so nothing 
 import subprocess
 from pathlib import Path
 
-from customfixtures import atomic_lib
+from customfixtures import atomic_lib, atomic_part
 from gitfixtures import GIT, GitRepos, commit_file, import_files, make_superproject, populate_custom, requires_git
 from installfixtures import vendor_footprint
 from zipfixtures import STEP_BYTES
@@ -105,3 +105,28 @@ def test_unreadable_linked_library_refuses_probe_panel_and_click(qtbot, tmp_path
     assert not {"add", "reset", "commit"} & {argv[6] for argv in calls}
     assert _head(repos, repos.custom) == custom_head
     assert _head(repos, repos.parent) == parent_head
+
+
+def test_unchecked_linked_part_shown_in_panel_without_refusing(qtbot, tmp_path):
+    repos = _repos(tmp_path)
+    part = atomic_part("P", replace={"Footprint": f"{SHARED}:GENERIC-2PIN"})
+    commit_file(repos, repos.custom, LINKED_REL, atomic_lib((part,)), "Add the linked part")
+    kicad = tmp_path / "kicad" / "footprints"
+    (kicad / f"{SHARED}.pretty").mkdir(parents=True)  # the library name is now defined twice: the link cannot be followed
+    plan = _overwrite_footprint(repos)
+
+    probe = commit_step.probe_commit(plan, git=GitContext(Path(GIT)), kicad_fp_dir=kicad)
+
+    assert probe.state == "ready"
+    (issue,) = [i for i in probe.issues if i.code == "commit.atomic_unchecked"]
+    assert issue.severity is Severity.WARNING
+    assert LINKED in issue.text and " / P " in issue.text
+
+    panel = _show(qtbot, plan, probe)
+    panel._message.setPlainText(MESSAGE)
+
+    assert panel.state() == "ready"
+    assert not panel._old_label.isHidden()
+    assert issue.text in panel._old_label.text()
+    assert panel._gate_lines.isHidden()
+    assert panel.commit_button.isEnabled()
