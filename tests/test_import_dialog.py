@@ -3957,6 +3957,37 @@ def test_changed_file_opens_changed_diff(qtbot, make_install_dialog):
     assert seen[2][:2] == ("changed", model_rel)
 
 
+def test_changed_and_dirty_file_opens_both_views(qtbot, make_install_dialog):
+    sym_rel = f"Symbols/{LIB}.kicad_sym"
+    seen: list[tuple[str, str, int]] = []
+
+    def changed(cplan, path, **kwargs):
+        seen.append(("changed", path, threading.get_ident()))
+        return ContentText(title=f"{path} - as installed vs now", header=path, body="-a\n+b", kind="diff")
+
+    def before_import(cplan, path, **kwargs):
+        seen.append(("before", path, threading.get_ident()))
+        return ContentText(title=f"{path} - HEAD vs before this import", header=path, body="-x\n+y", kind="diff")
+
+    probe = fake_ready_probe(stale=(f"Custom/{sym_rel}",), dirty_before=frozenset({sym_rel}))
+    dialog = make_install_dialog(probe_commit=probe, changed_diff=changed, pre_import_diff=before_import)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    files = panel._files_list
+    item = next(files.item(i) for i in range(files.count()) if files.item(i).data(Qt.ItemDataRole.UserRole) == sym_rel)
+    assert item.text() == f"⚠ Custom/{sym_rel} (changed since install; also changed before this import)"
+    files.itemActivated.emit(item)
+
+    view = wait_view(qtbot, dialog)
+    assert len(dialog._content_views) == 1
+    assert [(kind, path) for kind, path, _ in seen] == [("changed", sym_rel), ("before", sym_rel)]
+    assert seen[0][2] == seen[1][2] != threading.get_ident()
+    assert view.windowTitle() == f"{sym_rel} - changed since install and before this import"
+    text = view._text.toPlainText()
+    assert text.index("-a\n+b") < text.index("-x\n+y")
+
+
 def test_no_commit_step_for_noop_plan(qtbot, make_install_dialog, tmp_path):
     dialog = make_install_dialog()
     dialog._start_commit_step(types.SimpleNamespace(is_noop=True), fake_result(tmp_path))
@@ -5098,6 +5129,83 @@ def test_fixes_applied_reemitted_and_rechecked(qtbot, make_install_dialog):
 
     check.reject()
     qtbot.waitUntil(lambda: dialog._atomic_dialog is None, timeout=10000)
+
+
+def test_check_again_supersedes_running_probe(qtbot, make_install_dialog, gates):
+    calls: list[int] = []
+    rechecks: list[int] = []
+    commits: list[int] = []
+    second_started = threading.Event()
+    seen_cancel: list = []
+
+    def probe(cplan, *, cancelled=None, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return gated_fake_probe(cplan)
+        seen_cancel.append(cancelled)
+        gate = threading.Event()
+        gates.append(gate)
+        second_started.set()
+        assert gate.wait(30)
+        return fake_ready_probe("feature/old")(cplan)
+
+    def recheck(cplan, **kwargs):
+        rechecks.append(1)
+        return cplan, fake_ready_probe("main")(cplan)
+
+    def count_commit(*args, **kwargs):
+        commits.append(1)
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=probe, recheck_commit=recheck, run_commit=count_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    dialog._start_probe(reprobe=True)  # a probe that waits on its gate
+    qtbot.waitUntil(lambda: second_started.is_set(), timeout=30000)
+    assert dialog.is_probing()
+
+    dialog._on_atomic_fixes_applied([Issue(Severity.SUCCESS, "atomic.fixed", "Fixed 1 part")])
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    assert rechecks == [1]
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert seen_cancel[0]()  # the older probe was told to stop
+
+    gates[0].set()  # the superseded probe finishes last and is dropped
+    finish_workers(qtbot, dialog)
+    assert panel.state() == "ready"
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert dialog._commit_probe.branch == "main"
+    assert not dialog.is_probing()
+    assert commits == []
+
+
+def test_check_again_refused_while_committing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    rechecks: list[int] = []
+
+    def recheck(cplan, **kwargs):
+        rechecks.append(1)
+        return cplan, fake_ready_probe()(cplan)
+
+    dialog = make_install_dialog(
+        probe_commit=fake_ready_probe(), recheck_commit=recheck, run_commit=gated(gates, started, fake_committed)
+    )
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+
+    dialog._on_check_again()
+    assert rechecks == []
+    assert dialog.is_committing()
+    assert not dialog.is_probing()
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: panel.state() == "done" and not dialog.is_committing(), timeout=30000)
+    assert rechecks == []
 
 
 def test_kicad_folder_reaches_probe_recheck_and_commit(qtbot, item_layout, recorded, tmp_path):

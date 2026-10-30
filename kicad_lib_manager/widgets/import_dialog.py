@@ -37,8 +37,8 @@ from ..importer.candidate import ImportCandidate
 from ..importer.commit_gate import scan_result_for
 from ..importer.commit_plan import CommitPlan, build_commit_plan
 from ..importer.commit_step import (
-    CommitOutcome, CommitProbe, SwitchOutcome, changed_diff, pre_import_diff, probe_commit, recheck_commit, run_commit,
-    switch_to_main,
+    CommitOutcome, CommitProbe, SwitchOutcome, changed_diff, combined_view, pre_import_diff, probe_commit,
+    recheck_commit, run_commit, switch_to_main,
 )
 from ..importer.content import ContentText, op_content, unchanged_content
 from ..importer.detect import detect_candidate
@@ -2858,6 +2858,15 @@ class ImportDialog(QDialog):
         self._result_view.set_commit_panel(panel)
         self._start_probe()
 
+    def _begin_probe_generation(self) -> threading.Event:
+        """A newer probe or check supersedes every older one: their Events are set, the new one is returned (T-11-22)."""
+        for older in self._probe_cancels:
+            older.set()
+        event = threading.Event()
+        self._probe_cancels = [event]  # the older ones are set already; _shutdown sets the live one
+        self._commit_probe = None
+        return event
+
     def _start_probe(self, *, reprobe: bool = False):
         """Probe git for the current commit plan; runs again after a switch or a refusal (D-15, D-11).
 
@@ -2867,11 +2876,7 @@ class ImportDialog(QDialog):
         panel, cplan = self._commit_panel, self._commit_plan
         if panel is None or cplan is None or self._closing:
             return
-        for older in self._probe_cancels:
-            older.set()
-        event = threading.Event()
-        self._probe_cancels = [event]  # the older ones are set already; _shutdown sets the live one
-        self._commit_probe = None
+        event = self._begin_probe_generation()
         if reprobe:
             panel.begin_reprobe()
         else:
@@ -2913,19 +2918,16 @@ class ImportDialog(QDialog):
     def _on_check_again(self):
         """Check again (D-08): take the files as they are now and probe the new plan; it never commits.
 
-        The check only reads, so it takes no Close lock. It replaces any older probe exactly as
-        _start_probe does, and the plan it returns replaces the dialog's plan.
+        The check only reads, so it takes no Close lock. A running probe or check does not stop it: it
+        supersedes that one exactly as _start_probe does and the older result is dropped (IN-03). It is
+        refused only while a Switch to main or Commit runs. The plan it returns replaces the dialog's plan.
         """
         panel, cplan = self._commit_panel, self._commit_plan
-        if self._closing or self._git_worker is not None or self._probe_worker is not None:
+        if self._closing or self._git_worker is not None:
             return
         if panel is None or cplan is None:
             return
-        for older in self._probe_cancels:
-            older.set()
-        event = threading.Event()
-        self._probe_cancels = [event]
-        self._commit_probe = None
+        event = self._begin_probe_generation()
         panel.begin_reprobe()
         core, fp_dir = self._core, self._kicad_fp_dir
         worker = self._spawn(
@@ -3019,10 +3021,11 @@ class ImportDialog(QDialog):
         self._commit_panel.show_switch_failed(issue.text)
 
     def _on_commit_file_activated(self, rel: str):
-        """An amber file was opened (D-08, D-09).
+        """An amber file was opened (D-08, D-09, WR-02).
 
-        A file that changed since the install, or that a fix added, shows what it held then against now;
-        any other amber file shows HEAD against what it held before this import.
+        A file that changed since the install, or that a fix added, shows what it held then against now.
+        If it also held changes before this import, one view shows that after it (both are built on one
+        worker). Any other amber file shows HEAD against what it held before this import.
         """
         cplan, probe = self._commit_plan, self._commit_probe
         if cplan is None or self._closing:
@@ -3030,10 +3033,16 @@ class ImportDialog(QDialog):
         core = self._core
         cfile = next((f for f in cplan.files if f.rel == rel), None)
         stale = probe.stale if probe is not None else ()
-        if cfile is not None and (cfile.note or cfile.display in stale):
+        marked = cfile is not None and bool(cfile.note or cfile.display in stale)
+        dirty = probe is not None and rel in probe.dirty_before
+        if marked and dirty:
+            self._run_content(
+                lambda cp=cplan, r=rel: combined_view(core.changed_diff(cp, r), core.pre_import_diff(cp, r))
+            )
+        elif marked:
             self._run_content(lambda cp=cplan, r=rel: core.changed_diff(cp, r))
-            return
-        self._run_content(lambda cp=cplan, r=rel: core.pre_import_diff(cp, r))
+        else:
+            self._run_content(lambda cp=cplan, r=rel: core.pre_import_diff(cp, r))
 
     def _on_commit_requested(self, message: str, bump_parent: bool):
         panel, cplan, probe = self._commit_panel, self._commit_plan, self._commit_probe
