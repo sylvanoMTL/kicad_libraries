@@ -231,8 +231,13 @@ def import_files(
         base = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
+        kind = _kind_of(rel)
+        # like a real install: the written bytes are kept for the "changed since install" diff, except for a model
         commit_files.append(
-            CommitFile(rel, f"Custom/{rel}", path, _kind_of(rel), hashlib.sha256(data).hexdigest(), base)
+            CommitFile(
+                rel, f"Custom/{rel}", path, kind, hashlib.sha256(data).hexdigest(), base,
+                installed=None if kind == "model" else data,
+            )
         )
     return CommitPlan(
         repo_root=repos.parent,
