@@ -17,7 +17,8 @@ from pathlib import Path
 from .. import gitops
 from ..gitops import GitContext, GitRun
 from ..models import Issue, Severity
-from .commit_gate import CANCELLED, GateResult
+from . import commit_gate
+from .commit_gate import CANCELLED, GateResult, failure_lines, gate_issues, refusal_summary
 from .commit_plan import (
     CommitPlan,
     changed_since_install,
@@ -59,7 +60,7 @@ class CommitProbe:
     stale: tuple[str, ...] = ()  # display paths of planned files that changed after the install (D-08, D-09)
     identical: frozenset[str] = frozenset()  # planned rels whose bytes already equal HEAD (D-13)
     all_identical: bool = False  # every planned file equals HEAD: no Custom commit is possible (D-14)
-    gate: GateResult | None = None  # filled by the panel's atomic gate (plan 11-08)
+    gate: GateResult | None = None  # what the atomic gate found; set for every probe that could commit (GIT-06)
 
 
 @dataclass(frozen=True)
@@ -304,12 +305,18 @@ def _preexisting(
 
 
 def probe_commit(
-    cplan: CommitPlan, *, git: GitContext | None = None, cancelled: Callable[[], bool] | None = None
+    cplan: CommitPlan,
+    *,
+    git: GitContext | None = None,
+    kicad_fp_dir: Path | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> CommitProbe:
     """Read the git state of Custom and the parent repo; nothing is changed.
 
     cancelled is checked between the git steps, so a closing dialog waits for at most one running git
-    call; once it is True the probe returns state "unavailable" with CANCELLED_REASON.
+    call; once it is True the probe returns state "unavailable" with CANCELLED_REASON. When Custom is on a
+    named branch the atomic gate runs too: a part that breaks the rule makes the state "gated" before
+    any click (GIT-06, D-03).
     """
     ctx = _context(cplan, git)
     if isinstance(ctx, Issue):
@@ -343,12 +350,22 @@ def probe_commit(
     if fields is None:
         return _unavailable("unavailable", CANCELLED_REASON)
     stale = fields["stale"]
+    gate = commit_gate.run_gate(ctx, cplan, kicad_fp_dir, cancelled=cancelled)
+    if _is_cancelled(cancelled):
+        return _unavailable("unavailable", CANCELLED_REASON)
+    reasons = []
+    if gate.refused:
+        reasons.append(refusal_summary(gate) + ".")
+    if stale:
+        reasons.append(stale_text(stale))
+    fields["issues"] = (*fields["issues"], *gate_issues(gate))
     return CommitProbe(
-        state="gated" if stale else "ready",  # a stale file is known before any click (D-08, D-09)
-        reason=stale_text(stale) if stale else "",
+        state="gated" if reasons else "ready",  # a stale file or a broken rule is known before any click (D-03, D-08)
+        reason=" ".join(reasons),
         branch=branch,
         head=head,
         not_main=branch != "main",  # a named branch is committed on as it is (D-14)
+        gate=gate,
         **fields,
     )
 
@@ -409,23 +426,24 @@ def _run_failed(run: GitRun | Issue) -> bool:
     return isinstance(run, Issue) or run.returncode != 0
 
 
-def _precheck(ctx: GitContext, cplan: CommitPlan, expected_branch: str | None, bump_parent: bool) -> Issue | None:
+def _precheck(
+    ctx: GitContext,
+    cplan: CommitPlan,
+    expected_branch: str | None,
+    bump_parent: bool,
+    kicad_fp_dir: Path | None = None,
+) -> Issue | None:
     """The first reason the commit must not start, or None. Reads only; nothing is written (D-11, D-16).
 
     Everything the probe saw is checked again here, because the Result view can stay open while the
-    files or either repo change.
+    files or either repo change. That includes the atomic gate (GIT-06, D-03).
     """
     errors = [issue for issue in cplan.issues if issue.severity is Severity.ERROR]
     if errors:
         return errors[0]
     stale = changed_since_install(cplan)
     if stale:
-        plural = "s" if len(stale) != 1 else ""
-        return Issue(
-            Severity.ERROR, "commit.stale_file",
-            f"Not committed: {', '.join(stale)} changed after the install (for example, edited in KiCad). "
-            f"Check the file{plural} and commit by hand.",
-        )
+        return Issue(Severity.ERROR, "commit.stale_file", "Not committed: " + stale_text(stale))
     reason = _custom_unavailable(ctx, cplan)
     if reason:
         return Issue(Severity.ERROR, "commit.refused", f"Not committed: {reason}")
@@ -445,6 +463,10 @@ def _precheck(ctx: GitContext, cplan: CommitPlan, expected_branch: str | None, b
                 Severity.ERROR, "commit.parent_unavailable",
                 f"Not committed: {parent_reason}. Untick the parent option to commit in Custom only.",
             )
+    gate = commit_gate.run_gate(ctx, cplan, kicad_fp_dir)  # files can change between the probe and the click (D-03)
+    if gate.refused:
+        lines = "\n".join(failure_lines(gate))
+        return Issue(Severity.ERROR, "commit.atomic", f"Not committed: {refusal_summary(gate)}.\n{lines}")
     rels = [f.rel for f in cplan.files]
     tracked = gitops.tracked_paths(ctx, custom, rels)
     if isinstance(tracked, Issue):
@@ -665,6 +687,7 @@ def run_commit(
     expected_branch: str | None = None,
     git: GitContext | None = None,
     progress: Callable | None = None,
+    kicad_fp_dir: Path | None = None,
 ) -> CommitOutcome:
     """Commit exactly the plan's files in Custom, then (optionally) only the Custom gitlink in the parent.
 
@@ -678,7 +701,7 @@ def run_commit(
         return _failed("commit.custom_failed", f"Commit unavailable: {ctx.text}")
     step = progress or (lambda *args: None)
     custom = cplan.custom_dir
-    refusal = _precheck(ctx, cplan, expected_branch, bump_parent)
+    refusal = _precheck(ctx, cplan, expected_branch, bump_parent, kicad_fp_dir)
     if refusal is not None:
         return CommitOutcome(issues=(refusal,))
     rels = [f.rel for f in cplan.files]

@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from customfixtures import atomic_lib, atomic_part, write_atomic_files
 from gitfixtures import (
     GIT,
     advance_remote_main,
@@ -27,6 +28,7 @@ from gitfixtures import (
     import_files,
     make_superproject,
     make_worktree,
+    populate_custom,
     requires_git,
     start_merge_conflict,
     write_hook,
@@ -1618,3 +1620,79 @@ def test_pre_import_diff_model_is_binary(tmp_path):
     assert content.kind == "binary"
     assert hashlib.sha256(b"head model\n").hexdigest() in content.body
     assert hashlib.sha256(b"edited model\n").hexdigest() in content.body
+
+
+# -- the atomic gate in the probe and again at the click (Phase 11, GIT-06, D-03, D-09) ---------------------
+
+GATE_LIB = "Atomic_Gate_Test"
+GATE_REL = f"Symbols/{GATE_LIB}.kicad_sym"
+
+
+def _populate_atomic(custom):
+    populate_custom(custom)
+    write_atomic_files(custom)
+
+
+def _atomic_repos(tmp_path):
+    return make_superproject(tmp_path / "git", populate=_populate_atomic)
+
+
+def _gate_plan(repos, *parts, head_parts=None):
+    """Commit head_parts as the library's HEAD content, then stand in for an install that wrote parts."""
+    if head_parts is not None:
+        commit_file(repos, repos.custom, GATE_REL, atomic_lib(head_parts), "Add the first parts")
+    return import_files(repos, {GATE_REL: atomic_lib(parts)}, library=GATE_LIB, symbol=parts[-1].name)
+
+
+@requires_git
+def test_probe_gated_and_click_refused_for_failing_part(tmp_path):
+    repos = _atomic_repos(tmp_path)
+    good = atomic_part("PASSING-1")
+    plan = _gate_plan(repos, good, atomic_part("LIS3MDL", drop=("Datasheet",)), head_parts=(good,))
+    custom_head, parent_head = _head(repos), repos.git(repos.parent, "rev-parse", "HEAD").strip()
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.state == "gated"
+    assert probe.gate is not None and probe.gate.blocking[0].part == "LIS3MDL"
+    assert probe.reason.startswith("1 part breaks the atomic rule")
+    errors = [issue for issue in probe.issues if issue.severity is Severity.ERROR]
+    assert [issue.code for issue in errors] == ["commit.atomic.datasheet"]
+
+    ctx, calls = _recording_ctx()
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=ctx)
+
+    assert outcome.custom_commit is None and outcome.failed
+    issue = _single_error(outcome, "commit.atomic")
+    assert f"{GATE_LIB} / LIS3MDL: " in issue.text and issue.text.startswith("Not committed: 1 part breaks the atomic rule")
+    assert _writes(calls) == []
+    assert _head(repos) == custom_head
+    assert repos.git(repos.parent, "rev-parse", "HEAD").strip() == parent_head
+
+
+@requires_git
+def test_probe_old_failure_stays_ready_and_commits(tmp_path):
+    repos = _atomic_repos(tmp_path)
+    old = atomic_part("OLD-1", drop=("Datasheet",))
+    plan = _gate_plan(repos, old, atomic_part("NEW-Q"), head_parts=(old,))
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+
+    assert probe.state == "ready" and probe.gate is not None and probe.gate.refused is False
+    warnings = [issue for issue in probe.issues if issue.code.startswith("commit.atomic_old.")]
+    assert warnings and all(issue.severity is Severity.WARNING for issue in warnings)
+    outcome = commit_step.run_commit(plan, MESSAGE, False, git=_ctx())
+    assert outcome.committed and not outcome.failed
+
+
+@requires_git
+def test_precheck_stale_points_to_check_again(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    plan = _plan(repos)
+    (repos.custom / FP_NEW).write_bytes(b"edited in KiCad after the install\n")
+
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=_ctx())
+
+    issue = _single_error(outcome, "commit.stale_file")
+    assert "Click Check again" in issue.text and "commit by hand" not in issue.text
+    assert f"Custom/{FP_NEW}" in issue.text
