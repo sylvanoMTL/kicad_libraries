@@ -14,7 +14,14 @@ from pathlib import Path
 from .. import gitops
 from ..gitops import GitContext, GitRun
 from ..models import Issue, Severity
-from .commit_plan import CommitPlan, changed_since_install, parent_message, pre_install_bytes, subject_of
+from .commit_plan import (
+    CommitPlan,
+    changed_since_install,
+    file_sha256,
+    parent_message,
+    pre_install_bytes,
+    subject_of,
+)
 from .content import ContentText, binary_text, diff_text
 
 
@@ -55,6 +62,7 @@ class CommitOutcome:
     manual_command: str = ""
     output: str = ""
     issues: tuple[Issue, ...] = ()
+    parent_only: bool = False  # the D-14 bump: Custom already held the files, only the parent gitlink was committed
 
     @property
     def committed(self) -> bool:
@@ -161,6 +169,26 @@ def _parent_state(ctx: GitContext, cplan: CommitPlan) -> tuple[bool, str, str | 
     if branch is None:
         return False, "the parent repo is on a detached HEAD", None, None
     return True, "", branch, gitops.committed_gitlink(ctx, root, cplan.custom_rel)
+
+
+ALREADY_IN_HEAD = "Already identical to HEAD, not in the commit: "
+
+
+def _identical_to_head(ctx: GitContext, cplan: CommitPlan, cancelled: Callable[[], bool] | None = None) -> frozenset[str]:
+    """The planned files whose bytes on disk equal what HEAD would put in the work tree (D-13).
+
+    head_blob applies git's filters, so a clean CRLF file under autocrlf matches. Stops early and returns
+    what is known once cancelled() is True.
+    """
+    found = set()
+    for file in cplan.files:
+        if cancelled is not None and cancelled():
+            break
+        digest = file_sha256(file.path)
+        blob = gitops.head_blob(ctx, cplan.custom_dir, file.rel) if digest is not None else None
+        if blob is not None and hashlib.sha256(blob).hexdigest() == digest:
+            found.add(file.rel)
+    return frozenset(found)
 
 
 def _dirty_before(ctx: GitContext, cplan: CommitPlan) -> frozenset[str]:
@@ -523,8 +551,15 @@ def run_commit(
     refusal = _precheck(ctx, cplan, expected_branch, bump_parent)
     if refusal is not None:
         return CommitOutcome(issues=(refusal,))
-    step("Committing in Custom...", 0, 2)
     rels = [f.rel for f in cplan.files]
+    # decided from the bytes on disk right before the write, so a file edited meanwhile is not mistaken (D-13)
+    identical = _identical_to_head(ctx, cplan)
+    if rels and identical == set(rels):
+        if not bump_parent:
+            return _failed("commit.nothing_to_commit", "Not committed: Custom already holds these files.")
+        held = Issue(Severity.INFO, "commit.already_in_head", "Nothing to commit in Custom: it already holds these files")
+        return _parent_step(ctx, cplan, message, [held], {}, step=step, short="", parent_only=True)
+    step("Committing in Custom...", 0, 2)
     tracked = gitops.tracked_paths(ctx, custom, rels)
     if isinstance(tracked, Issue):
         return _failed("commit.custom_failed", f"Commit in Custom failed: {tracked.text}; nothing was committed")
@@ -557,33 +592,62 @@ def run_commit(
     planned = set(rels)
     committed_files = gitops.commit_files(ctx, custom)
     if committed_files is not None and set(committed_files) != planned:
-        extra, missing = sorted(set(committed_files) - planned), sorted(planned - set(committed_files))
-        stop = " The parent repo was not updated." if bump_parent else ""
-        issues.append(Issue(
-            Severity.ERROR, "commit.unexpected_files",
-            f"The Custom commit {short} was made, but its files differ from the list shown: "
-            f"{extra} added, {missing} missing.{stop}",
-        ))
-        return CommitOutcome(issues=tuple(issues), **fields)
+        extra = sorted(set(committed_files) - planned)
+        absent = planned - set(committed_files)
+        # a planned file proven equal to HEAD is not a missing file: git had nothing to commit for it (D-13)
+        already = [f.display for f in cplan.files if f.rel in absent and f.rel in identical]
+        real_missing = sorted(absent - identical)
+        if already:
+            issues.append(Issue(Severity.INFO, "commit.already_in_head", ALREADY_IN_HEAD + ", ".join(already)))
+        if extra or real_missing:
+            stop = " The parent repo was not updated." if bump_parent else ""
+            issues.append(Issue(
+                Severity.ERROR, "commit.unexpected_files",
+                f"The Custom commit {short} was made, but its files differ from the list shown: "
+                f"{extra} added, {real_missing} missing.{stop}",
+            ))
+            return CommitOutcome(issues=tuple(issues), **fields)
     if not bump_parent:
         return CommitOutcome(issues=tuple(issues), **fields)
+    return _parent_step(ctx, cplan, message, issues, fields, step=step, short=short)
 
-    step("Committing Custom ref in parent...", 1, 2)
+
+def _parent_step(
+    ctx: GitContext,
+    cplan: CommitPlan,
+    message: str,
+    issues: list[Issue],
+    fields: dict,
+    *,
+    step: Callable,
+    short: str,
+    parent_only: bool = False,
+) -> CommitOutcome:
+    """Commit only the Custom gitlink in the parent and fold the result into the outcome.
+
+    parent_only is the bump with no new Custom commit (D-14, research Open Question 5): `committed`
+    stays False because no Custom commit was made, and `parent_only` tells the dialog and the panel what happened.
+    """
+    step("Committing Custom ref in parent...", 0 if parent_only else 1, 1 if parent_only else 2)
     parent = cplan.repo_root
-    parent_short, text, parent_run, parent_issues = commit_parent_ref(ctx, cplan, subject_of(message))
+    parent_short, text, parent_run, parent_issues = commit_parent_ref(
+        ctx, cplan, subject_of(message), parent_only=parent_only
+    )
     fields["parent_message"] = text
     issues.extend(parent_issues)
     if parent_run is not None:
         manual = _manual_parent_command(parent, cplan.custom_rel, text)
         output = parent_run.text if isinstance(parent_run, Issue) else parent_run.output
-        issues.append(Issue(
-            Severity.ERROR, "commit.parent_failed",
-            f"The Custom commit {short} was kept, but the parent commit failed ({_exit_text(parent_run)}).\n"
-            f"{output}\nFinish it by hand: {manual}",
-        ))
-        return CommitOutcome(manual_command=manual, output=output, issues=tuple(issues), **fields)
+        what = (
+            f"The parent commit failed ({_exit_text(parent_run)})." if parent_only
+            else f"The Custom commit {short} was kept, but the parent commit failed ({_exit_text(parent_run)})."
+        )
+        issues.append(Issue(Severity.ERROR, "commit.parent_failed", f"{what}\n{output}\nFinish it by hand: {manual}"))
+        return CommitOutcome(
+            manual_command=manual, output=output, issues=tuple(issues), parent_only=parent_only, **fields
+        )
     if parent_short is None:  # the parent already points at Custom's HEAD: nothing to commit (D-13)
-        return CommitOutcome(issues=tuple(issues), **fields)
+        return CommitOutcome(issues=tuple(issues), parent_only=parent_only, **fields)
 
     parent_branch = gitops.current_branch(ctx, parent) or "HEAD"
     parent_upstream = gitops.upstream_ahead(ctx, parent)
@@ -597,4 +661,4 @@ def run_commit(
         parent_upstream=parent_upstream[0] if parent_upstream else None,
         parent_ahead=parent_upstream[1] if parent_upstream else None,
     )
-    return CommitOutcome(issues=tuple(issues), **fields)
+    return CommitOutcome(issues=tuple(issues), parent_only=parent_only, **fields)
