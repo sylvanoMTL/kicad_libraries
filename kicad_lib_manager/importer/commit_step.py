@@ -193,7 +193,9 @@ def _earlier(
     ctx: GitContext, cplan: CommitPlan, gitlink_old: str | None, head: str
 ) -> tuple[tuple[tuple[str, str], ...], bool]:
     """(Custom commits from the parent's committed gitlink to Custom's HEAD, oldest first; whether they could be listed)."""
-    if gitlink_old is None or not head:
+    if gitlink_old is None:
+        return (), True  # no earlier gitlink: nothing is earlier, and nothing failed to list (REV-07)
+    if not head:
         return (), False
     if gitlink_old == head:
         return (), True
@@ -370,8 +372,30 @@ def _custom_failure(run: GitRun | Issue, *, committing: bool) -> CommitOutcome:
     return _failed("commit.custom_failed", text, output)
 
 
+def _parent_text(
+    ctx: GitContext, cplan: CommitPlan, subject: str, old: str | None, new: str, *, parent_only: bool = False
+) -> str:
+    """The parent message for the bump from old to new, built through the one parent_message builder (D-15).
+
+    The new Custom commit's own line carries the app's subject (RESEARCH Pitfall 7); every other line is
+    git's. With parent_only there is no new Custom commit, so all lines are git's own.
+    """
+    custom = cplan.custom_dir
+    if old:
+        found = gitops.log_range(ctx, custom, old, new)
+        listed, pairs = found is not None, list(found or [])
+    else:
+        listed, pairs = True, []  # nothing earlier exists, so nothing can fail to list
+    if parent_only:
+        return parent_message(
+            subject, cplan.custom_rel, old, pairs[-1][0] if pairs else new[:7], pairs, listed=listed
+        )
+    tip = pairs[-1][0] if pairs else (gitops.short_hash(ctx, custom, new) or new[:7])
+    return parent_message(subject, cplan.custom_rel, old, tip, [*pairs[:-1], (tip, subject)], listed=listed)
+
+
 def commit_parent_ref(
-    ctx: GitContext, cplan: CommitPlan, subject: str
+    ctx: GitContext, cplan: CommitPlan, subject: str, *, parent_only: bool = False
 ) -> tuple[str | None, str, GitRun | Issue | None, tuple[Issue, ...]]:
     """Commit only the Custom gitlink in the parent repo, after Custom's own commit exists.
 
@@ -387,8 +411,7 @@ def commit_parent_ref(
     if old is not None and old == new:
         text = f"The parent repo already points at Custom {new[:7]}; no parent commit was needed"
         return None, "", None, (Issue(Severity.INFO, "commit.parent_skipped", text),)
-    commits = gitops.log_range(ctx, custom, old, new) if old else []
-    message = parent_message(subject, cplan.custom_rel, old, new, commits or [], listed=commits is not None)
+    message = _parent_text(ctx, cplan, subject, old, new, parent_only=parent_only)
     run = gitops.commit_gitlink(ctx, parent, message, cplan.custom_rel)
     if _run_failed(run):
         return None, message, run, ()

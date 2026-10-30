@@ -240,15 +240,20 @@ def parent_message(
     subject: str,
     custom_rel: str,
     old: str | None,
-    new: str,
+    new_short: str,
     commits,
     *,
     listed: bool = True,
 ) -> str:
-    """The parent repo's message for the Custom bump (D-18): the subject, the range and the commits it covers."""
+    """The parent repo's message for the Custom bump (D-18): the subject, the range and the commits it covers.
+
+    The one builder behind the preview and the committed text (D-15). new_short is shown as given: the
+    placeholder in the preview, git's own abbreviation in the commit. Without an old gitlink there is
+    nothing earlier that could fail to list, so the commit lines are always printed.
+    """
     lines = [f"Update {custom_rel}: {sanitize_line(subject)}", ""]
-    lines.append(f"{custom_rel} {_short(old)}..{_short(new)}" if old else f"{custom_rel} {_short(new)}")
-    if listed:
+    lines.append(f"{custom_rel} {_short(old)}..{new_short}" if old else f"{custom_rel} {new_short}")
+    if not old or listed:
         lines.extend(f"- {short} {sanitize_line(text)}" for short, text in commits)
     else:
         lines.append(f"(the {custom_rel} commits since {_short(old)} could not be listed)")
@@ -259,3 +264,12 @@ def parent_preview(subject: str, custom_rel: str, old: str | None, earlier, *, l
     """The D-19 preview: the parent message with a placeholder for the Custom commit that is not made yet."""
     commits = [*earlier, (NEW_PLACEHOLDER, subject)]
     return parent_message(subject, custom_rel, old, NEW_PLACEHOLDER, commits, listed=listed)
+
+
+def parent_only_preview(
+    subject: str, custom_rel: str, old: str | None, head: str, earlier, *, listed: bool = True
+) -> str:
+    """The preview of a bump with no new Custom commit (D-14): the earlier commits, each under its own subject."""
+    pairs = list(earlier)
+    new_short = pairs[-1][0] if old and listed and pairs else head[:7]
+    return parent_message(subject, custom_rel, old, new_short, pairs, listed=listed)

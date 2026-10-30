@@ -30,7 +30,7 @@ from zipfixtures import footprint_library_for
 from kicad_lib_manager import gitops
 from kicad_lib_manager.gitops import GitContext
 from kicad_lib_manager.importer import commit_step
-from kicad_lib_manager.importer.commit_plan import default_message, subject_of
+from kicad_lib_manager.importer.commit_plan import NEW_PLACEHOLDER, default_message, parent_preview, subject_of
 from kicad_lib_manager.models import Severity
 
 LIB = "Atomic_Battery_Management"
@@ -58,6 +58,17 @@ def _recording_ctx():
         return subprocess.run(argv, **kwargs)
 
     return GitContext(Path(GIT), runner), calls
+
+
+def _no_gitlink_ctx():
+    """A context whose ls-tree answers exit 0 with nothing, so the parent seems to record no Custom gitlink."""
+
+    def runner(argv, **kwargs):
+        if "ls-tree" in argv:
+            return subprocess.CompletedProcess(argv, 0, stdout=b"", stderr=b"")
+        return subprocess.run(argv, **kwargs)
+
+    return GitContext(Path(GIT), runner)
 
 
 def _plan(repos):
@@ -1049,6 +1060,39 @@ def test_parent_message_lists_covered_commits(tmp_path):
         f"- {outcome.custom_commit} {subject}",
     ]
     assert _body(repos, repos.parent) == outcome.parent_message.strip()
+
+
+@requires_git
+@pytest.mark.parametrize("gitlink", [True, False], ids=["gitlink", "no_gitlink"])
+def test_parent_preview_equals_committed_message(tmp_path, gitlink):
+    repos = make_superproject(tmp_path / "git")
+    commit_file(repos, repos.custom, "one.txt", b"1\n", "First")
+    commit_file(repos, repos.custom, "two.txt", b"2\n", "Second")
+    plan = _plan(repos)
+    message = default_message(plan)
+    ctx = _ctx() if gitlink else _no_gitlink_ctx()
+
+    probe = commit_step.probe_commit(plan, git=ctx)
+    preview = parent_preview(
+        subject_of(message), "Custom", probe.gitlink_old, probe.earlier, listed=probe.earlier_listed
+    )
+    outcome = commit_step.run_commit(plan, message, True, git=ctx)
+
+    assert (probe.gitlink_old is not None) is gitlink
+    assert outcome.parent_commit is not None, outcome.issues
+    assert preview.replace(NEW_PLACEHOLDER, outcome.custom_commit) == outcome.parent_message
+    assert _body(repos, repos.parent) == outcome.parent_message.strip()
+    assert "could not be listed" not in outcome.parent_message
+    assert outcome.parent_message.splitlines()[-1] == f"- {outcome.custom_commit} {subject_of(message)}"
+
+
+@requires_git
+def test_earlier_none_gitlink_is_listed(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    head = _head(repos)
+
+    assert commit_step._earlier(_ctx(), _plan(repos), None, head) == ((), True)
+    assert commit_step._earlier(_ctx(), _plan(repos), head, "") == ((), False)
 
 
 @requires_git

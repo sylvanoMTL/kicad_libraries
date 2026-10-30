@@ -373,24 +373,37 @@ def test_default_message_package_folder_carries_the_folder_name(install):
 
 def test_parent_message_lists_commits():
     message = commit_plan.parent_message(
-        "Add P1 to L", "Custom", "a" * 40, "b" * 40, [("1111111", "First"), ("2222222", "Add P1 to L")]
+        "Add P1 to L", "Custom", "a" * 40, "bbbbbbb", [("1111111", "First"), ("2222222", "Add P1 to L")]
     )
 
     assert message == "Update Custom: Add P1 to L\n\nCustom aaaaaaa..bbbbbbb\n- 1111111 First\n- 2222222 Add P1 to L"
 
 
-def test_parent_message_without_old_and_unlisted():
-    no_old = commit_plan.parent_message("S", "Custom", None, "b" * 40, [("1111111", "First")])
-    unlisted = commit_plan.parent_message("S", "Custom", "a" * 40, "b" * 40, [], listed=False)
+def test_parent_message_shows_the_new_short_verbatim():
+    message = commit_plan.parent_message("S", "Custom", "a" * 40, "bbbbbbbb", [("bbbbbbbb", "S")])
 
-    assert "Custom bbbbbbb" in no_old.splitlines()
-    assert "Custom ..bbbbbbb" not in no_old
+    assert message.splitlines()[2] == "Custom aaaaaaa..bbbbbbbb"
+
+
+def test_parent_message_without_old_lists_the_commits_and_never_the_unlisted_line():
+    for listed in (True, False):
+        message = commit_plan.parent_message("S", "Custom", None, "bbbbbbb", [("bbbbbbb", "S")], listed=listed)
+
+        assert message.splitlines() == ["Update Custom: S", "", "Custom bbbbbbb", "- bbbbbbb S"]
+        assert "could not be listed" not in message
+        assert "Custom .." not in message
+
+
+def test_parent_message_with_old_and_unlisted():
+    unlisted = commit_plan.parent_message("S", "Custom", "a" * 40, "bbbbbbb", [], listed=False)
+
+    assert "Custom aaaaaaa..bbbbbbb" in unlisted.splitlines()
     assert "(the Custom commits since aaaaaaa could not be listed)" in unlisted.splitlines()
     assert not any(line.startswith("- ") for line in unlisted.splitlines())
 
 
 def test_parent_message_sanitises_the_subject_and_commit_lines():
-    message = commit_plan.parent_message("S\nTrailer: x", "Custom", "a" * 40, "b" * 40, [("1111111", "A\r\nB")])
+    message = commit_plan.parent_message("S\nTrailer: x", "Custom", "a" * 40, "bbbbbbb", [("1111111", "A\r\nB")])
 
     assert message.splitlines()[0] == "Update Custom: S Trailer: x"
     assert "- 1111111 A B" in message.splitlines()
@@ -403,6 +416,31 @@ def test_parent_preview_placeholder():
     assert "Custom aaaaaaa..<new commit>" in lines
     assert "- 1111111 First" in lines
     assert "- <new commit> S" in lines
+
+
+def test_parent_preview_without_old_lists_the_new_commit_line():
+    preview = commit_plan.parent_preview("S", "Custom", None, (), listed=True)
+
+    assert preview.splitlines() == ["Update Custom: S", "", "Custom <new commit>", "- <new commit> S"]
+
+
+def test_parent_only_preview_uses_the_last_pair_as_range_end_and_keeps_subjects():
+    earlier = [("1111111", "First"), ("2222222", "Second")]
+
+    preview = commit_plan.parent_only_preview("Bump", "Custom", "a" * 40, "c" * 40, earlier)
+
+    assert preview.splitlines() == [
+        "Update Custom: Bump", "", "Custom aaaaaaa..2222222", "- 1111111 First", "- 2222222 Second",
+    ]
+
+
+def test_parent_only_preview_falls_back_to_head_without_pairs():
+    no_old = commit_plan.parent_only_preview("Bump", "Custom", None, "c" * 40, ())
+    unlisted = commit_plan.parent_only_preview("Bump", "Custom", "a" * 40, "c" * 40, (), listed=False)
+
+    assert no_old.splitlines()[2] == "Custom ccccccc"
+    assert unlisted.splitlines()[2] == "Custom aaaaaaa..ccccccc"
+    assert "(the Custom commits since aaaaaaa could not be listed)" in unlisted.splitlines()
 
 
 def test_subject_of():
