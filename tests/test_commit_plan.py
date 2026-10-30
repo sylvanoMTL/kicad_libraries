@@ -259,6 +259,115 @@ def test_pre_install_bytes_picks_matching_backup(install, tmp_path):
     assert commit_plan.pre_install_bytes(symbols, backups) is None
 
 
+# ── The note, the pre-image, re-baseline and added files (Phase 11: D-08, D-10) ─────────────
+
+
+def test_commit_file_positional_construction_still_works(tmp_path):
+    cfile = commit_plan.CommitFile("Symbols/A.kicad_sym", "Custom/Symbols/A.kicad_sym", tmp_path / "A", "symbol_lib", "abc", None)
+
+    assert cfile.note == ""
+    assert cfile.installed is None
+
+
+def test_build_commit_plan_keeps_installed_bytes(install):
+    cplan = install.commit_plan()
+    by_kind = {f.kind: f for f in cplan.files}
+
+    assert by_kind["footprint"].installed == install.footprint_data
+    assert by_kind["symbol_lib"].installed == install.symbols_data
+    assert by_kind["model"].installed is None
+
+
+def test_rebaseline_takes_current_bytes(install):
+    cplan = install.commit_plan()
+    install.footprint.write_bytes(b"edited by hand")
+    assert commit_plan.changed_since_install(cplan) != ()
+
+    new_plan = commit_plan.rebaseline(cplan)
+
+    by_kind = {f.kind: f for f in new_plan.files}
+    assert by_kind["footprint"].expected_sha256 == sha(b"edited by hand")
+    assert by_kind["footprint"].note == commit_plan.NOTE_CHANGED
+    assert by_kind["footprint"].installed == install.footprint_data
+    assert by_kind["symbol_lib"].note == "" and by_kind["model"].note == ""
+    assert commit_plan.changed_since_install(new_plan) == ()
+    # the input plan is unchanged
+    assert {f.kind: f for f in cplan.files}["footprint"].expected_sha256 == sha(install.footprint_data)
+    assert commit_plan.changed_since_install(cplan) != ()
+
+
+def test_rebaseline_keeps_missing_file_stale(install):
+    cplan = install.commit_plan()
+    install.model.unlink()
+
+    new_plan = commit_plan.rebaseline(cplan)
+
+    model = next(f for f in new_plan.files if f.kind == "model")
+    assert model.expected_sha256 == sha(install.model_data)
+    assert model.note == ""
+    assert commit_plan.changed_since_install(new_plan) == ("Custom/3DModels/P1.step",)
+
+
+def test_rebaseline_keeps_added_note(install):
+    cplan = install.commit_plan()
+    footprint = next(f for f in cplan.files if f.kind == "footprint")
+    marked = replace(cplan, files=tuple(replace(f, note=commit_plan.NOTE_ADDED) if f is footprint else f for f in cplan.files))
+    install.footprint.write_bytes(b"changed again")
+
+    new_plan = commit_plan.rebaseline(marked)
+
+    assert next(f for f in new_plan.files if f.kind == "footprint").note == commit_plan.NOTE_ADDED
+
+
+def test_with_added_files_marks_and_sorts(install):
+    cplan = install.commit_plan()
+    added = write(install.layout.models_dir / "NEW.step", b"new model")
+
+    new_plan = commit_plan.with_added_files(cplan, [("3DModels/NEW.step", "model", None)])
+
+    assert [f.display for f in new_plan.files] == [
+        "Custom/3DModels/NEW.step",
+        "Custom/3DModels/P1.step",
+        f"Custom/Footprints/{FP_LIB}.pretty/FP1.kicad_mod",
+        f"Custom/Symbols/{LIB}.kicad_sym",
+    ]
+    new = new_plan.files[0]
+    assert (new.rel, new.kind, new.note, new.base_sha256, new.path) == ("3DModels/NEW.step", "model", "added", None, added)
+    assert new.expected_sha256 == sha(b"new model")
+    assert new_plan.issues == ()
+    assert len(cplan.files) == 3
+
+
+def test_with_added_files_does_not_add_a_planned_file_twice(install):
+    cplan = install.commit_plan()
+
+    new_plan = commit_plan.with_added_files(
+        cplan, [("3dmodels/P1.STEP", "model", None), ("3DModels/P1.step", "model", None)]
+    )
+
+    assert new_plan.files == cplan.files
+
+
+def test_with_added_files_refuses_a_path_outside_custom(install):
+    cplan = install.commit_plan()
+    write(install.layout.repo_root / "outside.txt", b"x")
+
+    new_plan = commit_plan.with_added_files(cplan, [("../outside.txt", "model", None)])
+
+    assert new_plan.files == cplan.files
+    (issue,) = new_plan.issues
+    assert issue.code == "commit.outside_custom" and issue.severity is Severity.ERROR
+    assert issue.text == "Custom/../outside.txt is outside Custom; it is not committed"
+
+
+def test_with_added_files_skips_a_file_that_cannot_be_read(install):
+    cplan = install.commit_plan()
+
+    new_plan = commit_plan.with_added_files(cplan, [("3DModels/MISSING.step", "model", None)])
+
+    assert new_plan.files == cplan.files and new_plan.issues == ()
+
+
 # ── The default message (D-18) ──────────────────────────────────────────────────────────────
 
 
@@ -373,24 +482,37 @@ def test_default_message_package_folder_carries_the_folder_name(install):
 
 def test_parent_message_lists_commits():
     message = commit_plan.parent_message(
-        "Add P1 to L", "Custom", "a" * 40, "b" * 40, [("1111111", "First"), ("2222222", "Add P1 to L")]
+        "Add P1 to L", "Custom", "a" * 40, "bbbbbbb", [("1111111", "First"), ("2222222", "Add P1 to L")]
     )
 
     assert message == "Update Custom: Add P1 to L\n\nCustom aaaaaaa..bbbbbbb\n- 1111111 First\n- 2222222 Add P1 to L"
 
 
-def test_parent_message_without_old_and_unlisted():
-    no_old = commit_plan.parent_message("S", "Custom", None, "b" * 40, [("1111111", "First")])
-    unlisted = commit_plan.parent_message("S", "Custom", "a" * 40, "b" * 40, [], listed=False)
+def test_parent_message_shows_the_new_short_verbatim():
+    message = commit_plan.parent_message("S", "Custom", "a" * 40, "bbbbbbbb", [("bbbbbbbb", "S")])
 
-    assert "Custom bbbbbbb" in no_old.splitlines()
-    assert "Custom ..bbbbbbb" not in no_old
+    assert message.splitlines()[2] == "Custom aaaaaaa..bbbbbbbb"
+
+
+def test_parent_message_without_old_lists_the_commits_and_never_the_unlisted_line():
+    for listed in (True, False):
+        message = commit_plan.parent_message("S", "Custom", None, "bbbbbbb", [("bbbbbbb", "S")], listed=listed)
+
+        assert message.splitlines() == ["Update Custom: S", "", "Custom bbbbbbb", "- bbbbbbb S"]
+        assert "could not be listed" not in message
+        assert "Custom .." not in message
+
+
+def test_parent_message_with_old_and_unlisted():
+    unlisted = commit_plan.parent_message("S", "Custom", "a" * 40, "bbbbbbb", [], listed=False)
+
+    assert "Custom aaaaaaa..bbbbbbb" in unlisted.splitlines()
     assert "(the Custom commits since aaaaaaa could not be listed)" in unlisted.splitlines()
     assert not any(line.startswith("- ") for line in unlisted.splitlines())
 
 
 def test_parent_message_sanitises_the_subject_and_commit_lines():
-    message = commit_plan.parent_message("S\nTrailer: x", "Custom", "a" * 40, "b" * 40, [("1111111", "A\r\nB")])
+    message = commit_plan.parent_message("S\nTrailer: x", "Custom", "a" * 40, "bbbbbbb", [("1111111", "A\r\nB")])
 
     assert message.splitlines()[0] == "Update Custom: S Trailer: x"
     assert "- 1111111 A B" in message.splitlines()
@@ -403,6 +525,31 @@ def test_parent_preview_placeholder():
     assert "Custom aaaaaaa..<new commit>" in lines
     assert "- 1111111 First" in lines
     assert "- <new commit> S" in lines
+
+
+def test_parent_preview_without_old_lists_the_new_commit_line():
+    preview = commit_plan.parent_preview("S", "Custom", None, (), listed=True)
+
+    assert preview.splitlines() == ["Update Custom: S", "", "Custom <new commit>", "- <new commit> S"]
+
+
+def test_parent_only_preview_uses_the_last_pair_as_range_end_and_keeps_subjects():
+    earlier = [("1111111", "First"), ("2222222", "Second")]
+
+    preview = commit_plan.parent_only_preview("Bump", "Custom", "a" * 40, "c" * 40, earlier)
+
+    assert preview.splitlines() == [
+        "Update Custom: Bump", "", "Custom aaaaaaa..2222222", "- 1111111 First", "- 2222222 Second",
+    ]
+
+
+def test_parent_only_preview_falls_back_to_head_without_pairs():
+    no_old = commit_plan.parent_only_preview("Bump", "Custom", None, "c" * 40, ())
+    unlisted = commit_plan.parent_only_preview("Bump", "Custom", "a" * 40, "c" * 40, (), listed=False)
+
+    assert no_old.splitlines()[2] == "Custom ccccccc"
+    assert unlisted.splitlines()[2] == "Custom aaaaaaa..ccccccc"
+    assert "(the Custom commits since aaaaaaa could not be listed)" in unlisted.splitlines()
 
 
 def test_subject_of():

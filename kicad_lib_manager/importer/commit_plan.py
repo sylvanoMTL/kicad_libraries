@@ -6,13 +6,16 @@ messages follow the D-18 layout, so the panel and the tests share one source of 
 
 import hashlib
 import re
-from dataclasses import dataclass
+from collections.abc import Sequence
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 
 from ..models import Issue, Severity
 from .plan import InstallPlan, InstallResult
 
+NOTE_CHANGED = "changed"  # the file changed after the install; Check again took its new content (D-08)
+NOTE_ADDED = "added"  # a file a fix added to the commit after the install (D-10)
 NEW_PLACEHOLDER = "<new commit>"  # stands for the Custom commit that does not exist yet (RESEARCH Pattern 5)
 # Controls (C0, DEL, C1) plus the Unicode line and paragraph separators, which str.splitlines treats as breaks
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\N{LINE SEPARATOR}\N{PARAGRAPH SEPARATOR}]")
@@ -28,6 +31,8 @@ class CommitFile:
     kind: str
     expected_sha256: str
     base_sha256: str | None  # the content before the install; None when the install created the file
+    note: str = ""  # NOTE_CHANGED or NOTE_ADDED once Check again has seen the file differ (D-08, D-10)
+    installed: bytes | None = None  # the bytes the install wrote, for the "changed since install" diff; None for a model
 
 
 @dataclass(frozen=True)
@@ -130,7 +135,7 @@ def build_commit_plan(
             continue
         seen_rel.add(rel)
         display = _posix_relative(spelled, repo_root) or spelled.as_posix()
-        files.append(CommitFile(rel, display, path, op.kind, expected, op.base_sha256))
+        files.append(CommitFile(rel, display, path, op.kind, expected, op.base_sha256, installed=op.data))
     files.sort(key=lambda f: (f.display.casefold(), f.display))
     overwrite = any(
         c.kind == "symbol" and c.resolution is not None and c.resolution.action == "overwrite"
@@ -155,7 +160,7 @@ def build_commit_plan(
     )
 
 
-def _sha256_of(path: Path) -> str | None:
+def file_sha256(path: Path) -> str | None:
     """Hex digest of a file read in 1 MiB chunks; None when it cannot be read."""
     digest = hashlib.sha256()
     try:
@@ -169,7 +174,58 @@ def _sha256_of(path: Path) -> str | None:
 
 def changed_since_install(cplan: CommitPlan) -> tuple[str, ...]:
     """Display paths, in plan order, of the planned files that are missing or no longer hold what the install wrote (D-11)."""
-    return tuple(f.display for f in cplan.files if _sha256_of(f.path) != f.expected_sha256)
+    return tuple(f.display for f in cplan.files if file_sha256(f.path) != f.expected_sha256)
+
+
+def rebaseline(cplan: CommitPlan) -> CommitPlan:
+    """A new plan in which every file whose bytes now differ from expected_sha256 takes its current hash (D-08).
+
+    The changed file is noted "changed" (a file already noted "added" keeps that note). A file that cannot
+    be read keeps its old hash, so the stale refusal still stops a commit of a missing file. The install-time
+    bytes stay in `installed`. Nothing is mutated.
+    """
+    files = []
+    for cfile in cplan.files:
+        current = file_sha256(cfile.path)
+        if current is None or current == cfile.expected_sha256:
+            files.append(cfile)
+            continue
+        note = NOTE_ADDED if cfile.note == NOTE_ADDED else NOTE_CHANGED
+        files.append(replace(cfile, expected_sha256=current, note=note))
+    return replace(cplan, files=tuple(files))
+
+
+def with_added_files(cplan: CommitPlan, added: Sequence[tuple[str, str, str | None]]) -> CommitPlan:
+    """A new plan with extra Custom files a fix produced, each noted "added" (D-10).
+
+    Each item is (rel under Custom, kind, base_sha256). A path that resolves outside Custom adds an ERROR
+    commit.outside_custom issue and is not added; a file already planned (any case) or unreadable is skipped.
+    """
+    custom_dir = cplan.custom_dir
+    custom_real = custom_dir.resolve()
+    files = list(cplan.files)
+    issues = list(cplan.issues)
+    known = {cfile.rel.casefold() for cfile in files}
+    for rel, kind, base in added:
+        path = custom_dir / rel
+        resolved = path.resolve()
+        if not resolved.is_relative_to(custom_real):
+            text = f"{cplan.custom_rel}/{rel} is outside {cplan.custom_rel}; it is not committed"
+            issues.append(Issue(Severity.ERROR, "commit.outside_custom", text))
+            continue
+        spelled = _disk_spelling(path, custom_dir)
+        spelled_rel = _posix_relative(spelled, custom_dir)
+        if spelled_rel is None or ".." in Path(spelled_rel).parts:
+            spelled_rel = resolved.relative_to(custom_real).as_posix()
+        if spelled_rel.casefold() in known or rel.casefold() in known:
+            continue
+        sha = file_sha256(path)
+        if sha is None:
+            continue
+        known.add(spelled_rel.casefold())
+        files.append(CommitFile(spelled_rel, f"{cplan.custom_rel}/{spelled_rel}", path, kind, sha, base, note=NOTE_ADDED))
+    files.sort(key=lambda f: (f.display.casefold(), f.display))
+    return replace(cplan, files=tuple(files), issues=tuple(issues))
 
 
 def pre_install_bytes(cfile: CommitFile, backup_dir: Path | None) -> bytes | None:
@@ -240,15 +296,20 @@ def parent_message(
     subject: str,
     custom_rel: str,
     old: str | None,
-    new: str,
+    new_short: str,
     commits,
     *,
     listed: bool = True,
 ) -> str:
-    """The parent repo's message for the Custom bump (D-18): the subject, the range and the commits it covers."""
+    """The parent repo's message for the Custom bump (D-18): the subject, the range and the commits it covers.
+
+    The one builder behind the preview and the committed text (D-15). new_short is shown as given: the
+    placeholder in the preview, git's own abbreviation in the commit. Without an old gitlink there is
+    nothing earlier that could fail to list, so the commit lines are always printed.
+    """
     lines = [f"Update {custom_rel}: {sanitize_line(subject)}", ""]
-    lines.append(f"{custom_rel} {_short(old)}..{_short(new)}" if old else f"{custom_rel} {_short(new)}")
-    if listed:
+    lines.append(f"{custom_rel} {_short(old)}..{new_short}" if old else f"{custom_rel} {new_short}")
+    if not old or listed:
         lines.extend(f"- {short} {sanitize_line(text)}" for short, text in commits)
     else:
         lines.append(f"(the {custom_rel} commits since {_short(old)} could not be listed)")
@@ -259,3 +320,12 @@ def parent_preview(subject: str, custom_rel: str, old: str | None, earlier, *, l
     """The D-19 preview: the parent message with a placeholder for the Custom commit that is not made yet."""
     commits = [*earlier, (NEW_PLACEHOLDER, subject)]
     return parent_message(subject, custom_rel, old, NEW_PLACEHOLDER, commits, listed=listed)
+
+
+def parent_only_preview(
+    subject: str, custom_rel: str, old: str | None, head: str, earlier, *, listed: bool = True
+) -> str:
+    """The preview of a bump with no new Custom commit (D-14): the earlier commits, each under its own subject."""
+    pairs = list(earlier)
+    new_short = pairs[-1][0] if old and listed and pairs else head[:7]
+    return parent_message(subject, custom_rel, old, new_short, pairs, listed=listed)
