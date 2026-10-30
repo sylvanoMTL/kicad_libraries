@@ -20,14 +20,16 @@ from ..models import Issue, Severity
 from . import commit_gate
 from .commit_gate import CANCELLED, GateResult, failure_lines, gate_issues, refusal_summary
 from .commit_plan import (
+    NOTE_ADDED,
     CommitPlan,
     changed_since_install,
     file_sha256,
     parent_message,
     pre_install_bytes,
+    rebaseline,
     subject_of,
 )
-from .content import ContentText, binary_text, diff_text
+from .content import MAX_READ, ContentText, binary_text, diff_text
 
 CANCELLED_REASON = CANCELLED
 
@@ -370,6 +372,28 @@ def probe_commit(
     )
 
 
+def recheck_commit(
+    cplan: CommitPlan,
+    *,
+    git: GitContext | None = None,
+    kicad_fp_dir: Path | None = None,
+    cancelled: Callable[[], bool] | None = None,
+) -> tuple[CommitPlan, CommitProbe]:
+    """Check again: take every planned file as it is now, judge that content, and probe (D-08).
+
+    A file whose bytes changed after the install takes its current hash (note "changed"); the install-time
+    bytes stay in `installed`. The returned plan replaces the old one. Nothing is staged, committed or
+    written: only files and read-only git are read. The stale rule between this check and the click stays,
+    because the click compares each file with the new hash.
+    """
+    ctx = _context(cplan, git)
+    if isinstance(ctx, Issue):
+        return cplan, _unavailable("unavailable", ctx.text)
+    new = rebaseline(cplan)
+    probe = probe_commit(new, git=ctx, kicad_fp_dir=kicad_fp_dir, cancelled=cancelled)
+    return new, probe
+
+
 @dataclass(frozen=True)
 class SwitchOutcome:
     ok: bool
@@ -677,6 +701,55 @@ def pre_import_diff(cplan: CommitPlan, rel: str, *, git: GitContext | None = Non
     old_label = f"{shown} (HEAD)" if head is not None else f"{shown} (not in HEAD)"
     body = diff_text(head or b"", pre, old_label, f"{shown} (before this import)")
     return ContentText(title, shown, body, "diff")
+
+
+def _read_now(path: Path) -> bytes:
+    """The current bytes of a planned file, refusing anything over the content view's read cap."""
+    with open(path, "rb") as handle:
+        data = handle.read(MAX_READ + 1)
+    if len(data) > MAX_READ:
+        raise OSError(f"the file is larger than {MAX_READ // (1024 * 1024)} MiB")
+    return data
+
+
+def changed_diff(cplan: CommitPlan, rel: str, *, git: GitContext | None = None) -> ContentText:
+    """The D-08 view of one file Check again took: what the install wrote (or HEAD) against what the file holds now.
+
+    A file a fix added is shown as HEAD against now; any other as installed against now. A 3D model, or a
+    file whose installed bytes are not kept, is summarised by size and SHA-256. Reads files and runs
+    read-only git only.
+    """
+    cfile = next((f for f in cplan.files if f.rel == rel), None)
+    if cfile is None:
+        return ContentText(f"{rel} - as installed vs now", rel, f"{rel} is not part of this commit.", "error")
+    shown = cfile.display
+    added = cfile.note == NOTE_ADDED
+    title = f"{shown} - HEAD vs now" if added else f"{shown} - as installed vs now"
+    try:
+        current = _read_now(cfile.path)
+    except OSError as e:
+        return ContentText(title, shown, f"Could not read {shown}: {e.strerror or e}.", "error")
+    sha = hashlib.sha256(current).hexdigest()
+    now_label = f"{shown} (now)"
+    if added:
+        ctx = _context(cplan, git)
+        if isinstance(ctx, Issue):
+            return ContentText(title, shown, f"Could not read HEAD: {ctx.text}.", "error")
+        head = gitops.head_blob(ctx, cplan.custom_dir, rel)
+        if cfile.kind == "model":
+            now = binary_text(now_label, len(current), sha)
+            if head is None:
+                return ContentText(title, shown, f"{shown} (not in HEAD)\n\n{now}", "binary")
+            at_head = binary_text(f"{shown} (HEAD)", len(head), hashlib.sha256(head).hexdigest())
+            return ContentText(title, shown, f"{at_head}\n\n{now}", "binary")
+        old_label = f"{shown} (HEAD)" if head is not None else f"{shown} (not in HEAD)"
+        return ContentText(title, shown, diff_text(head or b"", current, old_label, now_label), "diff")
+    if cfile.kind == "model" or cfile.installed is None:
+        body = binary_text(now_label, len(current), sha) + "\n\nThe content as installed is not kept for this file."
+        return ContentText(title, shown, body, "binary")
+    if current == cfile.installed:
+        return ContentText(title, shown, "The file still holds what the install wrote.", "unchanged")
+    return ContentText(title, shown, diff_text(cfile.installed, current, f"{shown} (as installed)", now_label), "diff")
 
 
 def run_commit(
