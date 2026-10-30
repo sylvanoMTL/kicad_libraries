@@ -40,7 +40,7 @@ from kicad_lib_manager import gitops
 from kicad_lib_manager.gitops import GitContext
 from kicad_lib_manager.importer import commit_plan, commit_step
 from kicad_lib_manager.importer.commit_plan import NEW_PLACEHOLDER, default_message, parent_preview, subject_of
-from kicad_lib_manager.models import Severity
+from kicad_lib_manager.models import Issue, Severity
 
 LIB = "Atomic_Battery_Management"
 FFC_LIB = "Atomic_Connector_Audio"
@@ -1819,6 +1819,42 @@ def test_recheck_adds_nothing_when_no_part_links_a_model(tmp_path):
     new_plan, _ = commit_step.recheck_commit(plan, git=_ctx())
 
     assert [f.rel for f in new_plan.files] == [f.rel for f in plan.files]
+
+
+@requires_git
+def test_recheck_adds_modified_tracked_footprint(tmp_path):
+    repos = _atomic_repos(tmp_path)
+    good = atomic_part("PASSING-1")
+    plan = _gate_plan(repos, good, atomic_part("NEW-A"), head_parts=(good,))
+    tracked_fp = "Footprints/Atomic_Footprints.pretty/GENERIC-2PIN.kicad_mod"
+    head_bytes = (repos.custom / tracked_fp).read_bytes()
+    # a fix changes the model line of the footprint the committed part links, and copies the new model
+    (repos.custom / tracked_fp).write_bytes(vendor_footprint("GENERIC-2PIN", models=("${CUSTOM_3DMODEL_DIR}/OTHER.step",)))
+    (repos.custom / "3DModels" / "OTHER.step").write_bytes(STEP_BYTES)
+    ctx = _ctx()
+
+    new_plan, probe = commit_step.recheck_commit(plan, git=ctx)
+
+    footprint = _planned(new_plan, tracked_fp)
+    assert footprint.note == "added" and footprint.kind == "footprint"
+    assert footprint.base_sha256 == hashlib.sha256(head_bytes).hexdigest()
+    assert _planned(new_plan, "3DModels/OTHER.step").base_sha256 is None
+    assert probe.state == "ready", probe.reason
+
+
+@requires_git
+def test_recheck_with_a_failing_file_list_adds_a_warning(tmp_path, monkeypatch):
+    repos = _atomic_repos(tmp_path)
+    plan = _newfp_plan(repos)
+    (repos.custom / NEWFP_STEP).write_bytes(STEP_BYTES)
+    broken = Issue(Severity.ERROR, "git.failed", "git ls-files failed")
+    monkeypatch.setattr(commit_step.gitops, "tracked_paths", lambda *args, **kwargs: broken)
+
+    new_plan, probe = commit_step.recheck_commit(plan, git=_ctx())
+
+    assert [f.rel for f in new_plan.files] == [f.rel for f in plan.files]
+    warnings = [issue for issue in probe.issues if issue.code == "commit.recheck_failed"]
+    assert len(warnings) == 1 and warnings[0].severity is Severity.WARNING
 
 
 @requires_git
