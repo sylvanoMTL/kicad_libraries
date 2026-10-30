@@ -8,7 +8,7 @@ Issue is shown as plain text.
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QKeyEvent
 from PySide6.QtWidgets import (
-    QAbstractItemView, QCheckBox, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit,
+    QAbstractItemView, QCheckBox, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPlainTextEdit,
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
@@ -24,6 +24,7 @@ _PREVIEW_LINES = 5
 _OUTPUT_LINES = 8  # lines of git output shown before the box scrolls
 _EARLIER_SHOWN = 10  # earlier Custom commits listed before "...and k more"
 _PARENT_TEXT = "Also commit the Custom ref in the parent repo"
+_COMMITTED_CUSTOM_ONLY = "Committed in Custom only"  # the button text after a partial result (D-17)
 _WARNING_NOISE = "warning: in the working copy of"  # line-ending notices git prints for every file (Pitfall 6)
 _STATES = (
     "probing", "unavailable", "refused", "offer_switch", "switching", "ready", "committing", "done", "failed"
@@ -84,6 +85,17 @@ def _lines_height(box: QPlainTextEdit, lines: int) -> int:
     return metrics.lineSpacing() * lines + margins + 2 * box.frameWidth() + box.horizontalScrollBar().sizeHint().height()
 
 
+def _outcome_tint(severities) -> str | None:
+    """The background of the outcome strip: set by its strongest line (D-18)."""
+    if Severity.ERROR in severities:
+        return theme.ERROR_TINT
+    if Severity.WARNING in severities:
+        return theme.AMBER_TINT
+    if Severity.SUCCESS in severities:
+        return theme.SUCCESS_TINT
+    return None
+
+
 def _readonly_box(lines: int) -> QPlainTextEdit:
     box = QPlainTextEdit()
     box.setReadOnly(True)
@@ -113,6 +125,7 @@ class CommitPanel(QWidget):
         self._plan: CommitPlan | None = None
         self._probe: CommitProbe | None = None
         self._outcome_labels: list[QLabel] = []
+        self._outcome_severities: list[Severity] = []
         self._pending_refusal: tuple[Issue, ...] = ()  # shown again on top of the next probe (D-11)
         self._parent_wanted: bool | None = None  # the user's parent choice; None until the first probe
         self._updating = False  # True while the panel itself changes the parent box
@@ -194,6 +207,7 @@ class CommitPanel(QWidget):
         # Enter inside the panel must never commit (PROJECT.md Safety, RESEARCH Pitfall 9)
         self.commit_button.setAutoDefault(False)
         self.commit_button.setDefault(False)
+        self.commit_button.setStyleSheet(theme.PRIMARY_BUTTON_QSS)  # the one primary action here (D-19)
         self.commit_button.clicked.connect(self._on_commit_clicked)
         lay.addWidget(self.commit_button, alignment=Qt.AlignmentFlag.AlignLeft)
 
@@ -206,14 +220,19 @@ class CommitPanel(QWidget):
         self._progress = QProgressBar()
         self._progress.setRange(0, 0)
         self._progress.setTextVisible(False)
-        self._progress.setFixedSize(240, 16)
+        self._progress.setFixedSize(theme.SP_XL * 8, theme.SP_MD)
         step_lay.addWidget(self._progress, 0)
         self._step_row.hide()
         lay.addWidget(self._step_row)
 
-        self._outcome_layout = QVBoxLayout()
+        # one strip holds every outcome line; its tint follows the strongest line (D-18)
+        self._outcome_frame = QFrame()
+        self._outcome_frame.setObjectName("outcomeStrip")
+        self._outcome_layout = QVBoxLayout(self._outcome_frame)
+        self._outcome_layout.setContentsMargins(0, 0, 0, 0)
         self._outcome_layout.setSpacing(theme.SP_XS)
-        lay.addLayout(self._outcome_layout)
+        self._outcome_frame.hide()
+        lay.addWidget(self._outcome_frame)
         self._manual_label = _plain_label()
         self._manual_label.setFont(_mono_font())
         self._manual_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -289,7 +308,7 @@ class CommitPanel(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, commit_file.rel)
             files.addItem(item)
         self._files_heading.setText(f"Files to commit ({files.count()})")
-        row = files.sizeHintForRow(0) if files.count() else files.fontMetrics().height() + 8
+        row = files.sizeHintForRow(0) if files.count() else files.fontMetrics().height() + theme.SP_SM
         files.setFixedHeight(row * min(max(files.count(), 1), _FILES_ROWS) + 2 * files.frameWidth())
 
     def apply_probe(self, probe: CommitProbe):
@@ -347,7 +366,7 @@ class CommitPanel(QWidget):
         """Back to the offer after a failed switch: git's first line as the error, the rest in the output box."""
         lines = text.splitlines() or [text]
         self._clear_outcome()
-        self._add_outcome_line(f"✖ {lines[0]}", theme.ERROR)
+        self._add_outcome_line(f"✖ {lines[0]}", theme.ERROR, Severity.ERROR)
         self._set_output(lines[1:])
         self._set_state("offer_switch")
 
@@ -393,7 +412,7 @@ class CommitPanel(QWidget):
             if issue.severity is Severity.ERROR:
                 extra.extend(rest)
                 text = first
-            self._add_outcome_line(f"{_GLYPHS.get(issue.severity, '')}{text}", color)
+            self._add_outcome_line(f"{_GLYPHS.get(issue.severity, '')}{text}", color, issue.severity)
         return extra
 
     @staticmethod
@@ -409,13 +428,26 @@ class CommitPanel(QWidget):
             return issue.text, None
         return None
 
-    def _add_outcome_line(self, text: str, color: str | None):
+    def _add_outcome_line(self, text: str, color: str | None, severity: Severity):
         label = _wrapped_label()
         label.setText(text)
         label.setStyleSheet(f"color: {color};" if color else "")
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self._outcome_labels.append(label)
+        self._outcome_severities.append(severity)
         self._outcome_layout.addWidget(label)
+        self._tint_outcome_frame()
+
+    def _tint_outcome_frame(self):
+        """Show the strip with the tint of its strongest line. The object-name selector keeps the labels unstyled."""
+        tint = _outcome_tint(self._outcome_severities)
+        if tint:
+            self._outcome_frame.setStyleSheet(
+                f"QFrame#outcomeStrip {{ background-color: {tint}; padding: {theme.SP_SM}px; }}"
+            )
+        else:
+            self._outcome_frame.setStyleSheet("")
+        self._outcome_frame.setVisible(bool(self._outcome_labels))
 
     def _clear_outcome(self):
         for label in self._outcome_labels:
@@ -424,6 +456,8 @@ class CommitPanel(QWidget):
             label.setParent(None)
             label.deleteLater()
         self._outcome_labels = []
+        self._outcome_severities = []
+        self._tint_outcome_frame()
         self._manual_label.hide()
         self._manual_label.setText("")
         self._set_output([])
@@ -504,7 +538,9 @@ class CommitPanel(QWidget):
         self._switch_button.setVisible(state in ("offer_switch", "switching"))
         self._switch_button.setEnabled(state == "offer_switch")
         self._step_row.setVisible(state == "committing")
-        self.commit_button.setText({"committing": "Committing...", "done": "Committed", "failed": "Committed"}.get(state, "Commit"))
+        self.commit_button.setText(
+            {"committing": "Committing...", "done": "Committed", "failed": _COMMITTED_CUSTOM_ONLY}.get(state, "Commit")
+        )
         self._apply_strip()
         self._refresh_parent_and_commit()
 
