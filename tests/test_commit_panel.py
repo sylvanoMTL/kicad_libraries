@@ -409,19 +409,124 @@ def test_panel_partial_failure_keeps_hash_no_retry(qtbot, tmp_path):
     assert panel._output.toPlainText() == "hook said no"
 
 
-def test_panel_refusal_returns_to_ready(qtbot, tmp_path):
-    panel, _ = ready_panel(qtbot, tmp_path)
-    panel.set_committing()
-    text = "Not committed: Custom/Symbols/A.kicad_sym changed after the install"
+_REFUSAL = "The Custom branch changed from main to feature/x since the preview; nothing was committed"
 
-    panel.show_outcome(make_outcome(issues=(issue(Severity.ERROR, "commit.stale_file", text),)))
+
+def refused_panel(qtbot, tmp_path):
+    """A ready panel whose user edited the message and unticked the parent box, then got a refusal."""
+    panel, _ = ready_panel(qtbot, tmp_path, parent_dir=tmp_path)
+    panel._message.setPlainText("My own message")
+    panel._parent_check.setChecked(False)
+    panel.set_committing()
+    panel.show_outcome(make_outcome(issues=(issue(Severity.ERROR, "commit.branch_changed", _REFUSAL),)))
+    return panel
+
+
+def test_panel_refusal_waits_for_reprobe(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+
+    assert panel.state() == "probing"
+    assert not panel.commit_button.isEnabled()
+    assert panel.outcome_lines() == [f"✖ {_REFUSAL}"]
+    assert panel.message() == "My own message"
+    assert panel.committed() is False
+
+
+def test_panel_reprobe_keeps_refusal_message_and_parent_choice(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+
+    panel.apply_probe(make_probe(branch="feature/x", not_main=True, parent_dir=tmp_path))
 
     assert panel.state() == "ready"
-    assert panel.outcome_lines() == [f"✖ {text}"]
-    assert not panel._message.isReadOnly()
-    assert panel._parent_check.isEnabled()
-    assert panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit"
-    assert not panel.committed()
+    assert panel._branch_label.text() == "Custom branch: feature/x (not main)"
+    assert panel.outcome_lines()[0] == f"✖ {_REFUSAL}"
+    assert panel.message() == "My own message"
+    assert panel._parent_check.isEnabled() and not panel._parent_check.isChecked()
+    assert panel.commit_button.isEnabled()
+
+
+def test_panel_own_refusal_replaces_pending(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+
+    panel.apply_probe(CommitProbe(state="refused", reason="R"))
+
+    assert panel.state() == "refused"
+    assert not panel.commit_button.isEnabled()
+    assert panel.outcome_lines() == []
+    assert panel._strip.text() == "⚠ Commit refused: R"
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.outcome_lines() == []
+
+
+def test_panel_pending_refusal_cleared_by_commit_click(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+    requests = []
+    panel.commit_requested.connect(lambda text, bump: requests.append((text, bump)))
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.outcome_lines() == [f"✖ {_REFUSAL}"]
+
+    panel.commit_button.click()
+
+    assert requests == [("My own message", False)]
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.outcome_lines() == []
+
+
+def test_panel_pending_refusal_cleared_by_switch_click(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+    requested = []
+    panel.switch_requested.connect(lambda: requested.append(True))
+    panel.apply_probe(CommitProbe(state="offer_switch", head="abc1234def", reason="Custom is on a detached HEAD."))
+
+    panel._switch_button.click()
+
+    assert requested == [True]
+    assert panel._pending_refusal == ()
+
+
+def test_panel_parent_choice_kept_across_probes(qtbot, tmp_path):
+    panel, _ = new_panel(qtbot, tmp_path, make_probe(parent_dir=tmp_path))
+    assert panel._parent_check.isChecked()
+
+    panel._parent_check.setChecked(False)
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert not panel._parent_check.isChecked() and panel._parent_check.isEnabled()
+
+    panel.apply_probe(make_probe(parent_ok=False, parent_reason="detached", parent_branch=None, parent_dir=tmp_path))
+    assert not panel._parent_check.isChecked() and not panel._parent_check.isEnabled()
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert not panel._parent_check.isChecked() and panel._parent_check.isEnabled()
+
+    panel.show_plan(make_cplan(tmp_path))
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel._parent_check.isChecked()
+
+
+def test_panel_ticked_choice_comes_back_after_disabled_probe(qtbot, tmp_path):
+    panel, _ = new_panel(qtbot, tmp_path, make_probe(parent_dir=tmp_path))
+
+    panel.apply_probe(make_probe(parent_ok=False, parent_reason="detached", parent_branch=None, parent_dir=tmp_path))
+    assert not panel._parent_check.isChecked()
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel._parent_check.isChecked()
+
+
+def test_panel_begin_reprobe_with_new_plan(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    panel._message.setPlainText("Keep me")
+
+    panel.begin_reprobe(make_cplan(tmp_path, 4))
+
+    assert panel.state() == "probing"
+    assert panel.message() == "Keep me"
+    assert panel._files_list.count() == 4
+    assert panel._files_heading.text() == "Files to commit (4)"
+    assert panel._branch_label.text() == "Custom branch: checking..."
+    assert not panel.commit_button.isEnabled()
+
+    panel.begin_reprobe()
+    assert panel._files_list.count() == 4 and panel.message() == "Keep me"
 
 
 def test_panel_hook_output_box_capped_and_filtered(qtbot, tmp_path):

@@ -98,7 +98,8 @@ class CommitPanel(QWidget):
     """State machine: probing, then unavailable | refused | offer_switch | ready, then committing, then done | failed.
 
     offer_switch goes through switching and back to probing (the dialog probes again) or to offer_switch
-    again when the switch failed. An outcome with nothing committed returns to ready.
+    again when the switch failed. An outcome with nothing committed goes to probing and keeps its refusal
+    text on top: the dialog probes again, and only a fresh probe can enable Commit once more (D-11).
     """
 
     commit_requested = Signal(str, bool)  # the message, whether to commit the Custom ref in the parent too
@@ -112,6 +113,9 @@ class CommitPanel(QWidget):
         self._plan: CommitPlan | None = None
         self._probe: CommitProbe | None = None
         self._outcome_labels: list[QLabel] = []
+        self._pending_refusal: tuple[Issue, ...] = ()  # shown again on top of the next probe (D-11)
+        self._parent_wanted: bool | None = None  # the user's parent choice; None until the first probe
+        self._updating = False  # True while the panel itself changes the parent box
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -222,6 +226,7 @@ class CommitPanel(QWidget):
         lay.addWidget(self._output)
 
         self._message.textChanged.connect(self._refresh_parent_and_commit)
+        self._parent_check.toggled.connect(self._on_parent_toggled)
         self._parent_check.toggled.connect(self._refresh_parent_and_commit)
         self._set_state("probing")
 
@@ -247,6 +252,34 @@ class CommitPanel(QWidget):
         """Fill the file list and pre-fill the message (D-18); the panel waits for the probe."""
         self._plan = cplan
         self._probe = None
+        self._parent_wanted = None
+        self._pending_refusal = ()
+        self._fill_files(cplan)
+        self._dirty_hint.hide()
+        self._other_label.hide()
+        self._message.setPlainText(default_message(cplan))
+        self._branch_label.setText("Custom branch: checking...")
+        self._branch_label.setStyleSheet("")
+        self._clear_outcome()
+        self._set_state("probing")
+
+    def begin_reprobe(self, cplan: CommitPlan | None = None):
+        """Wait for a fresh probe without losing the message, the parent choice or a pending refusal (D-11).
+
+        With a new plan only the file list is refreshed.
+        """
+        if cplan is not None:
+            self._plan = cplan
+            self._fill_files(cplan)
+        self._probe = None
+        self._branch_label.setText("Custom branch: checking...")
+        self._branch_label.setStyleSheet("")
+        self._clear_outcome()
+        self._render_issues(self._pending_refusal)
+        self._set_state("probing")
+
+    def _fill_files(self, cplan: CommitPlan):
+        """The file rows, their heading and the list height."""
         files = self._files_list
         files.clear()
         for commit_file in cplan.files:
@@ -258,18 +291,15 @@ class CommitPanel(QWidget):
         self._files_heading.setText(f"Files to commit ({files.count()})")
         row = files.sizeHintForRow(0) if files.count() else files.fontMetrics().height() + 8
         files.setFixedHeight(row * min(max(files.count(), 1), _FILES_ROWS) + 2 * files.frameWidth())
-        self._dirty_hint.hide()
-        self._other_label.hide()
-        self._message.setPlainText(default_message(cplan))
-        self._branch_label.setText("Custom branch: checking...")
-        self._branch_label.setStyleSheet("")
-        self._clear_outcome()
-        self._set_state("probing")
 
     def apply_probe(self, probe: CommitProbe):
         """Switch to the probe's state and show what it found."""
         self._probe = probe
         self._clear_outcome()
+        if probe.state in ("refused", "unavailable"):
+            self._pending_refusal = ()  # the probe's own reason replaces the old refusal
+        else:
+            self._render_issues(self._pending_refusal)
         self._show_custom_line(probe)
         if probe.parent_dir is not None:
             where = probe.parent_dir.as_posix()
@@ -279,14 +309,21 @@ class CommitPanel(QWidget):
             self._parent_label.show()
         else:
             self._parent_label.hide()
-        if probe.parent_ok:
-            self._parent_check.setText(f"{_PARENT_TEXT} ({probe.parent_branch})".replace("&", "&&"))
-            self._parent_check.setToolTip(f"{_PARENT_TEXT} ({probe.parent_branch})")
-            self._parent_check.setChecked(True)
-        else:
-            self._parent_check.setText(_PARENT_TEXT)
-            self._parent_check.setToolTip("")
-            self._parent_check.setChecked(False)
+        # the box is ticked on the first probe only; later probes keep the user's choice (REV-11)
+        self._updating = True
+        try:
+            if probe.parent_ok:
+                self._parent_check.setText(f"{_PARENT_TEXT} ({probe.parent_branch})".replace("&", "&&"))
+                self._parent_check.setToolTip(f"{_PARENT_TEXT} ({probe.parent_branch})")
+                if self._parent_wanted is None:
+                    self._parent_wanted = True
+                self._parent_check.setChecked(self._parent_wanted)
+            else:
+                self._parent_check.setText(_PARENT_TEXT)
+                self._parent_check.setToolTip("")
+                self._parent_check.setChecked(False)
+        finally:
+            self._updating = False
         if probe.state == "ready" and not probe.parent_ok:
             self._parent_reason.setText(f"Parent commit unavailable: {probe.parent_reason}")
             self._parent_reason.show()
@@ -323,19 +360,9 @@ class CommitPanel(QWidget):
             self._step.setText(text)
 
     def show_outcome(self, outcome: CommitOutcome):
-        """Show what the commit did: done, failed after a partial success (D-03), or back to ready after a refusal."""
+        """Show what the commit did: done, failed after a partial success (D-03), or waiting for a fresh probe."""
         self._clear_outcome()
-        extra: list[str] = []
-        for issue in outcome.issues:
-            line = self._issue_line(issue)
-            if line is None:
-                continue
-            text, color = line
-            first, *rest = text.splitlines() or [""]
-            if issue.severity is Severity.ERROR:
-                extra.extend(rest)
-                text = first
-            self._add_outcome_line(f"{_GLYPHS.get(issue.severity, '')}{text}", color)
+        extra = self._render_issues(outcome.issues)
         output = outcome.output.splitlines()
         if not output:
             output = [line for line in extra if not line.startswith("Finish it by hand:")]
@@ -345,11 +372,29 @@ class CommitPanel(QWidget):
             self._manual_label.setText(f"Finish it by hand: {outcome.manual_command}")
             self._manual_label.show()
         if outcome.committed:
+            self._pending_refusal = ()
             self._set_state("failed" if outcome.failed else "done")
         else:
-            self._set_state("ready")
+            # nothing was committed: never show a stale "ready"; the dialog probes again (D-11, REV-10)
+            self._pending_refusal = tuple(outcome.issues)
+            self._set_state("probing")
 
     # -- internals -------------------------------------------------------------------------------
+
+    def _render_issues(self, issues) -> list[str]:
+        """Outcome lines for issues; returns the detail lines of error issues, for the output box."""
+        extra: list[str] = []
+        for issue in issues:
+            line = self._issue_line(issue)
+            if line is None:
+                continue
+            text, color = line
+            first, *rest = text.splitlines() or [""]
+            if issue.severity is Severity.ERROR:
+                extra.extend(rest)
+                text = first
+            self._add_outcome_line(f"{_GLYPHS.get(issue.severity, '')}{text}", color)
+        return extra
 
     @staticmethod
     def _issue_line(issue: Issue):
@@ -503,12 +548,18 @@ class CommitPanel(QWidget):
             lines.append(f"…and {len(earlier) - _EARLIER_SHOWN} more")
         return "\n".join(lines)
 
+    def _on_parent_toggled(self, checked: bool):
+        if not self._updating and self._parent_check.isEnabled():
+            self._parent_wanted = checked
+
     def _on_commit_clicked(self):
         if self._state == "ready" and self.commit_button.isEnabled():
+            self._pending_refusal = ()
             self.commit_requested.emit(self._message.toPlainText(), self.bump_parent())
 
     def _on_switch_clicked(self):
         if self._state == "offer_switch":
+            self._pending_refusal = ()
             self.switch_requested.emit()
 
     def _on_item_activated(self, item: QListWidgetItem):
