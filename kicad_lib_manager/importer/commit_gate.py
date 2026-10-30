@@ -15,6 +15,13 @@ link a committed model are still checked, and their failures are listed as older
 lines cannot be read is skipped quietly in that pass, which cannot hide a blocking failure: a model link
 only ever yields older failures.
 
+A linked part is found through the footprint file its link resolves to, and check_symbol reads a footprint
+file and its 3D models only for a link that resolves, so a part whose link does not resolve reaches no
+committed file and its verdict cannot depend on a committed footprint's or model's content. The one case in
+which it still names a committed file, a link equal to a committed footprint that cannot be followed in the
+work tree (its library name is also a KiCad library, or the footprint folder cannot be listed), is listed
+as not checked and does not refuse, because the owner decided refusal only for unreadable libraries.
+
 An Atomic_ library outside the commit that cannot be read, parsed or listed, while the commit holds a
 footprint or a 3D model, refuses the commit like an unreadable committed library: its parts may link the
 committed files and cannot be judged. This fails closed on purpose; refusing a library that does not use
@@ -56,12 +63,14 @@ class GateResult:
     """What the gate found: blocking failures, older failures, lines that stop the commit, and the entries behind them.
 
     problems is the one channel for "some parts could not be checked": every line in it refuses the commit.
+    unchecked holds the linked parts that could not be checked against a committed footprint; they never refuse.
     """
 
     blocking: tuple[AtomicFailure, ...] = ()
     old: tuple[AtomicFailure, ...] = ()
     problems: tuple[str, ...] = ()
     entries: tuple[tuple[str, str, SymbolEntry], ...] = ()  # (library, rel_path, entry)
+    unchecked: tuple[str, ...] = ()  # shown in the panel through old_notes, never a refusal
 
     @property
     def refused(self) -> bool:
@@ -218,6 +227,7 @@ class _LinkedFindings:
     problems: tuple[str, ...]
     # (rel_path, part) pairs a committed library listed as old whose linked check now introduces a failure
     moved: frozenset[tuple[str, str]]
+    unchecked: tuple[str, ...] = ()
     cancelled: bool = False
 
 
@@ -257,6 +267,7 @@ def _check_linked_symbols(
     old: list[AtomicFailure] = []
     entries: list[tuple[str, str, SymbolEntry]] = []
     problems: list[str] = []
+    unchecked: list[str] = []
     moved: set[tuple[str, str]] = set()
     linked_rels = {f"{cplan.custom_rel}/{rel}" for rel in footprints.values()}
     head: AtomicContext | None = None
@@ -293,8 +304,13 @@ def _check_linked_symbols(
         for name, ref in index.items():
             if name in judged:
                 continue
-            target = work.resolve_footprint(_footprint_text(ref, index))
+            text = _footprint_text(ref, index)
+            target = work.resolve_footprint(text)
             if target.problem is not None:
+                if text in footprints:  # a link to a committed footprint that cannot be followed is shown, not skipped
+                    unchecked.append(
+                        f"{library} / {name} was not checked against the committed footprint {text} ({target.problem})"
+                    )
                 continue
             linked = target.rel_path in linked_rels
             if not linked and models and target.rel_path is not None and target.path is not None:
@@ -315,7 +331,9 @@ def _check_linked_symbols(
             blocking.extend(AtomicFailure(library, rel_path, name, v.rule, v.text) for v in introduced)
             old.extend(AtomicFailure(library, rel_path, name, v.rule, v.text) for v in older)
             entries.append((library, rel_path, entry))
-    return _LinkedFindings(tuple(blocking), tuple(old), tuple(entries), tuple(problems), frozenset(moved))
+    return _LinkedFindings(
+        tuple(blocking), tuple(old), tuple(entries), tuple(problems), frozenset(moved), tuple(unchecked)
+    )
 
 
 def run_gate(
@@ -366,6 +384,7 @@ def run_gate(
             (blocking if ref.name in judged else old).extend(_failures(library, rel_path, entry))
             entries.append((library, rel_path, entry))
 
+    unchecked: tuple[str, ...] = ()
     footprints = _committed_footprints(cplan)
     models = _committed_models(cplan)
     if footprints or models:
@@ -380,7 +399,14 @@ def run_gate(
         old.extend(linked.old)
         entries.extend(linked.entries)
         problems.extend(linked.problems)
-    return GateResult(blocking=tuple(blocking), old=tuple(old), problems=tuple(problems), entries=tuple(entries))
+        unchecked = linked.unchecked
+    return GateResult(
+        blocking=tuple(blocking),
+        old=tuple(old),
+        problems=tuple(problems),
+        entries=tuple(entries),
+        unchecked=unchecked,
+    )
 
 
 def _custom_model_names(custom_dir: Path) -> frozenset[str]:
@@ -475,20 +501,26 @@ def failure_lines(gate: GateResult) -> list[str]:
 
 
 def old_notes(gate: GateResult) -> list[str]:
-    """One note per library that holds parts which already failed before this import (D-02)."""
+    """The panel's amber lines, none of which stops the commit.
+
+    First one note per library that holds parts which already failed before this import (D-02), then one
+    line per linked part that was not checked against a committed footprint.
+    """
     counts: dict[str, set[str]] = {}
     for failure in gate.old:
         counts.setdefault(failure.library, set()).add(failure.part)
-    return [
+    notes = [
         f"{library} also holds {_plural(len(parts), 'part', 'parts')} that already failed before this import"
         for library, parts in counts.items()
     ]
+    return [*notes, *gate.unchecked]
 
 
 def gate_issues(gate: GateResult) -> list[Issue]:
-    """The log lines of the gate, in the Phase 9 D-05 shape: blocking, old, then the libraries that could not be checked."""
+    """The log lines of the gate, in the Phase 9 D-05 shape: blocking, old, parts not checked, then unreadable libraries."""
     issues = [Issue(Severity.ERROR, f"commit.atomic.{f.rule}", _line(f)) for f in gate.blocking]
     issues.extend(Issue(Severity.WARNING, f"commit.atomic_old.{f.rule}", _line(f)) for f in gate.old)
+    issues.extend(Issue(Severity.WARNING, "commit.atomic_unchecked", line) for line in gate.unchecked)
     issues.extend(Issue(Severity.ERROR, "commit.atomic_unreadable", problem) for problem in gate.problems)
     return issues
 
