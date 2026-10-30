@@ -14,7 +14,7 @@ from kicad_lib_manager.importer.commit_plan import CommitFile, CommitPlan
 from kicad_lib_manager.importer.commit_step import CommitProbe
 from kicad_lib_manager.importer.plan import Conflict, InstallResult
 from kicad_lib_manager.widgets import import_dialog
-from kicad_lib_manager.widgets.commit_panel import CommitPanel
+from kicad_lib_manager.widgets.commit_panel import _ADDED_MARK, _CHANGED_MARK, CommitPanel
 from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
 from kicad_lib_manager.widgets.import_result import ImportResultView
@@ -220,7 +220,7 @@ def test_help_import_page_describes_commit_step(qtbot, tmp_path):
         assert label in gated_buttons, f"the gated panel no longer shows {label!r}"
         assert label in page, label
     assert "atomic rule" in page
-    assert "changed since install" in page and "added by a fix" in page
+    assert _CHANGED_MARK in page and _ADDED_MARK in page
 
     # the section sits right after "Install and result" and before "Library tables"
     raw = HELP_PAGES["importing"]

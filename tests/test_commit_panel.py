@@ -15,6 +15,7 @@ from kicad_lib_manager.importer.commit_gate import AtomicFailure, GateResult
 from kicad_lib_manager.importer.commit_step import CommitOutcome, CommitProbe
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.widgets import theme
+from kicad_lib_manager.widgets import commit_panel
 from kicad_lib_manager.widgets.commit_panel import CommitPanel
 
 _FILE_KINDS = (
@@ -824,6 +825,31 @@ def test_panel_gated_lines_capped(qtbot, tmp_path):
     assert lines[:10] == [f"Atomic_A / P{index}: no datasheet" for index in range(10)]
     assert lines[10] == "…and 3 more"
     assert len(lines) == 11
+
+
+def test_panel_gate_cap_is_its_own_constant(qtbot, tmp_path, monkeypatch):
+    failures = [failure("Atomic_A", f"P{index}") for index in range(13)]
+    monkeypatch.setattr(commit_panel, "_EARLIER_SHOWN", 2)
+    panel = gated_panel(qtbot, tmp_path, *failures)
+    lines = panel._gate_lines.text().splitlines()
+    assert len(lines) == 11 and lines[-1] == "…and 3 more"
+
+    monkeypatch.setattr(commit_panel, "_GATE_LINES_SHOWN", 3)
+    panel = gated_panel(qtbot, tmp_path, *failures)
+    lines = panel._gate_lines.text().splitlines()
+    assert len(lines) == 4 and lines[-1] == "…and 10 more"
+
+
+def test_panel_open_check_uses_first_failure(qtbot, tmp_path):
+    f1, f2, o1 = failure("Atomic_A", "P1"), failure("Atomic_B", "P2"), failure("Atomic_C", "P3")
+    gate = GateResult(blocking=(f1, f2), old=(o1,))
+    panel = gated_panel(qtbot, tmp_path, f1, f2, gate=gate)
+    opened = []
+    panel.open_check_requested.connect(lambda rel, part: opened.append((rel, part)))
+
+    panel._open_check_button.click()
+
+    assert opened == [(gate.first_failure.rel_path, gate.first_failure.part)] == [(f1.rel_path, f1.part)]
 
 
 def test_panel_gated_buttons_secondary_and_signals(qtbot, tmp_path):
