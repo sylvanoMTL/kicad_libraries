@@ -1,5 +1,6 @@
 """The commit panel's state machine, driven with fake CommitPlan, CommitProbe and CommitOutcome values (Phase 6)."""
 
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, Qt
@@ -7,8 +8,9 @@ from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import QLabel, QListWidgetItem, QPushButton
 
 from kicad_lib_manager.importer.commit_plan import (
-    CommitFile, CommitPlan, default_message, parent_preview, subject_of,
+    CommitFile, CommitPlan, default_message, parent_only_preview, parent_preview, subject_of,
 )
+from kicad_lib_manager.importer.commit_gate import AtomicFailure, GateResult
 from kicad_lib_manager.importer.commit_step import CommitOutcome, CommitProbe
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.widgets import theme
@@ -755,3 +757,349 @@ def test_panel_sizes_on_theme_scale(qtbot, tmp_path):
     panel.show_plan(make_cplan(tmp_path, 0))
     files = panel._files_list
     assert files.height() == files.fontMetrics().height() + theme.SP_SM + 2 * files.frameWidth()
+
+
+# -- Phase 11 (GIT-06, D-06, D-07): the gated state and its two ways forward ----------------------
+
+
+def failure(library: str, part: str, text: str = "no datasheet", rule: str = "datasheet") -> AtomicFailure:
+    return AtomicFailure(library, f"Custom/Symbols/{library}.kicad_sym", part, rule, text)
+
+
+def gated_probe(*failures: AtomicFailure, **fields) -> CommitProbe:
+    count = len({(f.library, f.part) for f in failures})
+    gate = GateResult(blocking=tuple(failures))
+    values = dict(state="gated", reason=f"{count} parts break the atomic rule.", gate=gate)
+    values.update(fields)
+    return make_probe(**values)
+
+
+def gated_panel(qtbot, tmp_path, *failures: AtomicFailure, **fields):
+    panel, _ = new_panel(qtbot, tmp_path, gated_probe(*failures, parent_dir=tmp_path, **fields))
+    assert panel.state() == "gated"
+    return panel
+
+
+def test_panel_gated_lists_failures_and_disables_commit(qtbot, tmp_path):
+    panel = gated_panel(
+        qtbot, tmp_path,
+        failure("Atomic_Sensor_Motion", "LIS3MDL"),
+        failure("Atomic_IC_LDO_TI", "TPS7A02", "no footprint"),
+    )
+
+    assert panel._strip.text() == "⚠ Commit refused: 2 parts break the atomic rule."
+    assert theme.AMBER_TINT in panel._strip.styleSheet()
+    assert panel._gate_lines.text().splitlines() == [
+        "Atomic_Sensor_Motion / LIS3MDL: no datasheet",
+        "Atomic_IC_LDO_TI / TPS7A02: no footprint",
+    ]
+    assert not panel._gate_lines.isHidden()
+    assert theme.AMBER in panel._gate_lines.styleSheet()
+    assert not panel.commit_button.isEnabled()
+    assert not panel._message.isReadOnly()
+    assert panel._parent_check.isEnabled()
+    panel.commit_button.click()  # a click on a disabled button does nothing; the state guard also holds
+    panel._on_commit_clicked()
+
+
+def test_panel_gated_commit_never_emits(qtbot, tmp_path):
+    panel = gated_panel(qtbot, tmp_path, failure("Atomic_A", "P1"))
+    requests = []
+    panel.commit_requested.connect(lambda text, bump: requests.append((text, bump)))
+
+    panel.commit_button.click()
+    panel._on_commit_clicked()
+    panel._message.setPlainText("Another message")
+
+    assert requests == []
+    assert not panel.commit_button.isEnabled()
+    assert panel.message() == "Another message"
+
+
+def test_panel_gated_lines_capped(qtbot, tmp_path):
+    panel = gated_panel(qtbot, tmp_path, *(failure("Atomic_A", f"P{index}") for index in range(13)))
+
+    lines = panel._gate_lines.text().splitlines()
+    assert lines[:10] == [f"Atomic_A / P{index}: no datasheet" for index in range(10)]
+    assert lines[10] == "…and 3 more"
+    assert len(lines) == 11
+
+
+def test_panel_gated_buttons_secondary_and_signals(qtbot, tmp_path):
+    first = failure("Atomic_A", "P1")
+    panel = gated_panel(qtbot, tmp_path, first, failure("Atomic_B", "P2"))
+    opened, again = [], []
+    panel.open_check_requested.connect(lambda rel, part: opened.append((rel, part)))
+    panel.check_again_requested.connect(lambda: again.append(True))
+
+    for button in (panel._open_check_button, panel._check_again_button):
+        assert not button.isHidden()
+        assert button.styleSheet() == ""
+        assert not button.autoDefault() and not button.isDefault()
+    assert panel._open_check_button.text() == "Open Check Atomic Parts…"
+    assert panel._check_again_button.text() == "Check again"
+    panel._open_check_button.click()
+    panel._check_again_button.click()
+    assert opened == [(first.rel_path, "P1")]
+    assert again == [True]
+
+    # a stale-only gated probe (no refused gate) offers Check again but not Open Check Atomic Parts
+    panel.apply_probe(make_probe(state="gated", reason="A file changed after the install.", parent_dir=tmp_path))
+    assert not panel._check_again_button.isHidden()
+    assert panel._open_check_button.isHidden()
+    assert panel._gate_lines.isHidden()
+
+    panel.apply_probe(make_probe(state="gated", reason="x", gate=GateResult(), parent_dir=tmp_path))
+    assert panel._open_check_button.isHidden() and panel._gate_lines.isHidden()
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.state() == "ready"
+    assert panel._open_check_button.isHidden() and panel._check_again_button.isHidden()
+    assert panel._gate_lines.isHidden()
+
+
+def test_panel_gated_unchecked_libraries_hide_open_check(qtbot, tmp_path):
+    gate = GateResult(problems=("Atomic_A: the library could not be checked (unreadable)",))
+    panel, _ = new_panel(qtbot, tmp_path, make_probe(
+        state="gated", reason="1 library could not be checked.", gate=gate, parent_dir=tmp_path
+    ))
+
+    assert panel._gate_lines.text() == "Atomic_A: the library could not be checked (unreadable)"
+    assert panel._open_check_button.isHidden()
+    assert not panel._check_again_button.isHidden()
+
+
+def test_panel_check_again_clears_pending_refusal(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+    again = []
+    panel.check_again_requested.connect(lambda: again.append(True))
+    panel.apply_probe(gated_probe(failure("Atomic_A", "P1"), parent_dir=tmp_path))
+    assert panel.outcome_lines() == [f"✖ {_REFUSAL}"]
+
+    panel._check_again_button.click()
+
+    assert again == [True]
+    assert panel._pending_refusal == ()
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.outcome_lines() == []
+
+
+def test_panel_check_again_only_in_gated_state(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    again = []
+    panel.check_again_requested.connect(lambda: again.append(True))
+
+    panel._on_check_again_clicked()
+    panel._on_open_check_clicked()
+
+    assert again == []
+
+
+def test_panel_gated_text_is_plain(qtbot, tmp_path):
+    panel = gated_panel(qtbot, tmp_path, failure("Atomic_A", "P<b>1</b>", "<b>bold</b> rule"))
+
+    assert panel._gate_lines.text() == "Atomic_A / P<b>1</b>: <b>bold</b> rule"
+    assert panel._gate_lines.textFormat() == Qt.TextFormat.PlainText
+    assert all(label.textFormat() == Qt.TextFormat.PlainText for label in labels(panel))
+
+
+# -- Phase 11 (D-02, D-08, D-10): the old-failure note and the changed / added file markers ----------
+
+
+def test_panel_old_failures_note_keeps_commit(qtbot, tmp_path):
+    gate = GateResult(old=(
+        failure("Atomic_A", "P1"), failure("Atomic_A", "P2"), failure("Atomic_A", "P2", "no footprint", "footprint"),
+        failure("Atomic_B", "P3"),
+    ))
+    panel, _ = ready_panel(qtbot, tmp_path, gate=gate, parent_dir=tmp_path)
+
+    assert panel.state() == "ready"
+    assert panel._old_label.text().splitlines() == [
+        "Atomic_A also holds 2 parts that already failed before this import",
+        "Atomic_B also holds 1 part that already failed before this import",
+    ]
+    assert not panel._old_label.isHidden()
+    assert theme.AMBER in panel._old_label.styleSheet()
+    assert panel.commit_button.isEnabled()
+    assert panel._gate_lines.isHidden()
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))  # no gate at all
+    assert panel._old_label.isHidden()
+    panel.apply_probe(make_probe(gate=GateResult(), parent_dir=tmp_path))
+    assert panel._old_label.isHidden()
+    panel.apply_probe(make_probe(gate=gate, parent_dir=tmp_path))
+    panel.begin_reprobe()
+    assert panel._old_label.isHidden()
+
+
+def test_panel_old_failures_shown_beside_gated_lines(qtbot, tmp_path):
+    old = (failure("Atomic_B", "P3"),)
+    panel = gated_panel(qtbot, tmp_path, failure("Atomic_A", "P1"), gate=GateResult(blocking=(failure("Atomic_A", "P1"),), old=old))
+
+    assert not panel._old_label.isHidden()
+    assert not panel._gate_lines.isHidden()
+    assert not panel.commit_button.isEnabled()
+
+
+def test_panel_changed_and_added_markers(qtbot, tmp_path):
+    base = make_cplan(tmp_path).files
+    files = (replace(base[0], note="changed"), replace(base[1], note="added"), base[2])
+    probe = make_probe(stale=(base[2].display,), parent_dir=tmp_path)
+    panel, _ = new_panel(qtbot, tmp_path, probe, files=files)
+    activated = []
+    panel.file_activated.connect(activated.append)
+
+    assert rows(panel) == [
+        f"⚠ {base[0].display} (changed since install)",
+        f"+ {base[1].display} (added by a fix)",
+        f"⚠ {base[2].display} (changed since install)",
+    ]
+    for index in range(3):
+        item = panel._files_list.item(index)
+        assert item.foreground().color() == QColor(theme.AMBER)
+        assert "Double-click" in item.toolTip()
+    assert "changed after the install" in panel._files_list.item(0).toolTip()
+    assert "committed because a committed part links it" in panel._files_list.item(1).toolTip()
+    assert not panel._changed_hint.isHidden()
+    assert theme.AMBER in panel._changed_hint.styleSheet()
+    for index, base_file in enumerate(base):
+        panel._files_list.itemActivated.emit(panel._files_list.item(index))
+    assert activated == [base[0].rel, base[1].rel, base[2].rel]
+
+
+def test_panel_plain_row_has_no_marker_and_does_not_activate(qtbot, tmp_path):
+    base = make_cplan(tmp_path).files
+    panel, _ = new_panel(qtbot, tmp_path, make_probe(parent_dir=tmp_path), files=(replace(base[0], note="changed"), *base[1:]))
+    activated = []
+    panel.file_activated.connect(activated.append)
+
+    assert rows(panel)[1] == base[1].display
+    assert panel._files_list.item(1).data(Qt.ItemDataRole.ForegroundRole) is None
+    panel._files_list.itemActivated.emit(panel._files_list.item(1))
+    assert activated == []
+
+    # a later probe without changes resets the marks
+    panel.show_plan(make_cplan(tmp_path))
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert rows(panel) == [f.display for f in base]
+    assert panel._changed_hint.isHidden()
+
+
+def test_panel_changed_beats_dirty_before(qtbot, tmp_path):
+    base = make_cplan(tmp_path).files
+    probe = make_probe(dirty_before=frozenset({base[0].rel}), stale=(base[0].display,), parent_dir=tmp_path)
+    panel, _ = new_panel(qtbot, tmp_path, probe)
+
+    assert rows(panel)[0] == f"⚠ {base[0].display} (changed since install)"
+
+
+# -- Phase 11 (D-14): nothing to commit and the parent-only bump -----------------------------------
+
+
+_NOTHING = "⚠ Nothing to commit: Custom already holds these files"
+
+
+def test_panel_nothing_to_commit(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="abc1234def5678", parent_dir=tmp_path)
+
+    assert panel._strip.text() == _NOTHING
+    assert not panel._strip.isHidden()
+    assert theme.AMBER_TINT in panel._strip.styleSheet()
+    assert not panel.commit_button.isEnabled()
+    assert panel.commit_button.text() == "Commit"
+
+    panel._parent_check.setChecked(False)  # still nothing to do for the parent: the gitlink is current
+    assert not panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit"
+
+
+def test_panel_nothing_to_commit_strip_gone_when_files_differ(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="abc1234def5678", parent_dir=tmp_path)
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+
+    assert panel._strip.isHidden()
+    assert panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit"
+
+
+def test_panel_parent_only_bump_label_and_preview(qtbot, tmp_path):
+    earlier = (("abc1234", "Earlier"), ("def5678", "Tip"))
+    panel, cplan = ready_panel(
+        qtbot, tmp_path, all_identical=True, earlier=earlier, gitlink_old="1111111aaaa", parent_dir=tmp_path
+    )
+    requests = []
+    panel.commit_requested.connect(lambda text, bump: requests.append((text, bump)))
+
+    assert panel._strip.text() == _NOTHING
+    assert panel.commit_button.isEnabled()
+    assert panel.commit_button.text() == "Commit parent ref"
+    expected = parent_only_preview(
+        subject_of(panel.message()), "Custom", "1111111aaaa", "abc1234def5678", earlier, listed=True
+    )
+    assert panel._parent_preview.toPlainText() == expected
+    assert "<new commit>" not in expected
+    assert not panel._parent_preview.isHidden()
+
+    panel._parent_check.setChecked(False)
+    assert not panel.commit_button.isEnabled()
+    assert panel.commit_button.text() == "Commit"
+
+    panel._parent_check.setChecked(True)
+    assert panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit parent ref"
+    panel.commit_button.click()
+    assert requests == [(panel.message(), True)]
+
+
+def test_panel_parent_only_needs_message_and_parent(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="1111111aaaa", parent_dir=tmp_path)
+
+    panel._message.setPlainText("   ")
+    assert not panel.commit_button.isEnabled()
+
+    panel._message.setPlainText("Bump")
+    assert panel.commit_button.isEnabled()
+    panel.apply_probe(make_probe(
+        all_identical=True, gitlink_old="1111111aaaa", parent_ok=False, parent_reason="detached",
+        parent_branch=None, parent_dir=tmp_path,
+    ))
+    assert not panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit"
+
+
+def test_panel_parent_only_label_resets_after_state_change(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="1111111aaaa", parent_dir=tmp_path)
+    assert panel.commit_button.text() == "Commit parent ref"
+
+    panel.set_committing()
+    assert panel.commit_button.text() == "Committing..."
+    panel.show_outcome(make_outcome(parent_only=True, parent_commit="1234567", issues=(
+        issue(Severity.SUCCESS, "commit.parent_done", "Committed 1234567 on main in the parent repo"),
+    )))
+    assert panel.commit_button.text() == "Committed"
+
+
+def test_panel_parent_only_outcome_done(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="1111111aaaa", parent_dir=tmp_path)
+    panel.set_committing()
+
+    panel.show_outcome(make_outcome(parent_only=True, parent_commit="1234567", issues=(
+        issue(Severity.SUCCESS, "commit.parent_done", "Committed 1234567 on main in the parent repo"),
+        issue(Severity.INFO, "commit.not_pushed", "Not pushed"),
+    )))
+
+    assert panel.state() == "done"
+    assert panel.committed() is True
+    assert theme.SUCCESS_TINT in panel._outcome_frame.styleSheet()
+    assert not panel.commit_button.isEnabled()
+
+
+def test_panel_parent_only_failure_reprobes(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="1111111aaaa", parent_dir=tmp_path)
+    panel.set_committing()
+    failed = issue(Severity.ERROR, "commit.parent_failed", "The parent commit failed (git exit 1)")
+
+    panel.show_outcome(make_outcome(parent_only=True, manual_command="git -C x commit", issues=(failed,)))
+
+    assert panel.state() == "probing"
+    assert panel.committed() is False
+    assert panel._pending_refusal == (failed,)
+    assert not panel.commit_button.isEnabled()
+    assert not panel._manual_label.isHidden()

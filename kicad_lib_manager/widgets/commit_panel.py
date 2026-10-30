@@ -12,7 +12,10 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
-from ..importer.commit_plan import CommitPlan, default_message, parent_preview, subject_of
+from ..importer.commit_gate import failure_lines, old_notes
+from ..importer.commit_plan import (
+    NOTE_ADDED, NOTE_CHANGED, CommitPlan, default_message, parent_only_preview, parent_preview, subject_of,
+)
 from ..importer.commit_step import MANUAL_LABEL, CommitOutcome, CommitProbe
 from ..models import Issue, Severity
 from . import theme
@@ -28,10 +31,15 @@ _COMMITTED_CUSTOM_ONLY = "Committed in Custom only"  # the button text after a p
 _MANUAL_PREFIX = "Finish it by hand"  # starts both manual labels (with and without the PowerShell words)
 _WARNING_NOISE ="warning: in the working copy of"  # line-ending notices git prints for every file (Pitfall 6)
 _STATES = (
-    "probing", "unavailable", "refused", "offer_switch", "switching", "ready", "committing", "done", "failed"
+    "probing", "unavailable", "refused", "gated", "offer_switch", "switching", "ready", "committing", "done", "failed"
 )
 _GLYPHS = {Severity.SUCCESS: "✓ ", Severity.ERROR: "✖ ", Severity.WARNING: "⚠ "}
-_STRIP_PREFIX = {"unavailable": "Commit unavailable: ", "refused": "Commit refused: "}
+_STRIP_PREFIX = {"unavailable": "Commit unavailable: ", "refused": "Commit refused: ", "gated": "Commit refused: "}
+_PARENT_ONLY_LABEL = "Commit parent ref"  # the button when only the parent's Custom ref can be committed (D-14)
+_NOTHING_TO_COMMIT = "Nothing to commit: Custom already holds these files"
+_CHANGED_MARK = " (changed since install)"
+_ADDED_MARK = " (added by a fix)"
+_CHANGED_HINT = "⚠ Marked files changed after the install or were added by a fix. Double-click one to see it."
 _DIRTY_HINT = (
     "⚠ Amber files also contain uncommitted changes made before this import. "
     "They are committed too; double-click one to see them."
@@ -118,12 +126,15 @@ class CommitPanel(QWidget):
     commit_requested = Signal(str, bool)  # the message, whether to commit the Custom ref in the parent too
     switch_requested = Signal()
     file_activated = Signal(str)  # CommitFile.rel of a file that had changes before the import
+    check_again_requested = Signal()  # the user wants the files and the atomic rule checked again (D-07, D-11)
+    open_check_requested = Signal(str, str)  # rel_path of the symbol library and the part to show first (D-07)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._state = "probing"
         self._committed = False
         self._plan: CommitPlan | None = None
+        self._activatable: set[str] = set()  # CommitFile.rel of the rows that show a diff on double-click
         self._probe: CommitProbe | None = None
         self._outcome_labels: list[QLabel] = []
         self._outcome_severities: list[Severity] = []
@@ -154,6 +165,29 @@ class CommitPanel(QWidget):
         strip_row.addWidget(self._switch_button, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(strip_row)
 
+        self._gate_lines = _amber_label()  # one "Library / Part: rule" line per broken rule (D-06)
+        self._gate_lines.hide()
+        lay.addWidget(self._gate_lines)
+        self._old_label = _amber_label()  # libraries that held failing parts before this import (D-02)
+        self._old_label.hide()
+        lay.addWidget(self._old_label)
+        gate_row = QHBoxLayout()
+        gate_row.setSpacing(theme.SP_SM)
+        # both are secondary buttons: no style sheet, never the default (D-07, D-19)
+        self._open_check_button = QPushButton("Open Check Atomic Parts…")
+        self._check_again_button = QPushButton("Check again")
+        for button, slot in (
+            (self._open_check_button, self._on_open_check_clicked),
+            (self._check_again_button, self._on_check_again_clicked),
+        ):
+            button.setAutoDefault(False)
+            button.setDefault(False)
+            button.clicked.connect(slot)
+            button.hide()
+            gate_row.addWidget(button)
+        gate_row.addStretch(1)
+        lay.addLayout(gate_row)
+
         self._files_heading = _heading("Files to commit (0)")
         lay.addWidget(self._files_heading)
         self._files_list = _CommitFilesList()
@@ -164,6 +198,10 @@ class CommitPanel(QWidget):
         self._files_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._files_list.itemActivated.connect(self._on_item_activated)
         lay.addWidget(self._files_list)
+        self._changed_hint = _amber_label()
+        self._changed_hint.setText(_CHANGED_HINT)
+        self._changed_hint.hide()
+        lay.addWidget(self._changed_hint)
         self._dirty_hint = _amber_label()
         self._dirty_hint.setText(_DIRTY_HINT)
         self._dirty_hint.hide()
@@ -276,6 +314,8 @@ class CommitPanel(QWidget):
         self._pending_refusal = ()
         self._fill_files(cplan)
         self._dirty_hint.hide()
+        self._changed_hint.hide()
+        self._activatable = set()
         self._other_label.hide()
         self._message.setPlainText(default_message(cplan))
         self._branch_label.setText("Custom branch: checking...")
@@ -321,6 +361,7 @@ class CommitPanel(QWidget):
         else:
             self._render_issues(self._pending_refusal)
         self._show_custom_line(probe)
+        self._show_gate(probe)
         if probe.parent_dir is not None:
             where = probe.parent_dir.as_posix()
             self._parent_label.set_full_text(
@@ -349,7 +390,7 @@ class CommitPanel(QWidget):
             self._parent_reason.show()
         else:
             self._parent_reason.hide()
-        self._mark_dirty_files(probe)
+        self._mark_files(probe)
         count = probe.other_changes
         if count > 0:
             if count == 1:
@@ -387,12 +428,13 @@ class CommitPanel(QWidget):
         if not output:
             output = [line for line in extra if not line.startswith(_MANUAL_PREFIX)]
         self._set_output(output)
-        self._committed = outcome.committed
+        # a parent-only bump (D-14) has no Custom commit; its parent commit counts as the commit
+        self._committed = outcome.committed or (outcome.parent_only and outcome.parent_commit is not None)
         # the late-commit warning (D-12) and the parent-only failure carry a manual command too (D-16, D-17)
         if outcome.manual_command and (outcome.committed or outcome.parent_only):
             self._manual_label.setText(f"{outcome.manual_label or MANUAL_LABEL} {outcome.manual_command}")
             self._manual_label.show()
-        if outcome.committed:
+        if self._committed:
             self._pending_refusal = ()
             self._set_state("failed" if outcome.failed else "done")
         else:
@@ -488,15 +530,46 @@ class CommitPanel(QWidget):
             label.setText("Custom branch: not available")
             label.setStyleSheet("")
 
-    def _mark_dirty_files(self, probe: CommitProbe):
-        """Rows that had changes before the import show in amber; every other row is reset to plain."""
-        any_dirty = False
+    def _show_gate(self, probe: CommitProbe):
+        """The refusal lines and the two ways forward of a gated probe (D-06, D-07)."""
+        gated = probe.state == "gated"
+        gate = probe.gate
+        lines = failure_lines(gate) if gated and gate is not None and gate.refused else []
+        if len(lines) > _EARLIER_SHOWN:
+            lines = [*lines[:_EARLIER_SHOWN], f"…and {len(lines) - _EARLIER_SHOWN} more"]
+        self._gate_lines.setText("\n".join(lines))
+        self._gate_lines.setVisible(bool(lines))
+        self._check_again_button.setVisible(gated)
+        self._open_check_button.setVisible(gated and gate is not None and bool(gate.blocking))
+        # older failures are only noted; they never touch Commit (D-02)
+        notes = old_notes(gate) if gate is not None and probe.state in ("ready", "gated") else []
+        self._old_label.setText("\n".join(notes))
+        self._old_label.setVisible(bool(notes))
+
+    def _mark_files(self, probe: CommitProbe):
+        """Mark the rows: changed since the install, added by a fix, or dirty before the import; others are plain."""
+        any_marked = any_dirty = False
+        self._activatable = set()
         files = self._files_list
+        stale = set(probe.stale)
         for row in range(files.count()):
             item = files.item(row)
             rel = item.data(Qt.ItemDataRole.UserRole)
-            display = self._plan.files[row].display if self._plan is not None and row < len(self._plan.files) else item.text()
-            if rel in probe.dirty_before:
+            cfile = self._plan.files[row] if self._plan is not None and row < len(self._plan.files) else None
+            display = cfile.display if cfile is not None else item.text()
+            changed = cfile is not None and (cfile.note == NOTE_CHANGED or cfile.display in stale)
+            added = cfile is not None and cfile.note == NOTE_ADDED
+            if changed:
+                any_marked = True
+                item.setText(f"⚠ {display}{_CHANGED_MARK}")
+                item.setForeground(QBrush(QColor(theme.AMBER)))
+                item.setToolTip(f"{display} changed after the install. Double-click to see the change.")
+            elif added:
+                any_marked = True
+                item.setText(f"+ {display}{_ADDED_MARK}")
+                item.setForeground(QBrush(QColor(theme.AMBER)))
+                item.setToolTip(f"{display} is committed because a committed part links it. Double-click to see it.")
+            elif rel in probe.dirty_before:
                 any_dirty = True
                 item.setText(f"⚠ {display}")
                 item.setForeground(QBrush(QColor(theme.AMBER)))
@@ -508,6 +581,9 @@ class CommitPanel(QWidget):
                 item.setText(display)
                 item.setData(Qt.ItemDataRole.ForegroundRole, None)
                 item.setToolTip(display)
+            if rel is not None and (changed or added or rel in probe.dirty_before):
+                self._activatable.add(rel)
+        self._changed_hint.setVisible(any_marked)
         self._dirty_hint.setVisible(any_dirty)
 
     def _apply_strip(self):
@@ -522,6 +598,8 @@ class CommitPanel(QWidget):
             text, alert = f"⚠ {_STRIP_PREFIX[state]}{reason}", True
         elif state == "offer_switch":
             text, alert = f"⚠ {reason} Switch to main before committing.".replace("  ", " "), True
+        elif state == "ready" and probe is not None and probe.all_identical:
+            text, alert = f"⚠ {_NOTHING_TO_COMMIT}", True  # D-14
         else:
             self._strip.hide()
             return
@@ -537,11 +615,18 @@ class CommitPanel(QWidget):
     def _set_state(self, state: str):
         self._state = state
         ready = state == "ready"
-        self._message.setReadOnly(not ready)
-        self._parent_check.setEnabled(ready and self._probe is not None and self._probe.parent_ok)
+        editable = state in ("ready", "gated")  # a refused commit still lets the user prepare the message (D-06)
+        self._message.setReadOnly(not editable)
+        self._parent_check.setEnabled(editable and self._probe is not None and self._probe.parent_ok)
         self._switch_button.setVisible(state in ("offer_switch", "switching"))
         self._switch_button.setEnabled(state == "offer_switch")
         self._step_row.setVisible(state == "committing")
+        if state == "probing":
+            self._old_label.hide()
+        if state != "gated":  # _show_gate decides what a gated probe shows
+            self._gate_lines.hide()
+            self._check_again_button.hide()
+            self._open_check_button.hide()
         self.commit_button.setText(
             {"committing": "Committing...", "done": "Committed", "failed": _COMMITTED_CUSTOM_ONLY}.get(state, "Commit")
         )
@@ -556,12 +641,20 @@ class CommitPanel(QWidget):
             probe is not None and cplan is not None and self._parent_check.isChecked()
             and (self._parent_check.isEnabled() or locked_in)
         )
+        # every planned file already equals HEAD: only the parent's Custom ref can still be committed (D-14)
+        parent_only = probe is not None and probe.all_identical
         if show_parent:
             self._earlier_label.setText(self._earlier_text(probe))
-            preview = parent_preview(
-                subject_of(self._message.toPlainText()), cplan.custom_rel, probe.gitlink_old, probe.earlier,
-                listed=probe.earlier_listed,
-            )
+            subject = subject_of(self._message.toPlainText())
+            if parent_only:
+                preview = parent_only_preview(
+                    subject, cplan.custom_rel, probe.gitlink_old, probe.head, probe.earlier,
+                    listed=probe.earlier_listed,
+                )
+            else:
+                preview = parent_preview(
+                    subject, cplan.custom_rel, probe.gitlink_old, probe.earlier, listed=probe.earlier_listed
+                )
             if self._parent_preview.toPlainText() != preview:
                 self._parent_preview.setPlainText(preview)
         self._earlier_label.setVisible(show_parent and bool(self._earlier_label.text()))
@@ -569,7 +662,14 @@ class CommitPanel(QWidget):
         self._parent_preview.setVisible(show_parent)
         blank = not self._message.toPlainText().strip()
         self._blank_label.setVisible(self._state == "ready" and blank)
-        self.commit_button.setEnabled(self._state == "ready" and not blank)
+        ready = self._state == "ready" and not blank
+        if parent_only:
+            behind = bool(probe.head) and probe.gitlink_old != probe.head
+            bump = self._parent_check.isEnabled() and self._parent_check.isChecked() and behind
+            ready = ready and bump
+            if self._state == "ready":
+                self.commit_button.setText(_PARENT_ONLY_LABEL if bump else "Commit")
+        self.commit_button.setEnabled(ready)
 
     @staticmethod
     def _earlier_text(probe: CommitProbe) -> str:
@@ -597,6 +697,17 @@ class CommitPanel(QWidget):
             self._pending_refusal = ()
             self.commit_requested.emit(self._message.toPlainText(), self.bump_parent())
 
+    def _on_check_again_clicked(self):
+        if self._state == "gated":
+            self._pending_refusal = ()
+            self.check_again_requested.emit()
+
+    def _on_open_check_clicked(self):
+        gate = self._probe.gate if self._probe is not None else None
+        if self._state == "gated" and gate is not None and gate.blocking:
+            first = gate.blocking[0]
+            self.open_check_requested.emit(first.rel_path, first.part)
+
     def _on_switch_clicked(self):
         if self._state == "offer_switch":
             self._pending_refusal = ()
@@ -604,6 +715,6 @@ class CommitPanel(QWidget):
 
     def _on_item_activated(self, item: QListWidgetItem):
         rel = item.data(Qt.ItemDataRole.UserRole)
-        if rel is not None and self._probe is not None and rel in self._probe.dirty_before:
+        if rel is not None and rel in self._activatable:
             self.file_activated.emit(rel)
 
