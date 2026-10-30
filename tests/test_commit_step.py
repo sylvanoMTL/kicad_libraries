@@ -6,7 +6,13 @@ puts Custom in the state under test. Nothing here touches the real repository.
 
 import dataclasses
 import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -409,7 +415,7 @@ def test_probe_identity_unknown_unavailable(tmp_path):
     probe = commit_step.probe_commit(_plan(repos), git=_answering({"var": (128, b"")}))
 
     assert probe.state == "unavailable"
-    assert probe.reason == "git does not know who you are: set user.name and user.email"
+    assert probe.reason == IDENTITY_REASON
     assert _issue_triples(probe) == _unavailable_issue(probe.reason)
 
 
@@ -418,6 +424,75 @@ def test_probe_identity_known_by_default(tmp_path):
     repos = make_superproject(tmp_path / "git")
 
     assert commit_step.probe_commit(_plan(repos), git=_ctx()).state == "ready"
+
+
+IDENTITY_REASON = (
+    "git does not know who you are: set user.name and user.email, or "
+    "GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME and GIT_COMMITTER_EMAIL"
+)
+_IDENTITY_VARS = (
+    "GIT_AUTHOR_NAME", "GIT_AUTHOR_EMAIL", "GIT_AUTHOR_DATE",
+    "GIT_COMMITTER_NAME", "GIT_COMMITTER_EMAIL", "GIT_COMMITTER_DATE",
+)  # fmt: skip
+_ENV_AUTHOR = {"GIT_AUTHOR_NAME": "Env Author", "GIT_AUTHOR_EMAIL": "author@example.invalid"}
+_ENV_COMMITTER = {"GIT_COMMITTER_NAME": "Env Committer", "GIT_COMMITTER_EMAIL": "committer@example.invalid"}
+
+
+def _isolate_identity(monkeypatch, repos, home):
+    """No identity in any config: the repo-local one is removed, HOME is empty and the variables are unset."""
+    home.mkdir(parents=True, exist_ok=True)
+    repos.git(repos.custom, "config", "--unset", "user.name")
+    repos.git(repos.custom, "config", "--unset", "user.email")
+    repos.git(repos.custom, "config", "user.useConfigOnly", "true")
+    for name in ("HOME", "USERPROFILE", "XDG_CONFIG_HOME"):
+        monkeypatch.setenv(name, str(home))
+    monkeypatch.delenv("EMAIL", raising=False)
+    for name in _IDENTITY_VARS:
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.lower(), raising=False)
+
+
+@requires_git
+def test_probe_identity_message_names_variables(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "unavailable"
+    assert probe.reason == IDENTITY_REASON
+    assert "GIT_AUTHOR_NAME" in probe.reason and "user.name" in probe.reason
+
+
+@requires_git
+def test_env_identity_probe_and_commit(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+    for name, value in {**_ENV_AUTHOR, **_ENV_COMMITTER}.items():
+        monkeypatch.setenv(name, value)
+    plan = _plan(repos)
+
+    probe = commit_step.probe_commit(plan, git=_ctx())
+    outcome = commit_step.run_commit(plan, MESSAGE, True, git=_ctx())
+
+    assert probe.state == "ready", probe.reason
+    assert not outcome.failed, outcome.issues
+    assert outcome.custom_commit is not None and outcome.parent_commit is not None
+    assert repos.git(repos.custom, "log", "-1", "--format=%an <%ae>").strip() == "Env Author <author@example.invalid>"
+    assert repos.git(repos.parent, "log", "-1", "--format=%an <%ae>").strip() == "Env Author <author@example.invalid>"
+
+
+@requires_git
+def test_probe_with_only_committer_variables_is_unavailable(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+    for name, value in _ENV_COMMITTER.items():
+        monkeypatch.setenv(name, value)
+
+    probe = commit_step.probe_commit(_plan(repos), git=_ctx())
+
+    assert probe.state == "unavailable"
+    assert probe.reason == IDENTITY_REASON  # no more "ready" followed by a failed commit
 
 
 # -- the parent repo: reported, never blocking the Custom commit (D-16, D-17a) ---
@@ -741,6 +816,7 @@ def test_probe_cancelled_between_preexisting_reads(tmp_path):
 
 HOOK_REJECT = "#!/bin/sh\necho 'hook says no'\necho 'on stderr' >&2\nexit 1\n"
 MESSAGE = f"Add FP1 to {LIB}"
+_CUSTOM_ARG = "-- 'Custom'" if sys.platform == "win32" else "-- Custom"  # the running platform's quoting
 
 
 def _subcommands(calls):
@@ -889,11 +965,147 @@ def test_parent_hook_rejection_keeps_custom_commit(tmp_path):
     assert outcome.parent_commit is None and repos.git(repos.parent, "rev-parse", "HEAD").strip() == parent_before
     issue = next(i for i in outcome.issues if i.code == "commit.parent_failed")
     assert issue.severity is Severity.ERROR
-    assert "was kept" in issue.text and "parent hook says no" in issue.text and "Finish it by hand: git -C" in issue.text
-    assert outcome.manual_command.endswith("-- Custom")
+    label = commit_step.manual_label()
+    assert "was kept" in issue.text and "parent hook says no" in issue.text
+    assert f"{label} git -C" in issue.text
+    assert outcome.manual_label == label
+    assert outcome.manual_command.endswith(_CUSTOM_ARG)
     assert outcome.manual_command in issue.text
     first_commit = _subcommands(calls).index("commit")
     assert "reset" not in _subcommands(calls)[first_commit:]
+
+
+# -- the "Finish it by hand" command, written for the shell it is pasted into (REV-08, D-16) ----------
+
+_TRICKY_SUBJECT = "Update Custom: it's $x, then a `tick`, a mid\\string and z $(calc)"
+_TRICKY_MESSAGE = f"{_TRICKY_SUBJECT}\n\nCustom abc1234..def5678\n- def5678 Add 'P'"
+
+
+def test_manual_command_powershell_quotes_every_argument():
+    parent = Path("C:/Repo O'Neil")
+
+    command = commit_step.manual_command(parent, "Custom", _TRICKY_MESSAGE, windows=True)
+
+    subject = _TRICKY_SUBJECT.replace("'", "''")
+    assert command == f"git -C 'C:/Repo O''Neil' commit -m '{subject}' -- 'Custom'"
+
+
+def test_manual_command_posix_uses_shlex():
+    parent = Path("/home/o'neil/Repo")
+
+    command = commit_step.manual_command(parent, "Custom", _TRICKY_MESSAGE, windows=False)
+
+    q = shlex.quote
+    assert command == f"git -C {q(parent.as_posix())} commit -m {q(_TRICKY_SUBJECT)} -- {q('Custom')}"
+    assert shlex.split(command) == ["git", "-C", parent.as_posix(), "commit", "-m", _TRICKY_SUBJECT, "--", "Custom"]
+
+
+_DQUOTE_MESSAGE = 'Update Custom: Add "Foo"\n\nCustom abc..def\n- abc Add "Foo"'
+
+
+def test_manual_command_uses_message_file_for_double_quote(tmp_path):
+    parent = Path("C:/Repo")
+
+    command = commit_step.manual_command(parent, "Custom", _DQUOTE_MESSAGE, windows=True, message_dir=tmp_path)
+
+    match = re.fullmatch(r"git -C 'C:/Repo' commit -F '([^']+)' -- 'Custom'", command)
+    assert match, command
+    written = Path(match.group(1))
+    assert "\\" not in match.group(1) and written.suffix == ".txt" and written.parent == tmp_path
+    assert written.read_bytes() == _DQUOTE_MESSAGE.encode("utf-8")
+    assert '"' not in command
+
+
+def test_manual_command_uses_message_file_for_trailing_backslash(tmp_path):
+    message = "Update Custom: copy to C:\\data\\\n\nbody line"
+
+    command = commit_step.manual_command(Path("C:/Repo"), "Custom", message, windows=True, message_dir=tmp_path)
+
+    assert " -F '" in command and " -m " not in command
+    (written,) = tmp_path.iterdir()
+    assert written.read_bytes() == message.encode("utf-8")
+
+
+def test_manual_command_unicode_message_is_written_as_utf8(tmp_path):
+    message = 'Update Custom: Add "Zürich" \u2713'
+
+    command = commit_step.manual_command(Path("C:/Repo"), "Custom", message, windows=True, message_dir=tmp_path)
+
+    assert " -F '" in command
+    (written,) = tmp_path.iterdir()
+    assert written.read_bytes().decode("utf-8") == message
+
+
+def test_manual_command_posix_never_writes_a_file(tmp_path):
+    command = commit_step.manual_command(
+        Path("/repo"), "Custom", _DQUOTE_MESSAGE, windows=False, message_dir=tmp_path
+    )
+
+    assert " -m " in command and " -F " not in command
+    assert shlex.split(command)[5] == 'Update Custom: Add "Foo"'
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_manual_command_falls_back_to_m_form_when_the_file_cannot_be_written(tmp_path):
+    missing = tmp_path / "no" / "such" / "folder"
+
+    command = commit_step.manual_command(Path("C:/Repo"), "Custom", _DQUOTE_MESSAGE, windows=True, message_dir=missing)
+
+    assert " -m " in command and " -F " not in command
+
+
+_ECHO_SCRIPT = (
+    "import json, os, sys\n"
+    "with open(os.environ['KICAD_ECHO_OUT'], 'w', encoding='utf-8') as handle:\n"
+    "    json.dump(sys.argv[1:], handle)\n"
+)
+_POWERSHELL_SUBJECTS = (
+    "Update Custom: it's here",
+    "Update Custom: cost $x and $(calc)",
+    "Update Custom: a `tick` here",
+    "Update Custom: back\\slash in the middle",
+    'Update Custom: Add "Foo" part',
+    "Update Custom: ends with a slash\\",
+    "Update Custom: it\u2019s typographic",
+)
+
+
+@pytest.mark.skipif(
+    shutil.which("powershell") is None,
+    reason="Windows PowerShell not found (the paste-safety test runs the generated command in it)",
+)
+@pytest.mark.parametrize("subject", _POWERSHELL_SUBJECTS)
+def test_manual_command_survives_real_powershell(subject, tmp_path):
+    parent = tmp_path / "parent repo"
+    message = f"{subject}\n\nCustom abc1234..def5678\n- def5678 {subject}"
+    script = tmp_path / "echo_args.py"
+    script.write_text(_ECHO_SCRIPT, encoding="utf-8")
+    out = tmp_path / "received.json"
+    command = commit_step.manual_command(parent, "Custom", message, windows=True, message_dir=tmp_path)
+    assert command.startswith("git ")
+    line = f"& {commit_step._ps_quote(sys.executable)} {commit_step._ps_quote(str(script))} {command[len('git '):]}"
+
+    done = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", line],
+        env={**os.environ, "KICAD_ECHO_OUT": str(out)},
+        capture_output=True, timeout=60,
+    )
+
+    assert done.returncode == 0, done.stderr.decode("utf-8", errors="replace")
+    received = json.loads(out.read_text(encoding="utf-8"))
+    if "-F" in received:
+        file = Path(received[received.index("-F") + 1])
+        assert received == ["-C", parent.as_posix(), "commit", "-F", file.as_posix(), "--", "Custom"]
+        assert file.read_bytes().decode("utf-8") == message
+        assert file.parent != parent and not file.is_relative_to(parent)
+    else:
+        assert received == ["-C", parent.as_posix(), "commit", "-m", subject, "--", "Custom"]
+
+
+def test_manual_label_names_the_shell():
+    assert commit_step.manual_label(windows=True) == "Finish it by hand. In PowerShell:"
+    assert commit_step.manual_label(windows=False) == "Finish it by hand:"
+    assert commit_step.manual_label() == commit_step.manual_label(windows=sys.platform == "win32")
 
 
 @requires_git
@@ -954,10 +1166,12 @@ def test_commit_timeout_after_head_moved_reports_commit(tmp_path):
     assert "reset" not in _subcommands(calls)[first_commit:]
     assert repos.git(repos.parent, "rev-parse", "HEAD").strip() == parent_before
     assert outcome.parent_commit is None and "commit" not in _subcommands(calls)[first_commit + 1 :]
-    assert outcome.manual_command and outcome.manual_command.endswith("-- Custom")
+    assert outcome.manual_command and outcome.manual_command.endswith(_CUSTOM_ARG)
+    assert outcome.manual_label == commit_step.manual_label()
     assert outcome.parent_message.startswith("Update Custom: ")
     parent_warning = next(i for i in outcome.issues if i.code == "commit.parent_not_started")
-    assert parent_warning.severity is Severity.WARNING and outcome.manual_command in parent_warning.text
+    assert parent_warning.severity is Severity.WARNING
+    assert f"{outcome.manual_label} {outcome.manual_command}" in parent_warning.text
 
 
 @requires_git
@@ -1259,9 +1473,9 @@ def test_all_identical_parent_only_failure_has_manual_command(tmp_path):
     outcome = commit_step.run_commit(plan, MESSAGE, True, git=_ctx())
 
     issue = next(i for i in outcome.issues if i.code == "commit.parent_failed")
-    assert issue.text.startswith("The parent commit failed (") and "Finish it by hand: git -C" in issue.text
+    assert issue.text.startswith("The parent commit failed (") and f"{commit_step.manual_label()} git -C" in issue.text
     assert "was kept" not in issue.text and outcome.parent_only is True
-    assert outcome.manual_command.endswith("-- Custom")
+    assert outcome.manual_command.endswith(_CUSTOM_ARG)
 
 
 @requires_git

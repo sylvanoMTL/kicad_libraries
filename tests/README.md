@@ -58,6 +58,8 @@ These skip only on a machine that lacks something. None of them skip on the work
 - Directory links unavailable: `directory links are not available here` (`tests/test_install_apply.py`).
 - Junctions unavailable: `junctions are a Windows feature` and `could not create a junction here` (`tests/test_package_folder.py`).
 - Git not on PATH: `git is not on PATH` (`tests/gitfixtures.py`, `tests/test_fixtures.py`, `tests/test_package_zip.py`).
+- Windows PowerShell missing: `Windows PowerShell not found (the paste-safety test runs the generated command in it)` (`tests/test_commit_step.py`).
+  It runs on the workstation.
 - A zipfile feature missing: `this Python's zipfile has no <name>` (`tests/test_package_zip.py`).
 - Licence-restricted vendor samples absent: `downloaded_examples/<file> not present (licence-restricted <vendor> sample, kept local)`
   (`tests/test_real_vendor_samples.py`, `tests/test_vendorfixtures.py`, `tests/test_categories.py`, `tests/test_footprint_text.py`, `tests/test_atomic_targets.py`, `tests/test_gate_reasons.py`).

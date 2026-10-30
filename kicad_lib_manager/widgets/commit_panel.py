@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..importer.commit_plan import CommitPlan, default_message, parent_preview, subject_of
-from ..importer.commit_step import CommitOutcome, CommitProbe
+from ..importer.commit_step import MANUAL_LABEL, CommitOutcome, CommitProbe
 from ..models import Issue, Severity
 from . import theme
 from .import_result import ElidedLabel, _heading, _plain_label
@@ -25,7 +25,8 @@ _OUTPUT_LINES = 8  # lines of git output shown before the box scrolls
 _EARLIER_SHOWN = 10  # earlier Custom commits listed before "...and k more"
 _PARENT_TEXT = "Also commit the Custom ref in the parent repo"
 _COMMITTED_CUSTOM_ONLY = "Committed in Custom only"  # the button text after a partial result (D-17)
-_WARNING_NOISE = "warning: in the working copy of"  # line-ending notices git prints for every file (Pitfall 6)
+_MANUAL_PREFIX = "Finish it by hand"  # starts both manual labels (with and without the PowerShell words)
+_WARNING_NOISE ="warning: in the working copy of"  # line-ending notices git prints for every file (Pitfall 6)
 _STATES = (
     "probing", "unavailable", "refused", "offer_switch", "switching", "ready", "committing", "done", "failed"
 )
@@ -384,11 +385,12 @@ class CommitPanel(QWidget):
         extra = self._render_issues(outcome.issues)
         output = outcome.output.splitlines()
         if not output:
-            output = [line for line in extra if not line.startswith("Finish it by hand:")]
+            output = [line for line in extra if not line.startswith(_MANUAL_PREFIX)]
         self._set_output(output)
         self._committed = outcome.committed
-        if outcome.committed and outcome.failed and outcome.manual_command:
-            self._manual_label.setText(f"Finish it by hand: {outcome.manual_command}")
+        # the late-commit warning (D-12) and the parent-only failure carry a manual command too (D-16, D-17)
+        if outcome.manual_command and (outcome.committed or outcome.parent_only):
+            self._manual_label.setText(f"{outcome.manual_label or MANUAL_LABEL} {outcome.manual_command}")
             self._manual_label.show()
         if outcome.committed:
             self._pending_refusal = ()
@@ -412,6 +414,8 @@ class CommitPanel(QWidget):
             if issue.severity is Severity.ERROR:
                 extra.extend(rest)
                 text = first
+            else:  # the manual command has its own selectable line (D-16)
+                text = "\n".join(line for line in (first, *rest) if not line.startswith(_MANUAL_PREFIX))
             self._add_outcome_line(f"{_GLYPHS.get(issue.severity, '')}{text}", color, issue.severity)
         return extra
 
