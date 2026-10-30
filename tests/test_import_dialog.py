@@ -3733,23 +3733,70 @@ def test_refusal_reprobe_replaced_by_own_refusal(qtbot, make_install_dialog):
 
 def test_parent_only_failure_reprobes_in_dialog(qtbot, make_install_dialog):
     probes: list[int] = []
-    failure = Issue(Severity.ERROR, "commit.parent_failed", "The parent commit failed (hook said no)")
+    manual = "git -C 'C:/x' commit -m 'Update Custom' -- 'Custom'"
+    label = "Finish it by hand. In PowerShell:"
+    failure = Issue(
+        Severity.ERROR, "commit.parent_failed",
+        f"The parent commit failed (git exit 1).\nhook says: no\nfix the footer first\n{label} {manual}",
+    )
 
     def probe(cplan, **kwargs):
         probes.append(1)
         return fake_ready_probe()(cplan)
 
-    outcome = CommitOutcome(parent_only=True, parent_commit=None, issues=(failure,))
+    outcome = CommitOutcome(
+        parent_only=True, parent_commit=None, output="hook says: no\nfix the footer first",
+        manual_command=manual, manual_label=label, issues=(failure,),
+    )
     dialog = make_install_dialog(probe_commit=probe, run_commit=lambda *a, **k: outcome)
     install_ul(qtbot, dialog)
     (panel,) = commit_panel_of(dialog)
     qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
     panel.commit_button.click()
 
-    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready", timeout=30000)
-    assert panel.outcome_lines()[0] == f"✖ {failure.text}"
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready" and not dialog.is_probing(), timeout=30000)
+    assert panel.outcome_lines()[0] == "✖ The parent commit failed (git exit 1)."
+    assert panel._output.toPlainText().splitlines() == ["hook says: no", "fix the footer first"]
+    assert not panel._output.isHidden()
+    assert panel._manual_label.text() == f"{label} {manual}"
+    assert not panel._manual_label.isHidden()
     assert not panel.committed()
-    assert not dialog.is_probing()
+
+
+def test_hook_rejection_output_survives_reprobe_in_dialog(qtbot, make_install_dialog):
+    probes: list[int] = []
+    seen: list[int] = []
+    rejected = Issue(
+        Severity.ERROR, "commit.custom_failed",
+        "Commit in Custom failed (git exit 1); nothing was committed\nhook says: no\nfix the footer first",
+    )
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe()(cplan)
+
+    def run(cplan, message, bump, **kwargs):
+        seen.append(1)
+        if len(seen) == 1:
+            return CommitOutcome(output="hook says: no\nfix the footer first", issues=(rejected,))
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=run)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready" and not dialog.is_probing(), timeout=30000)
+    assert panel.outcome_lines()[0] == "✖ Commit in Custom failed (git exit 1); nothing was committed"
+    assert panel._output.toPlainText().splitlines() == ["hook says: no", "fix the footer first"]
+    assert not panel._output.isHidden()
+    assert panel._manual_label.isHidden()
+
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
+    assert panel._output.isHidden()
+    assert panel.outcome_lines() == [f"✓ {fake_committed().issues[0].text}"]
 
 
 def test_switch_reprobe_keeps_message(qtbot, make_install_dialog):
