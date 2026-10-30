@@ -346,6 +346,7 @@ class ImportDialog(QDialog):
 
     installed = Signal(object, object)
     issues_logged = Signal(object)  # list[Issue]; the main window routes them to the log
+    atomic_fixes_applied = Signal(object)  # list[Issue]; fixes written from the commit panel's check dialog
 
     def __init__(
         self,
@@ -2964,9 +2965,18 @@ class ImportDialog(QDialog):
             parent=self,
         )
         dialog.issues_logged.connect(self.issues_logged.emit)
+        dialog.applied.connect(self._on_atomic_fixes_applied)
         dialog.finished.connect(self._on_atomic_dialog_finished)
         self._atomic_dialog = dialog
         dialog.open()
+
+    def _on_atomic_fixes_applied(self, issues):
+        """Fixes were written from the check dialog: the main window logs and rescans, then the commit is re-checked.
+
+        Only the read-only re-check starts here; a commit always needs its own click (T-11-25).
+        """
+        self.atomic_fixes_applied.emit(list(issues))
+        self._on_check_again()
 
     def _on_atomic_dialog_finished(self, _result: int):
         dialog, self._atomic_dialog = self._atomic_dialog, None

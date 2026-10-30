@@ -318,6 +318,26 @@ def test_import_dialog_opens_window_modal(qtbot, make_window, tmp_path, monkeypa
     assert w._import_dialog is None
 
 
+def test_main_window_rescans_after_import_dialog_fixes(qtbot, make_window, tmp_path, monkeypatch):
+    backup_root = tmp_path / "atomic_backups"
+    monkeypatch.setattr(main_window, "ATOMIC_BACKUP_ROOT", backup_root)
+    w = make_window([scan_with()])
+    scans: list[int] = []
+    monkeypatch.setattr(w, "_start_scan", lambda *args, **kwargs: scans.append(1))
+
+    w._open_import(tmp_path / "missing.zip")
+    dialog = w._import_dialog
+    assert isinstance(dialog, ImportDialog)
+    assert dialog._atomic_backup_root == backup_root
+
+    dialog.atomic_fixes_applied.emit([Issue(Severity.SUCCESS, "atomic.fixed", "fixed from the import dialog")])
+    assert "fixed from the import dialog" in w._log._text.toPlainText()
+    assert scans == [1]
+
+    dialog.reject()
+    assert w._import_dialog is None
+
+
 # -- tables after the post-install rescan (plan 05-04, D-16, D-17) ---------------------------
 
 def _managed(nick: str, rel: str) -> str:

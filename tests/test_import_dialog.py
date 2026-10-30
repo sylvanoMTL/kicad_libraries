@@ -4929,6 +4929,43 @@ def test_check_again_in_dialog_never_commits(qtbot, make_install_dialog):
     assert not dialog.is_committing()
 
 
+def test_fixes_applied_reemitted_and_rechecked(qtbot, make_install_dialog):
+    rechecks: list[dict] = []
+    commits: list[int] = []
+
+    def recheck(cplan, **kwargs):
+        rechecks.append(kwargs)
+        return cplan, fake_ready_probe()(cplan)
+
+    def count_commit(*args, **kwargs):
+        commits.append(1)
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=gated_fake_probe, recheck_commit=recheck, run_commit=count_commit)
+    emitted: list = []
+    dialog.atomic_fixes_applied.connect(lambda issues: emitted.append(issues))
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    panel._open_check_button.click()
+    check = dialog._atomic_dialog
+    assert isinstance(check, AtomicCheckDialog)
+    issue = Issue(Severity.SUCCESS, "atomic.fixed", "Fixed 1 part")
+    check.applied.emit([issue])
+
+    assert emitted == [[issue]]
+    assert issue not in logged  # the main window logs applied fixes, so the dialog does not log them twice
+    wait_idle_state(qtbot, dialog, panel, "ready")
+    assert len(rechecks) == 1
+    assert commits == []  # applying fixes leaves the commit to its own click
+    assert not dialog.is_committing()
+
+    check.reject()
+    qtbot.waitUntil(lambda: dialog._atomic_dialog is None, timeout=10000)
+
+
 def test_kicad_folder_reaches_probe_recheck_and_commit(qtbot, item_layout, recorded, tmp_path):
     seen: dict[str, Path | None] = {}
     fp_dir = tmp_path / "kicad_footprints"
