@@ -202,7 +202,7 @@ Plans:
   4. The parent checkbox keeps the user's choice across probes. The dialog and the main window can be closed while the read-only probe runs. A user whose git identity comes from `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables can commit from the panel.
   5. The Commit button is styled as the primary action, error and success outcomes are tinted, the parent-failed state is no longer labelled "Committed", and the panel's sizes come from the theme scale.
 
-**Plans**: 6/13 plans executed
+**Plans**: 8/13 plans executed
 
 Plans:
 **Wave 1**
@@ -216,8 +216,8 @@ Plans:
 - [x] 11-06-PLAN.md — late commit reported via HEAD before/after, identical-to-HEAD INFO, parent-only bump, stale and cancel in the probe (REV-06, REV-09, D-14)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 11-07-PLAN.md — PowerShell-safe manual command with the -F fallback, identity message, env-identity commit (REV-08, REV-11)
-- [ ] 11-09-PLAN.md — probe no longer locks Close (cancel Event), re-probe after a refusal, primary Install Part (REV-10, IN-02, D-19)
+- [x] 11-07-PLAN.md — PowerShell-safe manual command with the -F fallback, identity message, env-identity commit (REV-08, REV-11)
+- [x] 11-09-PLAN.md — probe no longer locks Close (cancel Event), re-probe after a refusal, primary Install Part (REV-10, IN-02, D-19)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 11-08-PLAN.md — gate in probe and click, Check again service (re-baseline, gate re-run), changed-file diff (GIT-06, D-03, D-08, D-09)
@@ -274,7 +274,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
-| 11. Commit Gate and Commit Panel Fixes | v2.0 | 6/13 | In Progress | - |
+| 11. Commit Gate and Commit Panel Fixes | v2.0 | 8/13 | In Progress | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
