@@ -12,6 +12,12 @@ when new). Only a violation the HEAD view does not have blocks; one present in b
 failure (D-02). Model existence is read from the work tree in both views (RESEARCH A4), so a committed
 model file can never make a part fail by itself: committing a file never removes one. The symbols that
 link a committed model are still checked, and their failures are listed as older.
+
+An Atomic_ library outside the commit that cannot be read, parsed or listed, while the commit holds a
+footprint or a 3D model, refuses the commit like an unreadable committed library: its parts may link the
+committed files and cannot be judged. This fails closed on purpose; refusing a library that does not use
+those files is accepted (WR-03, the owner's decision). With no footprint and no model in the commit the
+linked check does not run and no outside library is read.
 """
 
 import os
@@ -28,6 +34,7 @@ from .incoming import incoming_context
 from .package import MAX_KICAD_TEXT_BYTES, MAX_KICAD_TEXT_NODES
 
 CANCELLED = "The check was cancelled"
+_UNLISTED = "the symbol libraries could not be listed"
 _MIB = 1024 * 1024
 
 
@@ -183,13 +190,18 @@ def _committed_models(cplan: CommitPlan) -> frozenset[str]:
     return frozenset(c.rel[len(prefix):] for c in cplan.files if c.kind == "model" and c.rel.startswith(prefix))
 
 
-def _atomic_symbol_files(custom_dir: Path) -> list[str]:
-    """File names of the Atomic_ symbol libraries under Custom/Symbols, in name order."""
+def _atomic_symbol_files(custom_dir: Path) -> tuple[list[str], str]:
+    """File names of the Atomic_ symbol libraries under Custom/Symbols in name order, and why it could not be listed.
+
+    A folder that does not exist has nothing to check: ([], ""). Any other failure gives ([], the reason).
+    """
     try:
         names = sorted(os.listdir(custom_dir / "Symbols"))
-    except OSError:
-        return []
-    return [name for name in names if name.endswith(".kicad_sym") and is_atomic(name[: -len(".kicad_sym")])]
+    except FileNotFoundError:
+        return [], ""
+    except OSError as e:
+        return [], str(e.strerror or e)
+    return [name for name in names if name.endswith(".kicad_sym") and is_atomic(name[: -len(".kicad_sym")])], ""
 
 
 def _check_linked_symbols(
@@ -203,18 +215,27 @@ def _check_linked_symbols(
     cancelled: Callable[[], bool] | None,
     blocking: list[AtomicFailure],
     old: list[AtomicFailure],
-    notes: list[str],
+    problems: list[str],
     entries: list[tuple[str, str, SymbolEntry]],
 ) -> bool:
     """Judge the symbols that link a committed footprint or model (D-04); True when the check was cancelled.
 
     A symbol that fails in the work tree has its violations split against the HEAD view: the ones HEAD
     did not have block, the rest are old. Changed symbols of committed libraries were judged already.
+    A library that cannot be read, or a Symbols folder that cannot be listed, becomes a problem (fail closed).
     """
     linked_rels = {f"{cplan.custom_rel}/{rel}" for rel in footprints.values()}
     head: AtomicContext | None = None
     model_cache: dict[Path, tuple[str, ...]] = {}
-    for file_name in _atomic_symbol_files(cplan.custom_dir):
+    file_names, unlisted = _atomic_symbol_files(cplan.custom_dir)
+    if unlisted:
+        problems.append(
+            f"{cplan.custom_rel}/Symbols: {_UNLISTED} ({unlisted}), "
+            "so their parts could not be checked against the committed footprints and 3D models. "
+            "Click Check again once the folder can be read."
+        )
+        return False
+    for file_name in file_names:
         if cancelled is not None and cancelled():
             return True
         library = file_name[: -len(".kicad_sym")]
@@ -225,7 +246,10 @@ def _check_linked_symbols(
         else:
             root, why = _read_library(cplan.custom_dir / "Symbols" / file_name)
             if root is None:
-                notes.append(f"Could not check the parts of {library} that link the committed files ({why})")
+                problems.append(
+                    f"{library}: the parts in this library could not be checked against the committed footprints and 3D models ({why}). "
+                    "Fix the library file (check that it opens in KiCad), then click Check again."
+                )
         if root is None:
             continue
         rel_path = f"{cplan.custom_rel}/Symbols/{file_name}"
@@ -275,13 +299,13 @@ def run_gate(
     A symbol that is new, differs from HEAD, or extends one that does is judged as changed and its
     broken rules block (D-01, D-05); an unchanged symbol that fails is only noted (D-02). A committed
     library that cannot be read refuses the commit rather than passing it. A committed footprint or
-    3D model also judges the symbols that link it, in any Atomic_ library (D-04).
+    3D model also judges the symbols that link it, in any Atomic_ library (D-04); an Atomic_ library
+    outside the commit that cannot be read, parsed or listed then refuses too (fail closed, WR-03).
     """
     context = incoming_context(cplan.repo_root, cplan.custom_dir / "Footprints", kicad_fp_dir)
     blocking: list[AtomicFailure] = []
     old: list[AtomicFailure] = []
     problems: list[str] = []
-    notes: list[str] = []
     entries: list[tuple[str, str, SymbolEntry]] = []
     # file name (casefolded) -> (parsed root or None, names judged as changed) of each committed library
     committed: dict[str, tuple[kicad_files.Node | None, set[str]]] = {}
@@ -315,12 +339,10 @@ def run_gate(
     models = _committed_models(cplan)
     if footprints or models:
         if _check_linked_symbols(
-            ctx, cplan, kicad_fp_dir, context, footprints, models, committed, cancelled, blocking, old, notes, entries
+            ctx, cplan, kicad_fp_dir, context, footprints, models, committed, cancelled, blocking, old, problems, entries
         ):
             return GateResult(problems=(CANCELLED,))
-    return GateResult(
-        blocking=tuple(blocking), old=tuple(old), problems=tuple(problems), entries=tuple(entries), notes=tuple(notes)
-    )
+    return GateResult(blocking=tuple(blocking), old=tuple(old), problems=tuple(problems), entries=tuple(entries))
 
 
 def _custom_model_names(custom_dir: Path) -> frozenset[str]:
@@ -386,15 +408,22 @@ def _plural(count: int, one: str, many: str) -> str:
 
 
 def refusal_summary(gate: GateResult) -> str:
-    """The strip text of a refused commit: how many parts break the rule and how many libraries were not checked."""
+    """The strip text of a refused commit: how many parts break the rule, how many libraries were not checked.
+
+    A Symbols folder that could not be listed is named as such, never counted as a library.
+    """
     if not gate.refused:
         return ""
     parts: list[str] = []
     broken = len({(f.library, f.part) for f in gate.blocking})
     if broken:
         parts.append(f"{broken} part breaks the atomic rule" if broken == 1 else f"{broken} parts break the atomic rule")
-    if gate.problems:
-        parts.append(f"{_plural(len(gate.problems), 'library', 'libraries')} could not be checked")
+    unlisted = sum(1 for problem in gate.problems if _UNLISTED in problem)
+    libraries = len(gate.problems) - unlisted
+    if libraries:
+        parts.append(f"{_plural(libraries, 'library', 'libraries')} could not be checked")
+    if unlisted:
+        parts.append(_UNLISTED)
     return "; ".join(parts)
 
 
