@@ -2858,6 +2858,15 @@ class ImportDialog(QDialog):
         self._result_view.set_commit_panel(panel)
         self._start_probe()
 
+    def _begin_probe_generation(self) -> threading.Event:
+        """A newer probe or check supersedes every older one: their Events are set, the new one is returned (T-11-22)."""
+        for older in self._probe_cancels:
+            older.set()
+        event = threading.Event()
+        self._probe_cancels = [event]  # the older ones are set already; _shutdown sets the live one
+        self._commit_probe = None
+        return event
+
     def _start_probe(self, *, reprobe: bool = False):
         """Probe git for the current commit plan; runs again after a switch or a refusal (D-15, D-11).
 
@@ -2867,11 +2876,7 @@ class ImportDialog(QDialog):
         panel, cplan = self._commit_panel, self._commit_plan
         if panel is None or cplan is None or self._closing:
             return
-        for older in self._probe_cancels:
-            older.set()
-        event = threading.Event()
-        self._probe_cancels = [event]  # the older ones are set already; _shutdown sets the live one
-        self._commit_probe = None
+        event = self._begin_probe_generation()
         if reprobe:
             panel.begin_reprobe()
         else:
@@ -2913,19 +2918,16 @@ class ImportDialog(QDialog):
     def _on_check_again(self):
         """Check again (D-08): take the files as they are now and probe the new plan; it never commits.
 
-        The check only reads, so it takes no Close lock. It replaces any older probe exactly as
-        _start_probe does, and the plan it returns replaces the dialog's plan.
+        The check only reads, so it takes no Close lock. A running probe or check does not stop it: it
+        supersedes that one exactly as _start_probe does and the older result is dropped (IN-03). It is
+        refused only while a Switch to main or Commit runs. The plan it returns replaces the dialog's plan.
         """
         panel, cplan = self._commit_panel, self._commit_plan
-        if self._closing or self._git_worker is not None or self._probe_worker is not None:
+        if self._closing or self._git_worker is not None:
             return
         if panel is None or cplan is None:
             return
-        for older in self._probe_cancels:
-            older.set()
-        event = threading.Event()
-        self._probe_cancels = [event]
-        self._commit_probe = None
+        event = self._begin_probe_generation()
         panel.begin_reprobe()
         core, fp_dir = self._core, self._kicad_fp_dir
         worker = self._spawn(
