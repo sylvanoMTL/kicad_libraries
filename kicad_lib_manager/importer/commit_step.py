@@ -167,7 +167,10 @@ def _custom_unavailable(ctx: GitContext, cplan: CommitPlan) -> str | None:
     if busy:
         return f"{busy} is in progress in Custom"
     if not gitops.identity_known(ctx, custom):
-        return "git does not know who you are: set user.name and user.email"
+        return (
+            "git does not know who you are: set user.name and user.email, or "
+            "GIT_AUTHOR_NAME, GIT_AUTHOR_EMAIL, GIT_COMMITTER_NAME and GIT_COMMITTER_EMAIL"
+        )
     return None
 
 
