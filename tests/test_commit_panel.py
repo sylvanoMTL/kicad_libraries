@@ -1,5 +1,6 @@
 """The commit panel's state machine, driven with fake CommitPlan, CommitProbe and CommitOutcome values (Phase 6)."""
 
+from dataclasses import replace
 from pathlib import Path
 
 from PySide6.QtCore import QEvent, Qt
@@ -900,3 +901,93 @@ def test_panel_gated_text_is_plain(qtbot, tmp_path):
     assert panel._gate_lines.text() == "Atomic_A / P<b>1</b>: <b>bold</b> rule"
     assert panel._gate_lines.textFormat() == Qt.TextFormat.PlainText
     assert all(label.textFormat() == Qt.TextFormat.PlainText for label in labels(panel))
+
+
+# -- Phase 11 (D-02, D-08, D-10): the old-failure note and the changed / added file markers ----------
+
+
+def test_panel_old_failures_note_keeps_commit(qtbot, tmp_path):
+    gate = GateResult(old=(
+        failure("Atomic_A", "P1"), failure("Atomic_A", "P2"), failure("Atomic_A", "P2", "no footprint", "footprint"),
+        failure("Atomic_B", "P3"),
+    ))
+    panel, _ = ready_panel(qtbot, tmp_path, gate=gate, parent_dir=tmp_path)
+
+    assert panel.state() == "ready"
+    assert panel._old_label.text().splitlines() == [
+        "Atomic_A also holds 2 parts that already failed before this import",
+        "Atomic_B also holds 1 part that already failed before this import",
+    ]
+    assert not panel._old_label.isHidden()
+    assert theme.AMBER in panel._old_label.styleSheet()
+    assert panel.commit_button.isEnabled()
+    assert panel._gate_lines.isHidden()
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))  # no gate at all
+    assert panel._old_label.isHidden()
+    panel.apply_probe(make_probe(gate=GateResult(), parent_dir=tmp_path))
+    assert panel._old_label.isHidden()
+    panel.apply_probe(make_probe(gate=gate, parent_dir=tmp_path))
+    panel.begin_reprobe()
+    assert panel._old_label.isHidden()
+
+
+def test_panel_old_failures_shown_beside_gated_lines(qtbot, tmp_path):
+    old = (failure("Atomic_B", "P3"),)
+    panel = gated_panel(qtbot, tmp_path, failure("Atomic_A", "P1"), gate=GateResult(blocking=(failure("Atomic_A", "P1"),), old=old))
+
+    assert not panel._old_label.isHidden()
+    assert not panel._gate_lines.isHidden()
+    assert not panel.commit_button.isEnabled()
+
+
+def test_panel_changed_and_added_markers(qtbot, tmp_path):
+    base = make_cplan(tmp_path).files
+    files = (replace(base[0], note="changed"), replace(base[1], note="added"), base[2])
+    probe = make_probe(stale=(base[2].display,), parent_dir=tmp_path)
+    panel, _ = new_panel(qtbot, tmp_path, probe, files=files)
+    activated = []
+    panel.file_activated.connect(activated.append)
+
+    assert rows(panel) == [
+        f"⚠ {base[0].display} (changed since install)",
+        f"+ {base[1].display} (added by a fix)",
+        f"⚠ {base[2].display} (changed since install)",
+    ]
+    for index in range(3):
+        item = panel._files_list.item(index)
+        assert item.foreground().color() == QColor(theme.AMBER)
+        assert "Double-click" in item.toolTip()
+    assert "changed after the install" in panel._files_list.item(0).toolTip()
+    assert "committed because a committed part links it" in panel._files_list.item(1).toolTip()
+    assert not panel._changed_hint.isHidden()
+    assert theme.AMBER in panel._changed_hint.styleSheet()
+    for index, base_file in enumerate(base):
+        panel._files_list.itemActivated.emit(panel._files_list.item(index))
+    assert activated == [base[0].rel, base[1].rel, base[2].rel]
+
+
+def test_panel_plain_row_has_no_marker_and_does_not_activate(qtbot, tmp_path):
+    base = make_cplan(tmp_path).files
+    panel, _ = new_panel(qtbot, tmp_path, make_probe(parent_dir=tmp_path), files=(replace(base[0], note="changed"), *base[1:]))
+    activated = []
+    panel.file_activated.connect(activated.append)
+
+    assert rows(panel)[1] == base[1].display
+    assert panel._files_list.item(1).data(Qt.ItemDataRole.ForegroundRole) is None
+    panel._files_list.itemActivated.emit(panel._files_list.item(1))
+    assert activated == []
+
+    # a later probe without changes resets the marks
+    panel.show_plan(make_cplan(tmp_path))
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert rows(panel) == [f.display for f in base]
+    assert panel._changed_hint.isHidden()
+
+
+def test_panel_changed_beats_dirty_before(qtbot, tmp_path):
+    base = make_cplan(tmp_path).files
+    probe = make_probe(dirty_before=frozenset({base[0].rel}), stale=(base[0].display,), parent_dir=tmp_path)
+    panel, _ = new_panel(qtbot, tmp_path, probe)
+
+    assert rows(panel)[0] == f"⚠ {base[0].display} (changed since install)"
