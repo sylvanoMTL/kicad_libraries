@@ -790,6 +790,19 @@ def changed_diff(cplan: CommitPlan, rel: str, *, git: GitContext | None = None) 
     return ContentText(title, shown, diff_text(cfile.installed, current, f"{shown} (as installed)", now_label), "diff")
 
 
+def combined_view(since_install: ContentText, before_import: ContentText) -> ContentText:
+    """One view holding the change since the install and the pre-import change of one file (D-08, D-09, WR-02)."""
+    shown = since_install.header or before_import.header
+    body = "\n\n".join((since_install.title, since_install.body, before_import.title, before_import.body))
+    if "diff" in (since_install.kind, before_import.kind):
+        kind = "diff"
+    elif since_install.kind == before_import.kind:
+        kind = since_install.kind
+    else:
+        kind = "text"
+    return ContentText(f"{shown} - changed since install and before this import", shown, body, kind)
+
+
 def run_commit(
     cplan: CommitPlan,
     message: str,
