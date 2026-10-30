@@ -202,7 +202,7 @@ Plans:
   4. The parent checkbox keeps the user's choice across probes. The dialog and the main window can be closed while the read-only probe runs. A user whose git identity comes from `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables can commit from the panel.
   5. The Commit button is styled as the primary action, error and success outcomes are tinted, the parent-failed state is no longer labelled "Committed", and the panel's sizes come from the theme scale.
 
-**Plans**: 13/17 plans executed (4 gap-closure plans planned)
+**Plans**: 16/17 plans executed (4 gap-closure plans planned)
 
 Plans:
 **Wave 1**
@@ -233,9 +233,9 @@ Plans:
 - [x] 11-13-PLAN.md — applied fixes rescan and re-check, changed-file diff, D-14 log rule, main-window wiring, Phase 6 review dispositions, full suite (GIT-06, REV-09)
 
 **Wave 8** *(gap closure: 11-VERIFICATION WR-01 and 11-REVIEW WR-02..IN-06; blocked on Wave 7 completion)*
-- [ ] 11-14-PLAN.md — panel keeps git's output and the manual command through the re-probe (dialog-level test), combined marks for changed rows with pre-import changes, "added: linked by a committed part", dead code, gate-line cap (REV-10, GIT-06, UI-02; WR-01, WR-02, IN-01, IN-04, IN-05)
-- [ ] 11-15-PLAN.md — gate refuses when an Atomic_ library it must judge cannot be read (fail closed), notes channel removed, _check_linked_symbols returns its findings, one cancel text (GIT-06; WR-03, IN-02, IN-01)
-- [ ] 11-16-PLAN.md — run_git keeps only the four identity name/email variables, case folding on Windows only (REV-11; IN-06)
+- [x] 11-14-PLAN.md — panel keeps git's output and the manual command through the re-probe (dialog-level test), combined marks for changed rows with pre-import changes, "added: linked by a committed part", dead code, gate-line cap (REV-10, GIT-06, UI-02; WR-01, WR-02, IN-01, IN-04, IN-05)
+- [x] 11-15-PLAN.md — gate refuses when an Atomic_ library it must judge cannot be read (fail closed), notes channel removed, _check_linked_symbols returns its findings, one cancel text (GIT-06; WR-03, IN-02, IN-01)
+- [x] 11-16-PLAN.md — run_git keeps only the four identity name/email variables, case folding on Windows only (REV-11; IN-06)
 
 **Wave 9** *(gap closure; blocked on Wave 8 completion)*
 - [ ] 11-17-PLAN.md — double-click shows both changes for a changed file with pre-import changes, Check again supersedes a running probe, 11-REVIEW dispositions, full suite (GIT-06, REV-10; WR-02, IN-03)
@@ -282,7 +282,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
-| 11. Commit Gate and Commit Panel Fixes | v2.0 | 13/13 | In Progress | - |
+| 11. Commit Gate and Commit Panel Fixes | v2.0 | 16/17 | In Progress | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
