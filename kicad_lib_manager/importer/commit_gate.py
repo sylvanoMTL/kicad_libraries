@@ -11,7 +11,9 @@ work tree and again in a HEAD view in which the committed footprints hold their 
 when new). Only a violation the HEAD view does not have blocks; one present in both views is an older
 failure (D-02). Model existence is read from the work tree in both views (RESEARCH A4), so a committed
 model file can never make a part fail by itself: committing a file never removes one. The symbols that
-link a committed model are still checked, and their failures are listed as older.
+link a committed model are still checked, and their failures are listed as older. A footprint whose model
+lines cannot be read is skipped quietly in that pass, which cannot hide a blocking failure: a model link
+only ever yields older failures.
 
 An Atomic_ library outside the commit that cannot be read, parsed or listed, while the commit holds a
 footprint or a 3D model, refuses the commit like an unreadable committed library: its parts may link the
@@ -51,13 +53,15 @@ class AtomicFailure:
 
 @dataclass(frozen=True)
 class GateResult:
-    """What the gate found: blocking failures, older failures, lines that stop the commit, and the entries behind them."""
+    """What the gate found: blocking failures, older failures, lines that stop the commit, and the entries behind them.
+
+    problems is the one channel for "some parts could not be checked": every line in it refuses the commit.
+    """
 
     blocking: tuple[AtomicFailure, ...] = ()
     old: tuple[AtomicFailure, ...] = ()
     problems: tuple[str, ...] = ()
     entries: tuple[tuple[str, str, SymbolEntry], ...] = ()  # (library, rel_path, entry)
-    notes: tuple[str, ...] = ()
 
     @property
     def refused(self) -> bool:
@@ -204,6 +208,33 @@ def _atomic_symbol_files(custom_dir: Path) -> tuple[list[str], str]:
     return [name for name in names if name.endswith(".kicad_sym") and is_atomic(name[: -len(".kicad_sym")])], ""
 
 
+@dataclass(frozen=True)
+class _LinkedFindings:
+    """What the linked check found, for run_gate to merge: it changes nothing it was given."""
+
+    blocking: tuple[AtomicFailure, ...]
+    old: tuple[AtomicFailure, ...]
+    entries: tuple[tuple[str, str, SymbolEntry], ...]
+    problems: tuple[str, ...]
+    # (rel_path, part) pairs a committed library listed as old whose linked check now introduces a failure
+    moved: frozenset[tuple[str, str]]
+    cancelled: bool = False
+
+
+def _move_introduced(
+    old: list[AtomicFailure], entries: list[tuple[str, str, SymbolEntry]], moved: frozenset[tuple[str, str]]
+) -> tuple[list[AtomicFailure], list[tuple[str, str, SymbolEntry]]]:
+    """The old failures and entries without the (rel_path, part) pairs in moved, order kept.
+
+    An unchanged symbol of a committed library that was listed as old and now fails because of a linked
+    file is listed once, as blocking; this drops its old listing.
+    """
+    return (
+        [f for f in old if (f.rel_path, f.part) not in moved],
+        [e for e in entries if (e[1], e[2].name) not in moved],
+    )
+
+
 def _check_linked_symbols(
     ctx: GitContext,
     cplan: CommitPlan,
@@ -212,32 +243,35 @@ def _check_linked_symbols(
     footprints: dict[str, str],
     models: frozenset[str],
     committed: dict[str, tuple[kicad_files.Node | None, set[str]]],
+    listed_old: frozenset[tuple[str, str]],
     cancelled: Callable[[], bool] | None,
-    blocking: list[AtomicFailure],
-    old: list[AtomicFailure],
-    problems: list[str],
-    entries: list[tuple[str, str, SymbolEntry]],
-) -> bool:
-    """Judge the symbols that link a committed footprint or model (D-04); True when the check was cancelled.
+) -> _LinkedFindings:
+    """Judge the symbols that link a committed footprint or model (D-04).
 
     A symbol that fails in the work tree has its violations split against the HEAD view: the ones HEAD
-    did not have block, the rest are old. Changed symbols of committed libraries were judged already.
-    A library that cannot be read, or a Symbols folder that cannot be listed, becomes a problem (fail closed).
+    did not have block, the rest are old. Changed symbols of committed libraries were judged already, and
+    listed_old holds the (rel_path, part) pairs those libraries listed as old. A library that cannot be
+    read, or a Symbols folder that cannot be listed, becomes a problem (fail closed).
     """
+    blocking: list[AtomicFailure] = []
+    old: list[AtomicFailure] = []
+    entries: list[tuple[str, str, SymbolEntry]] = []
+    problems: list[str] = []
+    moved: set[tuple[str, str]] = set()
     linked_rels = {f"{cplan.custom_rel}/{rel}" for rel in footprints.values()}
     head: AtomicContext | None = None
     model_cache: dict[Path, tuple[str, ...]] = {}
     file_names, unlisted = _atomic_symbol_files(cplan.custom_dir)
     if unlisted:
-        problems.append(
+        line = (
             f"{cplan.custom_rel}/Symbols: {_UNLISTED} ({unlisted}), "
             "so their parts could not be checked against the committed footprints and 3D models. "
             "Click Check again once the folder can be read."
         )
-        return False
+        return _LinkedFindings((), (), (), (line,), frozenset())
     for file_name in file_names:
         if cancelled is not None and cancelled():
-            return True
+            return _LinkedFindings((), (), (), (), frozenset(), cancelled=True)
         library = file_name[: -len(".kicad_sym")]
         known = committed.get(file_name.casefold())
         judged: set[str] = set()
@@ -275,16 +309,13 @@ def _check_linked_symbols(
                 head = _head_view_context(ctx, cplan, kicad_fp_dir, footprints)
             before = check_symbol(root, name, rel_path=rel_path, fixable=False, ctx=head)
             introduced, older = _introduced(entry.violations, before.violations)
-            listed = any(f.rel_path == rel_path and f.part == name for f in old)
-            if listed and not introduced:
+            if (rel_path, name) in listed_old and not introduced:
                 continue  # an unchanged symbol of a committed library, already listed as old
-            # An unchanged symbol of a committed library listed as old is moved, not listed twice
-            old[:] = [f for f in old if (f.rel_path, f.part) != (rel_path, name)]
-            entries[:] = [e for e in entries if (e[1], e[2].name) != (rel_path, name)]
+            moved.add((rel_path, name))
             blocking.extend(AtomicFailure(library, rel_path, name, v.rule, v.text) for v in introduced)
             old.extend(AtomicFailure(library, rel_path, name, v.rule, v.text) for v in older)
             entries.append((library, rel_path, entry))
-    return False
+    return _LinkedFindings(tuple(blocking), tuple(old), tuple(entries), tuple(problems), frozenset(moved))
 
 
 def run_gate(
@@ -338,10 +369,17 @@ def run_gate(
     footprints = _committed_footprints(cplan)
     models = _committed_models(cplan)
     if footprints or models:
-        if _check_linked_symbols(
-            ctx, cplan, kicad_fp_dir, context, footprints, models, committed, cancelled, blocking, old, problems, entries
-        ):
+        listed_old = frozenset((f.rel_path, f.part) for f in old)
+        linked = _check_linked_symbols(
+            ctx, cplan, kicad_fp_dir, context, footprints, models, committed, listed_old, cancelled
+        )
+        if linked.cancelled:
             return GateResult(problems=(CANCELLED,))
+        old, entries = _move_introduced(old, entries, linked.moved)
+        blocking.extend(linked.blocking)
+        old.extend(linked.old)
+        entries.extend(linked.entries)
+        problems.extend(linked.problems)
     return GateResult(blocking=tuple(blocking), old=tuple(old), problems=tuple(problems), entries=tuple(entries))
 
 
@@ -448,11 +486,10 @@ def old_notes(gate: GateResult) -> list[str]:
 
 
 def gate_issues(gate: GateResult) -> list[Issue]:
-    """The log lines of the gate, in the Phase 9 D-05 shape: blocking, old, unreadable, then notes."""
+    """The log lines of the gate, in the Phase 9 D-05 shape: blocking, old, then the libraries that could not be checked."""
     issues = [Issue(Severity.ERROR, f"commit.atomic.{f.rule}", _line(f)) for f in gate.blocking]
     issues.extend(Issue(Severity.WARNING, f"commit.atomic_old.{f.rule}", _line(f)) for f in gate.old)
     issues.extend(Issue(Severity.ERROR, "commit.atomic_unreadable", problem) for problem in gate.problems)
-    issues.extend(Issue(Severity.INFO, "commit.atomic_note", note) for note in gate.notes)
     return issues
 
 

@@ -32,8 +32,6 @@ from .commit_plan import (
 )
 from .content import MAX_READ, ContentText, binary_text, diff_text
 
-CANCELLED_REASON = CANCELLED
-
 
 @dataclass(frozen=True)
 class CommitProbe:
@@ -317,7 +315,7 @@ def probe_commit(
     """Read the git state of Custom and the parent repo; nothing is changed.
 
     cancelled is checked between the git steps, so a closing dialog waits for at most one running git
-    call; once it is True the probe returns state "unavailable" with CANCELLED_REASON. When Custom is on a
+    call; once it is True the probe returns state "unavailable" with CANCELLED. When Custom is on a
     named branch the atomic gate runs too: a part that breaks the rule makes the state "gated" before
     any click (GIT-06, D-03).
     """
@@ -325,17 +323,17 @@ def probe_commit(
     if isinstance(ctx, Issue):
         return _unavailable("unavailable", ctx.text)
     if _is_cancelled(cancelled):
-        return _unavailable("unavailable", CANCELLED_REASON)
+        return _unavailable("unavailable", CANCELLED)
     reason = _custom_unavailable(ctx, cplan)
     if reason:
         return _unavailable("unavailable", reason)
     if _is_cancelled(cancelled):
-        return _unavailable("unavailable", CANCELLED_REASON)
+        return _unavailable("unavailable", CANCELLED)
     custom = cplan.custom_dir
     branch = gitops.current_branch(ctx, custom)
     head = gitops.head_commit(ctx, custom) or ""
     if _is_cancelled(cancelled):
-        return _unavailable("unavailable", CANCELLED_REASON)
+        return _unavailable("unavailable", CANCELLED)
     if branch is None:
         short = gitops.short_hash(ctx, custom) or head[:7] or "unknown"
         state, reason, ref, ahead = _detached_state(ctx, cplan, short)
@@ -346,16 +344,16 @@ def probe_commit(
             )
         fields = _preexisting(ctx, cplan, head, cancelled)
         if fields is None:
-            return _unavailable("unavailable", CANCELLED_REASON)
+            return _unavailable("unavailable", CANCELLED)
         return CommitProbe(state=state, reason=reason, head=head, main_ref=ref, main_ahead=ahead, **fields)
 
     fields = _preexisting(ctx, cplan, head, cancelled)
     if fields is None:
-        return _unavailable("unavailable", CANCELLED_REASON)
+        return _unavailable("unavailable", CANCELLED)
     stale = fields["stale"]
     gate = commit_gate.run_gate(ctx, cplan, kicad_fp_dir, cancelled=cancelled)
     if _is_cancelled(cancelled):
-        return _unavailable("unavailable", CANCELLED_REASON)
+        return _unavailable("unavailable", CANCELLED)
     reasons = []
     if gate.refused:
         reasons.append(refusal_summary(gate) + ".")
