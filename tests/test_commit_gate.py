@@ -290,3 +290,96 @@ def test_gate_footprint_without_linked_parts(tmp_path):
     cplan = import_files(repos, {_fp_rel("LONELY-FP"): vendor_footprint("LONELY-FP")}, library=SHARED)
 
     assert run_gate(_ctx(), cplan, None) == GateResult()
+
+
+def test_gate_linked_failure_already_at_head_is_old(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("N", "NO-MODEL"))
+    cplan = import_files(
+        repos, {_fp_rel("NO-MODEL"): vendor_footprint("NO-MODEL", pads=("1", "2", "3"))}, library=SHARED
+    )
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.blocking == ()
+    assert gate.refused is False
+    assert [(f.library, f.part, f.rule) for f in gate.old] == [(LINKED, "N", "model_3d")]
+    assert commit_gate.old_notes(gate) == [f"{LINKED} also holds 1 part that already failed before this import"]
+
+
+def test_gate_linked_new_failure_beside_old_one(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("M", drop=("Datasheet",)))
+    cplan = import_files(repos, {_fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN")}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert [(f.part, f.rule) for f in gate.blocking] == [("M", "model_3d")]
+    assert [(f.part, f.rule) for f in gate.old] == [("M", "datasheet")]
+    assert [entry.name for _, _, entry in gate.entries] == ["M"]
+
+
+def test_gate_new_footprint_with_model_does_not_block(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("K", "NEW-FP"))
+    footprint = vendor_footprint("NEW-FP", models=(SHARED_MODEL,))
+    cplan = import_files(repos, {_fp_rel("NEW-FP"): footprint}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.blocking == ()
+    assert gate.refused is False
+
+
+def test_gate_new_footprint_without_model_blocks(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("K", "NEW-FP"))
+    cplan = import_files(repos, {_fp_rel("NEW-FP"): vendor_footprint("NEW-FP")}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert [(f.library, f.part, f.rule) for f in gate.blocking] == [(LINKED, "K", "model_3d")]
+    assert gate.refused is True
+
+
+def test_gate_committed_model_never_blocks_alone(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("Q", drop=("Datasheet",)))
+    cplan = import_files(repos, {"3DModels/GENERIC-2PIN.step": STEP_BYTES + b"\n"}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.blocking == ()
+    assert gate.refused is False
+    assert [(f.library, f.part, f.rule) for f in gate.old] == [(LINKED, "Q", "datasheet")]
+
+
+def test_gate_unreadable_outside_library_is_a_note(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    commit_file(repos, repos.custom, "Symbols/Atomic_Broken.kicad_sym", b"(kicad_symbol_lib (version", "Add a damaged library")
+    cplan = import_files(repos, {_fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN")}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.problems == ()
+    assert len(gate.notes) == 1 and "Atomic_Broken" in gate.notes[0]
+    assert gate.refused is False
+
+
+def test_gate_unchanged_part_of_committed_library_broken_by_footprint_blocks_once(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("P"))
+    cplan = import_files(
+        repos,
+        {
+            LINKED_REL: atomic_lib((_linked_part("P"), _linked_part("R"))),
+            _fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN"),
+        },
+        library=LINKED,
+    )
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert sorted((f.part, f.rule) for f in gate.blocking) == [("P", "model_3d"), ("R", "model_3d")]
+    assert gate.old == ()
+    assert sorted(entry.name for _, _, entry in gate.entries) == ["P", "R"]
