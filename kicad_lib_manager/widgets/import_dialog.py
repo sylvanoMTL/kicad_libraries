@@ -37,7 +37,7 @@ from ..importer.candidate import ImportCandidate
 from ..importer.commit_gate import scan_result_for
 from ..importer.commit_plan import CommitPlan, build_commit_plan
 from ..importer.commit_step import (
-    CommitOutcome, CommitProbe, SwitchOutcome, pre_import_diff, probe_commit, recheck_commit, run_commit,
+    CommitOutcome, CommitProbe, SwitchOutcome, changed_diff, pre_import_diff, probe_commit, recheck_commit, run_commit,
     switch_to_main,
 )
 from ..importer.content import ContentText, op_content, unchanged_content
@@ -303,6 +303,7 @@ class ImportCore:
     run_commit: Callable = run_commit
     switch_to_main: Callable = switch_to_main
     pre_import_diff: Callable = pre_import_diff
+    changed_diff: Callable = changed_diff
     footprint_index: Callable = build_index
 
 
@@ -346,6 +347,7 @@ class ImportDialog(QDialog):
 
     installed = Signal(object, object)
     issues_logged = Signal(object)  # list[Issue]; the main window routes them to the log
+    atomic_fixes_applied = Signal(object)  # list[Issue]; fixes written from the commit panel's check dialog
 
     def __init__(
         self,
@@ -2964,9 +2966,18 @@ class ImportDialog(QDialog):
             parent=self,
         )
         dialog.issues_logged.connect(self.issues_logged.emit)
+        dialog.applied.connect(self._on_atomic_fixes_applied)
         dialog.finished.connect(self._on_atomic_dialog_finished)
         self._atomic_dialog = dialog
         dialog.open()
+
+    def _on_atomic_fixes_applied(self, issues):
+        """Fixes were written from the check dialog: the main window logs and rescans, then the commit is re-checked.
+
+        Only the read-only re-check starts here; a commit always needs its own click (T-11-25).
+        """
+        self.atomic_fixes_applied.emit(list(issues))
+        self._on_check_again()
 
     def _on_atomic_dialog_finished(self, _result: int):
         dialog, self._atomic_dialog = self._atomic_dialog, None
@@ -3008,11 +3019,20 @@ class ImportDialog(QDialog):
         self._commit_panel.show_switch_failed(issue.text)
 
     def _on_commit_file_activated(self, rel: str):
-        """An amber file was opened: show its content in HEAD against what it held before this import (D-09)."""
-        cplan = self._commit_plan
+        """An amber file was opened (D-08, D-09).
+
+        A file that changed since the install, or that a fix added, shows what it held then against now;
+        any other amber file shows HEAD against what it held before this import.
+        """
+        cplan, probe = self._commit_plan, self._commit_probe
         if cplan is None or self._closing:
             return
         core = self._core
+        cfile = next((f for f in cplan.files if f.rel == rel), None)
+        stale = probe.stale if probe is not None else ()
+        if cfile is not None and (cfile.note or cfile.display in stale):
+            self._run_content(lambda cp=cplan, r=rel: core.changed_diff(cp, r))
+            return
         self._run_content(lambda cp=cplan, r=rel: core.pre_import_diff(cp, r))
 
     def _on_commit_requested(self, message: str, bump_parent: bool):
@@ -3057,9 +3077,15 @@ class ImportDialog(QDialog):
         self._on_commit_done(worker, CommitOutcome(issues=(issue,)))
 
     def _log_not_committed(self):
-        """D-02: the user closes the Result view without a Custom commit; one WARNING, no question asked."""
+        """D-02: the user closes the Result view without a Custom commit; one WARNING, no question asked.
+
+        D-14: nothing is left uncommitted when Custom already holds every file; a parent-only bump with a
+        parent commit already counts as committed in the panel.
+        """
         panel = self._commit_panel
         if panel is None or panel.committed() or self._not_committed_logged:
+            return
+        if self._commit_probe is not None and self._commit_probe.all_identical:
             return
         self._not_committed_logged = True
         text = "Not committed — commit manually: the imported files stay as uncommitted changes in Custom."

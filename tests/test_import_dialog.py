@@ -3823,6 +3823,93 @@ def test_commit_not_logged_after_a_commit(qtbot, make_install_dialog, monkeypatc
     assert logged_codes(logged, "commit.not_committed") == []
 
 
+def test_parent_only_or_all_identical_not_logged_as_not_committed(qtbot, make_install_dialog, monkeypatch):
+    forbid_message_boxes(monkeypatch)
+    # Custom already holds every planned file: nothing is left uncommitted, so closing logs nothing (D-14)
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(all_identical=True))
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    assert not panel.committed()
+    dialog.close()
+    assert not dialog.isVisible()
+    assert logged_codes(logged, "commit.not_committed") == []
+
+
+def test_parent_only_bump_not_logged_and_not_reprobed(qtbot, make_install_dialog, monkeypatch):
+    forbid_message_boxes(monkeypatch)
+    probes: list[int] = []
+    bump = CommitOutcome(
+        parent_only=True, parent_commit="def5678",
+        issues=(Issue(Severity.SUCCESS, "commit.parent_done", "Committed def5678 on main in the parent repo"),),
+    )
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe(all_identical=True, head="b" * 40, gitlink_old="a" * 40)(cplan)
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=lambda *a, **k: bump)
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done" and not dialog.is_committing(), timeout=30000)
+    finish_workers(qtbot, dialog)
+    assert probes == [1]  # the parent commit counts as the commit: no second probe follows
+
+    dialog._result_view.close_button.click()
+    assert not dialog.isVisible()
+    assert logged_codes(logged, "commit.not_committed") == []
+
+
+def test_changed_file_opens_changed_diff(qtbot, make_install_dialog):
+    sym_rel = f"Symbols/{LIB}.kicad_sym"
+    fp_rel = f"Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod"
+    seen: list[tuple[str, str, int]] = []
+
+    def changed(cplan, path, **kwargs):
+        seen.append(("changed", path, threading.get_ident()))
+        return ContentText(title=f"{path} - as installed vs now", header="", body="-a\n+b", kind="diff")
+
+    def before_import(cplan, path, **kwargs):
+        seen.append(("before", path, threading.get_ident()))
+        return ContentText(title=f"{path} - HEAD vs before this import", header="", body="-a\n+b", kind="diff")
+
+    probe = fake_ready_probe(stale=(f"Custom/{sym_rel}",), dirty_before=frozenset({fp_rel}))
+    dialog = make_install_dialog(probe_commit=probe, changed_diff=changed, pre_import_diff=before_import)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    files = panel._files_list
+
+    def row_of(rel):
+        return next(files.item(i) for i in range(files.count()) if files.item(i).data(Qt.ItemDataRole.UserRole) == rel)
+
+    files.itemActivated.emit(row_of(sym_rel))
+    view = wait_view(qtbot, dialog)
+    assert [(kind, path) for kind, path, _ in seen] == [("changed", sym_rel)]
+    assert seen[0][2] != threading.get_ident()
+    assert view.windowTitle() == f"{sym_rel} - as installed vs now"
+    view.close()
+
+    # the amber file from before the import still opens the D-09 view
+    files.itemActivated.emit(row_of(fp_rel))
+    qtbot.waitUntil(lambda: len(seen) == 2, timeout=30000)
+    assert seen[1][:2] == ("before", fp_rel)
+
+    # a file Check again marked changed or added takes the same route
+    model_rel = "3DModels/CSD85301Q2.stp"
+    cplan = dialog._commit_plan
+    marked = replace(next(f for f in cplan.files if f.rel == model_rel), note="added")
+    dialog._commit_plan = replace(cplan, files=tuple(marked if f.rel == model_rel else f for f in cplan.files))
+    dialog._on_commit_file_activated(model_rel)
+    qtbot.waitUntil(lambda: len(seen) == 3, timeout=30000)
+    assert seen[2][:2] == ("changed", model_rel)
+
+
 def test_no_commit_step_for_noop_plan(qtbot, make_install_dialog, tmp_path):
     dialog = make_install_dialog()
     dialog._start_commit_step(types.SimpleNamespace(is_noop=True), fake_result(tmp_path))
@@ -4927,6 +5014,43 @@ def test_check_again_in_dialog_never_commits(qtbot, make_install_dialog):
     assert len(rechecks) == 1 and callable(rechecks[0]["cancelled"])
     assert commits == []  # the re-check leaves the commit to its own click
     assert not dialog.is_committing()
+
+
+def test_fixes_applied_reemitted_and_rechecked(qtbot, make_install_dialog):
+    rechecks: list[dict] = []
+    commits: list[int] = []
+
+    def recheck(cplan, **kwargs):
+        rechecks.append(kwargs)
+        return cplan, fake_ready_probe()(cplan)
+
+    def count_commit(*args, **kwargs):
+        commits.append(1)
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=gated_fake_probe, recheck_commit=recheck, run_commit=count_commit)
+    emitted: list = []
+    dialog.atomic_fixes_applied.connect(lambda issues: emitted.append(issues))
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    panel._open_check_button.click()
+    check = dialog._atomic_dialog
+    assert isinstance(check, AtomicCheckDialog)
+    issue = Issue(Severity.SUCCESS, "atomic.fixed", "Fixed 1 part")
+    check.applied.emit([issue])
+
+    assert emitted == [[issue]]
+    assert issue not in logged  # the main window logs applied fixes, so the dialog does not log them twice
+    wait_idle_state(qtbot, dialog, panel, "ready")
+    assert len(rechecks) == 1
+    assert commits == []  # applying fixes leaves the commit to its own click
+    assert not dialog.is_committing()
+
+    check.reject()
+    qtbot.waitUntil(lambda: dialog._atomic_dialog is None, timeout=10000)
 
 
 def test_kicad_folder_reaches_probe_recheck_and_commit(qtbot, item_layout, recorded, tmp_path):

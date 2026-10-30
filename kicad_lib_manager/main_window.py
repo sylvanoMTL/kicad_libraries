@@ -959,10 +959,12 @@ class MainWindow(QMainWindow):
             package_path=path,
             core=IMPORT_CORE,
             backup_root=IMPORT_BACKUP_ROOT,
+            atomic_backup_root=ATOMIC_BACKUP_ROOT,
             parent=self,
         )
         dialog.installed.connect(self._on_import_installed)
         dialog.issues_logged.connect(self._log_issues)
+        dialog.atomic_fixes_applied.connect(self._on_atomic_fixes_applied)
         dialog.finished.connect(self._on_import_dialog_finished)
         self._import_dialog = dialog
         dialog.open()
