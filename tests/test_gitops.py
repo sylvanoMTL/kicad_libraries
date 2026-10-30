@@ -5,6 +5,7 @@ superproject and checks that a full probe plus commit changes no remote ref.
 """
 
 import ast
+import inspect
 import subprocess
 from pathlib import Path
 
@@ -99,12 +100,35 @@ def test_run_git_argv_and_env(monkeypatch):
 
 
 def test_run_git_strips_every_git_variable_regardless_of_case(monkeypatch):
+    _clear_identity(monkeypatch)  # a developer's own identity variables must not change the result
     monkeypatch.setenv("GIT_CONFIG_GLOBAL", "elsewhere")
     monkeypatch.setenv("git_ceiling_directories", "elsewhere")
     runner, calls = _recorder()
     run_git(GitContext(Path("git"), runner), REPO, "--version")
     git_keys = {key for key in calls[0][1]["env"] if key.upper().startswith("GIT_")}
     assert git_keys == {"GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_EDITOR"}
+
+
+def test_run_git_keeps_only_identity_variables(monkeypatch):
+    _clear_identity(monkeypatch)
+    for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_PARAMETERS"):
+        monkeypatch.setenv(name, "elsewhere")
+    for name in IDENTITY_NAMES:
+        # two of the six arrive in lower case, which is how a Windows shell may spell them
+        key = name.lower() if name in ("GIT_AUTHOR_NAME", "GIT_COMMITTER_DATE") else name
+        monkeypatch.setenv(key, f"value of {name}")
+    runner, calls = _recorder()
+    run_git(GitContext(Path("git"), runner), REPO, "--version")
+    env = calls[0][1]["env"]
+    git_keys = {key for key in env if key.upper().startswith("GIT_")}
+    assert git_keys == {*IDENTITY_NAMES, "GIT_TERMINAL_PROMPT", "GIT_OPTIONAL_LOCKS", "GIT_EDITOR"}
+    assert all(env[name] == f"value of {name}" for name in IDENTITY_NAMES)
+
+
+def test_run_git_has_no_input_keyword():
+    for function in (gitops.run_git, gitops._commit_with_message):
+        parameters = inspect.signature(function).parameters
+        assert "stdin_data" in parameters and "input" not in parameters, function.__name__
 
 
 def test_run_git_timeout_and_oserror_become_issues():
@@ -220,6 +244,27 @@ def test_commit_with_identity_from_environment_only(tmp_path, monkeypatch):
     assert not isinstance(done, Issue) and done.returncode == 0, getattr(done, "output", done)
     line = repos.git(repos.custom, "log", "-1", "--format=%an <%ae>|%cn <%ce>").strip()
     assert line == "Env Author <author@example.invalid>|Env Committer <committer@example.invalid>"
+
+
+@requires_git
+def test_identity_known_needs_author_and_committer(tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    _isolate_identity(monkeypatch, repos, tmp_path / "home")
+    ctx = GitContext(Path(GIT))
+    committer = {k: v for k, v in ENV_IDENTITY.items() if k.startswith("GIT_COMMITTER")}
+    author = {k: v for k, v in ENV_IDENTITY.items() if k.startswith("GIT_AUTHOR")}
+
+    assert gitops.identity_known(ctx, repos.custom) is False
+
+    _set_identity(monkeypatch, **committer)
+    assert gitops.identity_known(ctx, repos.custom) is False  # committer alone is not enough
+
+    _clear_identity(monkeypatch)
+    _set_identity(monkeypatch, **author)
+    assert gitops.identity_known(ctx, repos.custom) is False  # nor is the author alone
+
+    _set_identity(monkeypatch, **committer)
+    assert gitops.identity_known(ctx, repos.custom) is True
 
 
 @requires_git
