@@ -202,7 +202,7 @@ Plans:
   4. The parent checkbox keeps the user's choice across probes. The dialog and the main window can be closed while the read-only probe runs. A user whose git identity comes from `GIT_AUTHOR_*` / `GIT_COMMITTER_*` variables can commit from the panel.
   5. The Commit button is styled as the primary action, error and success outcomes are tinted, the parent-failed state is no longer labelled "Committed", and the panel's sizes come from the theme scale.
 
-**Plans**: 12/13 plans executed
+**Plans**: 13/13 plans executed
 
 Plans:
 **Wave 1**
@@ -230,7 +230,7 @@ Plans:
 - [x] 11-11-PLAN.md — Check again and Open Check Atomic Parts… in the import dialog, end to end against real git, Help text (GIT-06, REV-10)
 
 **Wave 7** *(blocked on Wave 6 completion)*
-- [ ] 11-13-PLAN.md — applied fixes rescan and re-check, changed-file diff, D-14 log rule, main-window wiring, Phase 6 review dispositions, full suite (GIT-06, REV-09)
+- [x] 11-13-PLAN.md — applied fixes rescan and re-check, changed-file diff, D-14 log rule, main-window wiring, Phase 6 review dispositions, full suite (GIT-06, REV-09)
 
 **UI hint**: yes
 
@@ -274,7 +274,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 8. Test Isolation and KiCad 10 | v2.0 | 6/6 | Complete    | 2026-10-26 |
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
-| 11. Commit Gate and Commit Panel Fixes | v2.0 | 12/13 | In Progress | - |
+| 11. Commit Gate and Commit Panel Fixes | v2.0 | 13/13 | In Progress | - |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
