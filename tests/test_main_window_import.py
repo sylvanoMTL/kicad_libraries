@@ -702,6 +702,26 @@ def test_main_window_close_ignored_while_committing(make_window):
         w._import_dialog = None
 
 
+# -- plan 11-09 Task 1: the read-only probe does not keep the window open (IN-02) ---------------------
+
+def test_main_window_closes_while_probe_runs(make_window):
+    w = make_window([scan_with()])
+    rejected = []
+    w._import_dialog = types.SimpleNamespace(
+        is_installing=lambda: False,
+        is_committing=lambda: False,
+        is_probing=lambda: True,
+        reject=lambda: rejected.append(True),
+    )
+    try:
+        event = QCloseEvent()
+        w.closeEvent(event)
+        assert event.isAccepted()
+        assert rejected == [True]
+    finally:
+        w._import_dialog = None
+
+
 # -- plan 05-11 Task 2: the status rows of the Result view (POST-01, POST-02, D-16, D-17) ----------------
 
 class RecordingDialog:
@@ -714,6 +734,9 @@ class RecordingDialog:
         return False
 
     def is_committing(self):
+        return False
+
+    def is_probing(self):
         return False
 
     def reject(self):
