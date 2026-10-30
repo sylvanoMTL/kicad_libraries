@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QProgressBar, QPushButton, QSizePolicy, QVBoxLayout, QWidget,
 )
 
+from ..importer.commit_gate import failure_lines
 from ..importer.commit_plan import CommitPlan, default_message, parent_preview, subject_of
 from ..importer.commit_step import MANUAL_LABEL, CommitOutcome, CommitProbe
 from ..models import Issue, Severity
@@ -28,10 +29,10 @@ _COMMITTED_CUSTOM_ONLY = "Committed in Custom only"  # the button text after a p
 _MANUAL_PREFIX = "Finish it by hand"  # starts both manual labels (with and without the PowerShell words)
 _WARNING_NOISE ="warning: in the working copy of"  # line-ending notices git prints for every file (Pitfall 6)
 _STATES = (
-    "probing", "unavailable", "refused", "offer_switch", "switching", "ready", "committing", "done", "failed"
+    "probing", "unavailable", "refused", "gated", "offer_switch", "switching", "ready", "committing", "done", "failed"
 )
 _GLYPHS = {Severity.SUCCESS: "✓ ", Severity.ERROR: "✖ ", Severity.WARNING: "⚠ "}
-_STRIP_PREFIX = {"unavailable": "Commit unavailable: ", "refused": "Commit refused: "}
+_STRIP_PREFIX = {"unavailable": "Commit unavailable: ", "refused": "Commit refused: ", "gated": "Commit refused: "}
 _DIRTY_HINT = (
     "⚠ Amber files also contain uncommitted changes made before this import. "
     "They are committed too; double-click one to see them."
@@ -118,6 +119,8 @@ class CommitPanel(QWidget):
     commit_requested = Signal(str, bool)  # the message, whether to commit the Custom ref in the parent too
     switch_requested = Signal()
     file_activated = Signal(str)  # CommitFile.rel of a file that had changes before the import
+    check_again_requested = Signal()  # the user wants the files and the atomic rule checked again (D-07, D-11)
+    open_check_requested = Signal(str, str)  # rel_path of the symbol library and the part to show first (D-07)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -153,6 +156,29 @@ class CommitPanel(QWidget):
         self._switch_button.hide()
         strip_row.addWidget(self._switch_button, 0, Qt.AlignmentFlag.AlignTop)
         lay.addLayout(strip_row)
+
+        self._gate_lines = _amber_label()  # one "Library / Part: rule" line per broken rule (D-06)
+        self._gate_lines.hide()
+        lay.addWidget(self._gate_lines)
+        self._old_label = _amber_label()  # libraries that held failing parts before this import (D-02)
+        self._old_label.hide()
+        lay.addWidget(self._old_label)
+        gate_row = QHBoxLayout()
+        gate_row.setSpacing(theme.SP_SM)
+        # both are secondary buttons: no style sheet, never the default (D-07, D-19)
+        self._open_check_button = QPushButton("Open Check Atomic Parts…")
+        self._check_again_button = QPushButton("Check again")
+        for button, slot in (
+            (self._open_check_button, self._on_open_check_clicked),
+            (self._check_again_button, self._on_check_again_clicked),
+        ):
+            button.setAutoDefault(False)
+            button.setDefault(False)
+            button.clicked.connect(slot)
+            button.hide()
+            gate_row.addWidget(button)
+        gate_row.addStretch(1)
+        lay.addLayout(gate_row)
 
         self._files_heading = _heading("Files to commit (0)")
         lay.addWidget(self._files_heading)
@@ -321,6 +347,7 @@ class CommitPanel(QWidget):
         else:
             self._render_issues(self._pending_refusal)
         self._show_custom_line(probe)
+        self._show_gate(probe)
         if probe.parent_dir is not None:
             where = probe.parent_dir.as_posix()
             self._parent_label.set_full_text(
@@ -488,6 +515,18 @@ class CommitPanel(QWidget):
             label.setText("Custom branch: not available")
             label.setStyleSheet("")
 
+    def _show_gate(self, probe: CommitProbe):
+        """The refusal lines and the two ways forward of a gated probe (D-06, D-07)."""
+        gated = probe.state == "gated"
+        gate = probe.gate
+        lines = failure_lines(gate) if gated and gate is not None and gate.refused else []
+        if len(lines) > _EARLIER_SHOWN:
+            lines = [*lines[:_EARLIER_SHOWN], f"…and {len(lines) - _EARLIER_SHOWN} more"]
+        self._gate_lines.setText("\n".join(lines))
+        self._gate_lines.setVisible(bool(lines))
+        self._check_again_button.setVisible(gated)
+        self._open_check_button.setVisible(gated and gate is not None and bool(gate.blocking))
+
     def _mark_dirty_files(self, probe: CommitProbe):
         """Rows that had changes before the import show in amber; every other row is reset to plain."""
         any_dirty = False
@@ -537,11 +576,16 @@ class CommitPanel(QWidget):
     def _set_state(self, state: str):
         self._state = state
         ready = state == "ready"
-        self._message.setReadOnly(not ready)
-        self._parent_check.setEnabled(ready and self._probe is not None and self._probe.parent_ok)
+        editable = state in ("ready", "gated")  # a refused commit still lets the user prepare the message (D-06)
+        self._message.setReadOnly(not editable)
+        self._parent_check.setEnabled(editable and self._probe is not None and self._probe.parent_ok)
         self._switch_button.setVisible(state in ("offer_switch", "switching"))
         self._switch_button.setEnabled(state == "offer_switch")
         self._step_row.setVisible(state == "committing")
+        if state != "gated":  # _show_gate decides what a gated probe shows
+            self._gate_lines.hide()
+            self._check_again_button.hide()
+            self._open_check_button.hide()
         self.commit_button.setText(
             {"committing": "Committing...", "done": "Committed", "failed": _COMMITTED_CUSTOM_ONLY}.get(state, "Commit")
         )
@@ -596,6 +640,17 @@ class CommitPanel(QWidget):
         if self._state == "ready" and self.commit_button.isEnabled():
             self._pending_refusal = ()
             self.commit_requested.emit(self._message.toPlainText(), self.bump_parent())
+
+    def _on_check_again_clicked(self):
+        if self._state == "gated":
+            self._pending_refusal = ()
+            self.check_again_requested.emit()
+
+    def _on_open_check_clicked(self):
+        gate = self._probe.gate if self._probe is not None else None
+        if self._state == "gated" and gate is not None and gate.blocking:
+            first = gate.blocking[0]
+            self.open_check_requested.emit(first.rel_path, first.part)
 
     def _on_switch_clicked(self):
         if self._state == "offer_switch":
