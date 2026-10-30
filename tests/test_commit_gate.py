@@ -354,16 +354,69 @@ def test_gate_committed_model_never_blocks_alone(tmp_path):
     assert [(f.library, f.part, f.rule) for f in gate.old] == [(LINKED, "Q", "datasheet")]
 
 
-def test_gate_unreadable_outside_library_is_a_note(tmp_path):
-    repos = _footprint_repos(tmp_path)
+def _damaged_library(repos: GitRepos) -> None:
+    """An Atomic_ library present in HEAD (not in any plan's files) whose file does not parse."""
     commit_file(repos, repos.custom, "Symbols/Atomic_Broken.kicad_sym", b"(kicad_symbol_lib (version", "Add a damaged library")
+
+
+def test_gate_unreadable_outside_library_refuses(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _damaged_library(repos)
     cplan = import_files(repos, {_fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN")}, library=SHARED)
 
     gate = run_gate(_ctx(), cplan, None)
 
-    assert gate.problems == ()
-    assert len(gate.notes) == 1 and "Atomic_Broken" in gate.notes[0]
+    assert len(gate.problems) == 1
+    line = gate.problems[0]
+    assert line.startswith(
+        "Atomic_Broken: the parts in this library could not be checked against the committed footprints and 3D models ("
+    )
+    assert line.endswith("). Fix the library file (check that it opens in KiCad), then click Check again.")
+    assert gate.blocking == ()
+    assert gate.refused is True
+    assert commit_gate.refusal_summary(gate) == "1 library could not be checked"
+    assert commit_gate.failure_lines(gate) == [line]
+    assert [(i.severity, i.code, i.text) for i in commit_gate.gate_issues(gate)] == [
+        (Severity.ERROR, "commit.atomic_unreadable", line)
+    ]
+
+
+def test_gate_unreadable_outside_library_ignored_without_linked_files(tmp_path):
+    repos = _repos(tmp_path)
+    _damaged_library(repos)
+    cplan = import_files(repos, {REL: atomic_lib((atomic_part("PASSING-1"),))}, library=LIBRARY)
+
+    gate = run_gate(_ctx(), cplan, None)
+
     assert gate.refused is False
+    assert gate.problems == ()
+
+
+def test_gate_unlistable_symbols_folder_refuses(tmp_path, monkeypatch):
+    repos = _footprint_repos(tmp_path)
+    cplan = import_files(repos, {_fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN")}, library=SHARED)
+    real_listdir = commit_gate.os.listdir
+
+    def failing(error):
+        def listdir(path="."):
+            if Path(path).name == "Symbols":
+                raise error
+            return real_listdir(path)
+
+        return listdir
+
+    monkeypatch.setattr(commit_gate.os, "listdir", failing(PermissionError(13, "Access is denied")))
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert len(gate.problems) == 1
+    assert gate.problems[0].startswith("Custom/Symbols: the symbol libraries could not be listed (")
+    assert "could not be checked against the committed footprints and 3D models" in gate.problems[0]
+    assert gate.refused is True
+    assert commit_gate.refusal_summary(gate) == "the symbol libraries could not be listed"
+
+    # A folder that does not exist leaves nothing to check
+    monkeypatch.setattr(commit_gate.os, "listdir", failing(FileNotFoundError(2, "No such file")))
+    assert run_gate(_ctx(), cplan, None) == GateResult()
 
 
 def test_gate_unchanged_part_of_committed_library_broken_by_footprint_blocks_once(tmp_path):
