@@ -323,6 +323,64 @@ def run_gate(
     )
 
 
+def _custom_model_names(custom_dir: Path) -> frozenset[str]:
+    """Exact relative names of every file under Custom/3DModels, as the folder lists them."""
+    model_dir = custom_dir / "3DModels"
+    try:
+        return frozenset(p.relative_to(model_dir).as_posix() for p in model_dir.rglob("*") if p.is_file())
+    except OSError:
+        return frozenset()
+
+
+def linked_custom_files(
+    ctx: GitContext,
+    cplan: CommitPlan,
+    kicad_fp_dir: Path | None,
+    *,
+    cancelled: Callable[[], bool] | None = None,
+) -> tuple[tuple[str, str], ...]:
+    """The Custom footprints and 3D models a committed part links, as (path relative to Custom, kind) pairs (D-10).
+
+    The footprints are the plan's own plus the ones the new or changed symbols of any committed .kicad_sym
+    point at in Custom; the models are the ones those footprints name with the ${CUSTOM_3DMODEL_DIR}/ prefix.
+    A model counts only when its name is an exact entry of the Custom/3DModels listing, so no path is ever
+    built from model text. Footprints come first, then models, each in name order; nothing is read twice.
+    """
+    context = incoming_context(cplan.repo_root, cplan.custom_dir / "Footprints", kicad_fp_dir)
+    prefix = f"{cplan.custom_rel}/"
+    footprints = {rel.casefold(): rel for _, rel in sorted(_committed_footprints(cplan).items())}
+    for cfile in cplan.files:
+        if cfile.kind != "symbol_lib":
+            continue
+        if cancelled is not None and cancelled():
+            return ()
+        root, _ = _read_library(cplan.custom_dir / cfile.rel)
+        if root is None:
+            continue
+        index: dict[str, kicad_files.SymbolRef] = {}
+        for ref in kicad_files.find_symbols(root):
+            index.setdefault(ref.name, ref)
+        for name in changes.symbol_changes(ctx, cplan.custom_dir, cfile.rel, root):
+            ref = index.get(name)
+            if ref is None:
+                continue
+            target = context.resolve_footprint(_footprint_text(ref, index))
+            if target.problem is None and target.rel_path is not None and target.rel_path.startswith(prefix):
+                rel = target.rel_path[len(prefix):]
+                footprints.setdefault(rel.casefold(), rel)
+    names = _custom_model_names(cplan.custom_dir)
+    cache: dict[Path, tuple[str, ...]] = {}
+    models: dict[str, str] = {}
+    for rel in footprints.values():
+        for path in _footprint_models(cplan.custom_dir / rel, cache):
+            if path.startswith(CUSTOM_MODEL_PREFIX) and path[len(CUSTOM_MODEL_PREFIX):] in names:
+                models.setdefault(path[len(CUSTOM_MODEL_PREFIX):].casefold(), f"3DModels/{path[len(CUSTOM_MODEL_PREFIX):]}")
+    return (
+        *((rel, "footprint") for rel in sorted(footprints.values())),
+        *((rel, "model") for _, rel in sorted(models.items())),
+    )
+
+
 def _plural(count: int, one: str, many: str) -> str:
     return f"{count} {one if count == 1 else many}"
 

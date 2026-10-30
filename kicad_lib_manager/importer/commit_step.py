@@ -11,7 +11,7 @@ import shlex
 import sys
 import tempfile
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from .. import gitops
@@ -28,6 +28,7 @@ from .commit_plan import (
     pre_install_bytes,
     rebaseline,
     subject_of,
+    with_added_files,
 )
 from .content import MAX_READ, ContentText, binary_text, diff_text
 
@@ -372,6 +373,43 @@ def probe_commit(
     )
 
 
+def _with_linked_files(
+    ctx: GitContext, cplan: CommitPlan, kicad_fp_dir: Path | None, cancelled: Callable[[], bool] | None
+) -> tuple[CommitPlan, Issue | None]:
+    """The plan plus the Custom files a committed part links that a fix created or changed, each noted "added" (D-10).
+
+    An untracked linked file joins with no base. A tracked linked footprint joins when it differs from
+    HEAD, with the HEAD hash as its base, so the commit never leaves the part linking a committed
+    footprint that lacks the model (D-10 amendment); a tracked model or an unchanged footprint never does.
+    Only files and git state are read; nothing is staged or written. A file no committed part links
+    never enters, however untracked it is (Phase 6 D-10). When git cannot say what is tracked, nothing is
+    added and the second item is a WARNING commit.recheck_failed.
+    """
+    known = {cfile.rel.casefold() for cfile in cplan.files}
+    pairs = [
+        (rel, kind)
+        for rel, kind in commit_gate.linked_custom_files(ctx, cplan, kicad_fp_dir, cancelled=cancelled)
+        if rel.casefold() not in known and (cplan.custom_dir / rel).is_file()
+    ]
+    tracked = gitops.tracked_paths(ctx, cplan.custom_dir, [rel for rel, _ in pairs])
+    if isinstance(tracked, Issue):
+        text = f"Could not look for files added since the install: {tracked.text}"
+        return cplan, Issue(Severity.WARNING, "commit.recheck_failed", text)
+    added: list[tuple[str, str, str | None]] = []
+    for rel, kind in pairs:
+        if rel not in tracked:
+            added.append((rel, kind, None))
+            continue
+        if kind != "footprint":
+            continue
+        head = gitops.head_blob(ctx, cplan.custom_dir, rel)
+        now = file_sha256(cplan.custom_dir / rel)
+        base = hashlib.sha256(head).hexdigest() if head is not None else None
+        if now is not None and base != now:
+            added.append((rel, kind, base))
+    return (with_added_files(cplan, added) if added else cplan), None
+
+
 def recheck_commit(
     cplan: CommitPlan,
     *,
@@ -389,8 +427,10 @@ def recheck_commit(
     ctx = _context(cplan, git)
     if isinstance(ctx, Issue):
         return cplan, _unavailable("unavailable", ctx.text)
-    new = rebaseline(cplan)
+    new, failed = _with_linked_files(ctx, rebaseline(cplan), kicad_fp_dir, cancelled)
     probe = probe_commit(new, git=ctx, kicad_fp_dir=kicad_fp_dir, cancelled=cancelled)
+    if failed is not None:
+        probe = replace(probe, issues=(*probe.issues, failed))
     return new, probe
 
 

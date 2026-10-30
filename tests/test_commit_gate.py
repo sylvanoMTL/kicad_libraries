@@ -383,3 +383,68 @@ def test_gate_unchanged_part_of_committed_library_broken_by_footprint_blocks_onc
     assert sorted((f.part, f.rule) for f in gate.blocking) == [("P", "model_3d"), ("R", "model_3d")]
     assert gate.old == ()
     assert sorted(entry.name for _, _, entry in gate.entries) == ["P", "R"]
+
+
+# -- the footprints and models a committed part links, for Check again (D-10) ------------------------------
+
+NEWFP_MODEL = f"{MODEL_DIR_VAR}/NEWFP.step"
+
+
+def test_linked_custom_files_footprint_and_model(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    library = atomic_lib((_linked_part("NEW-P", "NEWFP"), _linked_part("OLD-P")))
+    cplan = import_files(
+        repos,
+        {LINKED_REL: library, _fp_rel("NEWFP"): vendor_footprint("NEWFP", models=(NEWFP_MODEL,))},
+        library=LINKED,
+    )
+    (repos.custom / "3DModels" / "NEWFP.step").write_bytes(STEP_BYTES)
+
+    found = commit_gate.linked_custom_files(_ctx(), cplan, None)
+
+    assert found == (
+        (_fp_rel("GENERIC-2PIN"), "footprint"),
+        (_fp_rel("NEWFP"), "footprint"),
+        ("3DModels/GENERIC-2PIN.step", "model"),
+        ("3DModels/NEWFP.step", "model"),
+    )
+
+
+def test_linked_custom_files_never_builds_a_path_from_model_text(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    (repos.custom / "Secret.step").write_bytes(STEP_BYTES)
+    (repos.custom / "3DModels" / "NEWFP.step").write_bytes(STEP_BYTES)
+    models = (
+        f"{MODEL_DIR_VAR}/../Secret.step",  # leaves 3DModels
+        f"{MODEL_DIR_VAR}/MISSING.step",  # not in the listing
+        f"{MODEL_DIR_VAR}/newfp.step",  # wrong case of a listed name
+        "${KIPRJMOD}/NEWFP.step",  # another variable
+    )
+    cplan = import_files(
+        repos,
+        {
+            LINKED_REL: atomic_lib((_linked_part("NEW-P", "NEWFP"),)),
+            _fp_rel("NEWFP"): vendor_footprint("NEWFP", models=models),
+        },
+        library=LINKED,
+    )
+
+    found = commit_gate.linked_custom_files(_ctx(), cplan, None)
+
+    assert found == ((_fp_rel("NEWFP"), "footprint"),)
+
+
+def test_linked_custom_files_committed_footprint_and_cancel(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    (repos.custom / "3DModels" / "NEWFP.step").write_bytes(STEP_BYTES)
+    footprint_only = import_files(
+        repos, {_fp_rel("LONELY-FP"): vendor_footprint("LONELY-FP", models=(NEWFP_MODEL,))}, library=SHARED
+    )
+    with_symbol = import_files(repos, {LINKED_REL: atomic_lib((_linked_part("NEW-P"),))}, library=LINKED)
+
+    # A committed footprint is a link in itself, and so is the model it names
+    assert commit_gate.linked_custom_files(_ctx(), footprint_only, None) == (
+        (_fp_rel("LONELY-FP"), "footprint"),
+        ("3DModels/NEWFP.step", "model"),
+    )
+    assert commit_gate.linked_custom_files(_ctx(), with_symbol, None, cancelled=lambda: True) == ()
