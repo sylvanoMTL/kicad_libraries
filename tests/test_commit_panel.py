@@ -8,7 +8,7 @@ from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import QLabel, QListWidgetItem, QPushButton
 
 from kicad_lib_manager.importer.commit_plan import (
-    CommitFile, CommitPlan, default_message, parent_preview, subject_of,
+    CommitFile, CommitPlan, default_message, parent_only_preview, parent_preview, subject_of,
 )
 from kicad_lib_manager.importer.commit_gate import AtomicFailure, GateResult
 from kicad_lib_manager.importer.commit_step import CommitOutcome, CommitProbe
@@ -991,3 +991,115 @@ def test_panel_changed_beats_dirty_before(qtbot, tmp_path):
     panel, _ = new_panel(qtbot, tmp_path, probe)
 
     assert rows(panel)[0] == f"⚠ {base[0].display} (changed since install)"
+
+
+# -- Phase 11 (D-14): nothing to commit and the parent-only bump -----------------------------------
+
+
+_NOTHING = "⚠ Nothing to commit: Custom already holds these files"
+
+
+def test_panel_nothing_to_commit(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="abc1234def5678", parent_dir=tmp_path)
+
+    assert panel._strip.text() == _NOTHING
+    assert not panel._strip.isHidden()
+    assert theme.AMBER_TINT in panel._strip.styleSheet()
+    assert not panel.commit_button.isEnabled()
+    assert panel.commit_button.text() == "Commit"
+
+    panel._parent_check.setChecked(False)  # still nothing to do for the parent: the gitlink is current
+    assert not panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit"
+
+
+def test_panel_nothing_to_commit_strip_gone_when_files_differ(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="abc1234def5678", parent_dir=tmp_path)
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+
+    assert panel._strip.isHidden()
+    assert panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit"
+
+
+def test_panel_parent_only_bump_label_and_preview(qtbot, tmp_path):
+    earlier = (("abc1234", "Earlier"), ("def5678", "Tip"))
+    panel, cplan = ready_panel(
+        qtbot, tmp_path, all_identical=True, earlier=earlier, gitlink_old="1111111aaaa", parent_dir=tmp_path
+    )
+    requests = []
+    panel.commit_requested.connect(lambda text, bump: requests.append((text, bump)))
+
+    assert panel._strip.text() == _NOTHING
+    assert panel.commit_button.isEnabled()
+    assert panel.commit_button.text() == "Commit parent ref"
+    expected = parent_only_preview(
+        subject_of(panel.message()), "Custom", "1111111aaaa", "abc1234def5678", earlier, listed=True
+    )
+    assert panel._parent_preview.toPlainText() == expected
+    assert "<new commit>" not in expected
+    assert not panel._parent_preview.isHidden()
+
+    panel._parent_check.setChecked(False)
+    assert not panel.commit_button.isEnabled()
+    assert panel.commit_button.text() == "Commit"
+
+    panel._parent_check.setChecked(True)
+    assert panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit parent ref"
+    panel.commit_button.click()
+    assert requests == [(panel.message(), True)]
+
+
+def test_panel_parent_only_needs_message_and_parent(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="1111111aaaa", parent_dir=tmp_path)
+
+    panel._message.setPlainText("   ")
+    assert not panel.commit_button.isEnabled()
+
+    panel._message.setPlainText("Bump")
+    assert panel.commit_button.isEnabled()
+    panel.apply_probe(make_probe(
+        all_identical=True, gitlink_old="1111111aaaa", parent_ok=False, parent_reason="detached",
+        parent_branch=None, parent_dir=tmp_path,
+    ))
+    assert not panel.commit_button.isEnabled() and panel.commit_button.text() == "Commit"
+
+
+def test_panel_parent_only_label_resets_after_state_change(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="1111111aaaa", parent_dir=tmp_path)
+    assert panel.commit_button.text() == "Commit parent ref"
+
+    panel.set_committing()
+    assert panel.commit_button.text() == "Committing..."
+    panel.show_outcome(make_outcome(parent_only=True, parent_commit="1234567", issues=(
+        issue(Severity.SUCCESS, "commit.parent_done", "Committed 1234567 on main in the parent repo"),
+    )))
+    assert panel.commit_button.text() == "Committed"
+
+
+def test_panel_parent_only_outcome_done(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="1111111aaaa", parent_dir=tmp_path)
+    panel.set_committing()
+
+    panel.show_outcome(make_outcome(parent_only=True, parent_commit="1234567", issues=(
+        issue(Severity.SUCCESS, "commit.parent_done", "Committed 1234567 on main in the parent repo"),
+        issue(Severity.INFO, "commit.not_pushed", "Not pushed"),
+    )))
+
+    assert panel.state() == "done"
+    assert panel.committed() is True
+    assert theme.SUCCESS_TINT in panel._outcome_frame.styleSheet()
+    assert not panel.commit_button.isEnabled()
+
+
+def test_panel_parent_only_failure_reprobes(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path, all_identical=True, gitlink_old="1111111aaaa", parent_dir=tmp_path)
+    panel.set_committing()
+    failed = issue(Severity.ERROR, "commit.parent_failed", "The parent commit failed (git exit 1)")
+
+    panel.show_outcome(make_outcome(parent_only=True, manual_command="git -C x commit", issues=(failed,)))
+
+    assert panel.state() == "probing"
+    assert panel.committed() is False
+    assert panel._pending_refusal == (failed,)
+    assert not panel.commit_button.isEnabled()
+    assert not panel._manual_label.isHidden()
