@@ -9,6 +9,7 @@ import hashlib
 import os
 import shlex
 import sys
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -526,9 +527,12 @@ def manual_label(*, windows: bool | None = None) -> str:
     return MANUAL_LABEL_POWERSHELL if _is_windows(windows) else MANUAL_LABEL
 
 
+_PS_SINGLE_QUOTES = "'‘’‚‛"  # PowerShell reads the typographic single quotes as quote marks too
+
+
 def _ps_quote(text: str) -> str:
     """A PowerShell verbatim string: single quotes, each embedded single quote doubled."""
-    return "'" + text.replace("'", "''") + "'"
+    return "'" + "".join(c + c if c in _PS_SINGLE_QUOTES else c for c in text) + "'"
 
 
 def manual_command(
@@ -537,15 +541,41 @@ def manual_command(
     """The git command that makes the parent commit by hand, written to be pasted into the user's shell (D-16).
 
     Windows: every argument is a PowerShell single-quoted string, so `$`, `$(...)` and backticks are never
-    expanded. Elsewhere shlex.quote is safe for every character. `windows` exists so both branches can be
-    tested on one machine.
+    expanded. Windows PowerShell 5.1 still drops an embedded `"` and lets a trailing `\\` eat the closing
+    quote when it builds the child's command line (research experiment E1). A subject with either takes
+    the `-F` form: the full message goes to a UTF-8 file outside the repository and the command holds only
+    its forward-slash path, so no message text reaches the command line (D-16 amended). Elsewhere
+    shlex.quote is safe for every character and the `-m` form is always used. `windows` and `message_dir`
+    exist so both branches can be tested on one machine.
     """
     subject = subject_of(message)
     if not _is_windows(windows):
         q = shlex.quote
         return f"git -C {q(parent.as_posix())} commit -m {q(subject)} -- {q(custom_rel)}"
     q = _ps_quote
-    return f"git -C {q(parent.as_posix())} commit -m {q(subject)} -- {q(custom_rel)}"
+    head = f"git -C {q(parent.as_posix())} commit"
+    if '"' in subject or subject.endswith("\\"):
+        name = _write_message_file(message, message_dir)
+        if name is not None:
+            return f"{head} -F {q(Path(name).as_posix())} -- {q(custom_rel)}"
+    return f"{head} -m {q(subject)} -- {q(custom_rel)}"
+
+
+def _write_message_file(message: str, directory: Path | None) -> str | None:
+    """Write the full message (UTF-8) to a new file outside the repository; None when that fails.
+
+    The file is left in place on purpose: the user pastes the command later.
+    """
+    try:
+        fd, name = tempfile.mkstemp(prefix="kicad_parent_message_", suffix=".txt", dir=directory)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(message.encode("utf-8"))
+    except OSError:
+        return None
+    return name
 
 
 def _custom_fields(short: str, branch: str, upstream: tuple[str, int] | None) -> dict:
