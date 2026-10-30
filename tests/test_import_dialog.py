@@ -321,7 +321,7 @@ def test_close_refused_while_installing(qtbot, make_dialog, gates):
 
     gates[0].set()
     qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
-    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=30000)
     dialog.reject()
     assert not dialog.isVisible()
 
@@ -2766,7 +2766,7 @@ def test_install_close_esc_reject_ignored(qtbot, make_install_dialog, gates):
     assert dialog.is_installing()
 
     gates[0].set()
-    qtbot.waitUntil(lambda: dialog.result is not None and not dialog.is_installing() and not dialog.is_committing(), timeout=60000)
+    qtbot.waitUntil(lambda: dialog.result is not None and not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=60000)
     assert dialog.isVisible()
     dialog.close()
     assert not dialog.isVisible()
@@ -3524,7 +3524,7 @@ def test_commit_close_button_disabled_while_git_runs(qtbot, make_install_dialog,
     install_ul(qtbot, dialog)
     (panel,) = commit_panel_of(dialog)
     qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
-    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
     assert dialog._result_view.close_button.isEnabled()
 
     panel.commit_button.click()
@@ -3583,6 +3583,206 @@ def test_commit_step_texts_shown(qtbot, make_install_dialog, gates):
     qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
 
 
+# -- Phase 11 plan 11-09 Task 1: the probe never locks Close, and it can be cancelled (IN-02) ----------
+
+
+def cancellable_probe(started: threading.Event, saw_cancel: threading.Event):
+    """A probe_commit fake that runs until cancelled() turns True, then reports an unavailable commit step."""
+
+    def probe(cplan, *, cancelled=None, **kwargs):
+        started.set()
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if cancelled is not None and cancelled():
+                saw_cancel.set()
+                break
+            time.sleep(0.01)
+        return CommitProbe(state="unavailable", reason="cancelled")
+
+    return probe
+
+
+def test_close_during_probe_cancels_and_closes(qtbot, make_install_dialog):
+    started, saw_cancel = threading.Event(), threading.Event()
+    dialog = make_install_dialog(probe_commit=cancellable_probe(started, saw_cancel))
+    install_ul(qtbot, dialog)
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+
+    assert dialog.is_probing()
+    assert not dialog.is_committing()
+    assert dialog._result_view.close_button.isEnabled()
+
+    began = time.monotonic()
+    dialog.close()
+    assert time.monotonic() - began < 5
+    assert not dialog.isVisible()
+    assert saw_cancel.is_set()
+    assert not any(w.isRunning() for w in dialog._workers)
+
+
+@pytest.mark.parametrize("how", ["esc", "reject", "button"])
+def test_close_button_enabled_while_probing(qtbot, make_install_dialog, how):
+    started, saw_cancel = threading.Event(), threading.Event()
+    dialog = make_install_dialog(probe_commit=cancellable_probe(started, saw_cancel))
+    install_ul(qtbot, dialog)
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+    assert dialog.is_probing()
+    assert dialog._result_view.close_button.isEnabled()
+    if how == "esc":
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    elif how == "reject":
+        dialog.reject()
+    else:
+        dialog._result_view.close_button.click()
+    assert not dialog.isVisible()
+    assert saw_cancel.is_set()
+
+
+def test_stale_probe_result_is_dropped(qtbot, make_install_dialog, gates):
+    calls: list[int] = []
+    first_started = threading.Event()
+
+    def probe(cplan, *, cancelled=None, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            gate = threading.Event()
+            gates.append(gate)
+            first_started.set()
+            assert gate.wait(30)
+            return fake_ready_probe("feature/old")(cplan)
+        return fake_ready_probe("main")(cplan)
+
+    dialog = make_install_dialog(probe_commit=probe)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: first_started.is_set(), timeout=30000)
+    assert panel.state() == "probing"
+
+    dialog._start_probe(reprobe=True)  # a newer probe supersedes the one that waits on its gate
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    assert panel._branch_label.text() == "Custom branch: main"
+
+    gates[0].set()  # the superseded probe finishes last
+    finish_workers(qtbot, dialog)
+    assert panel.state() == "ready"
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert dialog._commit_probe.branch == "main"
+    assert not dialog.is_probing()
+
+
+# -- Phase 11 plan 11-09 Task 2: re-probe after a refusal, primary Install Part (REV-10, D-11, D-19) -----
+
+
+def test_refusal_reprobes_and_keeps_input(qtbot, make_install_dialog):
+    probes: list[int] = []
+    seen: list[tuple] = []
+    refusal = Issue(Severity.ERROR, "commit.branch_changed", "Custom switched from main to feature/x; nothing was committed")
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe("main" if len(probes) == 1 else "feature/x")(cplan)
+
+    def run(cplan, message, bump, **kwargs):
+        seen.append((message, bump, kwargs.get("expected_branch")))
+        if len(seen) == 1:
+            return CommitOutcome(issues=(refusal,))
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=run)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel._message.setPlainText("My own message")
+    panel._parent_check.setChecked(False)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready", timeout=30000)
+    assert panel._branch_label.text() == "Custom branch: feature/x (not main)"
+    assert panel.outcome_lines()[0] == f"✖ {refusal.text}"
+    assert panel.message() == "My own message"
+    assert not panel._parent_check.isChecked()
+    assert not panel.committed()
+    assert not dialog.is_probing()
+
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
+    assert seen == [("My own message", False, "main"), ("My own message", False, "feature/x")]
+    assert len(probes) == 2  # a committed outcome is not followed by another probe
+
+
+def test_refusal_reprobe_replaced_by_own_refusal(qtbot, make_install_dialog):
+    probes: list[int] = []
+    old = Issue(Severity.ERROR, "commit.branch_changed", "Custom switched from main to feature/x; nothing was committed")
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        if len(probes) == 1:
+            return fake_ready_probe()(cplan)
+        return CommitProbe(state="refused", reason="Custom is behind origin/main")
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=lambda *a, **k: CommitOutcome(issues=(old,)))
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: panel.state() == "refused", timeout=30000)
+    assert panel._strip.text() == "⚠ Commit refused: Custom is behind origin/main"
+    assert not [line for line in panel.outcome_lines() if old.text in line]
+
+
+def test_parent_only_failure_reprobes_in_dialog(qtbot, make_install_dialog):
+    probes: list[int] = []
+    failure = Issue(Severity.ERROR, "commit.parent_failed", "The parent commit failed (hook said no)")
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe()(cplan)
+
+    outcome = CommitOutcome(parent_only=True, parent_commit=None, issues=(failure,))
+    dialog = make_install_dialog(probe_commit=probe, run_commit=lambda *a, **k: outcome)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready", timeout=30000)
+    assert panel.outcome_lines()[0] == f"✖ {failure.text}"
+    assert not panel.committed()
+    assert not dialog.is_probing()
+
+
+def test_switch_reprobe_keeps_message(qtbot, make_install_dialog):
+    probes: list[int] = []
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        if len(probes) == 1:
+            return CommitProbe(
+                state="offer_switch", reason="Custom is on a detached HEAD at abc1234.", head="abc1234" + "0" * 33,
+                parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main",
+            )
+        return fake_ready_probe()(cplan)
+
+    switched = SwitchOutcome(ok=True, issues=(Issue(Severity.SUCCESS, "commit.switched", "Switched Custom to main"),))
+    dialog = make_install_dialog(probe_commit=probe, switch_to_main=lambda *a, **k: switched)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "offer_switch", timeout=30000)
+    panel._message.setPlainText("Typed before the switch")
+    panel._switch_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready", timeout=30000)
+    assert panel.message() == "Typed before the switch"
+
+
+def test_install_button_primary(qtbot, make_install_dialog):
+    from kicad_lib_manager.widgets.theme import PRIMARY_BUTTON_QSS
+
+    dialog = make_install_dialog()
+    assert dialog._install_btn.styleSheet() == PRIMARY_BUTTON_QSS
+
+
 def forbid_message_boxes(monkeypatch):
     def refuse(*args, **kwargs):
         pytest.fail("a message box was opened")
@@ -3598,7 +3798,7 @@ def test_commit_not_committed_logged_on_close(qtbot, make_install_dialog, monkey
     install_ul(qtbot, dialog)
     (panel,) = commit_panel_of(dialog)
     qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
-    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
     assert logged_codes(logged, "commit.not_committed") == []
 
     dialog.close()
@@ -3697,7 +3897,7 @@ def test_git_state_changes_only_after_click(qtbot, tmp_path, monkeypatch):
     install_ul(qtbot, dialog)
     (panel,) = commit_panel_of(dialog)
     qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
-    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
 
     read_only = {
         "--version", "rev-parse", "symbolic-ref", "status", "merge-base", "rev-list", "log", "ls-tree",
@@ -3724,7 +3924,7 @@ def test_result_view_scrolls_at_minimum_size(qtbot, make_install_dialog):
     install_ul(qtbot, dialog)
     (panel,) = commit_panel_of(dialog)
     qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
-    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
     dialog.resize(900, 600)
     qtbot.wait(100)
 
@@ -3753,7 +3953,7 @@ def test_open_path_refused_while_busy(qtbot, make_install_dialog, gates, job):
         install_ul(qtbot, dialog)
         (panel,) = commit_panel_of(dialog)
         qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
-        qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+        qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
         panel.commit_button.click()
         qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
         page = dialog._result_page
@@ -3767,7 +3967,7 @@ def test_open_path_refused_while_busy(qtbot, make_install_dialog, gates, job):
     assert dialog._open_worker is None
     assert dialog._stack.currentWidget() is page
     gates[-1].set()
-    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing(), timeout=60000)
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=60000)
 
 
 def test_install_worker_uses_captured_plan(qtbot, make_install_dialog, gates, monkeypatch):
@@ -3870,7 +4070,7 @@ def test_add_model_tracer_snapeda_end_to_end(qtbot, make_item_dialog, item_layou
     assert ref is not None
     assert [m.path for m in find_models(ref.node)] == [f"{MODEL_DIR_VAR}/{SNAPEDA_MPN}.stp"]
 
-    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_committing() and not dialog.is_probing(), timeout=30000)
     dialog.reject()
     assert not staging.exists()
 
@@ -4267,7 +4467,7 @@ def test_add_model_package_open_until_install_ends(qtbot, make_install_dialog, g
         dialog._install_btn.click()
     assert seen["exist"] and all(seen["exist"])
     assert any(staging in path.parents for path in seen["sources"])  # the install read the model package
-    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=30000)
     assert staging.is_dir() and "close" not in events  # still open after apply_plan returned
 
     dialog.reject()
@@ -4297,7 +4497,7 @@ def test_add_model_disabled_while_installing(qtbot, make_install_dialog, gates):
     assert dialog._model_busy()
     gates[-1].set()
     qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
-    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=30000)
 
 
 def test_add_model_runs_off_gui_thread(qtbot, make_item_dialog, tmp_path, monkeypatch):

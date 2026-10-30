@@ -14,6 +14,7 @@ Three rules shape this module:
 """
 
 import html
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -66,7 +67,7 @@ from .import_result import ElidedLabel, ImportResultView
 from .preview_tree import PreviewTree
 from .theme import (
     AMBER, AMBER_TINT, BORDER, DISPLAY_PT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY,
-    MONO_PT, MUTED, SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
+    MONO_PT, MUTED, PRIMARY_BUTTON_QSS, SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
 )
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
@@ -447,7 +448,9 @@ class ImportDialog(QDialog):
         self._commit_panel: CommitPanel | None = None
         self._commit_plan: CommitPlan | None = None
         self._commit_probe: CommitProbe | None = None
-        self._git_worker: TaskWorker | None = None
+        self._git_worker: TaskWorker | None = None  # Switch to main or Commit only; the probe never locks Close (IN-02)
+        self._probe_worker: TaskWorker | None = None
+        self._probe_cancels: list[threading.Event] = []
         self._close_had_focus = False  # Close held the focus when a git job disabled it
         self._not_committed_logged = False  # the D-02 line is logged once per dialog
         self._closing = False
@@ -733,6 +736,7 @@ class ImportDialog(QDialog):
         self._install_row.hide()
         bottom.addWidget(self._install_row, stretch=1)
         self._install_btn = QPushButton("Install Part")
+        self._install_btn.setStyleSheet(PRIMARY_BUTTON_QSS)  # the main action of each view looks the same (D-19)
         self._install_btn.setMinimumWidth(112)
         self._install_btn.clicked.connect(self._on_install_clicked)
         bottom.addWidget(self._install_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -1201,7 +1205,10 @@ class ImportDialog(QDialog):
 
     def open_path(self, path: Path):
         """Open a zip or folder on a worker; the dialog owns the resulting Package."""
-        if self._closing or self._open_worker is not None or self.is_installing() or self.is_committing():
+        if (
+            self._closing or self._open_worker is not None or self.is_installing() or self.is_committing()
+            or self.is_probing()
+        ):
             return
         self._wait_builds()  # WR-04: never close the package under a running build
         self._discard_package()
@@ -2794,8 +2801,15 @@ class ImportDialog(QDialog):
     # -- commit step (Phase 6): nothing is committed before the user clicks Commit ---------------------
 
     def is_committing(self) -> bool:
-        """True while a git job (the probe, the switch or the commit) runs; the dialog cannot close then (D-07)."""
+        """True while Switch to main or Commit runs; the dialog cannot close then (D-07).
+
+        The read-only probe never blocks closing: it is cancelled and waited for on close (IN-02).
+        """
         return self._git_worker is not None
+
+    def is_probing(self) -> bool:
+        """True while the read-only probe of the commit step runs."""
+        return self._probe_worker is not None
 
     def _set_git_worker(self, worker: TaskWorker | None):
         """Record the running git job, or None when it ended; Close is disabled while one runs (D-07).
@@ -2832,23 +2846,35 @@ class ImportDialog(QDialog):
         self._result_view.set_commit_panel(panel)
         self._start_probe()
 
-    def _start_probe(self):
-        """Probe git for the current commit plan; runs again after a switch so no state from before it stays on screen (D-15)."""
+    def _start_probe(self, *, reprobe: bool = False):
+        """Probe git for the current commit plan; runs again after a switch or a refusal (D-15, D-11).
+
+        The probe takes no Close lock. A newer probe supersedes an older one: the older Event is set
+        and its result is dropped when it arrives (generation check, T-11-22).
+        """
         panel, cplan = self._commit_panel, self._commit_plan
         if panel is None or cplan is None or self._closing:
             return
+        for older in self._probe_cancels:
+            older.set()
+        event = threading.Event()
+        self._probe_cancels = [event]  # the older ones are set already; _shutdown sets the live one
         self._commit_probe = None
-        panel.show_plan(cplan)
+        if reprobe:
+            panel.begin_reprobe()
+        else:
+            panel.show_plan(cplan)
         core = self._core
-        worker = self._spawn(lambda progress, cp=cplan: core.probe_commit(cp))
-        self._set_git_worker(worker)
+        worker = self._spawn(lambda progress, cp=cplan, ev=event: core.probe_commit(cp, cancelled=ev.is_set))
+        self._probe_worker = worker
         worker.result.connect(lambda probe, w=worker: self._on_probe_done(w, probe))
         worker.failed.connect(lambda text, w=worker: self._on_probe_failed(w, text))
         worker.start()
 
     def _on_probe_done(self, worker: TaskWorker, probe: CommitProbe):
-        if self._git_worker is worker:
-            self._set_git_worker(None)
+        if worker is not self._probe_worker:
+            return  # a superseded probe
+        self._probe_worker = None
         if self._closing or self._commit_panel is None:
             return
         self._commit_probe = probe
@@ -2857,8 +2883,9 @@ class ImportDialog(QDialog):
             self.issues_logged.emit(list(probe.issues))
 
     def _on_probe_failed(self, worker: TaskWorker, text: str):
-        if self._git_worker is worker:
-            self._set_git_worker(None)
+        if worker is not self._probe_worker:
+            return
+        self._probe_worker = None
         if self._closing or self._commit_panel is None:
             return
         issue = Issue(Severity.ERROR, "commit.step_failed", f"Commit step failed: {text}")
@@ -2868,7 +2895,7 @@ class ImportDialog(QDialog):
     def _on_switch_requested(self):
         """Switch Custom to main on a worker (D-15); only the click on Switch to main gets here."""
         panel, cplan = self._commit_panel, self._commit_plan
-        if self._git_worker is not None or self._closing or panel is None or cplan is None:
+        if self._git_worker is not None or self._probe_worker is not None or self._closing or panel is None or cplan is None:
             return
         core = self._core
         panel.set_switching()
@@ -2885,7 +2912,7 @@ class ImportDialog(QDialog):
             return
         self.issues_logged.emit(list(outcome.issues))
         if outcome.ok:
-            self._start_probe()
+            self._start_probe(reprobe=True)  # the user's message and parent choice stay
             return
         texts = [i.text for i in outcome.issues if i.severity is Severity.ERROR] or [i.text for i in outcome.issues]
         self._commit_panel.show_switch_failed(texts[0] if texts else "git could not switch Custom to main")
@@ -2909,7 +2936,9 @@ class ImportDialog(QDialog):
 
     def _on_commit_requested(self, message: str, bump_parent: bool):
         panel, cplan, probe = self._commit_panel, self._commit_plan, self._commit_probe
-        if self._git_worker is not None or self._closing or panel is None or cplan is None or probe is None:
+        if self._git_worker is not None or self._probe_worker is not None:
+            return
+        if self._closing or panel is None or cplan is None or probe is None:
             return
         core = self._core
         panel.set_committing()
@@ -2937,6 +2966,10 @@ class ImportDialog(QDialog):
         self._commit_panel.show_outcome(outcome)
         if outcome.issues:
             self.issues_logged.emit(list(outcome.issues))
+        # The panel waits for a probe whenever it does not count the outcome as committed (REV-10, D-11):
+        # the fresh probe's branch then reaches the next run_commit through _on_commit_requested
+        if not self._commit_panel.committed():
+            self._start_probe(reprobe=True)
 
     def _on_commit_failed(self, worker: TaskWorker, text: str):
         issue = Issue(Severity.ERROR, "commit.step_failed", f"Commit step failed: {text}")
@@ -3028,6 +3061,8 @@ class ImportDialog(QDialog):
     def _shutdown(self):
         """Wait for every open and build worker, then close the package; idempotent."""
         self._closing = True
+        for event in self._probe_cancels:
+            event.set()  # the probe stops between git calls, so the wait below is short (IN-02)
         self._debounce.stop()
         self._busy_timer.stop()
         self._oneoff_jobs.clear()
