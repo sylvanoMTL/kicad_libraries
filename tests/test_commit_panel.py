@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QLabel, QListWidgetItem, QPushButton
 from kicad_lib_manager.importer.commit_plan import (
     CommitFile, CommitPlan, default_message, parent_preview, subject_of,
 )
+from kicad_lib_manager.importer.commit_gate import AtomicFailure, GateResult
 from kicad_lib_manager.importer.commit_step import CommitOutcome, CommitProbe
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.widgets import theme
@@ -755,3 +756,147 @@ def test_panel_sizes_on_theme_scale(qtbot, tmp_path):
     panel.show_plan(make_cplan(tmp_path, 0))
     files = panel._files_list
     assert files.height() == files.fontMetrics().height() + theme.SP_SM + 2 * files.frameWidth()
+
+
+# -- Phase 11 (GIT-06, D-06, D-07): the gated state and its two ways forward ----------------------
+
+
+def failure(library: str, part: str, text: str = "no datasheet", rule: str = "datasheet") -> AtomicFailure:
+    return AtomicFailure(library, f"Custom/Symbols/{library}.kicad_sym", part, rule, text)
+
+
+def gated_probe(*failures: AtomicFailure, **fields) -> CommitProbe:
+    count = len({(f.library, f.part) for f in failures})
+    gate = GateResult(blocking=tuple(failures))
+    values = dict(state="gated", reason=f"{count} parts break the atomic rule.", gate=gate)
+    values.update(fields)
+    return make_probe(**values)
+
+
+def gated_panel(qtbot, tmp_path, *failures: AtomicFailure, **fields):
+    panel, _ = new_panel(qtbot, tmp_path, gated_probe(*failures, parent_dir=tmp_path, **fields))
+    assert panel.state() == "gated"
+    return panel
+
+
+def test_panel_gated_lists_failures_and_disables_commit(qtbot, tmp_path):
+    panel = gated_panel(
+        qtbot, tmp_path,
+        failure("Atomic_Sensor_Motion", "LIS3MDL"),
+        failure("Atomic_IC_LDO_TI", "TPS7A02", "no footprint"),
+    )
+
+    assert panel._strip.text() == "⚠ Commit refused: 2 parts break the atomic rule."
+    assert theme.AMBER_TINT in panel._strip.styleSheet()
+    assert panel._gate_lines.text().splitlines() == [
+        "Atomic_Sensor_Motion / LIS3MDL: no datasheet",
+        "Atomic_IC_LDO_TI / TPS7A02: no footprint",
+    ]
+    assert not panel._gate_lines.isHidden()
+    assert theme.AMBER in panel._gate_lines.styleSheet()
+    assert not panel.commit_button.isEnabled()
+    assert not panel._message.isReadOnly()
+    assert panel._parent_check.isEnabled()
+    panel.commit_button.click()  # a click on a disabled button does nothing; the state guard also holds
+    panel._on_commit_clicked()
+
+
+def test_panel_gated_commit_never_emits(qtbot, tmp_path):
+    panel = gated_panel(qtbot, tmp_path, failure("Atomic_A", "P1"))
+    requests = []
+    panel.commit_requested.connect(lambda text, bump: requests.append((text, bump)))
+
+    panel.commit_button.click()
+    panel._on_commit_clicked()
+    panel._message.setPlainText("Another message")
+
+    assert requests == []
+    assert not panel.commit_button.isEnabled()
+    assert panel.message() == "Another message"
+
+
+def test_panel_gated_lines_capped(qtbot, tmp_path):
+    panel = gated_panel(qtbot, tmp_path, *(failure("Atomic_A", f"P{index}") for index in range(13)))
+
+    lines = panel._gate_lines.text().splitlines()
+    assert lines[:10] == [f"Atomic_A / P{index}: no datasheet" for index in range(10)]
+    assert lines[10] == "…and 3 more"
+    assert len(lines) == 11
+
+
+def test_panel_gated_buttons_secondary_and_signals(qtbot, tmp_path):
+    first = failure("Atomic_A", "P1")
+    panel = gated_panel(qtbot, tmp_path, first, failure("Atomic_B", "P2"))
+    opened, again = [], []
+    panel.open_check_requested.connect(lambda rel, part: opened.append((rel, part)))
+    panel.check_again_requested.connect(lambda: again.append(True))
+
+    for button in (panel._open_check_button, panel._check_again_button):
+        assert not button.isHidden()
+        assert button.styleSheet() == ""
+        assert not button.autoDefault() and not button.isDefault()
+    assert panel._open_check_button.text() == "Open Check Atomic Parts…"
+    assert panel._check_again_button.text() == "Check again"
+    panel._open_check_button.click()
+    panel._check_again_button.click()
+    assert opened == [(first.rel_path, "P1")]
+    assert again == [True]
+
+    # a stale-only gated probe (no refused gate) offers Check again but not Open Check Atomic Parts
+    panel.apply_probe(make_probe(state="gated", reason="A file changed after the install.", parent_dir=tmp_path))
+    assert not panel._check_again_button.isHidden()
+    assert panel._open_check_button.isHidden()
+    assert panel._gate_lines.isHidden()
+
+    panel.apply_probe(make_probe(state="gated", reason="x", gate=GateResult(), parent_dir=tmp_path))
+    assert panel._open_check_button.isHidden() and panel._gate_lines.isHidden()
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.state() == "ready"
+    assert panel._open_check_button.isHidden() and panel._check_again_button.isHidden()
+    assert panel._gate_lines.isHidden()
+
+
+def test_panel_gated_unchecked_libraries_hide_open_check(qtbot, tmp_path):
+    gate = GateResult(problems=("Atomic_A: the library could not be checked (unreadable)",))
+    panel, _ = new_panel(qtbot, tmp_path, make_probe(
+        state="gated", reason="1 library could not be checked.", gate=gate, parent_dir=tmp_path
+    ))
+
+    assert panel._gate_lines.text() == "Atomic_A: the library could not be checked (unreadable)"
+    assert panel._open_check_button.isHidden()
+    assert not panel._check_again_button.isHidden()
+
+
+def test_panel_check_again_clears_pending_refusal(qtbot, tmp_path):
+    panel = refused_panel(qtbot, tmp_path)
+    again = []
+    panel.check_again_requested.connect(lambda: again.append(True))
+    panel.apply_probe(gated_probe(failure("Atomic_A", "P1"), parent_dir=tmp_path))
+    assert panel.outcome_lines() == [f"✖ {_REFUSAL}"]
+
+    panel._check_again_button.click()
+
+    assert again == [True]
+    assert panel._pending_refusal == ()
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.outcome_lines() == []
+
+
+def test_panel_check_again_only_in_gated_state(qtbot, tmp_path):
+    panel, _ = ready_panel(qtbot, tmp_path)
+    again = []
+    panel.check_again_requested.connect(lambda: again.append(True))
+
+    panel._on_check_again_clicked()
+    panel._on_open_check_clicked()
+
+    assert again == []
+
+
+def test_panel_gated_text_is_plain(qtbot, tmp_path):
+    panel = gated_panel(qtbot, tmp_path, failure("Atomic_A", "P<b>1</b>", "<b>bold</b> rule"))
+
+    assert panel._gate_lines.text() == "Atomic_A / P<b>1</b>: <b>bold</b> rule"
+    assert panel._gate_lines.textFormat() == Qt.TextFormat.PlainText
+    assert all(label.textFormat() == Qt.TextFormat.PlainText for label in labels(panel))
