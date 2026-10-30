@@ -216,6 +216,11 @@ def test_help_import_page_describes_commit_step(qtbot, tmp_path):
     for claim in ("never pushed", "hooks", "detached", "uncommitted"):
         assert claim in lowered, claim
 
+    # Commit and Switch to main keep the window open; the first check does not (IN-02)
+    assert "cannot be closed" in page
+    assert "while the first check runs" in page
+    assert "While git runs" not in page
+
     # static text: no formatted vendor, user or path value (T-06-25)
     section = raw[raw.index("<h3>Commit</h3>"):raw.index("<h3>Library tables</h3>")]
     assert "{" not in section and "%s" not in section

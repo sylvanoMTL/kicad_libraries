@@ -67,7 +67,7 @@ from .import_result import ElidedLabel, ImportResultView
 from .preview_tree import PreviewTree
 from .theme import (
     AMBER, AMBER_TINT, BORDER, DISPLAY_PT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY,
-    MONO_PT, MUTED, SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
+    MONO_PT, MUTED, PRIMARY_BUTTON_QSS, SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
 )
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
@@ -736,6 +736,7 @@ class ImportDialog(QDialog):
         self._install_row.hide()
         bottom.addWidget(self._install_row, stretch=1)
         self._install_btn = QPushButton("Install Part")
+        self._install_btn.setStyleSheet(PRIMARY_BUTTON_QSS)  # the main action of each view looks the same (D-19)
         self._install_btn.setMinimumWidth(112)
         self._install_btn.clicked.connect(self._on_install_clicked)
         bottom.addWidget(self._install_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
@@ -2911,7 +2912,7 @@ class ImportDialog(QDialog):
             return
         self.issues_logged.emit(list(outcome.issues))
         if outcome.ok:
-            self._start_probe()
+            self._start_probe(reprobe=True)  # the user's message and parent choice stay
             return
         texts = [i.text for i in outcome.issues if i.severity is Severity.ERROR] or [i.text for i in outcome.issues]
         self._commit_panel.show_switch_failed(texts[0] if texts else "git could not switch Custom to main")
@@ -2965,6 +2966,10 @@ class ImportDialog(QDialog):
         self._commit_panel.show_outcome(outcome)
         if outcome.issues:
             self.issues_logged.emit(list(outcome.issues))
+        # The panel waits for a probe whenever it does not count the outcome as committed (REV-10, D-11):
+        # the fresh probe's branch then reaches the next run_commit through _on_commit_requested
+        if not self._commit_panel.committed():
+            self._start_probe(reprobe=True)
 
     def _on_commit_failed(self, worker: TaskWorker, text: str):
         issue = Issue(Severity.ERROR, "commit.step_failed", f"Commit step failed: {text}")

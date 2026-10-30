@@ -3670,6 +3670,119 @@ def test_stale_probe_result_is_dropped(qtbot, make_install_dialog, gates):
     assert not dialog.is_probing()
 
 
+# -- Phase 11 plan 11-09 Task 2: re-probe after a refusal, primary Install Part (REV-10, D-11, D-19) -----
+
+
+def test_refusal_reprobes_and_keeps_input(qtbot, make_install_dialog):
+    probes: list[int] = []
+    seen: list[tuple] = []
+    refusal = Issue(Severity.ERROR, "commit.branch_changed", "Custom switched from main to feature/x; nothing was committed")
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe("main" if len(probes) == 1 else "feature/x")(cplan)
+
+    def run(cplan, message, bump, **kwargs):
+        seen.append((message, bump, kwargs.get("expected_branch")))
+        if len(seen) == 1:
+            return CommitOutcome(issues=(refusal,))
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=run)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel._message.setPlainText("My own message")
+    panel._parent_check.setChecked(False)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready", timeout=30000)
+    assert panel._branch_label.text() == "Custom branch: feature/x (not main)"
+    assert panel.outcome_lines()[0] == f"✖ {refusal.text}"
+    assert panel.message() == "My own message"
+    assert not panel._parent_check.isChecked()
+    assert not panel.committed()
+    assert not dialog.is_probing()
+
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
+    assert seen == [("My own message", False, "main"), ("My own message", False, "feature/x")]
+    assert len(probes) == 2  # a committed outcome is not followed by another probe
+
+
+def test_refusal_reprobe_replaced_by_own_refusal(qtbot, make_install_dialog):
+    probes: list[int] = []
+    old = Issue(Severity.ERROR, "commit.branch_changed", "Custom switched from main to feature/x; nothing was committed")
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        if len(probes) == 1:
+            return fake_ready_probe()(cplan)
+        return CommitProbe(state="refused", reason="Custom is behind origin/main")
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=lambda *a, **k: CommitOutcome(issues=(old,)))
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: panel.state() == "refused", timeout=30000)
+    assert panel._strip.text() == "⚠ Commit refused: Custom is behind origin/main"
+    assert not [line for line in panel.outcome_lines() if old.text in line]
+
+
+def test_parent_only_failure_reprobes_in_dialog(qtbot, make_install_dialog):
+    probes: list[int] = []
+    failure = Issue(Severity.ERROR, "commit.parent_failed", "The parent commit failed (hook said no)")
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe()(cplan)
+
+    outcome = CommitOutcome(parent_only=True, parent_commit=None, issues=(failure,))
+    dialog = make_install_dialog(probe_commit=probe, run_commit=lambda *a, **k: outcome)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready", timeout=30000)
+    assert panel.outcome_lines()[0] == f"✖ {failure.text}"
+    assert not panel.committed()
+    assert not dialog.is_probing()
+
+
+def test_switch_reprobe_keeps_message(qtbot, make_install_dialog):
+    probes: list[int] = []
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        if len(probes) == 1:
+            return CommitProbe(
+                state="offer_switch", reason="Custom is on a detached HEAD at abc1234.", head="abc1234" + "0" * 33,
+                parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main",
+            )
+        return fake_ready_probe()(cplan)
+
+    switched = SwitchOutcome(ok=True, issues=(Issue(Severity.SUCCESS, "commit.switched", "Switched Custom to main"),))
+    dialog = make_install_dialog(probe_commit=probe, switch_to_main=lambda *a, **k: switched)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "offer_switch", timeout=30000)
+    panel._message.setPlainText("Typed before the switch")
+    panel._switch_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready", timeout=30000)
+    assert panel.message() == "Typed before the switch"
+
+
+def test_install_button_primary(qtbot, make_install_dialog):
+    from kicad_lib_manager.widgets.theme import PRIMARY_BUTTON_QSS
+
+    dialog = make_install_dialog()
+    assert dialog._install_btn.styleSheet() == PRIMARY_BUTTON_QSS
+
+
 def forbid_message_boxes(monkeypatch):
     def refuse(*args, **kwargs):
         pytest.fail("a message box was opened")
