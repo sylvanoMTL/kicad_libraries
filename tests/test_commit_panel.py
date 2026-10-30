@@ -3,6 +3,7 @@
 from dataclasses import replace
 from pathlib import Path
 
+import pytest
 from PySide6.QtCore import QEvent, Qt
 from PySide6.QtGui import QColor, QKeyEvent
 from PySide6.QtWidgets import QLabel, QListWidgetItem, QPushButton
@@ -951,7 +952,7 @@ def test_panel_changed_and_added_markers(qtbot, tmp_path):
 
     assert rows(panel) == [
         f"⚠ {base[0].display} (changed since install)",
-        f"+ {base[1].display} (added by a fix)",
+        f"+ {base[1].display} (added: linked by a committed part)",
         f"⚠ {base[2].display} (changed since install)",
     ]
     for index in range(3):
@@ -985,12 +986,30 @@ def test_panel_plain_row_has_no_marker_and_does_not_activate(qtbot, tmp_path):
     assert panel._changed_hint.isHidden()
 
 
-def test_panel_changed_beats_dirty_before(qtbot, tmp_path):
+def test_panel_changed_or_added_and_dirty_before_combined(qtbot, tmp_path):
     base = make_cplan(tmp_path).files
-    probe = make_probe(dirty_before=frozenset({base[0].rel}), stale=(base[0].display,), parent_dir=tmp_path)
-    panel, _ = new_panel(qtbot, tmp_path, probe)
+    files = (replace(base[0], note="changed"), replace(base[1], note="added"), base[2])
+    probe = make_probe(
+        dirty_before=frozenset(f.rel for f in base), stale=(base[2].display,), parent_dir=tmp_path
+    )
+    panel, _ = new_panel(qtbot, tmp_path, probe, files=files)
+    activated = []
+    panel.file_activated.connect(activated.append)
 
-    assert rows(panel)[0] == f"⚠ {base[0].display} (changed since install)"
+    assert rows(panel) == [
+        f"⚠ {base[0].display} (changed since install; also changed before this import)",
+        f"+ {base[1].display} (added: linked by a committed part; also changed before this import)",
+        f"⚠ {base[2].display} (changed since install; also changed before this import)",
+    ]
+    for index in range(3):
+        tip = panel._files_list.item(index).toolTip()
+        assert "uncommitted changes made before this import" in tip
+        assert "Double-click to see both" in tip
+    assert not panel._changed_hint.isHidden()
+    assert not panel._dirty_hint.isHidden()
+    for index in range(3):
+        panel._files_list.itemActivated.emit(panel._files_list.item(index))
+    assert activated == [base[0].rel, base[1].rel, base[2].rel]
 
 
 # -- Phase 11 (D-14): nothing to commit and the parent-only bump -----------------------------------
@@ -1103,3 +1122,69 @@ def test_panel_parent_only_failure_reprobes(qtbot, tmp_path):
     assert panel._pending_refusal == (failed,)
     assert not panel.commit_button.isEnabled()
     assert not panel._manual_label.isHidden()
+
+    panel.begin_reprobe()
+    panel.apply_probe(make_probe(all_identical=True, gitlink_old="1111111aaaa", parent_dir=tmp_path))
+    assert not panel._manual_label.isHidden()
+    assert "git -C x commit" in panel._manual_label.text()
+
+
+def parent_failure_panel(qtbot, tmp_path):
+    """A panel whose parent-only bump failed with git output and a manual command, waiting for the re-probe."""
+    panel, _ = ready_panel(qtbot, tmp_path, parent_dir=tmp_path)
+    panel.set_committing()
+    text = f"The parent commit failed (git exit 1).\nline A\nline B\n{_PS_LABEL} {_PS_MANUAL}"
+    panel.show_outcome(make_outcome(
+        parent_only=True, output="line A\nline B", manual_command=_PS_MANUAL, manual_label=_PS_LABEL,
+        issues=(issue(Severity.ERROR, "commit.parent_failed", text),),
+    ))
+    return panel
+
+
+def assert_failure_detail_shown(panel):
+    assert panel.outcome_lines() == ["✖ The parent commit failed (git exit 1)."]
+    assert panel._output.toPlainText().splitlines() == ["line A", "line B"]
+    assert not panel._output.isHidden()
+    assert panel._manual_label.text() == f"{_PS_LABEL} {_PS_MANUAL}"
+    assert not panel._manual_label.isHidden()
+
+
+def assert_failure_detail_gone(panel, tmp_path):
+    assert panel._pending_output == () and panel._pending_manual == ""
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel._output.isHidden() and panel._manual_label.isHidden()
+    assert panel.outcome_lines() == []
+
+
+def test_panel_failure_detail_survives_reprobe(qtbot, tmp_path):
+    panel = parent_failure_panel(qtbot, tmp_path)
+
+    panel.begin_reprobe()
+    assert panel.state() == "probing"
+    assert_failure_detail_shown(panel)
+    assert not panel.commit_button.isEnabled()
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+    assert panel.state() == "ready"
+    assert_failure_detail_shown(panel)
+
+
+@pytest.mark.parametrize("event", ["commit", "check_again", "switch", "own_refusal", "show_plan"])
+def test_panel_failure_detail_dropped(qtbot, tmp_path, event):
+    panel = parent_failure_panel(qtbot, tmp_path)
+
+    if event == "commit":
+        panel.apply_probe(make_probe(parent_dir=tmp_path))
+        panel.commit_button.click()
+    elif event == "check_again":
+        panel.apply_probe(gated_probe(failure("Atomic_A", "P1"), parent_dir=tmp_path))
+        panel._check_again_button.click()
+    elif event == "switch":
+        panel.apply_probe(CommitProbe(state="offer_switch", head="abc1234def", reason="Custom is on a detached HEAD."))
+        panel._switch_button.click()
+    elif event == "own_refusal":
+        panel.apply_probe(CommitProbe(state="refused", reason="R"))
+        assert panel.outcome_lines() == [] and panel._output.isHidden() and panel._manual_label.isHidden()
+    else:
+        panel.show_plan(make_cplan(tmp_path))
+    assert_failure_detail_gone(panel, tmp_path)
