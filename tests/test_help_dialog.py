@@ -19,8 +19,11 @@ from kicad_lib_manager.widgets.commit_panel import _ADDED_MARK, _CHANGED_MARK, C
 from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
 from kicad_lib_manager.widgets.import_result import ImportResultView
-from kicad_lib_manager.widgets import help_dialog, theme
-from kicad_lib_manager.widgets.theme import ACCENT, AMBER, DISPLAY_PT, HEADING_PT, MONO_FAMILY, MONO_PT
+from kicad_lib_manager.widgets import conflict_row, help_dialog, theme
+from kicad_lib_manager.widgets.conflict_row import _button_qss
+from kicad_lib_manager.widgets.theme import (
+    ACCENT, AMBER, DISPLAY_PT, ERROR, HEADING_PT, MONO_FAMILY, MONO_PT, SURFACE_BASE,
+)
 
 # The Atomic_ install target the stub results below name
 LIBRARY = "Atomic_Analog"
@@ -339,3 +342,12 @@ def test_help_headings_keep_their_sizes(qtbot):
         block = block.next()
     assert mono, "no code or pre text on the page"
     assert mono == {float(MONO_PT)}
+
+
+def test_conflict_row_styles_use_theme_tokens():
+    text = Path(conflict_row.__file__).read_text(encoding="utf-8")
+    assert re.findall(r"#[0-9A-Fa-f]{3,8}\b", text) == []
+    qss = _button_qss(ERROR)
+    assert f"background-color: {SURFACE_BASE}" in qss
+    assert f"color: {SURFACE_BASE}" in qss
+    assert re.fullmatch(r"#FFFFFF", theme.SURFACE_BASE)
