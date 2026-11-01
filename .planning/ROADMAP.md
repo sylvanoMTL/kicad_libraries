@@ -254,7 +254,7 @@ Plans:
   4. The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes.
   5. On a case-sensitive folder, when a case twin was written under another spelling, rollback restores the original spelling and removes the twin on both the rollback and the overwrite branches, as the deferred Phase 4 UAT Test 3 (backlog 999.2) expected.
 
-**Plans**: 3/8 plans executed
+**Plans**: 5/8 plans executed
 
 Plans:
 **Wave 1**
@@ -263,8 +263,8 @@ Plans:
 - [x] 12-03-PLAN.md — table step: already listed only for a real match, stale entry repointed, live clash and hand entry warned, existing-library branch (REV-01, D-01..D-05)
 
 **Wave 2** *(blocked on Wave 1 completion)*
-- [ ] 12-04-PLAN.md — blank Destination never reaches the working directory: post-install, Generate, table logs, Restore Backup (REV-02)
-- [ ] 12-05-PLAN.md — Finishing state for Change.../open with Cancel and the 10 s note; Install disabled during a one-off build, one-off jobs held during Install (REV-03, REV-04, D-06..D-08)
+- [x] 12-04-PLAN.md — blank Destination never reaches the working directory: post-install, Generate, table logs, Restore Backup (REV-02)
+- [x] 12-05-PLAN.md — Finishing state for Change.../open with Cancel and the 10 s note; Install disabled during a one-off build, one-off jobs held during Install (REV-03, REV-04, D-06..D-08)
 
 **Wave 3** *(blocked on Wave 2 completion)*
 - [ ] 12-06-PLAN.md — KiCad-open check off the GUI thread before the dialog, Retry / Change anyway / Not now, confirmed write merged into the re-read file, test teardown join (REV-05, D-09..D-12)
@@ -303,7 +303,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
-| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 3/8 | In Progress | - |
+| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 5/8 | In Progress | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
 ## Backlog
