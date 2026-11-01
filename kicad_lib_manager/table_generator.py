@@ -382,8 +382,8 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
             issues.append(Issue(
                 Severity.WARNING,
                 "table.external_clash",
-                f"{filename}: '{nickname}' is already defined by an external entry "
-                f"({by_hand.uri}); kept it and did not add {uri}",
+                f"Not added to {filename}: {nickname} is already used by an entry you added "
+                f"by hand ({by_hand.uri}); KiCad keeps loading that one.",
             ))
             return "skipped"
         if managed:
