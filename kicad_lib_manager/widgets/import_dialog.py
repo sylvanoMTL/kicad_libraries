@@ -143,8 +143,9 @@ def incoming_op(plan: InstallPlan, conflict: Conflict):
     if conflict.kind == "symbol":
         return next((op for op in plan.ops if op.kind == "symbol_lib"), None)
     if conflict.kind == "footprint":
-        wanted = f"{conflict.name}.kicad_mod"
-        return next((op for op in plan.ops if op.kind == "footprint" and op.path.name == wanted), None)
+        # An overwrite writes the spelling already on disk while the conflict keeps the vendor name (D-14)
+        wanted = f"{conflict.name}.kicad_mod".casefold()
+        return next((op for op in plan.ops if op.kind == "footprint" and op.path.name.casefold() == wanted), None)
     if conflict.kind == "model":
         return next((op for op in plan.ops if op.kind == "model" and op.path.name == plan.model_file), None)
     return None
