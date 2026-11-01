@@ -1585,9 +1585,9 @@ def test_resolution_overwrite_footprint(tmp_path, existing):
     assert not plan.blocked, plan.issues
     op = _op(plan, "footprint")
     assert op.base_sha256 == _sha(on_disk)
-    # Paths compare ignoring case on Windows, so the spelling is compared as text
-    assert (None if op.listed_path is None else op.listed_path.name) == (None if existing == "FP.kicad_mod" else existing)
-    assert op.path.name == "FP.kicad_mod"
+    # The write goes to the file already on disk, so no op carries a second spelling (D-14); the spelling is compared as text
+    assert op.listed_path is None
+    assert op.path.name == existing
 
 
 def test_resolution_overwrite_model_case_twin(tmp_path):
@@ -1596,20 +1596,19 @@ def test_resolution_overwrite_model_case_twin(tmp_path):
     plan = _plan(tmp_path, layout, ToolContext(), options=_with({MODEL_KEY: _res("overwrite")}))
     assert not plan.blocked, plan.issues
     op = _op(plan, "model")
-    assert (op.path.name, op.listed_path.name) == ("PART.step", "part.STEP")
+    assert op.path.name == "part.STEP" and op.listed_path is None
     assert op.base_sha256 == _sha(b"other bytes")
-    assert plan.model_file == "PART.step"
+    assert plan.model_file == "part.STEP"
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason="replacing a case twin leaves one entry only on NTFS (research spike S7)")
-def test_resolution_overwrite_model_case_twin_applies_on_ntfs(tmp_path):
+def test_resolution_overwrite_model_case_twin_keeps_disk_spelling(tmp_path):
     layout = _target_layout(tmp_path, V6)
     _put_model(layout, "part.STEP", b"other bytes")
     with _open(tmp_path, _vendor()) as (_, candidate):
         plan = build_plan(candidate, _with({MODEL_KEY: _res("overwrite")}), layout, ToolContext())
         _apply(plan, tmp_path)
-    assert os.listdir(layout.models_dir) == ["PART.step"]
-    assert (layout.models_dir / "PART.step").read_bytes() == STEP_BYTES
+    assert os.listdir(layout.models_dir) == ["part.STEP"]
+    assert (layout.models_dir / "part.STEP").read_bytes() == STEP_BYTES
 
 
 def test_resolution_rename_symbol(tmp_path):

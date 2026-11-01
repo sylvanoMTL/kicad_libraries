@@ -740,8 +740,9 @@ def _decide_file(spec: _FileSpec, key: str, resolution: Resolution | None) -> _D
         return _Decision(spec.default, conflict=conflict)
     resolved = replace(conflict, resolution=resolution)
     if resolution.action == "overwrite":
-        # The write replaces the file on disk under whatever spelling it has now (Pitfall 12)
-        return _Decision(spec.default, op=spec.make_op(spec.default, existing, digest), conflict=resolved)
+        # The new bytes go into the file already on disk under its own spelling, so parts that link it keep working and git sees a content change (D-14)
+        name = spec.identity_of(hit)
+        return _Decision(name, op=spec.make_op(name, existing, digest), conflict=resolved)
     if resolution.action == "skip":
         return _Decision(spec.identity_of(hit), conflict=resolved, kept=True)
     return _rename_file(spec, resolved, resolution)
