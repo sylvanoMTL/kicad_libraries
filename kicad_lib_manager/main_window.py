@@ -1020,8 +1020,13 @@ class MainWindow(QMainWindow):
         dialog.issues_logged.connect(self._log_issues)
         dialog.atomic_fixes_applied.connect(self._on_atomic_fixes_applied)
         dialog.finished.connect(self._on_import_dialog_finished)
+        dialog.leave_cancelled.connect(self._on_dialog_leave_cancelled)
         self._import_dialog = dialog
         dialog.open()
+
+    def _on_dialog_leave_cancelled(self):
+        """Cancel in the dialog's Finishing strip: this window forgets its own pending close too."""
+        self._close_after_dialog = False
 
     def _on_import_dialog_finished(self, _result: int):
         dialog, self._import_dialog = self._import_dialog, None

@@ -353,6 +353,7 @@ class ImportDialog(QDialog):
 
     installed = Signal(object, object)
     issues_logged = Signal(object)  # list[Issue]; the main window routes them to the log
+    leave_cancelled = Signal()  # Cancel ended a pending Change..., open or close
     atomic_fixes_applied = Signal(object)  # list[Issue]; fixes written from the commit panel's check dialog
 
     def __init__(
@@ -1550,6 +1551,10 @@ class ImportDialog(QDialog):
         self._stack.setEnabled(True)
         QGuiApplication.restoreOverrideCursor()
 
+    def _close_pending(self) -> bool:
+        """True while a close waits for the workers: their results are dropped like at a finished close."""
+        return self._finishing and self._pending_kind == "close"
+
     def _on_slow_timeout(self):
         if self._finishing:
             self._finish_slow.show()
@@ -1567,9 +1572,16 @@ class ImportDialog(QDialog):
         """Drop the pending action and restore the dialog; held builds resume. kicad-cli is never killed (D-07)."""
         if not self._finishing:
             return
+        kind = self._pending_kind
         self._end_finishing()
+        self.leave_cancelled.emit()
         self._pump_builds()
         self._update_install_state()
+        if kind == "close" and self._probe_cancelled_by_close:
+            # The close stopped the commit probe: the panel gets a fresh one (D-07, T-12-21). The cancelled
+            # probe's late result is dropped by the generation check.
+            self._probe_cancelled_by_close = False
+            self._start_probe(reprobe=True)
 
     def _reset_edit_state(self):
         self._gen += 1
@@ -3030,7 +3042,7 @@ class ImportDialog(QDialog):
 
     def _apply_probe_result(self, probe: CommitProbe):
         """Show a probe that is still current: the panel takes it and its issues go to the log."""
-        if self._closing or self._commit_panel is None:
+        if self._closing or self._close_pending() or self._commit_panel is None:
             return
         self._commit_probe = probe
         self._commit_panel.apply_probe(probe)
@@ -3245,7 +3257,7 @@ class ImportDialog(QDialog):
         worker.start()
 
     def _on_kicad_running(self, library: str, names):
-        if self._closing or not names:
+        if self._closing or self._close_pending() or not names:
             return
         text = f"KiCad is running. Reopen KiCad's Symbol and Footprint editors to see {library}."
         self._result_view.set_kicad_running(text)
