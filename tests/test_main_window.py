@@ -423,6 +423,126 @@ def test_generate_with_kicad_open_change_anyway_writes_and_warns(qtbot, make_win
     assert make_window.check_threads[0] != threading.main_thread().ident
 
 
+def _kicad_open_text(w):
+    return w._log._text.toPlainText()
+
+
+def test_kicad_open_retry_then_closed_asks_yes_no(qtbot, make_window):
+    make_window.running_queue = [["kicad"], []]
+    make_window.kicad_answers = [ConfirmAnswer.RETRY]
+    w = make_window([_new_lib_scan()])
+    repo_str = str(make_window.repo).replace("\\", "/")
+
+    w._on_generate()
+    settle(qtbot, w)
+
+    assert len(make_window.kicad_calls) == 1
+    assert len(make_window.questions) == 1
+    assert len(make_window.check_threads) == 2
+    config = json.loads(make_window.config_file.read_text(encoding="utf-8"))
+    assert config["environment"]["vars"]["KICAD_LIB_GITHUB"] == repo_str
+    assert "KiCad is open" not in _kicad_open_text(w)
+
+
+def test_kicad_open_retry_still_open_asks_again(qtbot, make_window):
+    make_window.running = ["kicad"]
+    make_window.kicad_answers = [ConfirmAnswer.RETRY, ConfirmAnswer.DECLINE]
+    w = make_window([_new_lib_scan()])
+    config_before = make_window.config_file.read_bytes()
+
+    w._on_generate()
+    settle(qtbot, w)
+
+    assert len(make_window.kicad_calls) == 2
+    assert make_window.questions == []
+    assert make_window.config_file.read_bytes() == config_before
+    assert "KiCad path variables left unchanged (change declined)" in _kicad_open_text(w)
+
+
+def test_kicad_open_not_now_writes_nothing(qtbot, make_window, tmp_path):
+    make_window.running = ["kicad"]
+    make_window.kicad_answers = [ConfirmAnswer.DECLINE]
+    w = make_window([_new_lib_scan()])
+    config_before = make_window.config_file.read_bytes()
+
+    w._on_generate()
+    settle(qtbot, w)
+
+    assert len(make_window.kicad_calls) == 1
+    assert make_window.config_file.read_bytes() == config_before
+    assert not (tmp_path / "backups").exists()
+
+
+def test_second_generate_starts_no_second_check(qtbot, make_window, monkeypatch):
+    w = make_window([_new_lib_scan()])
+    gate = threading.Event()
+
+    def gated_running():
+        make_window.check_threads.append(threading.get_ident())
+        gate.wait(5)
+        return []
+
+    monkeypatch.setattr(main_window, "kicad_running", gated_running)
+    try:
+        w._on_generate()
+        w._on_generate()
+    finally:
+        gate.set()
+    settle(qtbot, w)
+
+    assert len(make_window.check_threads) == 1
+    assert len(make_window.questions) == 1
+
+
+def test_close_waits_for_check_without_blocking(qtbot, make_window, monkeypatch):
+    w = make_window([_new_lib_scan()])
+    w.show()
+    gate = threading.Event()
+
+    def gated_running():
+        gate.wait(5)
+        return []
+
+    monkeypatch.setattr(main_window, "kicad_running", gated_running)
+    try:
+        w._on_generate()
+        w.close()
+        # The check is still held: the window stays, nothing was asked
+        assert w.isVisible()
+        assert make_window.questions == []
+    finally:
+        gate.set()
+    qtbot.waitUntil(lambda: not w.isVisible(), timeout=5000)
+
+    assert make_window.questions == []
+    assert make_window.kicad_calls == []
+
+
+def test_kicad_open_box_texts_and_buttons(make_window):
+    w = make_window([_new_lib_scan()])
+    changes = [
+        ("KICAD_LIB_GITHUB", None, "C:/repo"),
+        ("CUSTOM_3DMODEL_DIR", "D:/old", "C:/repo/Custom/3DModels"),
+    ]
+
+    box, answers = w._kicad_open_box(changes, ["eeschema", "kicad"])
+
+    text = box.text()
+    assert "KiCad is open (eeschema, kicad)" in text
+    assert "Close KiCad, then press Retry" in text
+    assert "KICAD_LIB_GITHUB: (not set) -> C:/repo" in text
+    assert "CUSTOM_3DMODEL_DIR: D:/old -> C:/repo/Custom/3DModels" in text
+    # The platform orders the buttons by role, so compare by text
+    assert {b.text() for b in box.buttons()} == {"Retry", "Change anyway", "Not now"}
+    assert box.defaultButton().text() == "Retry"
+    assert {b.text(): answer for b, answer in answers.items()} == {
+        "Retry": ConfirmAnswer.RETRY,
+        "Change anyway": ConfirmAnswer.WRITE,
+        "Not now": ConfirmAnswer.DECLINE,
+    }
+    assert box.escapeButton().text() == "Not now"
+
+
 # ── Scan funnel and busy guard (HARD-05) ──────────────────────────────────
 
 

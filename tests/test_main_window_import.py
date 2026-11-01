@@ -968,6 +968,18 @@ def test_status_rows_new_library_settle(qtbot, make_window, tmp_path):
     assert w.statusBar().currentMessage() == f"Installed CSD85301Q2 into {NEW_LIB}"
 
 
+def test_post_install_check_runs_off_gui_thread(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    usb_tables(repo, shared_listed=False)
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    run_install(qtbot, w, repo, NEW_LIB, True)
+
+    assert len(make_window.check_threads) == 1
+    assert make_window.check_threads[0] != threading.main_thread().ident
+
+
 def test_status_rows_existing_library_hint(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
