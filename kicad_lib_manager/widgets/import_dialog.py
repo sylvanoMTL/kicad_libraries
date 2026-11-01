@@ -467,6 +467,7 @@ class ImportDialog(QDialog):
         self._git_worker: TaskWorker | None = None  # Switch to main or Commit only; the probe never locks Close (IN-02)
         self._probe_worker: TaskWorker | None = None
         self._probe_cancels: list[threading.Event] = []
+        self._probe_cancelled_by_close = False  # a close stopped the probe; Cancel of that close probes again
         self._close_had_focus = False  # Close held the focus when a git job disabled it
         self._not_committed_logged = False  # the D-02 line is logged once per dialog
         self._closing = False
@@ -474,7 +475,7 @@ class ImportDialog(QDialog):
         # window live, and runs from the last relevant worker's finished handler (_try_finish)
         self._finishing = False
         self._pending: Callable[[], None] | None = None
-        self._pending_kind: str | None = None  # "change" or "open"
+        self._pending_kind: str | None = None  # "change", "open" or "close"
         self._slow_timer = QTimer(self)
         self._slow_timer.setSingleShot(True)
         self._slow_timer.timeout.connect(self._on_slow_timeout)
@@ -1509,6 +1510,16 @@ class ImportDialog(QDialog):
         """The rebuild and one-off workers that still run, except exclude (the worker being reaped)."""
         return [w for w in (self._building, self._oneoff) if w is not None and w is not exclude]
 
+    def _busy_for(self, kind: str, exclude: TaskWorker | None = None) -> list[TaskWorker]:
+        """The workers a pending request of this kind waits for, except exclude (the worker being reaped).
+
+        A close waits for every running worker, because the package they read is closed with the dialog;
+        Change... and an open wait for the builds only (D-06).
+        """
+        if kind == "close":
+            return [w for w in self._workers if w is not exclude and w.isRunning()]
+        return self._busy_builds(exclude)
+
     def _enter_finishing(self, kind: str, action: Callable[[], None]):
         """Grey the dialog out and wait for the running build; action runs by itself when it has ended (D-06).
 
@@ -1545,7 +1556,7 @@ class ImportDialog(QDialog):
 
     def _try_finish(self, exclude: TaskWorker | None = None):
         """Run the pending action once no relevant worker runs; called from every worker's finished handler."""
-        if not self._finishing or self._closing or self._busy_builds(exclude):
+        if not self._finishing or self._closing or self._busy_for(self._pending_kind, exclude):
             return
         action = self._pending
         self._end_finishing()  # first, so the action sees a live dialog
@@ -3304,11 +3315,15 @@ class ImportDialog(QDialog):
             model_package.close()
 
     def _shutdown(self):
-        """Wait for every open and build worker, then close the package; idempotent."""
+        """Close the package and release everything the dialog holds; idempotent.
+
+        It runs only from _finish_close, which the Finishing gate calls once no worker runs, so no worker is
+        joined here and the GUI thread never waits (D-06, T-12-18).
+        """
         self._closing = True
         self._end_finishing()  # a pending Change or open is dropped and the wait cursor restored
         for event in self._probe_cancels:
-            event.set()  # the probe stops between git calls, so the wait below is short (IN-02)
+            event.set()
         atomic, self._atomic_dialog = self._atomic_dialog, None
         if atomic is not None:
             atomic.reject()  # a check dialog open over this one closes with it
@@ -3318,31 +3333,61 @@ class ImportDialog(QDialog):
         for view in list(self._content_views):
             view.close()
         for worker in list(self._workers):
-            worker.wait()
-        for worker in list(self._workers):
             value = worker.value
             if isinstance(value, (OpenOutcome, ModelOutcome)):
                 value.package.close()  # an open or an attach that finished while closing
                 worker.value = None  # released once: a second _shutdown or a queued result finds nothing
         self._discard_package()
 
+    def _finish_close(self, r: int):
+        """The close itself, after the last worker has stopped. A method (not a lambda) so super() works when deferred."""
+        self._log_not_committed()
+        self._shutdown()
+        super().done(r)
+
+    def _cancel_probe_for_close(self):
+        """Stop the read-only commit probe between git calls, so Finishing lasts at most one git call (IN-02)."""
+        if self._probe_worker is None:
+            return
+        for event in self._probe_cancels:
+            event.set()
+        self._probe_cancelled_by_close = True
+
+    def _upgrade_to_close(self, r: int):
+        """A close asked for while Finishing wins over a pending Change... or open (owner answer 2026-11-01)."""
+        self._pending_kind = "close"
+        self._pending = functools.partial(self._finish_close, r)
+        self._cancel_probe_for_close()
+        self._try_finish()
+
     def done(self, r: int):
         # An install cannot be cancelled: closing waits until it ends (D-10, T-05-33); the same holds
         # for a git job, which may run a slow hook (D-07)
         if self.is_installing() or self.is_committing():
             return
-        self._log_not_committed()
-        self._shutdown()
-        super().done(r)
+        if self._finishing:
+            self._upgrade_to_close(r)
+            return
+        if self._busy_for("close"):
+            # Running workers are not joined on the GUI thread: Finishing, then the close by itself (D-06)
+            self._enter_finishing("close", functools.partial(self._finish_close, r))
+            self._cancel_probe_for_close()
+            return
+        self._finish_close(r)
 
     def keyPressEvent(self, event: QKeyEvent):
-        if (self.is_installing() or self.is_committing()) and event.key() == Qt.Key.Key_Escape:
+        if (self.is_installing() or self.is_committing() or self._finishing) and event.key() == Qt.Key.Key_Escape:
             event.accept()
             return
         super().keyPressEvent(event)
 
     def closeEvent(self, event: QCloseEvent):
         if self.is_installing() or self.is_committing():
+            event.ignore()
+            return
+        if self._finishing or self._busy_for("close"):
+            # done() defers the close; super().closeEvent would call reject again
+            self.done(QDialog.DialogCode.Rejected)
             event.ignore()
             return
         self._log_not_committed()
