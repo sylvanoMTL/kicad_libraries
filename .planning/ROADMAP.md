@@ -254,7 +254,7 @@ Plans:
   4. The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes.
   5. On a case-sensitive folder, when a case twin was written under another spelling, rollback restores the original spelling and removes the twin on both the rollback and the overwrite branches, as the deferred Phase 4 UAT Test 3 (backlog 999.2) expected.
 
-**Plans**: 6/8 plans executed
+**Plans**: 7/8 plans executed
 
 Plans:
 **Wave 1**
@@ -270,7 +270,7 @@ Plans:
 - [x] 12-06-PLAN.md — KiCad-open check off the GUI thread before the dialog, Retry / Change anyway / Not now, confirmed write merged into the re-read file, test teardown join (REV-05, D-09..D-12)
 
 **Wave 4** *(blocked on Wave 3 completion)*
-- [ ] 12-07-PLAN.md — close through Finishing (dialog and main window), Escape inert, close-wins, Cancel of a close, no join in _shutdown (REV-04, D-06, D-07)
+- [x] 12-07-PLAN.md — close through Finishing (dialog and main window), Escape inert, close-wins, Cancel of a close, no join in _shutdown (REV-04, D-06, D-07)
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [ ] 12-08-PLAN.md — Help text for the Phase 12 behaviour, 05-REVIEW dispositions, full-suite phase gate, live kicad-cli check (REV-01..REV-05)
@@ -303,7 +303,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
-| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 6/8 | In Progress | - |
+| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 7/8 | In Progress | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
 ## Backlog
