@@ -254,7 +254,27 @@ Plans:
   4. The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes.
   5. On a case-sensitive folder, when a case twin was written under another spelling, rollback restores the original spelling and removes the twin on both the rollback and the overwrite branches, as the deferred Phase 4 UAT Test 3 (backlog 999.2) expected.
 
-**Plans**: TBD
+**Plans**: 8 plans
+
+Plans:
+**Wave 1**
+- [ ] 12-01-PLAN.md — case-twin rollback and overwrite on a real case-sensitive folder; overwrite keeps the on-disk spelling (VER-02, D-13, D-14)
+- [ ] 12-02-PLAN.md — Help stylesheet and conflict rows from theme tokens only, SURFACE_BASE, screenshots (UI-01)
+- [ ] 12-03-PLAN.md — table step: already listed only for a real match, stale entry repointed, live clash and hand entry warned, existing-library branch (REV-01, D-01..D-05)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 12-04-PLAN.md — blank Destination never reaches the working directory: post-install, Generate, table logs, Restore Backup (REV-02)
+- [ ] 12-05-PLAN.md — Finishing state for Change.../open with Cancel and the 10 s note; Install disabled during a one-off build, one-off jobs held during Install (REV-03, REV-04, D-06..D-08)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 12-06-PLAN.md — KiCad-open check off the GUI thread before the dialog, Retry / Change anyway / Not now, confirmed write merged into the re-read file, test teardown join (REV-05, D-09..D-12)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 12-07-PLAN.md — close through Finishing (dialog and main window), Escape inert, close-wins, Cancel of a close, no join in _shutdown (REV-04, D-06, D-07)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 12-08-PLAN.md — Help text for the Phase 12 behaviour, 05-REVIEW dispositions, full-suite phase gate, live kicad-cli check (REV-01..REV-05)
+
 **UI hint**: yes
 
 ### Phase 13: Atomic Migration and KiCad Setup
@@ -283,7 +303,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
-| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/TBD | Not started | - |
+| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 0/8 | Planned | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
 ## Backlog

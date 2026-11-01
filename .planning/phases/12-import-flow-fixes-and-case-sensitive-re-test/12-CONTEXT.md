@@ -87,6 +87,14 @@ Out of this phase:
 - The "keep the on-disk spelling" rule (D-14) applies to footprint `.kicad_mod` files in a `.pretty` folder as well as 3D models.
 - The exact wording of the Finishing strip, the KiCad-open dialog and the Result rows, as long as it stays plain language with no raw field names.
 
+### Owner answers at planning (2026-11-01, from RESEARCH.md open questions)
+- `_reap` keeps a bounded `worker.wait(2000)` on threads whose work has already returned. The unbounded waits in `_wait_builds` and `_shutdown` are replaced by the Finishing state (D-06). The plan says so explicitly.
+- While Finishing, Escape does nothing (Cancel is the only way out). The window X turns a pending Change.../open into a pending close.
+- A blank Destination after install shows a WARNING (amber) Result row, not an error.
+- The case-only `Rename` preview row that D-14 produces (e.g. `Foo.step` → `foo.STEP`) is kept; the UAT screenshot confirms it reads well.
+- **Refinement of D-08 (owner-approved after plan check):** held one-off conflict builds resume after a *failed* install, but are dropped after a *successful* install, because the Result page has replaced the preview they would update. Both handlers still call `_pump_builds()`. A held preview rebuild is dropped after a successful install for the same reason (owner-approved after the third plan check).
+- **Refinement of D-11 (owner-approved after plan check):** the re-read / ask-again loop is capped at 3 passes. If the file still needs a different change list after the third pass, nothing is written and a WARNING says so.
+
 </decisions>
 
 <canonical_refs>

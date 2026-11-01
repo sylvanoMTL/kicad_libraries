@@ -473,16 +473,23 @@ Regression test for UI-01 (new, cheap): assert `re.findall(r"#[0-9A-Fa-f]{3,8}\b
 | A5 | Cancelling a Finishing close restores the dialog fully by resuming `_pump_builds()` | Pattern 2 | A dirty preview could stay out of date; fix is one `_request_rebuild()` on Cancel |
 | A6 | Owner prefers "close wins" over a pending Change when X is pressed during Finishing | Pattern 2 | Cosmetic; CONTEXT does not specify |
 
-## Open Questions
+## Open Questions (RESOLVED)
+
+All five were answered on 2026-11-01. Questions 1-4 by the owner (12-CONTEXT.md, "Owner answers at planning"); question 5 by the planner within the latitude D-10 gives.
 
 1. **Keep a bounded wait in `_reap`?**
    - What we know: D-06 says the Finishing state "replaces ... the waits in `_shutdown` and `_reap`". `_reap`'s wait only joins a thread whose `run()` has returned, but Qt warns the thread "may still run for arbitrary amount of time" after `finished()`.
    - What's unclear: whether the owner means that join too.
    - Recommendation: replace the unbounded waits in `_wait_builds` and `_shutdown`, keep `worker.wait(2000)` in `_reap`, and say so in the plan.
+   - **RESOLVED:** recommendation accepted (12-CONTEXT.md, "Owner answers at planning", bullet 1). `_reap` keeps `worker.wait(2000)`; the unbounded waits in `_wait_builds` and `_shutdown` are replaced by the Finishing state. Implemented by plan 12-05 (`_reap`, `_wait_builds`) and plan 12-07 (`_shutdown` joins no worker).
 2. **What does Escape do while Finishing?** Recommendation: nothing (Cancel is the only way out), close-wins for the X button.
+   - **RESOLVED:** recommendation accepted (12-CONTEXT.md, "Owner answers at planning", bullet 2). Escape does nothing while Finishing; the window X turns a pending Change... or open into a pending close. Implemented by plan 12-07.
 3. **Blank-Destination severity in the Result row:** WARNING (recommended) vs ERROR (matches the missing-folder row).
+   - **RESOLVED:** WARNING, shown as an amber Result row (12-CONTEXT.md, "Owner answers at planning", bullet 3). Implemented by plan 12-04.
 4. **Should the `Rename` row for a case-only D-14 change be suppressed or reworded?** Recommendation: keep it (it explains why the link spelling differs from the vendor's) and let the UAT screenshot decide.
+   - **RESOLVED:** kept as it is; the UAT screenshot confirms it reads well (12-CONTEXT.md, "Owner answers at planning", bullet 4). Implemented by plan 12-01.
 5. **After Retry finds KiCad closed: Yes/No confirm (recommended) or write at once?** CONTEXT leaves it to the planner; the confirm path is the only one that cannot write without a confirm.
+   - **RESOLVED:** Yes/No confirm. D-10 leaves this to the planner, as long as nothing is written without a confirm (12-CONTEXT.md, D-10). Plan 12-06 implements it: Retry runs the KiCad check again; if KiCad is still open the same three-button dialog returns, otherwise today's Yes/No confirm follows, so nothing is written without a Yes or a Change anyway.
 
 ## Environment Availability
 
