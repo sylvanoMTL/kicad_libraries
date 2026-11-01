@@ -1253,13 +1253,23 @@ class ImportDialog(QDialog):
         self.open_path(path)
 
     def open_path(self, path: Path):
-        """Open a zip or folder on a worker; the dialog owns the resulting Package."""
+        """Open a zip or folder on a worker; the dialog owns the resulting Package.
+
+        A running build is not waited for on the GUI thread: the dialog enters Finishing and the open runs
+        when the build has ended (D-06), so the old package closes only after it (WR-04).
+        """
         if (
-            self._closing or self._open_worker is not None or self.is_installing() or self.is_committing()
-            or self.is_probing()
+            self._closing or self._finishing or self._open_worker is not None or self.is_installing()
+            or self.is_committing() or self.is_probing()
         ):
             return
-        self._wait_builds()  # WR-04: never close the package under a running build
+        if self._busy_builds():
+            self._enter_finishing("open", functools.partial(self._do_open, path))
+            return
+        self._do_open(path)
+
+    def _do_open(self, path: Path):
+        """The open after the builds have ended: discard the old package, reset, read the new one."""
         self._discard_package()
         self._reset_edit_state()
         self._hide_issue_box()
@@ -1490,12 +1500,6 @@ class ImportDialog(QDialog):
         return True
 
     # -- the rebuild coordinator (PREV-07, D-06) -------------------------------
-
-    def _wait_builds(self):
-        """Wait for the running rebuild and one-off build, if any (open_path only until Task 2 replaces it)."""
-        for worker in (self._building, self._oneoff):
-            if worker is not None:
-                worker.wait()
 
     def is_finishing(self) -> bool:
         """True while a Change... or an open waits for a running build to end (D-06)."""
