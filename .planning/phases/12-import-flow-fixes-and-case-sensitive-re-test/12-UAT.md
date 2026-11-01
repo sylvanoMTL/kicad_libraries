@@ -1,9 +1,9 @@
 ---
-status: partial
+status: diagnosed
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
 source: [12-VERIFICATION.md]
 started: 2026-11-01T15:45:00Z
-updated: 2026-11-01T20:06:57.723Z
+updated: 2026-11-01T19:30:00Z
 ---
 
 ## Current Test
@@ -82,8 +82,16 @@ blocked: 1
   reason: "User reported: a cancel button on the right side of instal part is misisng"
   severity: major
   test: 6
-  artifacts: []
-  missing: []
+  root_cause: "The Edit page's bottom row (ImportDialog edit page builder) holds only the atomic strip, the install progress row and Install Part; no Cancel was ever specified (Phase 5 D-10 only forbade cancelling a running install). Leaving relies on the title-bar X or Escape."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "bottom row ~L760-794 adds _install_btn only; reject()/closeEvent (~L3370-3407) already handle Finishing, busy builds, installing and committing"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "Importing Parts page does not mention a Cancel button"
+  missing:
+    - "QPushButton('Cancel') to the right of Install Part that calls self.reject() (same path as X/Escape, so Finishing and close waits are reused)"
+    - "Cancel disabled while installing or committing, re-enabled after (follow the Install Part enable/disable points)"
+    - "Help sentence + tests in tests/test_import_dialog.py (Cancel closes idle dialog; disabled during install; during a build it enters Finishing like X)"
 
 - gap_id: G-12-5
   truth: "User-facing text names no raw tools or files: the Help page, the Finishing strip slow note, the path-variable questions (Yes/No and KiCad is open) and the keeps-changing log line say \"the KiCad command-line tool\" and \"KiCad's settings file\" instead of kicad-cli and kicad_common.json."
@@ -91,8 +99,20 @@ blocked: 1
   reason: "User reported: plain (replace kicad-cli / kicad_common.json with plain names)"
   severity: minor
   test: 5
-  artifacts: []
-  missing: []
+  root_cause: "Phase 12 added user-facing text that names the tool and settings file by their raw names, against the owner's plain-language rule."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "L107 SLOW_CLI_TEXT = 'kicad-cli is slow to respond (it gives up after 60 s)'"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "L320-321 'the strip adds that kicad-cli is slow to respond; kicad-cli gives up after 60 seconds'"
+    - path: "kicad_lib_manager/main_window.py"
+      issue: "L1118 and L1141 'These KiCad path variables in kicad_common.json would change'"
+    - path: "kicad_lib_manager/library_scanner.py"
+      issue: "L323 'kicad_common.json kept changing while you were asked; nothing was written.'"
+  missing:
+    - "Replace kicad-cli with 'the KiCad command-line tool' and kicad_common.json with \"KiCad's settings file\" in these user-facing strings"
+    - "Grep all user-facing strings (widgets, main_window, library_scanner messages, help pages) for other raw kicad-cli / kicad_common.json mentions added in phase 12 and fix them the same way; keep message prefixes the caller matches on (Failed, Could not, not found, Warning:) unchanged"
+    - "Update tests that assert these strings (tests/test_import_dialog.py, tests/test_kicad_config.py)"
 
 - gap_id: G-12-7
   truth: "In an Atomic_ library the empty Description box's hint says a Description is required (not that it will be written blank), matching the atomic check that blocks Install."
@@ -100,8 +120,16 @@ blocked: 1
   reason: "User reported: the UI is super confusing - Description placeholder says it will be written blank while Install is blocked for no description"
   severity: major
   test: 7
-  artifacts: []
-  missing: []
+  root_cause: "_BLANK_FIELD_HINT ('Empty - the field will be written blank', import_dialog.py L87) is set as the placeholder of Datasheet, Description and Manufacturer (L1110-1111). It predates the atomic rule (Phase 9/10): the importer now only accepts Atomic_ target libraries (stems.name_verdict refuses anything else), and the atomic check requires all three fields, so the hint always contradicts the 'Install is blocked: Type a Description' strip."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "L87 _BLANK_FIELD_HINT; L1110-1111 applied to datasheet/description/manufacturer"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "Fields section says 'An emptied optional field is written blank', which no longer applies to these three fields"
+  missing:
+    - "Placeholder that says the field is required, in plain words (e.g. 'Required - type a Description'), for Datasheet, Description and Manufacturer"
+    - "Help Fields paragraph reworded to match (these fields are required for an Atomic_ library)"
+    - "Tests asserting the placeholder text updated"
 
 - gap_id: G-12-8
   truth: "The Change... button makes clear it picks a different package."
@@ -109,5 +137,12 @@ blocked: 1
   reason: "User reported: the UI is super confusing - Change... does not say it picks another package"
   severity: minor
   test: 8
-  artifacts: []
-  missing: []
+  root_cause: "The package header's button is labelled only 'Change...' (import_dialog.py L662) with no tooltip; it sits alone at the top right, so nothing says it discards this package and goes back to pick another one."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "L662 QPushButton('Change...') with no tooltip"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "Help text names the button 'Change...' in several places"
+  missing:
+    - "Clearer label (e.g. 'Choose another package...') and a tooltip saying the current package and its edits are discarded and nothing has been written"
+    - "Help pages and tests that name the button updated to the new label (grep 'Change...' in kicad_lib_manager and tests)"
