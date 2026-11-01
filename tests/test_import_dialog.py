@@ -5444,3 +5444,114 @@ def test_no_build_starts_while_finishing(qtbot, make_dialog, gates):
     gates[0].set()
     qtbot.waitUntil(lambda: len(builds) == held + 1, timeout=30000)  # the queued rebuild runs after Cancel
     wait_plan(qtbot, dialog)
+
+
+# -- REV-03: a conflict view's one-off build and Install never overlap (D-08) ------------------------------
+
+
+def counting_oneoff_build(gates, calls: dict, gate_oneoff: bool = False):
+    """A build_plan fake that counts its calls; with gate_oneoff, the Overwrite one-off for the footprint is held."""
+
+    def build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        calls["n"] += 1
+        if gate_oneoff and options.resolutions.get(FP_KEY) == Resolution("overwrite"):
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    return build
+
+
+def skip_clash_dialog(qtbot, make_install_dialog, item_layout, **changes) -> ImportDialog:
+    """A planned dialog whose footprint clash is set to Skip, so Install is enabled."""
+    write_clashes(item_layout, model=False)
+    dialog = make_install_dialog(**changes)
+    dialog._conflict_rows[FP_KEY]._skip_btn.click()
+    wait_current(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    return dialog
+
+
+def gated_failing_apply(gates, started):
+    failing = failing_apply(Issue(Severity.ERROR, "install.test", "The install broke"))
+
+    def apply(plan, *, backup_root=None, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return failing(plan, backup_root=backup_root, progress=progress)
+
+    return apply
+
+
+def test_install_disabled_while_oneoff_runs(qtbot, make_install_dialog, item_layout, gates):
+    calls = {"n": 0}
+    dialog = skip_clash_dialog(
+        qtbot, make_install_dialog, item_layout, build_plan=counting_oneoff_build(gates, calls, gate_oneoff=True)
+    )
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog._install_btn.isEnabled()
+    assert dialog._updating_label.isVisible()
+
+    gates[0].set()
+    wait_view(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)  # back by itself, no other action
+    assert not dialog._updating_label.isVisible()
+
+
+def test_oneoff_held_during_install_runs_after_failure(qtbot, make_install_dialog, item_layout, gates):
+    calls = {"n": 0}
+    started = threading.Event()
+    dialog = skip_clash_dialog(
+        qtbot,
+        make_install_dialog,
+        item_layout,
+        build_plan=counting_oneoff_build(gates, calls),
+        apply_plan=gated_failing_apply(gates, started),
+    )
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    before = calls["n"]
+
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    qtbot.wait(150)
+    assert calls["n"] == before  # held: no build reads the files while the install writes them
+    assert len(dialog._oneoff_jobs) == 1
+
+    gates[-1].set()  # the install fails
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == f"{FP_PATH} - existing vs incoming"
+    assert calls["n"] > before
+
+
+def test_oneoff_held_during_install_dropped_after_success(qtbot, make_install_dialog, item_layout, gates):
+    calls = {"n": 0}
+    started = threading.Event()
+    dialog = skip_clash_dialog(
+        qtbot,
+        make_install_dialog,
+        item_layout,
+        build_plan=counting_oneoff_build(gates, calls),
+        apply_plan=blocking_apply(gates, started=started),
+    )
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    before = calls["n"]
+
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    dialog._request_rebuild()  # a rebuild asked for during the install is held too
+    qtbot.wait(150)
+    assert calls["n"] == before
+    assert len(dialog._oneoff_jobs) == 1 and dialog._queued is not None
+
+    gates[-1].set()  # the install succeeds
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    finish_workers(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._result_page
+    assert calls["n"] == before  # neither the one-off nor the rebuild ran
+    assert dialog._oneoff_jobs == []
+    assert dialog._queued is None
+    assert not open_views(dialog)
