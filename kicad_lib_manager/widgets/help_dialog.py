@@ -5,59 +5,31 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from .import_dialog import ADD_MODEL_TEXT, OFFICIAL_FOOTPRINT_TEXT, REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT
-from .theme import ACCENT, AMBER
+from .theme import (
+    ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
+    SP_MD, SP_SM, SP_XS, SURFACE, SURFACE_HEADER,
+)
 
-CSS = """
-body {
-    font-family: "Segoe UI", Arial, sans-serif;
-    font-size: 14px;
-    color: #222;
-    margin: 16px 20px;
-    line-height: 1.55;
-}
-h2 {
-    color: #0057A0;
-    border-bottom: 2px solid #0078D4;
-    padding-bottom: 6px;
-    margin-top: 8px;
-}
-h3 {
-    color: #333;
-    margin-top: 18px;
-}
-code {
-    background: #EEF1F5;
-    padding: 2px 5px;
-    border-radius: 3px;
-    font-size: 13px;
-}
-pre {
-    background: #F5F7FA;
-    border-left: 3px solid #0078D4;
-    padding: 10px 14px;
-    font-size: 13px;
-    overflow-x: auto;
-}
-ul, ol { margin-left: 8px; }
-li { margin-bottom: 6px; }
-table {
-    border-collapse: collapse;
-    margin: 10px 0;
-}
-th, td {
-    border: 1px solid #CCC;
-    padding: 6px 12px;
-    text-align: left;
-}
-th { background: #EEF1F5; }
-a { color: #0078D4; }
-.hint {
-    background: #FFF8E1;
-    border-left: 3px solid #F9A825;
-    padding: 8px 12px;
-    margin: 10px 0;
-}
-"""
+# Every colour, size and gap comes from theme.py (UI-01); the body takes the application font and palette
+CSS = "\n".join([
+    f'body {{ font-family: "Segoe UI", Arial, sans-serif; margin: {SP_MD}px {SP_MD}px {SP_MD}px {SP_MD}px; '
+    "line-height: 1.55; }",
+    f"h2 {{ color: {LINK}; border-bottom: 2px solid {ACCENT}; padding-bottom: {SP_XS}px; "
+    f"margin-top: {SP_SM}px; font-size: {DISPLAY_PT}pt; }}",
+    f"h3 {{ margin-top: {SP_MD}px; font-size: {HEADING_PT}pt; }}",
+    f"code {{ background: {SURFACE_HEADER}; padding: 0px {SP_XS}px; font-family: {MONO_FAMILY}; "
+    f"font-size: {MONO_PT}pt; }}",
+    f"pre {{ background: {SURFACE}; border-left: 3px solid {ACCENT}; padding: {SP_SM}px {SP_MD}px; "
+    f"font-family: {MONO_FAMILY}; font-size: {MONO_PT}pt; }}",
+    f"ul, ol {{ margin-left: {SP_SM}px; }}",
+    f"li {{ margin-bottom: {SP_XS}px; }}",
+    f"table {{ border-collapse: collapse; margin: {SP_SM}px 0px; }}",
+    f"th, td {{ border: 1px solid {BORDER}; padding: {SP_XS}px {SP_SM}px; text-align: left; }}",
+    f"th {{ background: {SURFACE_HEADER}; }}",
+    f"a {{ color: {ACCENT}; }}",
+    f".hint {{ background: {AMBER_TINT}; border-left: 3px solid {AMBER}; padding: {SP_SM}px {SP_MD}px; "
+    f"margin: {SP_SM}px 0px; }}",
+])
 
 
 def _wrap(body: str) -> str:
