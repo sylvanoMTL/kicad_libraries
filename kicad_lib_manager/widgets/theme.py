@@ -12,6 +12,7 @@ LINK = "#0057A0"
 MUTED = "#595959"
 SURFACE = "#F5F7FA"
 SURFACE_HEADER = "#EEF1F5"
+SURFACE_BASE = "#FFFFFF"  # plain button fill, and the text on a filled checked button
 BORDER = "#C8C8C8"
 
 # ── Spacing scale (px) ──────────────────────────────────────────────────────

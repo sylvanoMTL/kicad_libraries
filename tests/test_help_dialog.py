@@ -3,9 +3,10 @@
 import html as html_module
 import re
 import types
+from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTreeWidgetItem
+from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTextBrowser, QTreeWidgetItem
 
 from zipfixtures import footprint_library_for
 
@@ -18,7 +19,11 @@ from kicad_lib_manager.widgets.commit_panel import _ADDED_MARK, _CHANGED_MARK, C
 from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
 from kicad_lib_manager.widgets.import_result import ImportResultView
-from kicad_lib_manager.widgets.theme import ACCENT, AMBER
+from kicad_lib_manager.widgets import conflict_row, help_dialog, theme
+from kicad_lib_manager.widgets.conflict_row import _button_qss
+from kicad_lib_manager.widgets.theme import (
+    ACCENT, AMBER, DISPLAY_PT, ERROR, HEADING_PT, MONO_FAMILY, MONO_PT, SURFACE_BASE,
+)
 
 # The Atomic_ install target the stub results below name
 LIBRARY = "Atomic_Analog"
@@ -294,3 +299,55 @@ def test_help_import_page_uses_plain_words():
     assert "ki_" not in raw
     # the old generic-word rule is gone: no sentence about name parts
     assert "generic words" not in page
+
+
+def test_help_css_uses_theme_tokens_only():
+    css = help_dialog.CSS
+    colours = {v.upper() for k, v in vars(theme).items() if k.isupper() and isinstance(v, str) and v.startswith("#")}
+    found = re.findall(r"#[0-9A-Fa-f]{3,8}\b", css)
+    assert found, "the stylesheet no longer carries any colour"
+    for literal in found:
+        assert literal.upper() in colours, literal
+    assert re.search(r"font-size:\s*\d+px", css) is None
+    for text in (f"{DISPLAY_PT}pt", f"{HEADING_PT}pt", f"{MONO_PT}pt", MONO_FAMILY):
+        assert text in css, text
+    assert "border-radius" not in css
+    # the source holds no colour literal either: the stylesheet is built from the constants
+    source = Path(help_dialog.__file__).read_text(encoding="utf-8")
+    assert re.findall(r"#[0-9A-Fa-f]{3,8}\b", source) == []
+
+
+def test_help_headings_keep_their_sizes(qtbot):
+    browser = QTextBrowser()
+    qtbot.addWidget(browser)
+    browser.setHtml(HELP_PAGES["importing"])
+
+    def first_size(level: int) -> float:
+        block = browser.document().firstBlock()
+        while block.isValid():
+            if block.blockFormat().headingLevel() == level:
+                return next(iter(block)).fragment().charFormat().fontPointSize()
+            block = block.next()
+        raise AssertionError(f"no level {level} heading on the page")
+
+    assert first_size(2) == DISPLAY_PT
+    assert first_size(3) == HEADING_PT
+    mono = set()
+    block = browser.document().firstBlock()
+    while block.isValid():
+        for fragment in block:
+            fmt = fragment.fragment().charFormat()
+            if MONO_FAMILY in fmt.fontFamilies():
+                mono.add(fmt.fontPointSize())
+        block = block.next()
+    assert mono, "no code or pre text on the page"
+    assert mono == {float(MONO_PT)}
+
+
+def test_conflict_row_styles_use_theme_tokens():
+    text = Path(conflict_row.__file__).read_text(encoding="utf-8")
+    assert re.findall(r"#[0-9A-Fa-f]{3,8}\b", text) == []
+    qss = _button_qss(ERROR)
+    assert f"background-color: {SURFACE_BASE}" in qss
+    assert f"color: {SURFACE_BASE}" in qss
+    assert re.fullmatch(r"#FFFFFF", theme.SURFACE_BASE)

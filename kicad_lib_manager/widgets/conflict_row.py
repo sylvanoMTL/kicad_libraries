@@ -14,7 +14,8 @@ from PySide6.QtWidgets import (
 from ..importer.form import kind_label
 from ..importer.plan import Conflict, Resolution
 from .theme import (
-    ACCENT, AMBER, BORDER, ERROR, FIELD_FRAME_QSS, MUTED, SP_SM, SP_XS, SUCCESS, SURFACE, SURFACE_HEADER,
+    ACCENT, AMBER, BORDER, ERROR, FIELD_FRAME_QSS, MUTED, SP_SM, SP_XS, SUCCESS, SURFACE, SURFACE_BASE,
+    SURFACE_HEADER,
 )
 
 NEEDS_CHOICE = "Needs a choice"
@@ -32,9 +33,9 @@ _ROW_QSS = "\n".join([
 
 def _button_qss(fill: str) -> str:
     return "\n".join([
-        f"QPushButton {{ background-color: #FFFFFF; border: 1px solid {BORDER}; border-radius: 2px; "
+        f"QPushButton {{ background-color: {SURFACE_BASE}; border: 1px solid {BORDER}; border-radius: 2px; "
         f"padding: 4px {_BUTTON_PAD}px; min-height: 16px; }}",
-        f"QPushButton:checked {{ background-color: {fill}; border-color: {fill}; color: #FFFFFF; "
+        f"QPushButton:checked {{ background-color: {fill}; border-color: {fill}; color: {SURFACE_BASE}; "
         "font-weight: bold; }",
     ])
 
