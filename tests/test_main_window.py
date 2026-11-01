@@ -209,6 +209,61 @@ def test_destination_change_only_logs_and_never_on_keystrokes(make_window, tmp_p
     assert [lib.selected for lib in scan.footprint_libs] == [False]
 
 
+NO_DEST = "No destination folder set; library tables not changed"
+
+
+@pytest.mark.parametrize("blank", ["", "  "], ids=["empty", "spaces"])
+def test_generate_blank_destination_writes_nothing(make_window, tmp_path, monkeypatch, blank):
+    w = make_window([_new_lib_scan()])
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    history_before = settings.load_dest_history()
+    w._dest_combo.setEditText(blank)
+
+    w._on_generate()
+
+    assert os.listdir(cwd) == []
+    assert NO_DEST in w._log._text.toPlainText()
+    assert make_window.questions == []
+    assert not (tmp_path / "backups").exists()
+    history = settings.load_dest_history()
+    assert history == history_before
+    assert not any(not entry.strip() for entry in history)
+
+
+@pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "spaces"])
+def test_blank_destination_never_reads_the_working_directory(
+    qtbot, make_window, tmp_path, monkeypatch, blank
+):
+    scan = ScanResult(
+        symbol_libs=[SymbolLibrary("A", "Custom/Symbols/A.kicad_sym", "Custom")],
+        footprint_libs=[FootprintLibrary("B", "Custom/Footprints/B.pretty", "Custom")],
+    )
+    w = make_window([scan])
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "sym-lib-table").write_bytes(
+        _managed_table("sym_lib_table", [("A", "Custom/Symbols/A.kicad_sym")])
+    )
+    monkeypatch.chdir(cwd)
+    w._dest_combo.setEditText(blank)
+    before = w._log._text.toPlainText()
+
+    w._log_existing_tables(w._dest_path())
+    w._on_dest_changed()
+    w._apply_existing_selection(scan)
+    w._on_rescan()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert w._dest_path() is None
+    assert "Existing sym-lib-table found" not in w._log._text.toPlainText()[len(before):]
+    assert "Pre-selected" not in w._log._text.toPlainText()[len(before):]
+    assert [lib.selected for lib in scan.symbol_libs] == [False]
+    assert [lib.selected for lib in scan.footprint_libs] == [False]
+    assert sorted(os.listdir(cwd)) == ["sym-lib-table"]
+
+
 def _new_lib_scan():
     return ScanResult(
         symbol_libs=[SymbolLibrary("New", "Custom/Symbols/New.kicad_sym", "Custom", selected=True)],
