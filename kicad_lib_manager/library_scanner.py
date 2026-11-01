@@ -5,6 +5,7 @@ import re
 import stat
 import sys
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Callable
 
@@ -144,19 +145,35 @@ def _path_var_refusal(repo_root: Path, repo_str: str, old_vars: dict) -> Issue |
     return None
 
 
+class ConfirmAnswer(Enum):
+    """The answer of the path-variable confirm; plain True/False still mean write/decline."""
+
+    WRITE = "write"
+    DECLINE = "decline"
+    RETRY = "retry"
+
+
+def _as_answer(value) -> ConfirmAnswer:
+    if isinstance(value, ConfirmAnswer):
+        return value
+    return ConfirmAnswer.WRITE if value is True else ConfirmAnswer.DECLINE
+
+
 def sync_kicad_path_vars(
     repo_root: Path,
     *,
     config_base: Path | None = None,
     backup_root: Path | None = None,
     running: Callable[[], list[str]] | None = None,
-    confirm: Callable[[list[tuple[str, str | None, str]]], bool] | None = None,
+    confirm: Callable[[list[tuple[str, str | None, str]]], bool | ConfirmAnswer] | None = None,
 ) -> list[Issue]:
     """Set KICAD_LIB_GITHUB and CUSTOM_3DMODEL_DIR in the newest kicad_common.json.
 
-    Nothing is written unless the values would change and confirm(changes) returns
-    True. changes lists only the variables that would change, as (variable, old value
-    or None, new value). A missing confirm writes nothing.
+    Nothing is written unless the values would change and confirm(changes) answers
+    True or ConfirmAnswer.WRITE. changes lists only the variables that would change,
+    as (variable, old value or None, new value). A missing confirm writes nothing.
+    running() is called once, right before confirm, so the confirm can tell the owner
+    that KiCad is open; ConfirmAnswer.RETRY returns a config.retry note and writes nothing.
 
     The file is backed up first, re-parsed to prove only environment.vars changed,
     then replaced atomically. Older KiCad versions are never touched.
@@ -246,7 +263,13 @@ def sync_kicad_path_vars(
             "config.confirm_required",
             "Not changing KiCad path variables: no confirmation step was provided",
         )]
-    if not confirm(changes):
+    names = (running or kicad_running)()
+    answer = _as_answer(confirm(changes))
+    if answer is ConfirmAnswer.RETRY:
+        return issues + [Issue(
+            Severity.INFO, "config.retry", "Checking again whether KiCad is still open..."
+        )]
+    if answer is not ConfirmAnswer.WRITE:
         return issues + [Issue(
             Severity.INFO,
             "config.declined",
@@ -265,7 +288,6 @@ def sync_kicad_path_vars(
         )]
     new_text = fsutil.normalize_eol(new_text, src.eol)
 
-    names = (running or kicad_running)()
     if names:
         issues.append(Issue(
             Severity.WARNING,
