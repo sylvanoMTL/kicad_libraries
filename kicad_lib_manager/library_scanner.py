@@ -145,6 +145,70 @@ def _path_var_refusal(repo_root: Path, repo_str: str, old_vars: dict) -> Issue |
     return None
 
 
+_PATH_VAR_PASSES = 3  # how often the confirm may be asked again when the file keeps changing
+
+
+def _read_config(config_file: Path) -> tuple[fsutil.SourceText, dict, dict] | Issue:
+    """Read kicad_common.json: (source, parsed config, environment.vars) or the reason it cannot be used."""
+    src = fsutil.read_source(config_file)
+    if isinstance(src, Issue):
+        return src
+    try:
+        config = json.loads(src.text)
+    except json.JSONDecodeError as e:
+        return Issue(
+            Severity.ERROR,
+            "config.bad_json",
+            f"Could not read {config_file.name}: invalid JSON at line {e.lineno}, "
+            f"col {e.colno}; nothing was written",
+        )
+
+    # KiCad 7 and 8 write "vars": null, so None counts as an empty object
+    bad_shape = not isinstance(config, dict)
+    env = {} if bad_shape else config.get("environment", {})
+    bad_shape = bad_shape or not isinstance(env, dict)
+    old_vars = {} if bad_shape else env.get("vars")
+    if old_vars is None:
+        old_vars = {}
+    bad_shape = bad_shape or not isinstance(old_vars, dict)
+    if bad_shape:
+        return Issue(
+            Severity.ERROR,
+            "config.bad_shape",
+            f"{config_file.name} has an unexpected structure "
+            f"(environment.vars is not an object); nothing was written",
+        )
+    return src, config, old_vars
+
+
+def _plan_changes(
+    old_vars: dict, desired: dict[str, str]
+) -> tuple[list[tuple[str, str | None, str]], list[Issue], list[Issue]]:
+    """The variables that would change, the 'already set' lines and the 'set' lines."""
+    changes: list[tuple[str, str | None, str]] = []
+    ok_issues: list[Issue] = []
+    set_issues: list[Issue] = []
+    for key, value in desired.items():
+        old = old_vars.get(key)
+        if old != value:
+            changes.append((key, old, value))
+        if old == value:
+            ok_issues.append(Issue(
+                Severity.INFO, "config.var_ok", f"KiCad path '{key}' already set correctly"
+            ))
+        elif old is None:
+            set_issues.append(Issue(
+                Severity.SUCCESS, "config.var_set", f"KiCad path '{key}' set to: {value}"
+            ))
+        else:
+            set_issues.append(Issue(
+                Severity.SUCCESS,
+                "config.var_set",
+                f"KiCad path '{key}' updated: {old} -> {value}",
+            ))
+    return changes, ok_issues, set_issues
+
+
 class ConfirmAnswer(Enum):
     """The answer of the path-variable confirm; plain True/False still mean write/decline."""
 
@@ -175,8 +239,11 @@ def sync_kicad_path_vars(
     running() is called once, right before confirm, so the confirm can tell the owner
     that KiCad is open; ConfirmAnswer.RETRY returns a config.retry note and writes nothing.
 
-    The file is backed up first, re-parsed to prove only environment.vars changed,
-    then replaced atomically. Older KiCad versions are never touched.
+    After a yes the file is read again and only the two variables are set on top of its
+    current content, so settings KiCad saved while the owner was asked survive. A different
+    change list asks again (at most _PATH_VAR_PASSES times). The file is backed up first,
+    re-parsed to prove only environment.vars changed, then replaced atomically. Older KiCad
+    versions are never touched.
     """
     config_dir = find_kicad_config_dir(config_base)
     if not config_dir:
@@ -195,34 +262,10 @@ def sync_kicad_path_vars(
             f"(start and close KiCad {config_dir.name} once, then Generate again)",
         )]
 
-    src = fsutil.read_source(config_file)
-    if isinstance(src, Issue):
-        return [src]
-    try:
-        config = json.loads(src.text)
-    except json.JSONDecodeError as e:
-        return [Issue(
-            Severity.ERROR,
-            "config.bad_json",
-            f"Could not read {config_file.name}: invalid JSON at line {e.lineno}, "
-            f"col {e.colno}; nothing was written",
-        )]
-
-    # KiCad 7 and 8 write "vars": null, so None counts as an empty object
-    bad_shape = not isinstance(config, dict)
-    env = {} if bad_shape else config.get("environment", {})
-    bad_shape = bad_shape or not isinstance(env, dict)
-    old_vars = {} if bad_shape else env.get("vars")
-    if old_vars is None:
-        old_vars = {}
-    bad_shape = bad_shape or not isinstance(old_vars, dict)
-    if bad_shape:
-        return [Issue(
-            Severity.ERROR,
-            "config.bad_shape",
-            f"{config_file.name} has an unexpected structure "
-            f"(environment.vars is not an object); nothing was written",
-        )]
+    read = _read_config(config_file)
+    if isinstance(read, Issue):
+        return [read]
+    src, config, old_vars = read
 
     repo_str = str(repo_root).replace("\\", "/")
     desired = {
@@ -230,27 +273,7 @@ def sync_kicad_path_vars(
         "CUSTOM_3DMODEL_DIR": f"{repo_str}/Custom/3DModels",
     }
 
-    issues: list[Issue] = []
-    set_issues: list[Issue] = []
-    changes: list[tuple[str, str | None, str]] = []
-    for key, value in desired.items():
-        old = old_vars.get(key)
-        if old != value:
-            changes.append((key, old, value))
-        if old == value:
-            issues.append(Issue(
-                Severity.INFO, "config.var_ok", f"KiCad path '{key}' already set correctly"
-            ))
-        elif old is None:
-            set_issues.append(Issue(
-                Severity.SUCCESS, "config.var_set", f"KiCad path '{key}' set to: {value}"
-            ))
-        else:
-            set_issues.append(Issue(
-                Severity.SUCCESS,
-                "config.var_set",
-                f"KiCad path '{key}' updated: {old} -> {value}",
-            ))
+    changes, issues, set_issues = _plan_changes(old_vars, desired)
     if not set_issues:
         return issues
 
@@ -263,17 +286,42 @@ def sync_kicad_path_vars(
             "config.confirm_required",
             "Not changing KiCad path variables: no confirmation step was provided",
         )]
+
     names = (running or kicad_running)()
-    answer = _as_answer(confirm(changes))
-    if answer is ConfirmAnswer.RETRY:
-        return issues + [Issue(
-            Severity.INFO, "config.retry", "Checking again whether KiCad is still open..."
-        )]
-    if answer is not ConfirmAnswer.WRITE:
-        return issues + [Issue(
-            Severity.INFO,
-            "config.declined",
-            "KiCad path variables left unchanged (change declined)",
+    for _ in range(_PATH_VAR_PASSES):
+        answer = _as_answer(confirm(changes))
+        if answer is ConfirmAnswer.RETRY:
+            return issues + [Issue(
+                Severity.INFO, "config.retry", "Checking again whether KiCad is still open..."
+            )]
+        if answer is not ConfirmAnswer.WRITE:
+            return issues + [Issue(
+                Severity.INFO,
+                "config.declined",
+                "KiCad path variables left unchanged (change declined)",
+            )]
+
+        # KiCad may have saved while the owner read the dialog: the write starts from the
+        # file as it is now, never from the copy read before the question (D-11)
+        read = _read_config(config_file)
+        if isinstance(read, Issue):
+            return [read]
+        src, config, old_vars = read
+        fresh_changes, issues, set_issues = _plan_changes(old_vars, desired)
+        if not fresh_changes:
+            return issues
+        refusal = _path_var_refusal(repo_root, repo_str, old_vars)
+        if refusal is not None:
+            return issues + [refusal]
+        if fresh_changes == changes:
+            break
+        changes = fresh_changes
+    else:
+        return [Issue(
+            Severity.WARNING,
+            "config.keeps_changing",
+            "kicad_common.json kept changing while you were asked; nothing was written. "
+            "Press Generate Tables to try again.",
         )]
 
     new_config = copy.deepcopy(config)
@@ -292,8 +340,8 @@ def sync_kicad_path_vars(
         issues.append(Issue(
             Severity.WARNING,
             "config.kicad_running",
-            f"KiCad appears to be running ({', '.join(names)}); it may overwrite these "
-            f"path variables when it exits. Close KiCad and press Generate again.",
+            f"KiCad is open ({', '.join(names)}); it may undo these paths when it exits. "
+            f"If they revert, close KiCad and press Generate Tables.",
         ))
 
     backup_dir = (backup_root or fsutil.default_backup_dir()) / "kicad_common" / config_dir.name
