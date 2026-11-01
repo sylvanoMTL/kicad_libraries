@@ -2,44 +2,44 @@
 gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Atomic Libraries
-current_phase: 11
-current_phase_name: Commit Gate and Commit Panel Fixes
-status: executing
-stopped_at: Phase 11 context gathered
-last_updated: "2026-10-30T18:08:09.750Z"
-last_activity: 2026-10-30
-last_activity_desc: Phase 11 execution started
-state_head: d851ab8ffd04e8f1f236844d89a6f63c6b2de226
+current_phase: 12
+current_phase_name: Import Flow Fixes and Case-Sensitive Re-test
+status: planning
+stopped_at: Phase 11 complete, ready to plan Phase 12
+last_updated: "2026-11-01T10:49:29.411Z"
+last_activity: 2026-11-01
+last_activity_desc: Phase 11 complete, transitioned to Phase 12
+state_head: 46296edb195c5b63085469819b24466e5af947f1
 progress:
   total_phases: 6
-  completed_phases: 3
+  completed_phases: 4
   total_plans: 62
-  completed_plans: 58
-  percent: 50
+  completed_plans: 62
+  percent: 67
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-10-29)
+See: .planning/PROJECT.md (updated 2026-11-01)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 11 — Commit Gate and Commit Panel Fixes
+**Current focus:** Phase 12 — Import Flow Fixes and Case-Sensitive Re-test
 
 ## Current Position
 
-Phase: 11 (Commit Gate and Commit Panel Fixes) — EXECUTING
-Plan: 1 of 17
-Status: Executing Phase 11
-Last activity: 2026-10-30 — Phase 11 execution started
+Phase: 12 — Import Flow Fixes and Case-Sensitive Re-test
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-11-01 — Phase 11 complete, transitioned to Phase 12
 
-Progress: [█████░░░░░] 50%
+Progress: [███████░░░] 67%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 115
+- Total plans completed: 132
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -57,6 +57,7 @@ Progress: [█████░░░░░] 50%
 | 08 | 6 | - | - |
 | 09 | 9 | - | - |
 | 10 | 30 | - | - |
+| 11 | 17 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -93,6 +94,8 @@ The full decision log is in the PROJECT.md Key Decisions table. The v1.0 per-pha
 - [Phase 10]: UAT passed 2026-10-29 (16 checks; G-10-1 WR-06 pad-count family filter and G-10-11 every reason listed with an empty library, closed by 10-29 and 10-30); WR-07 kept: conflict choices are asked again after a refused library name is fixed
 - [Phase 10]: Deferred follow-up (kept in 10-UAT.md, not in the backlog): a log panel inside the import dialog for debugging
 - [Phase 08]: VER-01 closed: the KiCad 10 Symbol Editor check (08-UAT.md test 2) passed on 2026-10-26, with the scratch library unchanged by the session
+- [Phase 11]: UAT passed 2026-11-01 (3/3): commit panel look checked from rendered screenshots at 100% and 200%; the "Finish it by hand" command pasted into real interactive Windows PowerShell 5.1 and PowerShell 7.6 consoles made the parent commit with quotes, $, $(...) and backticks intact
+- [Phase 11]: The commit gate fails closed: an unreadable outside `Atomic_` library or unlistable Symbols folder refuses the commit (owner decision, plan 11-15)
 
 ### Pending Todos
 
@@ -101,12 +104,13 @@ None yet.
 ### Blockers/Concerns
 
 - [Phase 10]: Review findings open and non-blocking (10-REVIEW-DISPOSITION.md): WR-01 unlocked shared caches in footprint_index/siblings, WR-03 unvalidated manufacturer owner chain, WR-04 unescaped vendor tooltips, IN-01..IN-06
+- [Phase 11]: Review findings open and non-blocking (11-REVIEW-DISPOSITION.md): WR-01 a kept atomic refusal line survives the Check again after Open Check Atomic Parts fixes (one-line fix: `CommitPanel.forget_refusal()` from `_on_atomic_fixes_applied`); IN-01..IN-03
 
 Open, carried into v2.0 and now mapped to phases (none block the milestone):
 
 - [Backlog]: 999.2 (case-twin rollback on a case-sensitive folder) → VER-02 in Phase 12; removed from the ROADMAP backlog. 999.1 closed as VER-01 in Phase 8
 - [Review]: Phase 4 WR-04, IN-01/02/03/05; Phase 5 WR-01..WR-06 (WR-04 closed, WR-05 GUI thread waits up to 60 s on kicad-cli); Phase 6 WR-01..WR-05, IN-01..IN-03. See the REVIEW-DISPOSITION files under `milestones/v1.0-phases/`. → Phase 5 WR-01/02/03/05/06 are REV-01..05 (Phase 12). Phase 6 WR-01..05 and IN-01..03 are REV-06..11 (Phase 11). Phase 4 WR-04 is deferred as REF-01. Phase 4 IN-01/02/03/05 and Phase 5 IN-01..06 are not in v2.0.
-- [UI review]: Help dialog hard-codes colours and px font sizes outside `theme.py`, and `conflict_row.py` has `#FFFFFF` literals (05-UI-REVIEW 17/24). The Commit panel primary-button and outcome-tint items are in 06-UI-REVIEW (17/24). → UI-01 (Phase 12), UI-02 (Phase 11)
+- [UI review]: Help dialog hard-codes colours and px font sizes outside `theme.py`, and `conflict_row.py` has `#FFFFFF` literals (05-UI-REVIEW 17/24). → UI-01 (Phase 12). The Commit panel items (UI-02) closed in Phase 11
 
 ### Quick Tasks Completed
 
@@ -126,10 +130,10 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-10-29T20:02:37.333Z
-Stopped at: Phase 11 context gathered
-Resume file: .planning/phases/11-commit-gate-and-commit-panel-fixes/11-CONTEXT.md
+Last session: 2026-11-01T10:55:00Z
+Stopped at: Phase 11 complete, ready to plan Phase 12
+Resume file: None
 
 ## Operator Next Steps
 
-- Discuss Phase 10 with /gsd-discuss-phase 10, then plan it with /gsd-plan-phase 10
+- Discuss Phase 12 with /gsd-discuss-phase 12, then plan it with /gsd-plan-phase 12

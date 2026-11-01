@@ -21,7 +21,7 @@
     {
       "number": "11",
       "name": "Commit Gate and Commit Panel Fixes",
-      "status": "pending"
+      "status": "complete"
     },
     {
       "number": "12",
@@ -36,8 +36,8 @@
   ],
   "next": {
     "command": "/gsd-progress --next",
-    "label": "Advance to the next step",
-    "reason": "Phase 4 of 6 · 50% · executing"
+    "label": "Advance to the next step (plan phase 12)",
+    "reason": "Phase 5 of 6 — needs a plan"
   },
-  "updated_at": "2026-10-29T22:26:15.522Z"
+  "updated_at": "2026-11-01T10:49:29.473Z"
 }

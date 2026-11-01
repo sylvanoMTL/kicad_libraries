@@ -80,7 +80,7 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### Git
 
-- [ ] **GIT-06**: The commit panel refuses while any part being committed fails the atomic check, naming the part and the rule.
+- [x] **GIT-06**: The commit panel refuses while any part being committed fails the atomic check, naming the part and the rule.
 
 ### Re-tests
 
@@ -94,17 +94,17 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 - [ ] **REV-03**: A one-off conflict build can never overlap Install (Phase 5 WR-03).
 - [ ] **REV-04**: The GUI thread never blocks waiting for a kicad-cli call (Phase 5 WR-05).
 - [ ] **REV-05**: The `kicad_common.json` write uses fresh content after the confirm dialog, and the KiCad-running check gates it (Phase 5 WR-06).
-- [ ] **REV-06**: A commit timeout checks HEAD before reporting "nothing committed" (Phase 6 WR-01).
-- [ ] **REV-07**: The parent-message preview matches the committed text when there's no previous gitlink (Phase 6 WR-02).
-- [ ] **REV-08**: The "finish it by hand" command uses Windows quoting on Windows (Phase 6 WR-03).
-- [ ] **REV-09**: Files identical to HEAD no longer raise a spurious "missing" error (Phase 6 WR-04).
-- [ ] **REV-10**: After a precheck refusal, the commit panel re-probes instead of showing a stale "ready" (Phase 6 WR-05).
-- [ ] **REV-11**: The parent checkbox keeps the user's choice across probes, the dialog and main window can close during the read-only probe, and `run_git` keeps identity-related `GIT_*` variables (Phase 6 IN-01..IN-03).
+- [x] **REV-06**: A commit timeout checks HEAD before reporting "nothing committed" (Phase 6 WR-01).
+- [x] **REV-07**: The parent-message preview matches the committed text when there's no previous gitlink (Phase 6 WR-02).
+- [x] **REV-08**: The "finish it by hand" command uses Windows quoting on Windows (Phase 6 WR-03).
+- [x] **REV-09**: Files identical to HEAD no longer raise a spurious "missing" error (Phase 6 WR-04).
+- [x] **REV-10**: After a precheck refusal, the commit panel re-probes instead of showing a stale "ready" (Phase 6 WR-05).
+- [x] **REV-11**: The parent checkbox keeps the user's choice across probes, the dialog and main window can close during the read-only probe, and `run_git` keeps identity-related `GIT_*` variables (Phase 6 IN-01..IN-03).
 
 ### UI Polish
 
 - [ ] **UI-01**: The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes (05-UI-REVIEW).
-- [ ] **UI-02**: The Commit button is styled as the primary action, error and success outcomes are tinted, the parent-failed state is not labelled "Committed", and `commit_panel.py` sizes are on the theme scale (06-UI-REVIEW).
+- [x] **UI-02**: The Commit button is styled as the primary action, error and success outcomes are tinted, the parent-failed state is not labelled "Committed", and `commit_panel.py` sizes are on the theme scale (06-UI-REVIEW).
 
 ### Docs
 
@@ -164,7 +164,7 @@ Which phases cover which requirements. Filled in during roadmap creation.
 | MIG-03 | Phase 13 | Pending |
 | MIG-04 | Phase 13 | Pending |
 | MIG-05 | Phase 13 | Pending |
-| GIT-06 | Phase 11 | Pending |
+| GIT-06 | Phase 11 | Complete |
 | VER-01 | Phase 8 | Complete |
 | VER-02 | Phase 12 | Pending |
 | REV-01 | Phase 12 | Pending |
@@ -172,14 +172,14 @@ Which phases cover which requirements. Filled in during roadmap creation.
 | REV-03 | Phase 12 | Pending |
 | REV-04 | Phase 12 | Pending |
 | REV-05 | Phase 12 | Pending |
-| REV-06 | Phase 11 | Pending |
-| REV-07 | Phase 11 | Pending |
-| REV-08 | Phase 11 | Pending |
-| REV-09 | Phase 11 | Pending |
-| REV-10 | Phase 11 | Pending |
-| REV-11 | Phase 11 | Pending |
+| REV-06 | Phase 11 | Complete |
+| REV-07 | Phase 11 | Complete |
+| REV-08 | Phase 11 | Complete |
+| REV-09 | Phase 11 | Complete |
+| REV-10 | Phase 11 | Complete |
+| REV-11 | Phase 11 | Complete |
 | UI-01 | Phase 12 | Pending |
-| UI-02 | Phase 11 | Pending |
+| UI-02 | Phase 11 | Complete |
 | DOC-01 | Phase 13 | Pending |
 
 **Coverage:**
