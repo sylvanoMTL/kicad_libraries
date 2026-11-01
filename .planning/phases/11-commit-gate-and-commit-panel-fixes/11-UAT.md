@@ -3,7 +3,7 @@ status: complete
 phase: 11-commit-gate-and-commit-panel-fixes
 source: [11-VERIFICATION.md]
 started: 2026-10-30T00:00:00Z
-updated: 2026-11-01T10:42:28.544Z
+updated: 2026-11-01T10:49:08.716Z
 ---
 
 ## Current Test
@@ -26,16 +26,17 @@ note: "Real interactive powershell.exe 5.1 console (own console window, PSReadLi
 
 ### 3. The same paste in PowerShell 7
 expected: The command runs as shown and makes the parent commit with the subject intact
-result: skipped
-reason: "PowerShell 7 is not installed on the owner's machine and is not the shell they use; the app's command targets Windows PowerShell 5.1 here. Downloading a portable copy was not permitted."
+result: pass
+source: automated
+note: "Owner installed PowerShell 7.6.9 (winget, PSReadLine 2.4.5). Same method as test 2 in a real interactive pwsh console: all three subjects (double quotes -F form, single quotes + $HOME + $(whoami) + backtick -m form, typographic quotes -m form) made a real parent commit with the subject intact."
 
 ## Summary
 
 total: 3
-passed: 2
+passed: 3
 issues: 0
 pending: 0
-skipped: 1
+skipped: 0
 blocked: 0
 
 ## Gaps
