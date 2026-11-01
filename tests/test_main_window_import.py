@@ -5,6 +5,7 @@ modules): QSettings goes into tmp_path and scan, KiCad detection, REPO_ROOT and 
 config writer are replaced before the window exists.
 """
 
+import os
 import threading
 import types
 from pathlib import Path
@@ -40,6 +41,7 @@ NEW_LIB = "Atomic_Sensor_Temperature"
 NEW_FP_LIB = footprint_library_for(NEW_LIB)
 NEW_SYM_REL = f"Custom/Symbols/{NEW_LIB}.kicad_sym"
 NEW_FP_REL = f"Custom/Footprints/{NEW_FP_LIB}.pretty"
+NO_DEST = "No destination folder set; library tables not changed"
 
 
 @pytest.fixture(autouse=True)
@@ -603,6 +605,34 @@ def test_tables_missing_destination_logs_error(qtbot, make_window, tmp_path):
     assert f"Destination folder does not exist: {gone}" in log_text(w)
     assert not gone.exists()
     assert w._pending_post_install is None
+
+
+@pytest.mark.parametrize("new_library", [True, False], ids=["new_library", "existing_library"])
+@pytest.mark.parametrize("blank", ["", "   "], ids=["empty", "spaces"])
+def test_tables_blank_destination_writes_nothing(
+    qtbot, make_window, tmp_path, monkeypatch, new_library, blank
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo, shared_listed=False)
+    lib = NEW_LIB if new_library else LIB
+    w = make_window([scan_with(with_installed=False), scan_with(lib=lib)], repo=repo)
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    monkeypatch.chdir(cwd)
+    w._dest_combo.setCurrentText(blank)
+    questions_before = len(make_window.questions)
+
+    dialog, _ = run_install(qtbot, w, repo, lib, new_library)
+
+    assert os.listdir(cwd) == []
+    assert (repo / "sym-lib-table").read_bytes() == old_sym
+    assert (repo / "fp-lib-table").read_bytes() == old_fp
+    assert not list(repo.glob("*_backup_*"))
+    assert NO_DEST in log_text(w)
+    assert dialog.rows["tables"] == (NO_DEST, Severity.WARNING)
+    assert w._pending_post_install is None
+    assert len(make_window.questions) == questions_before
 
 
 # -- drag and drop, toolbar button and busy state (plan 05-08, UX-01, D-03, D-19) -------------

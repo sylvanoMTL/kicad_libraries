@@ -39,6 +39,9 @@ IMPORT_CORE: ImportCore | None = None
 IMPORT_BACKUP_ROOT: Path | None = None
 ATOMIC_BACKUP_ROOT: Path | None = None
 
+# Shown when the Destination box is blank: Path("") would be the working directory (REV-02)
+_NO_DEST_TEXT = "No destination folder set; library tables not changed"
+
 
 def _selected_count(result: ScanResult) -> int:
     return (
@@ -212,7 +215,7 @@ class MainWindow(QMainWindow):
 
         # Detect KiCad installation, then start scan
         self._detect_kicad()
-        self._log_existing_tables(Path(self._dest_combo.currentText()))
+        self._log_existing_tables(self._dest_path())
         # Reuse the saved scan when no library file changed (O-01)
         self._start_scan(reuse_cache=True)
 
@@ -412,9 +415,14 @@ class MainWindow(QMainWindow):
                     "warning",
                 )
 
-    def _log_existing_tables(self, dest: Path):
+    def _dest_path(self) -> Path | None:
+        """The Destination box as a folder; None when it is blank (Path("") is the working directory)."""
+        text = self._dest_combo.currentText().strip()
+        return Path(text) if text else None
+
+    def _log_existing_tables(self, dest: Path | None):
         """Log which table files exist at the destination; never touches selection."""
-        if not dest.is_dir():
+        if dest is None or not dest.is_dir():
             return
         for name in ("sym-lib-table", "fp-lib-table"):
             info = table_info(dest / name)
@@ -711,8 +719,8 @@ class MainWindow(QMainWindow):
 
     def _apply_existing_selection(self, result: ScanResult):
         """Pre-select libraries already in the destination tables; first scan only (D-05)."""
-        dest = Path(self._dest_combo.currentText())
-        if not dest.is_dir():
+        dest = self._dest_path()
+        if dest is None or not dest.is_dir():
             return
 
         # Collect the repo-relative paths of managed entries (identity is rel_path)
@@ -817,7 +825,11 @@ class MainWindow(QMainWindow):
                     "library_list", f"Updated; {library} was not found in the scan", Severity.WARNING
                 )
 
-        dest = Path(self._dest_combo.currentText())
+        dest = self._dest_path()
+        if dest is None:
+            self._log.log(_NO_DEST_TEXT, "warning")
+            self._set_import_status("tables", _NO_DEST_TEXT, Severity.WARNING)
+            return
         if not dest.is_dir():
             self._log.log(f"Destination folder does not exist: {dest}", "error")
             if pending.new_library:
@@ -1107,7 +1119,10 @@ class MainWindow(QMainWindow):
             self._log.log("No scan results available. Please wait for scan.", "error")
             return
 
-        dest = Path(self._dest_combo.currentText())
+        dest = self._dest_path()
+        if dest is None:
+            self._log.log(_NO_DEST_TEXT, "warning")
+            return
         if not dest.exists():
             self._log.log(f"Destination folder does not exist: {dest}", "error")
             return
@@ -1143,11 +1158,12 @@ class MainWindow(QMainWindow):
 
     def _on_rescan(self):
         self._log.log("Rescanning repository...", "info")
-        self._log_existing_tables(Path(self._dest_combo.currentText()))
+        self._log_existing_tables(self._dest_path())
         self._start_scan()
 
     def _on_restore_backup(self):
-        dialog = BackupDialog(self._dest_combo.currentText(), parent=self)
+        dest = self._dest_path()
+        dialog = BackupDialog(str(dest) if dest is not None else "", parent=self)
         if dialog.exec() and dialog.selected_backup_num is not None:
             self._log_issues(restore_backup_pair(
                 dialog.selected_folder, dialog.selected_backup_num
@@ -1174,7 +1190,7 @@ class MainWindow(QMainWindow):
 
     def _on_browse_dest(self):
         folder = QFileDialog.getExistingDirectory(
-            self, "Select destination folder", self._dest_combo.currentText()
+            self, "Select destination folder", self._dest_combo.currentText().strip()
         )
         if folder:
             history = add_dest_to_history(folder)
@@ -1183,11 +1199,11 @@ class MainWindow(QMainWindow):
             self._dest_combo.addItems(history)
             self._dest_combo.setCurrentIndex(0)
             self._dest_combo.blockSignals(False)
-            self._log_existing_tables(Path(self._dest_combo.currentText()))
+            self._log_existing_tables(self._dest_path())
 
     def _on_dest_changed(self, *_args):
         """Destination picked or typed: only report which tables exist there."""
-        self._log_existing_tables(Path(self._dest_combo.currentText()))
+        self._log_existing_tables(self._dest_path())
 
     def _on_select_all(self):
         self._tree.select_all()
