@@ -261,7 +261,7 @@ def test_rebuild_failure_keeps_tree_and_logs(qtbot, make_dialog):
     qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
 
 
-def test_close_waits_and_closes_package(qtbot, make_dialog, gates):
+def test_close_finishes_after_build_and_closes_package(qtbot, make_dialog, gates):
     events: list[str] = []
     count = {"n": 0}
 
@@ -289,12 +289,16 @@ def test_close_waits_and_closes_package(qtbot, make_dialog, gates):
     wait_plan(qtbot, dialog)
     dialog._request_rebuild()
     qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
-    threading.Timer(0.3, gates[0].set).start()
-    started = time.monotonic()
-    dialog.reject()
-    assert time.monotonic() - started >= 0.2
+    dialog.reject()  # returns at once: the build is still gated
+    assert not gates[0].is_set()
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+    assert events == []
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
     assert events == ["build_end", "close"]
-    assert not dialog.isVisible()
+    assert QGuiApplication.overrideCursor() is None
 
 
 def test_close_refused_while_installing(qtbot, make_dialog, gates):
@@ -3616,7 +3620,7 @@ def test_close_during_probe_cancels_and_closes(qtbot, make_install_dialog):
     began = time.monotonic()
     dialog.close()
     assert time.monotonic() - began < 5
-    assert not dialog.isVisible()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=5000)
     assert saw_cancel.is_set()
     assert not any(w.isRunning() for w in dialog._workers)
 
@@ -3635,7 +3639,7 @@ def test_close_button_enabled_while_probing(qtbot, make_install_dialog, how):
         dialog.reject()
     else:
         dialog._result_view.close_button.click()
-    assert not dialog.isVisible()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=5000)
     assert saw_cancel.is_set()
 
 
@@ -4585,10 +4589,11 @@ def test_add_model_close_while_reading_closes_package(qtbot, make_item_dialog, g
     pick_model(monkeypatch, model_zip(tmp_path / "dl"))
     dialog._add_model_btn.click()
     qtbot.waitUntil(started.is_set, timeout=30000)
-    threading.Timer(0.3, gates[-1].set).start()
-    began = time.monotonic()
-    dialog.reject()
-    assert time.monotonic() - began >= 0.2
+    dialog.reject()  # returns at once: the model read is still gated
+    assert dialog.is_finishing()
+    assert events == []  # the package is closed only after the read has stopped
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
     qtbot.wait(100)  # a queued result must not close the package a second time
     assert events == ["close"]
     assert dialog._model_packages == []
@@ -5066,7 +5071,8 @@ def test_close_rejects_open_check_dialog(qtbot, make_install_dialog):
     check = dialog._atomic_dialog
     assert check is not None and check.isVisible()
 
-    dialog.close()
+    dialog.close()  # the gated probe is cancelled and ends; the close completes by itself
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
     assert not check.isVisible()
     assert dialog._atomic_dialog is None
 
@@ -5556,3 +5562,120 @@ def test_oneoff_held_during_install_dropped_after_success(qtbot, make_install_di
     assert dialog._oneoff_jobs == []
     assert dialog._queued is None
     assert not open_views(dialog)
+
+
+# -- Phase 12 plan 12-07: closing through Finishing (D-06, D-07, REV-04) ---------------------------------------
+
+
+def test_escape_does_nothing_while_finishing(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog.reject()
+    assert dialog.is_finishing()
+
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert dialog.is_finishing()
+    assert dialog.isVisible()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert events == ["build_end", "close"]
+
+
+def test_x_upgrades_pending_change_to_close(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    assert dialog._pending_kind == "change"
+
+    dialog.close()  # the window X: the close wins over the pending Change...
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+    assert dialog._pending_kind == "close"
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert dialog._stack.currentWidget() is dialog._edit_page  # the Change never ran
+    assert events == ["build_end", "close"]
+
+
+def test_cancel_close_keeps_dialog_open(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    cancelled: list[int] = []
+    dialog.leave_cancelled.connect(lambda: cancelled.append(1))
+    hold_a_build(qtbot, dialog, gates)
+    dialog.reject()
+    assert dialog.is_finishing()
+
+    dialog._finish_cancel.click()
+    assert cancelled == [1]
+    assert not dialog.is_finishing()
+    assert dialog.isVisible()
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert dialog._stack.isEnabled()
+    assert QGuiApplication.overrideCursor() is None
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog._building is None, timeout=30000)
+    qtbot.wait(150)  # the dropped close must not run when the build ends
+    assert dialog.isVisible()
+    assert events == ["build_end"]
+
+
+def test_close_while_kicad_check_runs(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+
+    def running():
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return ["eeschema"]
+
+    dialog = make_install_dialog(kicad_running=running)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    install_ul(qtbot, dialog)
+    qtbot.waitUntil(started.is_set, timeout=30000)
+
+    dialog.close()  # returns at once: the KiCad check is still held
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert not dialog._result_view._kicad_notice.isVisible()
+    assert [i for i in logged if i.code == "import.kicad_running"] == []
+
+
+def test_cancelled_close_reprobes(qtbot, make_install_dialog):
+    calls: list[int] = []
+    started = threading.Event()
+
+    def probe(cplan, *, cancelled=None, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            started.set()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not (cancelled is not None and cancelled()):
+                time.sleep(0.01)
+            return CommitProbe(state="unavailable", reason="cancelled")
+        return fake_ready_probe()(cplan)
+
+    dialog = make_install_dialog(probe_commit=probe)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(started.is_set, timeout=30000)
+
+    dialog.close()
+    assert dialog.is_finishing()
+    dialog._finish_cancel.click()
+    assert dialog.isVisible()
+
+    qtbot.waitUntil(lambda: len(calls) == 2, timeout=30000)
+    qtbot.waitUntil(lambda: panel.state() == "ready" and not dialog.is_probing(), timeout=30000)
+    assert dialog.isVisible()

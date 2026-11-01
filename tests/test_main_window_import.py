@@ -8,6 +8,7 @@ config writer are replaced before the window exists.
 import os
 import threading
 import types
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -19,12 +20,13 @@ from zipfixtures import footprint_library_for
 from kicad_lib_manager import library_scanner, main_window, settings
 from kicad_lib_manager.library_scanner import ConfirmAnswer
 from kicad_lib_manager.importer.layout import RepoLayout
-from kicad_lib_manager.importer.plan import InstallResult
+from kicad_lib_manager.importer.plan import InstallResult, ToolContext
+from kicad_lib_manager.importer.planner import build_plan as real_build_plan
 from kicad_lib_manager.models import (
     FootprintLibrary, Issue, ScanResult, Severity, SymbolLibrary,
 )
 from kicad_lib_manager.widgets import theme
-from kicad_lib_manager.widgets.import_dialog import ImportDialog
+from kicad_lib_manager.widgets.import_dialog import ImportCore, ImportDialog
 
 LIB = "Atomic_Battery_Management"
 FP_LIB = footprint_library_for(LIB)
@@ -855,7 +857,9 @@ def test_generate_button_primary_style(make_window):
 
 def test_main_window_close_ignored_while_installing(make_window):
     w = make_window([scan_with()])
-    w._import_dialog = types.SimpleNamespace(is_installing=lambda: True, reject=lambda: pytest.fail("rejected"))
+    w._import_dialog = types.SimpleNamespace(
+        is_installing=lambda: True, is_finishing=lambda: False, reject=lambda: pytest.fail("rejected")
+    )
     try:
         event = QCloseEvent()
         w.closeEvent(event)
@@ -871,6 +875,7 @@ def test_main_window_close_ignored_while_committing(make_window):
     w._import_dialog = types.SimpleNamespace(
         is_installing=lambda: False,
         is_committing=lambda: True,
+        is_finishing=lambda: False,
         reject=lambda: pytest.fail("rejected"),
     )
     try:
@@ -890,6 +895,7 @@ def test_main_window_closes_while_probe_runs(make_window):
         is_installing=lambda: False,
         is_committing=lambda: False,
         is_probing=lambda: True,
+        is_finishing=lambda: False,
         reject=lambda: rejected.append(True),
     )
     try:
@@ -916,6 +922,9 @@ class RecordingDialog:
         return False
 
     def is_probing(self):
+        return False
+
+    def is_finishing(self):
         return False
 
     def reject(self):
@@ -1132,6 +1141,82 @@ def test_main_window_close_closes_idle_dialog_first(qtbot, make_window, tmp_path
     assert order == ["dialog", "geometry"]
     assert w._import_dialog is None
     assert dialog._closing
+
+
+# -- Phase 12 plan 12-07: closing the window while the dialog still builds (D-06, REV-04) -------------------
+
+UL_ZIP = Path(__file__).resolve().parent.parent / "downloaded_examples" / "ul_CSD85301Q2.zip"
+
+
+def gated_dialog_core(monkeypatch, gates, started):
+    """Make the window's import core hold its first build_plan call open until a gate is released."""
+    from kicad_lib_manager.importer.commit_step import CommitProbe
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    core = replace(
+        ImportCore(),
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        kicad_running=lambda: [],
+        probe_commit=lambda cplan, **kwargs: CommitProbe(state="unavailable", reason="not used"),
+        build_plan=gated_build,
+    )
+    monkeypatch.setattr(main_window, "IMPORT_CORE", core)
+
+
+@pytest.fixture
+def held_build_window(qtbot, make_window, monkeypatch):
+    """A shown window whose import dialog has a build held open; the gates are released at teardown."""
+    gates: list[threading.Event] = []
+    started = threading.Event()
+    gated_dialog_core(monkeypatch, gates, started)
+    w = make_window([scan_with()])
+    w.show()
+    w._open_import(UL_ZIP)
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    yield w, gates
+    for gate in gates:
+        gate.set()
+
+
+def test_main_window_close_waits_for_dialog_build(qtbot, held_build_window):
+    w, gates = held_build_window
+    dialog = w._import_dialog
+    w.close()  # returns at once: the build is still held
+    assert not gates[0].is_set()
+    assert w.isVisible()
+    assert w._import_dialog is dialog and dialog.is_finishing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not w.isVisible(), timeout=30000)
+    assert w._import_dialog is None
+
+
+def test_main_window_close_cancelled_with_dialog(qtbot, held_build_window):
+    w, gates = held_build_window
+    dialog = w._import_dialog
+    w.close()
+    assert dialog.is_finishing() and w._close_after_dialog
+
+    dialog._finish_cancel.click()  # Cancel drops the window's pending close too
+    assert not w._close_after_dialog
+    gates[0].set()
+    qtbot.waitUntil(
+        lambda: dialog._building is None and not any(x.isRunning() for x in dialog._workers), timeout=30000
+    )
+    qtbot.wait(150)
+    assert w.isVisible()
+    assert w._import_dialog is dialog
+
+    dialog.reject()  # an idle close of the dialog alone leaves the main window open
+    qtbot.waitUntil(lambda: w._import_dialog is None, timeout=30000)
+    qtbot.wait(150)
+    assert w.isVisible()
 
 
 # -- two nicknames in the post-install table step (plan 10-11, D-15, D-16) -----------------------

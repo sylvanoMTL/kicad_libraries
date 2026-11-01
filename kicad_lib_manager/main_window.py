@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QPushButton, QComboBox, QLabel, QFileDialog, QMessageBox,
     QProgressDialog,
 )
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
 from . import scan_cache
@@ -216,6 +216,7 @@ class MainWindow(QMainWindow):
         self._path_var_check: TaskWorker | None = None
         self._path_var_workers: list[TaskWorker] = []
         self._close_after_check = False
+        self._close_after_dialog = False  # the import dialog is finishing: close this window after it
         self.setAcceptDrops(True)
         self._build_menu()
         self._build_ui()
@@ -1019,13 +1020,21 @@ class MainWindow(QMainWindow):
         dialog.issues_logged.connect(self._log_issues)
         dialog.atomic_fixes_applied.connect(self._on_atomic_fixes_applied)
         dialog.finished.connect(self._on_import_dialog_finished)
+        dialog.leave_cancelled.connect(self._on_dialog_leave_cancelled)
         self._import_dialog = dialog
         dialog.open()
+
+    def _on_dialog_leave_cancelled(self):
+        """Cancel in the dialog's Finishing strip: this window forgets its own pending close too."""
+        self._close_after_dialog = False
 
     def _on_import_dialog_finished(self, _result: int):
         dialog, self._import_dialog = self._import_dialog, None
         if dialog is not None:
             dialog.deleteLater()
+        if self._close_after_dialog:
+            self._close_after_dialog = False
+            QTimer.singleShot(0, self.close)
 
     def _open_atomic_check(self, focus: tuple[str, str] | None = None):
         """Open Check Atomic Parts on the last scan; it never scans or checks on the GUI thread (D-12)."""
@@ -1319,8 +1328,13 @@ class MainWindow(QMainWindow):
             if dialog.is_installing() or dialog.is_committing():
                 event.ignore()
                 return
-            # Waits for the dialog's workers and closes the opened package first
+            # The dialog closes at once when idle, otherwise after its workers end (it shows it is
+            # finishing); this window then closes by itself (D-06)
             dialog.reject()
+            if dialog.is_finishing():
+                self._close_after_dialog = True
+                event.ignore()
+                return
         # The KiCad-open check runs on a worker: the window never waits for it here. The
         # finished handler closes the window once the check is over (T-12-16)
         if self._path_var_check is not None:
