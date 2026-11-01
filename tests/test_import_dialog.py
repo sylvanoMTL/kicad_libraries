@@ -2736,7 +2736,8 @@ def test_install_progress_and_lock(qtbot, make_install_dialog, gates):
     assert dialog._preview.isEnabled()  # the tree stays scrollable and its rows can be opened
     assert dialog._install_row.isVisible() and not dialog._strip.isVisible()
     assert MUTED.lower() in dialog._install_step.styleSheet().lower()
-    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel"]
+    # An install cannot be cancelled; the hidden Cancel of the Finishing strip is not a way to do it
+    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel" and b.isVisible()]
 
     gates[0].set()
     qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)

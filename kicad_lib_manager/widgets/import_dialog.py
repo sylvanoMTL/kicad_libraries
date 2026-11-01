@@ -2287,8 +2287,8 @@ class ImportDialog(QDialog):
             if op is not None:
                 self._run_content(lambda: core.op_content(op, repo_root, conflict=True))
                 return
-        if self.is_installing():
-            return  # no one-off build reads the files while the install writes them
+        # Queued even while an install runs: _pump_builds holds every job until the install ends, so no
+        # one-off build reads the files while the install writes them (D-08, 05-REVIEW WR-03)
         options = self._snapshot_options()
         options = replace(options, resolutions={**options.resolutions, key: Resolution("overwrite")})
         self._oneoff_jobs.append(
@@ -2585,7 +2585,7 @@ class ImportDialog(QDialog):
             return
         self._gen += 1
         options = self._snapshot_options()
-        if self._building is not None or self._oneoff is not None or self._finishing:
+        if self._building is not None or self._oneoff is not None or self._finishing or self.is_installing():
             self._queued = options
         else:
             self._start_build(options)
@@ -2610,8 +2610,13 @@ class ImportDialog(QDialog):
 
     def _pump_builds(self):
         """Start the next queued build when none runs: the latest rebuild first, then one-off jobs in order."""
-        if self._closing or self._finishing or self._building is not None or self._oneoff is not None:
-            return  # while Finishing nothing starts, so a queued build cannot restart kicad-cli and prolong the wait
+        if (
+            self._closing or self._finishing or self.is_installing()
+            or self._building is not None or self._oneoff is not None
+        ):
+            # While Finishing nothing starts, so a queued build cannot restart kicad-cli and prolong the wait;
+            # while installing nothing starts, so no build reads the library the install writes (D-08)
+            return
         if self._queued is not None:
             options, self._queued = self._queued, None
             self._start_build(options)
@@ -2629,6 +2634,7 @@ class ImportDialog(QDialog):
         worker.result.connect(lambda plan, w=worker: self._on_oneoff_done(w, session, on_result, plan, ""))
         worker.failed.connect(lambda text, w=worker: self._on_oneoff_done(w, session, on_result, None, text))
         worker.start()
+        self._update_install_state()  # a running one-off counts as updating: Install greys out at once (D-08)
 
     def _on_oneoff_done(self, worker: TaskWorker, session: int, on_result: Callable, plan, error: str):
         """A one-off build ended. Its plan goes only to on_result: never to self._plan, _plan_gen or _gen."""
@@ -2680,9 +2686,11 @@ class ImportDialog(QDialog):
         return self._install_worker is not None
 
     def _updating(self) -> bool:
-        # A model being read counts too: the preview does not show it yet, so nothing may install from it
+        # A model being read counts too: the preview does not show it yet, so nothing may install from it.
+        # So does a one-off conflict build: it reads the target library, which Install is about to write (D-08)
         return (
             self._building is not None
+            or self._oneoff is not None
             or self._queued is not None
             or self._dirty
             or self._model_worker is not None
@@ -2883,12 +2891,19 @@ class ImportDialog(QDialog):
         self._set_install_ui(False)
         self.issues_logged.emit(list(result.issues))
         if result.ok:
+            # The Result page replaced the preview, so a conflict view held during the install would be stale
+            # (the owner-approved refinement of D-08). A rebuild asked for meanwhile is dropped for the same
+            # reason: it would refresh a preview that is gone. That second drop is not named in the refinement.
+            self._oneoff_jobs.clear()
+            self._queued = None
             self.result = result
             self.result_plan = plan
             self._show_result(plan, result)
             self.installed.emit(result, plan)
+            self._pump_builds()  # nothing is held now, so this starts nothing
             return
         self._show_failure(result.issues, result.backup_dir)
+        self._pump_builds()  # the jobs held during the install start now, in the order they were asked for
         # Files on disk may have changed: rebuild so a retry cannot hit the stale-plan guard
         self._request_rebuild()
 
@@ -2900,6 +2915,7 @@ class ImportDialog(QDialog):
         self.issues_logged.emit([issue])
         # The worker itself broke, so nothing says every file was restored
         self._show_failure([issue], None, title=_FAILED_PLAIN)
+        self._pump_builds()  # the jobs held during the install start now (05-REVIEW WR-03)
         self._request_rebuild()
 
     def _show_result(self, plan: InstallPlan, result: InstallResult):
