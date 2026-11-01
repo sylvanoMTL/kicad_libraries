@@ -39,6 +39,9 @@ IMPORT_CORE: ImportCore | None = None
 IMPORT_BACKUP_ROOT: Path | None = None
 ATOMIC_BACKUP_ROOT: Path | None = None
 
+# Shown when the Destination box is blank: Path("") would be the working directory (REV-02)
+_NO_DEST_TEXT = "No destination folder set; library tables not changed"
+
 
 def _selected_count(result: ScanResult) -> int:
     return (
@@ -412,9 +415,14 @@ class MainWindow(QMainWindow):
                     "warning",
                 )
 
-    def _log_existing_tables(self, dest: Path):
+    def _dest_path(self) -> Path | None:
+        """The Destination box as a folder; None when it is blank (Path("") is the working directory)."""
+        text = self._dest_combo.currentText().strip()
+        return Path(text) if text else None
+
+    def _log_existing_tables(self, dest: Path | None):
         """Log which table files exist at the destination; never touches selection."""
-        if not dest.is_dir():
+        if dest is None or not dest.is_dir():
             return
         for name in ("sym-lib-table", "fp-lib-table"):
             info = table_info(dest / name)
@@ -817,7 +825,11 @@ class MainWindow(QMainWindow):
                     "library_list", f"Updated; {library} was not found in the scan", Severity.WARNING
                 )
 
-        dest = Path(self._dest_combo.currentText())
+        dest = self._dest_path()
+        if dest is None:
+            self._log.log(_NO_DEST_TEXT, "warning")
+            self._set_import_status("tables", _NO_DEST_TEXT, Severity.WARNING)
+            return
         if not dest.is_dir():
             self._log.log(f"Destination folder does not exist: {dest}", "error")
             if pending.new_library:
