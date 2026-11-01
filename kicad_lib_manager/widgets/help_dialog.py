@@ -4,7 +4,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
-from .import_dialog import ADD_MODEL_TEXT, OFFICIAL_FOOTPRINT_TEXT, REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT
+from .import_dialog import (
+    ADD_MODEL_TEXT, FINISHING_TEXT, OFFICIAL_FOOTPRINT_TEXT, REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT,
+)
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
     SP_MD, SP_SM, SP_XS, SURFACE, SURFACE_HEADER,
@@ -191,11 +193,17 @@ HELP_PAGES["generating"] = _wrap(
     "<li>Backup numbers increment automatically "
     "(<code>_backup_1</code>, <code>_backup_2</code>, ...)</li>"
     "<li>If <code>KICAD_LIB_GITHUB</code> or <code>CUSTOM_3DMODEL_DIR</code> in KiCad's "
-    "settings needs to change, the app first shows the old and new values and asks. "
-    "Answering No leaves KiCad's settings unchanged while the tables are still written. "
+    "settings needs to change, the app first checks whether KiCad is open, then shows the "
+    "old and new values and asks. When KiCad is open, the question names the open KiCad "
+    "programs and offers <b>Retry</b> (close KiCad first, then press it), "
+    "<b>Change anyway</b> or <b>Not now</b>. After you answer, the app reads KiCad's "
+    "settings again and changes only these two paths, so anything KiCad saved in the "
+    "meantime is kept. Answering No or <b>Not now</b> leaves KiCad's settings unchanged "
+    "while the tables are still written. "
     "When the app runs from a git worktree, or from a checkout other than the one "
     "<code>KICAD_LIB_GITHUB</code> points at, it never changes them and the log says "
     "why</li>"
+    "<li>With an empty Destination box nothing is written, and the log says so</li>"
     "</ul>"
     "<p>The log panel at the bottom confirms what was written.</p>"
 )
@@ -298,11 +306,19 @@ HELP_PAGES["importing"] = _wrap(
     "<li><b>Skip</b> keeps the existing item and links it instead.</li>"
     "</ul>"
     "<p>Double-click a conflict row to compare the existing file with the incoming "
-    "one.</p>"
+    "one. While that comparison is being prepared, <b>Install Part</b> waits, and it "
+    "becomes available again when the comparison is ready.</p>"
     "<h3>Install and result</h3>"
     "<p>Nothing is written until you click <b>Install Part</b>. While it installs, "
     "your choices are locked, a progress bar shows each step, and the dialog cannot "
     "be closed or cancelled.</p>"
+    "<p>The preview is rebuilt in the background when you edit a field. If you press "
+    "<b>Change...</b>, pick another package or close the dialog while it is still being "
+    "built, the dialog greys out and a strip at the bottom reads <b>" + FINISHING_TEXT
+    + "</b> The window stays live. The dialog then carries on by itself once the preview "
+    "is ready: it returns to the start page, opens the other package, or closes. Press "
+    "<b>Cancel</b> to stay where you are. After 10 seconds the strip adds that kicad-cli "
+    "is slow to respond; kicad-cli gives up after 60 seconds.</p>"
     "<p>If the install fails, the dialog returns to the preview with a red banner "
     "that lists the reasons. Every file is restored; if a restore itself fails, the "
     "banner names the backup folder that holds the original files. Fix the problem "
@@ -348,6 +364,11 @@ HELP_PAGES["importing"] = _wrap(
     "library is added to <code>sym-lib-table</code> and <code>fp-lib-table</code> "
     "without changing any other entry. An existing library that is missing from the "
     "tables shows a hint to press <b>Generate Tables</b>.</p>"
+    "<p>If an entry the app added earlier under the same name points at a library that "
+    "no longer exists, it is pointed at the installed library, after a backup of the "
+    "table. A name that already points at another library that exists, or at an entry "
+    "you added by hand, is left alone and a warning says so. With an empty Destination "
+    "box no table is written.</p>"
 )
 
 HELP_PAGES["restoring"] = _wrap(
