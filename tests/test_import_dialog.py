@@ -5252,3 +5252,101 @@ def test_kicad_folder_reaches_probe_recheck_and_commit(qtbot, item_layout, recor
     panel.commit_button.click()
     qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
     assert seen == {"probe": fp_dir, "recheck": fp_dir, "commit": fp_dir}
+
+
+# -- Phase 12 plan 12-05: Finishing instead of a GUI-thread wait (D-06, D-07, REV-03, REV-04) --------------------
+
+from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtGui import QGuiApplication  # noqa: E402
+
+from kicad_lib_manager.widgets.import_dialog import FINISHING_TEXT, SLOW_CLI_TEXT, TaskWorker  # noqa: E402
+
+
+def finishing_dialog(qtbot, make_dialog, gates, events: list, builds: list | None = None) -> ImportDialog:
+    """A shown, planned dialog whose second build_plan call is gated, and whose package records its close.
+
+    The gate is registered once that build runs: after dialog._request_rebuild() and qtbot.waitUntil on
+    len(gates) == 1 the build is held open. builds (when given) gets one entry per build_plan call.
+    """
+    count = {"n": 0}
+
+    def open_recording(path, repo_root, progress=None):
+        package = real_open_package(path, repo_root, progress)
+        original = package.close
+
+        def close():
+            events.append("close")
+            original()
+
+        package.close = close
+        return package
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if builds is not None:
+            builds.append(options)
+        if count["n"] == 2:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+            events.append("build_end")
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(open_package=open_recording, build_plan=gated_build), show=True)
+    wait_plan(qtbot, dialog)
+    return dialog
+
+
+def hold_a_build(qtbot, dialog: ImportDialog, gates) -> None:
+    """Start the gated rebuild and wait until it is held open."""
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+
+
+def wait_on_start_page(qtbot, dialog: ImportDialog) -> None:
+    qtbot.waitUntil(
+        lambda: dialog._stack.currentWidget() is dialog._start_page and not dialog.is_finishing(), timeout=30000
+    )
+
+
+def test_change_waits_for_build_without_blocking(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    assert QGuiApplication.overrideCursor() is None
+
+    dialog._on_change()  # returns at once: the build is still gated
+    assert not gates[0].is_set()
+    assert dialog.is_finishing()
+    assert dialog._finish_strip.isVisible()
+    assert dialog._finish_label.text() == FINISHING_TEXT
+    assert not dialog._stack.isEnabled()
+    assert QGuiApplication.overrideCursor() is not None
+    assert events == []
+
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+    assert events == ["build_end", "close"]
+    assert QGuiApplication.overrideCursor() is None
+    assert dialog._stack.isEnabled()
+    assert not dialog._finish_strip.isVisible()
+
+
+def test_change_never_waits_unbounded(qtbot, make_dialog, gates, monkeypatch):
+    waits: list[tuple] = []
+    original = TaskWorker.wait
+
+    def recording_wait(self, *args):
+        waits.append(args)
+        return original(self, *args)
+
+    monkeypatch.setattr(TaskWorker, "wait", recording_wait)
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+    seen = list(waits)
+    assert seen  # the reaper joined at least the finished builds
+    assert all(len(args) == 1 and args[0] <= 2000 for args in seen)

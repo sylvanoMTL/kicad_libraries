@@ -13,6 +13,7 @@ Three rules shape this module:
 - Nothing is written before Install Part. Opening and rebuilding are read-only.
 """
 
+import functools
 import html
 import threading
 import time
@@ -22,7 +23,8 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QStandardPaths, QThread, QTimer, Signal
 from PySide6.QtGui import (
-    QCloseEvent, QColor, QFont, QKeyEvent, QKeySequence, QPalette, QResizeEvent, QShortcut, QShowEvent,
+    QCloseEvent, QColor, QCursor, QFont, QGuiApplication, QKeyEvent, QKeySequence, QPalette, QResizeEvent, QShortcut,
+    QShowEvent,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QCompleter, QDialog, QFileDialog, QFormLayout, QFrame,
@@ -70,7 +72,7 @@ from .import_result import ElidedLabel, ImportResultView
 from .preview_tree import PreviewTree
 from .theme import (
     AMBER, AMBER_TINT, BORDER, DISPLAY_PT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, HEADING_PT, LINK, MONO_FAMILY,
-    MONO_PT, MUTED, PRIMARY_BUTTON_QSS, SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS,
+    MONO_PT, MUTED, PRIMARY_BUTTON_QSS, SP_LG, SP_MD, SP_SM, SP_XL, SP_XS, SUCCESS, SURFACE,
 )
 
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
@@ -101,6 +103,9 @@ _OFFICIAL_POPUP_WIDTH = 420
 _NO_FOOTPRINT_FIELD = "(none)"
 _LIBRARY_PLACEHOLDER = "Pick a library, or type Atomic_ and a KiCad library name"
 _BUSY_DELAY_MS = 150  # the busy strip shows only if a rebuild takes longer than this (no flicker)
+FINISHING_TEXT = "Finishing the preview..."  # public: the tests and the help page name the strip with this text
+SLOW_CLI_TEXT = "kicad-cli is slow to respond (it gives up after 60 s)"  # public, same reason
+_SLOW_NOTE_MS = 10_000  # the Finishing strip adds the slow note after this long (D-07)
 _FAILURE_LINES = 6  # reason lines shown in the failure banner before its body scrolls
 _FAILED_RESTORED = "Install failed. Every file was restored."
 _FAILED_NOT_RESTORED = "Install failed and some files could not be restored."
@@ -465,6 +470,14 @@ class ImportDialog(QDialog):
         self._close_had_focus = False  # Close held the focus when a git job disabled it
         self._not_committed_logged = False  # the D-02 line is logged once per dialog
         self._closing = False
+        # The Finishing state (D-06): Change... or an open asked for while a build runs waits here, with the
+        # window live, and runs from the last relevant worker's finished handler (_try_finish)
+        self._finishing = False
+        self._pending: Callable[[], None] | None = None
+        self._pending_kind: str | None = None  # "change" or "open"
+        self._slow_timer = QTimer(self)
+        self._slow_timer.setSingleShot(True)
+        self._slow_timer.timeout.connect(self._on_slow_timeout)
 
         self.setWindowTitle("Import Part")
         self.setWindowModality(Qt.WindowModality.WindowModal)
@@ -476,6 +489,7 @@ class ImportDialog(QDialog):
         outer.setSpacing(8)
         self._stack = QStackedWidget()
         outer.addWidget(self._stack)
+        self._build_finish_strip(outer)
         self._build_start_page()
         self._build_edit_page()
         self._build_result_page()
@@ -494,6 +508,30 @@ class ImportDialog(QDialog):
             QTimer.singleShot(0, lambda: self.open_path(Path(package_path)))
 
     # -- pages ------------------------------------------------------------------
+
+    def _build_finish_strip(self, outer: QVBoxLayout):
+        """The Finishing strip (D-06, D-07), beside the stack so Cancel stays enabled while the stack is off."""
+        strip = QFrame()
+        strip.setObjectName("finishStrip")
+        strip.setStyleSheet(f"QFrame#finishStrip {{ background-color: {SURFACE}; border: 1px solid {BORDER}; }}")
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(SP_SM, SP_SM, SP_SM, SP_SM)
+        row.setSpacing(SP_SM)
+        self._finish_label = QLabel(FINISHING_TEXT)
+        self._finish_label.setTextFormat(Qt.TextFormat.PlainText)
+        row.addWidget(self._finish_label)
+        self._finish_slow = QLabel(SLOW_CLI_TEXT)
+        self._finish_slow.setTextFormat(Qt.TextFormat.PlainText)
+        self._finish_slow.setStyleSheet(f"color: {MUTED};")
+        self._finish_slow.hide()
+        row.addWidget(self._finish_slow)
+        row.addStretch(1)
+        self._finish_cancel = QPushButton("Cancel")
+        self._finish_cancel.clicked.connect(self._on_finish_cancel)
+        row.addWidget(self._finish_cancel)
+        strip.hide()
+        self._finish_strip = strip
+        outer.addWidget(strip)
 
     def _build_start_page(self):
         """A centred column (max 560 wide, 32 px top inset, 24 px between blocks), UI-SPEC start step."""
@@ -1274,9 +1312,12 @@ class ImportDialog(QDialog):
         deleteLater on a finished install worker crashed the process (access violation), so the
         finished threads are never deleted early.
         """
-        worker.wait()
+        # QThread.finished arrives just before the thread ends, so this only joins a thread whose work has
+        # returned; the bound keeps the GUI thread from ever waiting on a build (owner answer 2026-11-01, D-06)
+        worker.wait(2000)
         if not isinstance(worker.value, (OpenOutcome, ModelOutcome)):
             worker.value = None
+        self._try_finish(exclude=worker)
 
     def _on_open_progress(self, message: str, current: int, total: int):
         self._reading_label.setText(message)
@@ -1451,10 +1492,69 @@ class ImportDialog(QDialog):
     # -- the rebuild coordinator (PREV-07, D-06) -------------------------------
 
     def _wait_builds(self):
-        """Wait for the running rebuild and one-off build, if any."""
+        """Wait for the running rebuild and one-off build, if any (open_path only until Task 2 replaces it)."""
         for worker in (self._building, self._oneoff):
             if worker is not None:
                 worker.wait()
+
+    def is_finishing(self) -> bool:
+        """True while a Change... or an open waits for a running build to end (D-06)."""
+        return self._finishing
+
+    def _busy_builds(self, exclude: TaskWorker | None = None) -> list[TaskWorker]:
+        """The rebuild and one-off workers that still run, except exclude (the worker being reaped)."""
+        return [w for w in (self._building, self._oneoff) if w is not None and w is not exclude]
+
+    def _enter_finishing(self, kind: str, action: Callable[[], None]):
+        """Grey the dialog out and wait for the running build; action runs by itself when it has ended (D-06).
+
+        The GUI thread never joins the build: the window keeps processing events, and kicad-cli is never
+        killed. Its own timeout ends a slow call (D-07).
+        """
+        self._finishing = True
+        self._pending = action
+        self._pending_kind = kind
+        self._stack.setEnabled(False)
+        self._finish_label.setText(FINISHING_TEXT)
+        self._finish_slow.setText(SLOW_CLI_TEXT)
+        self._finish_slow.hide()
+        self._finish_strip.show()
+        QGuiApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        self._slow_timer.start(_SLOW_NOTE_MS)
+
+    def _end_finishing(self):
+        """The exact inverse of _enter_finishing; a no-op when not Finishing, so the cursor calls stay paired."""
+        if not self._finishing:
+            return
+        self._finishing = False
+        self._pending = None
+        self._pending_kind = None
+        self._slow_timer.stop()
+        self._finish_strip.hide()
+        self._finish_slow.hide()
+        self._stack.setEnabled(True)
+        QGuiApplication.restoreOverrideCursor()
+
+    def _on_slow_timeout(self):
+        if self._finishing:
+            self._finish_slow.show()
+
+    def _try_finish(self, exclude: TaskWorker | None = None):
+        """Run the pending action once no relevant worker runs; called from every worker's finished handler."""
+        if not self._finishing or self._closing or self._busy_builds(exclude):
+            return
+        action = self._pending
+        self._end_finishing()  # first, so the action sees a live dialog
+        if action is not None:
+            action()
+
+    def _on_finish_cancel(self):
+        """Drop the pending action and restore the dialog; held builds resume. kicad-cli is never killed (D-07)."""
+        if not self._finishing:
+            return
+        self._end_finishing()
+        self._pump_builds()
+        self._update_install_state()
 
     def _reset_edit_state(self):
         self._gen += 1
@@ -2481,7 +2581,7 @@ class ImportDialog(QDialog):
             return
         self._gen += 1
         options = self._snapshot_options()
-        if self._building is not None or self._oneoff is not None:
+        if self._building is not None or self._oneoff is not None or self._finishing:
             self._queued = options
         else:
             self._start_build(options)
@@ -2506,8 +2606,8 @@ class ImportDialog(QDialog):
 
     def _pump_builds(self):
         """Start the next queued build when none runs: the latest rebuild first, then one-off jobs in order."""
-        if self._closing or self._building is not None or self._oneoff is not None:
-            return
+        if self._closing or self._finishing or self._building is not None or self._oneoff is not None:
+            return  # while Finishing nothing starts, so a queued build cannot restart kicad-cli and prolong the wait
         if self._queued is not None:
             options, self._queued = self._queued, None
             self._start_build(options)
@@ -2533,7 +2633,7 @@ class ImportDialog(QDialog):
         if not self._closing:
             if plan is None:
                 self.issues_logged.emit([Issue(Severity.ERROR, "import.step_failed", f"Import step failed: {error}")])
-            if session == self._session:
+            if session == self._session and not self._finishing:  # no content view opens over a pending action
                 on_result(plan, error)
             self._pump_builds()
             self._update_install_state()
@@ -3146,12 +3246,20 @@ class ImportDialog(QDialog):
     def _on_change(self):
         """Discard this package and every edit made to it; nothing has been written, so no question.
 
-        A running build is waited for, then the package is closed (WR-04). _reset_edit_state bumps
-        the generation, so a build result still queued for this package is dropped when it arrives.
+        A running build is no longer waited for on the GUI thread: the dialog enters Finishing and Change
+        runs when the build has ended (D-06), so the package is closed only after it (WR-04).
+        _reset_edit_state bumps the generation, so a build result still queued for this package is dropped
+        when it arrives.
         """
-        if self.is_installing() or self._closing or self._open_worker is not None:
+        if self.is_installing() or self._closing or self._finishing or self._open_worker is not None:
             return
-        self._wait_builds()
+        if self._busy_builds():
+            self._enter_finishing("change", self._do_change)
+            return
+        self._do_change()
+
+    def _do_change(self):
+        """Change... after the builds have ended: today's body (the package closes only now, WR-04)."""
         self._building = None
         self._oneoff = None
         self._discard_package()
@@ -3178,6 +3286,7 @@ class ImportDialog(QDialog):
     def _shutdown(self):
         """Wait for every open and build worker, then close the package; idempotent."""
         self._closing = True
+        self._end_finishing()  # a pending Change or open is dropped and the wait cursor restored
         for event in self._probe_cancels:
             event.set()  # the probe stops between git calls, so the wait below is short (IN-02)
         atomic, self._atomic_dialog = self._atomic_dialog, None
