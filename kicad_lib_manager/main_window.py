@@ -11,8 +11,10 @@ from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
 from . import scan_cache
 from .importer.layout import RepoLayout
+from .kicad_process import kicad_running
 from .library_scanner import (
-    LibraryRescan, find_kicad_footprint_dir, rescan_library, scan_all, sync_kicad_path_vars,
+    ConfirmAnswer, LibraryRescan, find_kicad_footprint_dir, rescan_library, scan_all,
+    sync_kicad_path_vars,
 )
 from .table_generator import (
     add_library_entries, write_tables, restore_backup_pair, table_info, TableInfo,
@@ -28,7 +30,7 @@ from .widgets.log_panel import LogPanel
 from .widgets.atomic_check_dialog import AtomicCheckDialog
 from .widgets.backup_dialog import BackupDialog
 from .widgets.help_dialog import HelpDialog
-from .widgets.import_dialog import ImportCore, ImportDialog
+from .widgets.import_dialog import ImportCore, ImportDialog, TaskWorker
 from .widgets.theme import PRIMARY_BUTTON_QSS
 
 APP_TITLE = "KiCad External Lib Manager"
@@ -208,6 +210,12 @@ class MainWindow(QMainWindow):
         self._import_dialog: ImportDialog | None = None
         self._atomic_dialog: AtomicCheckDialog | None = None
         self._pending_post_install: _PostInstall | None = None
+        # The KiCad-open check runs on a worker before the path-variable confirm (REV-05):
+        # one check at a time, and a close during it waits for it instead of blocking
+        self._path_var_busy = False
+        self._path_var_check: TaskWorker | None = None
+        self._path_var_workers: list[TaskWorker] = []
+        self._close_after_check = False
         self.setAcceptDrops(True)
         self._build_menu()
         self._build_ui()
@@ -1089,8 +1097,11 @@ class MainWindow(QMainWindow):
 
     # Intentional exception to the convention that QMessageBox is only used for About:
     # the owner requires an explicit confirmation before KiCad's global settings change
-    # (PROJECT.md Safety constraint: no write without a preview first).
-    def _confirm_path_var_changes(self, changes) -> bool:
+    # (PROJECT.md Safety constraint: no write without a preview first). With KiCad open the
+    # same confirmation is a three-button variant (Retry, Change anyway, Not now).
+    def _confirm_path_var_changes(self, changes, names=()):
+        if names:
+            return self._ask_kicad_open(changes, names)
         lines = [
             f"{var}: {old if old else '(not set)'} -> {new}" for var, old, new in changes
         ]
@@ -1108,11 +1119,84 @@ class MainWindow(QMainWindow):
         )
         return answer == QMessageBox.StandardButton.Yes
 
-    def _sync_path_vars(self):
-        """Offer the KiCad path variable change through the confirmation dialog."""
-        self._log_issues(
-            sync_kicad_path_vars(REPO_ROOT, confirm=self._confirm_path_var_changes)
+    def _kicad_open_box(self, changes, names) -> tuple[QMessageBox, dict]:
+        """The dialog for a change while KiCad is open, and the answer each button gives."""
+        lines = [
+            f"{var}: {old if old else '(not set)'} -> {new}" for var, old, new in changes
+        ]
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("KiCad is open")
+        box.setText(
+            f"KiCad is open ({', '.join(names)}). These KiCad path variables in "
+            "kicad_common.json would change:\n\n"
+            + "\n".join(lines)
+            + "\n\nKiCad may undo them when it exits. Close KiCad, then press Retry."
         )
+        retry = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
+        anyway = box.addButton("Change anyway", QMessageBox.ButtonRole.DestructiveRole)
+        not_now = box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
+        box.setDefaultButton(retry)
+        box.setEscapeButton(not_now)
+        return box, {
+            retry: ConfirmAnswer.RETRY,
+            anyway: ConfirmAnswer.WRITE,
+            not_now: ConfirmAnswer.DECLINE,
+        }
+
+    def _ask_kicad_open(self, changes, names) -> ConfirmAnswer:
+        box, answers = self._kicad_open_box(changes, names)
+        box.exec()
+        return answers.get(box.clickedButton(), ConfirmAnswer.DECLINE)
+
+    def _sync_path_vars(self):
+        """Offer the KiCad path variable change: check for a running KiCad first, off the GUI thread."""
+        if self._path_var_busy:
+            return
+        self._path_var_busy = True
+        self._start_path_var_check()
+
+    def _start_path_var_check(self):
+        # kicad_running is looked up at call time so tests can replace the module attribute
+        worker = TaskWorker(lambda progress: kicad_running(), parent=self)
+        # Finished threads are never deleteLater'd, same rule as the import dialog's _reap
+        self._path_var_workers.append(worker)
+        self._path_var_check = worker
+        worker.result.connect(self._on_path_var_check)
+        worker.failed.connect(self._on_path_var_check_failed)
+        worker.finished.connect(lambda w=worker: self._on_path_var_check_finished(w))
+        worker.start()
+
+    def _on_path_var_check_failed(self, text):
+        # A failed check counts as KiCad closed, like kicad_running itself
+        self._on_path_var_check([])
+
+    def _on_path_var_check(self, names):
+        if self._close_after_check:
+            self._path_var_busy = False
+            return
+        names = list(names)
+        issues = sync_kicad_path_vars(
+            REPO_ROOT,
+            running=lambda: names,
+            confirm=lambda changes: self._confirm_path_var_changes(changes, names),
+        )
+        self._log_issues(issues)
+        if any(issue.code == "config.retry" for issue in issues):
+            # Retry: look again; with KiCad closed the normal Yes/No question follows, so
+            # nothing is written without a confirm. _path_var_busy stays set meanwhile.
+            self._start_path_var_check()
+            return
+        self._path_var_busy = False
+
+    def _on_path_var_check_finished(self, worker):
+        # QThread.finished arrives just before the thread ends, so this only joins a thread
+        # whose work has returned
+        worker.wait(2000)
+        if self._path_var_check is worker:
+            self._path_var_check = None
+        if self._close_after_check and self._path_var_check is None:
+            self.close()
 
     def _on_generate(self):
         if not self._scan_result:
@@ -1237,6 +1321,12 @@ class MainWindow(QMainWindow):
                 return
             # Waits for the dialog's workers and closes the opened package first
             dialog.reject()
+        # The KiCad-open check runs on a worker: the window never waits for it here. The
+        # finished handler closes the window once the check is over (T-12-16)
+        if self._path_var_check is not None:
+            self._close_after_check = True
+            event.ignore()
+            return
         # The check dialog only holds the last scan result, so closing it loses nothing
         if self._atomic_dialog is not None:
             self._atomic_dialog.reject()

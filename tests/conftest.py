@@ -13,6 +13,30 @@ _GAP_RE = re.compile(r"[ \t\r\n]*")
 _ATOM_BAD_RE = re.compile(r'[ \t\r\n()"]')
 
 
+@pytest.hookimpl(wrapper=True, tryfirst=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Join every QThread child of the registered widgets before pytest-qt closes them.
+
+    pytest-qt closes the registered widgets before fixture teardown, and a close that waits
+    for its workers instead of blocking must never let a running thread be destroyed with
+    its widget. A test that gates a worker must release it before it ends.
+    """
+    widgets = [ref() for ref, _ in getattr(item, "qt_widgets", [])]
+    widgets = [widget for widget in widgets if widget is not None]
+    if widgets:
+        # Imported only here, so test modules that never create a widget stay Qt-free
+        from PySide6.QtCore import QThread
+
+        for widget in widgets:
+            try:
+                threads = widget.findChildren(QThread)
+            except RuntimeError:  # the C++ widget is already gone
+                continue
+            for thread in threads:
+                thread.wait(60000)
+    return (yield)
+
+
 @pytest.fixture
 def repo_root() -> Path:
     return REPO_ROOT

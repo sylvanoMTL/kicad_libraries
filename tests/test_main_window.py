@@ -17,6 +17,7 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QMessageBox
 
 from kicad_lib_manager import library_scanner, main_window, settings
+from kicad_lib_manager.library_scanner import ConfirmAnswer
 from kicad_lib_manager.widgets.log_panel import COLORS
 from kicad_lib_manager.models import (
     FootprintLibrary, FootprintRef, Issue, ScanResult, Severity, SymbolEntry, SymbolLibrary,
@@ -58,15 +59,16 @@ def make_window(qtbot, monkeypatch, tmp_path):
             config_file.parent.mkdir(exist_ok=True)
             config_file.write_text('{"environment": {"vars": null}}\n', encoding="utf-8")
 
-        # A caller passing config_base/backup_root/running itself makes a duplicate-keyword
-        # TypeError here, so nothing can reach the real KiCad config
+        # A caller passing config_base or backup_root itself makes a duplicate-keyword
+        # TypeError here, so nothing can reach the real KiCad config. The window passes its
+        # own running (the names its worker found); a direct call gets "KiCad is closed".
         def fake_sync(repo_root, **kwargs):
+            kwargs.setdefault("running", lambda: [])
             return library_scanner.sync_kicad_path_vars(
                 repo_root,
                 **kwargs,
                 config_base=config_base,
                 backup_root=tmp_path / "backups",
-                running=lambda: [],
             )
 
         monkeypatch.setattr(main_window, "REPO_ROOT", repo)
@@ -94,10 +96,40 @@ def make_window(qtbot, monkeypatch, tmp_path):
     monkeypatch.setattr(main_window.QMessageBox, "question", fake_question)
     make.answer = QMessageBox.StandardButton.Yes
     make.questions = []
+
+    # The KiCad-open check runs on a worker thread: record where it ran and what it found.
+    # make.running is the answer; make.running_queue (if not empty) gives one answer per check.
+    make.running = []
+    make.running_queue = []
+    make.check_threads = []
+
+    def fake_running():
+        make.check_threads.append(threading.get_ident())
+        if make.running_queue:
+            return list(make.running_queue.pop(0))
+        return list(make.running)
+
+    # The KiCad-open dialog is replaced the same way as the Yes/No question, so no test blocks
+    make.kicad_answers = []
+    make.kicad_calls = []
+
+    def fake_ask_kicad_open(self, changes, names):
+        make.kicad_calls.append((changes, list(names)))
+        if make.kicad_answers:
+            return make.kicad_answers.pop(0)
+        return ConfirmAnswer.DECLINE
+
+    monkeypatch.setattr(main_window, "kicad_running", fake_running)
+    monkeypatch.setattr(main_window.MainWindow, "_ask_kicad_open", fake_ask_kicad_open)
     return make
 
 
-def test_generate_splices_table_and_logs_issues(make_window):
+def settle(qtbot, w):
+    """Wait until the off-thread KiCad check and the path-variable question are done."""
+    qtbot.waitUntil(lambda: not w._path_var_busy, timeout=5000)
+
+
+def test_generate_splices_table_and_logs_issues(qtbot, make_window):
     scan = ScanResult(
         symbol_libs=[SymbolLibrary("New", "Custom/Symbols/New.kicad_sym", "Custom")],
         footprint_libs=[FootprintLibrary("NewFP", "Custom/Footprints/NewFP.pretty", "Custom")],
@@ -120,6 +152,7 @@ def test_generate_splices_table_and_logs_issues(make_window):
     scan.symbol_libs[0].selected = True
     scan.footprint_libs[0].selected = True
     w._on_generate()
+    settle(qtbot, w)
 
     data = (repo / "sym-lib-table").read_bytes()
     assert b"  (version 7)\r\n" in data
@@ -285,6 +318,7 @@ def test_generate_with_read_only_sym_table_logs_one_error_and_finishes(
     try:
         with qtbot.captureExceptions() as exceptions:
             w._on_generate()
+            settle(qtbot, w)
         assert exceptions == []
     finally:
         os.chmod(sym_table, stat.S_IREAD | stat.S_IWRITE)
@@ -298,13 +332,14 @@ def test_generate_with_read_only_sym_table_logs_one_error_and_finishes(
     assert w._dest_combo.itemText(0) == str(repo)
 
 
-def test_generate_declined_leaves_kicad_config_untouched(make_window, tmp_path):
+def test_generate_declined_leaves_kicad_config_untouched(qtbot, make_window, tmp_path):
     make_window.answer = QMessageBox.StandardButton.No
     w = make_window([_new_lib_scan()])
     repo = make_window.repo
     config_before = make_window.config_file.read_bytes()
 
     w._on_generate()
+    settle(qtbot, w)
 
     assert (repo / "sym-lib-table").exists()
     assert (repo / "fp-lib-table").exists()
@@ -314,13 +349,14 @@ def test_generate_declined_leaves_kicad_config_untouched(make_window, tmp_path):
     assert "KiCad path variables left unchanged" in w._log._text.toPlainText()
 
 
-def test_generate_from_worktree_refuses_without_asking(make_window, tmp_path):
+def test_generate_from_worktree_refuses_without_asking(qtbot, make_window, tmp_path):
     w = make_window([_new_lib_scan()])
     repo = make_window.repo
     (repo / ".git").write_text("gitdir: elsewhere\n")
     config_before = make_window.config_file.read_bytes()
 
     w._on_generate()
+    settle(qtbot, w)
 
     assert make_window.questions == []
     assert make_window.config_file.read_bytes() == config_before
@@ -332,11 +368,12 @@ def test_generate_from_worktree_refuses_without_asking(make_window, tmp_path):
     assert COLORS["warning"].lower() in line.lower()
 
 
-def test_generate_confirmed_shows_old_and_new_values(make_window):
+def test_generate_confirmed_shows_old_and_new_values(qtbot, make_window):
     w = make_window([_new_lib_scan()])
     repo_str = str(make_window.repo).replace("\\", "/")
 
     w._on_generate()
+    settle(qtbot, w)
 
     (args,) = make_window.questions
     assert args[0] is w
@@ -347,11 +384,12 @@ def test_generate_confirmed_shows_old_and_new_values(make_window):
     assert config["environment"]["vars"]["KICAD_LIB_GITHUB"] == repo_str
 
 
-def test_generate_without_kicad_config_warns_and_still_writes_both_tables(make_window):
+def test_generate_without_kicad_config_warns_and_still_writes_both_tables(qtbot, make_window):
     w = make_window([_new_lib_scan()], empty_config=True)
     repo = make_window.repo
 
     w._on_generate()
+    settle(qtbot, w)
 
     text = w._log._text.toPlainText()
     assert text.count("Could not find KiCad config directory") == 1
@@ -360,6 +398,149 @@ def test_generate_without_kicad_config_warns_and_still_writes_both_tables(make_w
     assert COLORS["warning"].lower() in line.lower()
     assert (repo / "sym-lib-table").exists()
     assert (repo / "fp-lib-table").exists()
+
+
+def test_generate_with_kicad_open_change_anyway_writes_and_warns(qtbot, make_window):
+    make_window.running = ["eeschema", "kicad"]
+    make_window.kicad_answers = [ConfirmAnswer.WRITE]
+    w = make_window([_new_lib_scan()])
+    repo_str = str(make_window.repo).replace("\\", "/")
+
+    w._on_generate()
+    settle(qtbot, w)
+
+    config = json.loads(make_window.config_file.read_text(encoding="utf-8"))
+    assert config["environment"]["vars"]["KICAD_LIB_GITHUB"] == repo_str
+    assert config["environment"]["vars"]["CUSTOM_3DMODEL_DIR"] == f"{repo_str}/Custom/3DModels"
+    lines = [ln for ln in w._log._text.toPlainText().splitlines() if "(eeschema, kicad)" in ln]
+    assert len(lines) == 1
+    assert "eeschema, kicad" in lines[0]
+    ((changes, names),) = make_window.kicad_calls
+    assert names == ["eeschema", "kicad"]
+    assert [var for var, _old, _new in changes] == ["KICAD_LIB_GITHUB", "CUSTOM_3DMODEL_DIR"]
+    assert make_window.questions == []
+    assert len(make_window.check_threads) == 1
+    assert make_window.check_threads[0] != threading.main_thread().ident
+
+
+def _kicad_open_text(w):
+    return w._log._text.toPlainText()
+
+
+def test_kicad_open_retry_then_closed_asks_yes_no(qtbot, make_window):
+    make_window.running_queue = [["kicad"], []]
+    make_window.kicad_answers = [ConfirmAnswer.RETRY]
+    w = make_window([_new_lib_scan()])
+    repo_str = str(make_window.repo).replace("\\", "/")
+
+    w._on_generate()
+    settle(qtbot, w)
+
+    assert len(make_window.kicad_calls) == 1
+    assert len(make_window.questions) == 1
+    assert len(make_window.check_threads) == 2
+    config = json.loads(make_window.config_file.read_text(encoding="utf-8"))
+    assert config["environment"]["vars"]["KICAD_LIB_GITHUB"] == repo_str
+    assert "KiCad is open" not in _kicad_open_text(w)
+
+
+def test_kicad_open_retry_still_open_asks_again(qtbot, make_window):
+    make_window.running = ["kicad"]
+    make_window.kicad_answers = [ConfirmAnswer.RETRY, ConfirmAnswer.DECLINE]
+    w = make_window([_new_lib_scan()])
+    config_before = make_window.config_file.read_bytes()
+
+    w._on_generate()
+    settle(qtbot, w)
+
+    assert len(make_window.kicad_calls) == 2
+    assert make_window.questions == []
+    assert make_window.config_file.read_bytes() == config_before
+    assert "KiCad path variables left unchanged (change declined)" in _kicad_open_text(w)
+
+
+def test_kicad_open_not_now_writes_nothing(qtbot, make_window, tmp_path):
+    make_window.running = ["kicad"]
+    make_window.kicad_answers = [ConfirmAnswer.DECLINE]
+    w = make_window([_new_lib_scan()])
+    config_before = make_window.config_file.read_bytes()
+
+    w._on_generate()
+    settle(qtbot, w)
+
+    assert len(make_window.kicad_calls) == 1
+    assert make_window.config_file.read_bytes() == config_before
+    assert not (tmp_path / "backups").exists()
+
+
+def test_second_generate_starts_no_second_check(qtbot, make_window, monkeypatch):
+    w = make_window([_new_lib_scan()])
+    gate = threading.Event()
+
+    def gated_running():
+        make_window.check_threads.append(threading.get_ident())
+        gate.wait(5)
+        return []
+
+    monkeypatch.setattr(main_window, "kicad_running", gated_running)
+    try:
+        w._on_generate()
+        w._on_generate()
+    finally:
+        gate.set()
+    settle(qtbot, w)
+
+    assert len(make_window.check_threads) == 1
+    assert len(make_window.questions) == 1
+
+
+def test_close_waits_for_check_without_blocking(qtbot, make_window, monkeypatch):
+    w = make_window([_new_lib_scan()])
+    w.show()
+    gate = threading.Event()
+
+    def gated_running():
+        gate.wait(5)
+        return []
+
+    monkeypatch.setattr(main_window, "kicad_running", gated_running)
+    try:
+        w._on_generate()
+        w.close()
+        # The check is still held: the window stays, nothing was asked
+        assert w.isVisible()
+        assert make_window.questions == []
+    finally:
+        gate.set()
+    qtbot.waitUntil(lambda: not w.isVisible(), timeout=5000)
+
+    assert make_window.questions == []
+    assert make_window.kicad_calls == []
+
+
+def test_kicad_open_box_texts_and_buttons(make_window):
+    w = make_window([_new_lib_scan()])
+    changes = [
+        ("KICAD_LIB_GITHUB", None, "C:/repo"),
+        ("CUSTOM_3DMODEL_DIR", "D:/old", "C:/repo/Custom/3DModels"),
+    ]
+
+    box, answers = w._kicad_open_box(changes, ["eeschema", "kicad"])
+
+    text = box.text()
+    assert "KiCad is open (eeschema, kicad)" in text
+    assert "Close KiCad, then press Retry" in text
+    assert "KICAD_LIB_GITHUB: (not set) -> C:/repo" in text
+    assert "CUSTOM_3DMODEL_DIR: D:/old -> C:/repo/Custom/3DModels" in text
+    # The platform orders the buttons by role, so compare by text
+    assert {b.text() for b in box.buttons()} == {"Retry", "Change anyway", "Not now"}
+    assert box.defaultButton().text() == "Retry"
+    assert {b.text(): answer for b, answer in answers.items()} == {
+        "Retry": ConfirmAnswer.RETRY,
+        "Change anyway": ConfirmAnswer.WRITE,
+        "Not now": ConfirmAnswer.DECLINE,
+    }
+    assert box.escapeButton().text() == "Not now"
 
 
 # ── Scan funnel and busy guard (HARD-05) ──────────────────────────────────

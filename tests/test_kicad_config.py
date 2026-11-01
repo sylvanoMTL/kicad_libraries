@@ -15,6 +15,7 @@ import pytest
 from kicad_lib_manager import fsutil, library_scanner
 from kicad_lib_manager.models import Severity
 from kicad_lib_manager.library_scanner import (
+    ConfirmAnswer,
     find_kicad_config_dir,
     find_kicad_footprint_dir,
     newest_version_dirs,
@@ -328,7 +329,10 @@ def test_running_kicad_warns_but_still_writes(repo, cfg, backups):
     issues = _sync(repo, cfg, backups, running=lambda: ["eeschema", "kicad"])
     (warn,) = _by_code(issues, "config.kicad_running")
     assert warn.severity is Severity.WARNING
-    assert "eeschema" in warn.text and "kicad" in warn.text
+    assert warn.text == (
+        "KiCad is open (eeschema, kicad); it may undo these paths when it exits. "
+        "If they revert, close KiCad and press Generate Tables."
+    )
     assert _by_code(issues, "config.written")
     assert json.loads(path.read_text(encoding="utf-8"))["environment"]["vars"] == _desired(repo)
 
@@ -564,3 +568,147 @@ def test_git_directory_is_not_a_worktree(repo, cfg, backups):
     assert not _by_code(issues, "config.worktree_refused")
     assert _by_code(issues, "config.written")
     assert json.loads(path.read_text(encoding="utf-8"))["environment"]["vars"] == _desired(repo)
+
+
+# -- Plan 12-06: the confirmed write merges into the file as it is now (D-09..D-12) -----
+
+def test_running_is_checked_before_confirm(repo, cfg, backups):
+    _write_config(cfg, "10.0", _null_vars_config())
+    order = []
+
+    def running():
+        order.append("running")
+        return []
+
+    def confirm(changes):
+        order.append("confirm")
+        return True
+
+    _sync(repo, cfg, backups, running=running, confirm=confirm)
+
+    assert order == ["running", "confirm"]
+
+
+def test_retry_answer_writes_nothing(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    before = path.read_bytes()
+
+    issues = _sync(repo, cfg, backups, confirm=lambda changes: ConfirmAnswer.RETRY)
+
+    (retry,) = _by_code(issues, "config.retry")
+    assert retry.severity is Severity.INFO
+    assert not _by_code(issues, "config.written")
+    assert not backups.exists()
+    assert path.read_bytes() == before
+
+
+def test_confirmed_write_keeps_settings_saved_meanwhile(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    saved = {}
+
+    def confirm(changes):
+        # KiCad saves its settings while the owner reads the dialog
+        data = _null_vars_config()
+        data["session"] = {"saved_while_asked": True}
+        _write_config(cfg, "10.0", data)
+        saved["bytes"] = path.read_bytes()
+        return True
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    written = json.loads(path.read_text(encoding="utf-8"))
+    assert written["session"] == {"saved_while_asked": True}
+    assert written["environment"]["vars"] == _desired(repo)
+    assert written["appearance"] == _null_vars_config()["appearance"]
+    assert written["system"] == _null_vars_config()["system"]
+    assert _by_code(issues, "config.written")
+    backup = _backup_dir(backups) / "kicad_common.json_backup_1"
+    assert backup.read_bytes() == saved["bytes"]
+
+
+def test_changed_list_asks_again(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    desired = _desired(repo)
+    calls = []
+
+    def confirm(changes):
+        calls.append(list(changes))
+        if len(calls) == 1:
+            # KiCad saved a file that already holds the first variable
+            data = _null_vars_config()
+            data["environment"]["vars"] = {"KICAD_LIB_GITHUB": desired["KICAD_LIB_GITHUB"]}
+            _write_config(cfg, "10.0", data)
+        return True
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    assert len(calls) == 2
+    assert [var for var, _old, _new in calls[1]] == ["CUSTOM_3DMODEL_DIR"]
+    assert json.loads(path.read_text(encoding="utf-8"))["environment"]["vars"] == desired
+    assert len(list(_backup_dir(backups).iterdir())) == 1
+    assert _by_code(issues, "config.written")
+
+
+def test_no_change_left_writes_nothing(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+
+    def confirm(changes):
+        data = _null_vars_config()
+        data["environment"]["vars"] = _desired(repo)
+        _write_config(cfg, "10.0", data)
+        return True
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    assert not backups.exists()
+    assert not _by_code(issues, "config.written")
+    assert len(_by_code(issues, "config.var_ok")) == 2
+    # Nothing but KiCad's own save is on disk
+    assert json.loads(path.read_text(encoding="utf-8"))["environment"]["vars"] == _desired(repo)
+
+
+def test_bad_json_on_reread_aborts(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    broken = b"{not json"
+
+    def confirm(changes):
+        path.write_bytes(broken)
+        return True
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+
+    (bad,) = _by_code(issues, "config.bad_json")
+    assert bad.severity is Severity.ERROR
+    assert not backups.exists()
+    assert path.read_bytes() == broken
+
+
+def test_unstable_file_stops_after_three_passes(repo, cfg, backups):
+    path = _write_config(cfg, "10.0", _null_vars_config())
+    repo_str = _desired(repo)["KICAD_LIB_GITHUB"]
+    calls = []
+
+    def confirm(changes):
+        calls.append(list(changes))
+        # The same checkout spelled with another number of trailing slashes: never refused,
+        # never equal to the wanted value, so the needed change keeps moving
+        data = _null_vars_config()
+        data["environment"]["vars"] = {"KICAD_LIB_GITHUB": repo_str + "/" * len(calls)}
+        _write_config(cfg, "10.0", data)
+        return True
+
+    issues = _sync(repo, cfg, backups, confirm=confirm)
+    last = path.read_bytes()
+
+    assert len(calls) == 3
+    (warn,) = _by_code(issues, "config.keeps_changing")
+    assert warn.severity is Severity.WARNING
+    assert warn.text == (
+        "kicad_common.json kept changing while you were asked; nothing was written. "
+        "Press Generate Tables to try again."
+    )
+    assert not _by_code(issues, "config.written")
+    assert not backups.exists()
+    vars_ = json.loads(last.decode("utf-8"))["environment"]["vars"]
+    assert vars_ == {"KICAD_LIB_GITHUB": repo_str + "///"}
+
