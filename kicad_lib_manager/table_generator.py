@@ -300,14 +300,37 @@ def write_tables(dest_folder: Path,
     return issues
 
 
+def _same_rel(a: str, b: str, *, fold: bool | None = None) -> bool:
+    """True when two repo-relative paths name the same place.
+
+    Slash direction and a trailing slash never matter; letter case matters only when fold is
+    true. fold=None means "on Windows", where the file system ignores case (D-03).
+    """
+    if fold is None:
+        fold = os.name == "nt"
+
+    def norm(value: str) -> str:
+        value = value.strip().replace("\\", "/").rstrip("/")
+        return value.casefold() if fold else value
+
+    return norm(a) == norm(b)
+
+
 def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
-               backup_number: int, issues: list[Issue]) -> str:
-    """Add one managed entry to one table. Returns "added", "listed" or "skipped"."""
+               backup_number: int, issues: list[Issue], *, repo_root: Path,
+               add_missing: bool = True, fold: bool | None = None) -> str:
+    """Add or repoint one managed entry in one table.
+
+    Returns "added", "listed", "updated", "skipped" or "missing" (add_missing is false and the
+    table does not list the nickname).
+    """
     filename = _TABLE_FILES[tag]
     lib_cls = SymbolLibrary if tag == "sym_lib_table" else FootprintLibrary
     uri = f"{_MANAGED_MARKER}{rel_path}"
 
     if not path.exists():
+        if not add_missing:
+            return "missing"
         template = _merge_table(tag, None, [lib_cls(nickname, rel_path, "", selected=True)])
         failure = fsutil.atomic_write_text(path, template.content, bom=False)
         if failure is not None:
@@ -322,7 +345,10 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
     issues.extend(loaded.source.issues)
 
     text = loaded.source.text
+    outcome = "added"
     if not text.strip(" \t\r\n"):
+        if not add_missing:
+            return "missing"
         new_text = _merge_table(
             tag, None, [lib_cls(nickname, rel_path, "", selected=True)]
         ).content
@@ -336,22 +362,43 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
                 "file left unchanged",
             ))
             return "skipped"
-        for entry in table.entries:
-            if entry.name != nickname:
-                continue
-            if _is_managed(entry):
-                return "listed"
+        # One outcome for all entries under this nickname, by precedence: a matching entry, then
+        # a live tool-owned entry, then a hand-added entry, then a stale tool-owned entry
+        same = [entry for entry in table.entries if entry.name == nickname]
+        managed = [entry for entry in same if _is_managed(entry)]
+        if any(_same_rel(_tail(entry), rel_path, fold=fold) for entry in managed):
+            return "listed"
+        live = next((entry for entry in managed if (repo_root / _tail(entry)).exists()), None)
+        if live is not None:
+            issues.append(Issue(
+                Severity.WARNING,
+                "table.path_clash",
+                f"Not added to {filename}: the name {nickname} already points at "
+                f"{_tail(live)}; KiCad still loads that library. Rename one of them.",
+            ))
+            return "skipped"
+        by_hand = next((entry for entry in same if not _is_managed(entry)), None)
+        if by_hand is not None:
             issues.append(Issue(
                 Severity.WARNING,
                 "table.external_clash",
                 f"{filename}: '{nickname}' is already defined by an external entry "
-                f"({entry.uri}); kept it and did not add {uri}",
+                f"({by_hand.uri}); kept it and did not add {uri}",
             ))
             return "skipped"
-        block = f"  {_entry_text(nickname, uri)}{loaded.source.eol}"
-        new_text = apply_edits(
-            text, [_insert_before_close(text, table.node, loaded.source.eol, block)]
-        )
+        if managed:
+            # Every tool-owned entry under the name points at a library that is gone: repoint
+            # the first one, changing only its URI value
+            node = managed[0].value_nodes["uri"]
+            new_text = apply_edits(text, [Edit(node.start, node.end, quote(uri))])
+            outcome = "updated"
+        elif not add_missing:
+            return "missing"
+        else:
+            block = f"  {_entry_text(nickname, uri)}{loaded.source.eol}"
+            new_text = apply_edits(
+                text, [_insert_before_close(text, table.node, loaded.source.eol, block)]
+            )
 
     backup = fsutil.backup_file(path, path.parent, number=backup_number)
     if isinstance(backup, Issue):
@@ -363,16 +410,22 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
     if failure is not None:
         issues.append(failure)
         return "skipped"
-    return "added"
+    return outcome
 
 
-def add_library_entries(dest_folder: Path, *, symbol: tuple[str, str] | None = None, footprint: tuple[str, str] | None = None) -> list[Issue]:
+def add_library_entries(dest_folder: Path, *, symbol: tuple[str, str] | None = None,
+                        footprint: tuple[str, str] | None = None, repo_root: Path,
+                        add_missing: bool = True, fold: bool | None = None) -> list[Issue]:
     """Add managed entries to sym-lib-table and fp-lib-table, each under its own nickname.
 
     symbol and footprint are (nickname, repo-relative posix path) pairs; only the ones given are
-    added. Never edits, reorders or removes any other entry, and never creates the destination
-    folder (D-17). A table that already lists the nickname is left alone; a missing table is
-    created from the same template Generate uses.
+    handled. Never reorders or removes any entry, and never creates the destination folder
+    (D-17). A table that already lists the nickname at that path is left alone. A tool-owned
+    entry under the nickname whose target is gone from repo_root is repointed (the table is
+    backed up first, only the URI changes); one whose target still exists, and any entry added
+    by hand, is never edited and gives a warning. A missing table is created from the same
+    template Generate uses. With add_missing false no entry is ever added or created: a table
+    that does not list the nickname gives "table.not_listed" (an install into an existing library).
     """
     if not dest_folder.is_dir():
         return [Issue(Severity.ERROR, "table.dest_missing",
@@ -386,23 +439,30 @@ def add_library_entries(dest_folder: Path, *, symbol: tuple[str, str] | None = N
     if not requested:
         return issues
     backup_number = _next_backup_number(dest_folder)
-    outcomes: list[tuple[str, str, str]] = []  # (filename, nickname, outcome)
+    outcomes: list[tuple[str, str, str, str]] = []  # (filename, nickname, outcome, rel_path)
     for tag, (nickname, rel_path) in requested:
         filename = _TABLE_FILES[tag]
-        outcome = _add_entry(tag, dest_folder / filename, nickname, rel_path, backup_number, issues)
-        outcomes.append((filename, nickname, outcome))
+        outcome = _add_entry(tag, dest_folder / filename, nickname, rel_path, backup_number, issues,
+                             repo_root=repo_root, add_missing=add_missing, fold=fold)
+        outcomes.append((filename, nickname, outcome, rel_path))
 
-    if len(outcomes) == 2 and all(outcome == "added" for _, _, outcome in outcomes):
+    if len(outcomes) == 2 and all(outcome == "added" for _, _, outcome, _ in outcomes):
         issues.append(Issue(Severity.SUCCESS, "table.entries_added",
                             f"Added {outcomes[0][1]} to sym-lib-table and {outcomes[1][1]} to fp-lib-table"))
         return issues
-    for filename, nickname, outcome in outcomes:
+    for filename, nickname, outcome, rel_path in outcomes:
         if outcome == "added":
             issues.append(Issue(Severity.SUCCESS, "table.entry_added",
                                 f"Added {nickname} to {filename}"))
+        elif outcome == "updated":
+            issues.append(Issue(Severity.SUCCESS, "table.entry_updated",
+                                f"Updated: {nickname} in {filename} now points at {rel_path}"))
         elif outcome == "listed":
             issues.append(Issue(Severity.INFO, "table.already_listed",
                                 f"{filename} already lists {nickname}; not changed"))
+        elif outcome == "missing":
+            issues.append(Issue(Severity.INFO, "table.not_listed",
+                                f"{filename} does not list {nickname}"))
     return issues
 
 

@@ -838,6 +838,7 @@ class MainWindow(QMainWindow):
                     if pending.footprint_library and pending.fp_rel_path
                     else None
                 ),
+                repo_root=REPO_ROOT,
             )
             self._log_issues(issues)
             text, severity = self._tables_outcome(issues)
@@ -888,9 +889,17 @@ class MainWindow(QMainWindow):
         warned = any(issue.severity is Severity.WARNING for issue in issues)
         parts = [
             issue.text for issue in issues
-            if issue.code in ("table.entry_added", "table.already_listed", "table.external_clash")
+            if issue.code in (
+                "table.entry_added", "table.entry_updated", "table.already_listed",
+                "table.path_clash", "table.external_clash",
+            )
         ]
-        return "; ".join(parts) or "Library tables checked", Severity.WARNING if warned else Severity.INFO
+        text = "; ".join(parts) or "Library tables checked"
+        if warned:
+            return text, Severity.WARNING
+        if any(issue.code == "table.entry_updated" for issue in issues):
+            return text, Severity.SUCCESS
+        return text, Severity.INFO
 
     def _import_busy(self) -> bool:
         """True while a scan runs or the import dialog is open (D-19)."""
