@@ -167,6 +167,28 @@ def test_help_import_page_failure_and_tables_claims():
         assert claim in page, claim
 
 
+def test_help_describes_phase_12_behaviour():
+    generating = _page_text("generating").lower()
+    for claim in (
+        "checks whether kicad is open", "retry", "change anyway", "not now", "only these two paths",
+        "empty destination",
+    ):
+        assert claim in generating, claim
+
+    importing = _page_text("importing").lower()
+    for claim in (
+        import_dialog.FINISHING_TEXT.lower(), "press cancel to stay",
+        "points at a library that no longer exists", "added by hand", "empty destination",
+        "install part waits",
+    ):
+        assert claim in importing, claim
+
+    # the new sentences stay in plain words: no raw field names (owner preference)
+    for key in ("generating", "importing"):
+        text = _page_text(key).casefold()
+        assert "ki_" not in text, key
+
+
 def _panel_texts(panel) -> list[str]:
     return [w.text() for w in panel.findChildren(QLabel)] + [w.text() for w in panel.findChildren(QAbstractButton)]
 
