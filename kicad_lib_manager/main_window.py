@@ -1182,6 +1182,11 @@ class MainWindow(QMainWindow):
             confirm=lambda changes: self._confirm_path_var_changes(changes, names),
         )
         self._log_issues(issues)
+        if any(issue.code == "config.retry" for issue in issues):
+            # Retry: look again; with KiCad closed the normal Yes/No question follows, so
+            # nothing is written without a confirm. _path_var_busy stays set meanwhile.
+            self._start_path_var_check()
+            return
         self._path_var_busy = False
 
     def _on_path_var_check_finished(self, worker):
@@ -1190,6 +1195,8 @@ class MainWindow(QMainWindow):
         worker.wait(2000)
         if self._path_var_check is worker:
             self._path_var_check = None
+        if self._close_after_check and self._path_var_check is None:
+            self.close()
 
     def _on_generate(self):
         if not self._scan_result:
@@ -1314,6 +1321,12 @@ class MainWindow(QMainWindow):
                 return
             # Waits for the dialog's workers and closes the opened package first
             dialog.reject()
+        # The KiCad-open check runs on a worker: the window never waits for it here. The
+        # finished handler closes the window once the check is over (T-12-16)
+        if self._path_var_check is not None:
+            self._close_after_check = True
+            event.ignore()
+            return
         # The check dialog only holds the last scan result, so closing it loses nothing
         if self._atomic_dialog is not None:
             self._atomic_dialog.reject()
