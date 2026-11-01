@@ -2736,7 +2736,8 @@ def test_install_progress_and_lock(qtbot, make_install_dialog, gates):
     assert dialog._preview.isEnabled()  # the tree stays scrollable and its rows can be opened
     assert dialog._install_row.isVisible() and not dialog._strip.isVisible()
     assert MUTED.lower() in dialog._install_step.styleSheet().lower()
-    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel"]
+    # An install cannot be cancelled; the hidden Cancel of the Finishing strip is not a way to do it
+    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel" and b.isVisible()]
 
     gates[0].set()
     qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
@@ -5252,3 +5253,306 @@ def test_kicad_folder_reaches_probe_recheck_and_commit(qtbot, item_layout, recor
     panel.commit_button.click()
     qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
     assert seen == {"probe": fp_dir, "recheck": fp_dir, "commit": fp_dir}
+
+
+# -- Phase 12 plan 12-05: Finishing instead of a GUI-thread wait (D-06, D-07, REV-03, REV-04) --------------------
+
+from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtGui import QGuiApplication  # noqa: E402
+
+from kicad_lib_manager.widgets.import_dialog import FINISHING_TEXT, SLOW_CLI_TEXT, TaskWorker  # noqa: E402
+
+
+def finishing_dialog(qtbot, make_dialog, gates, events: list, builds: list | None = None) -> ImportDialog:
+    """A shown, planned dialog whose second build_plan call is gated, and whose package records its close.
+
+    The gate is registered once that build runs: after dialog._request_rebuild() and qtbot.waitUntil on
+    len(gates) == 1 the build is held open. builds (when given) gets one entry per build_plan call.
+    """
+    count = {"n": 0}
+
+    def open_recording(path, repo_root, progress=None):
+        package = real_open_package(path, repo_root, progress)
+        original = package.close
+
+        def close():
+            events.append("close")
+            original()
+
+        package.close = close
+        return package
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if builds is not None:
+            builds.append(options)
+        if count["n"] == 2:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+            events.append("build_end")
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(open_package=open_recording, build_plan=gated_build), show=True)
+    wait_plan(qtbot, dialog)
+    return dialog
+
+
+def hold_a_build(qtbot, dialog: ImportDialog, gates) -> None:
+    """Start the gated rebuild and wait until it is held open."""
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+
+
+def wait_on_start_page(qtbot, dialog: ImportDialog) -> None:
+    qtbot.waitUntil(
+        lambda: dialog._stack.currentWidget() is dialog._start_page and not dialog.is_finishing(), timeout=30000
+    )
+
+
+def test_change_waits_for_build_without_blocking(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    assert QGuiApplication.overrideCursor() is None
+
+    dialog._on_change()  # returns at once: the build is still gated
+    assert not gates[0].is_set()
+    assert dialog.is_finishing()
+    assert dialog._finish_strip.isVisible()
+    assert dialog._finish_label.text() == FINISHING_TEXT
+    assert not dialog._stack.isEnabled()
+    assert QGuiApplication.overrideCursor() is not None
+    assert events == []
+
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+    assert events == ["build_end", "close"]
+    assert QGuiApplication.overrideCursor() is None
+    assert dialog._stack.isEnabled()
+    assert not dialog._finish_strip.isVisible()
+
+
+def test_change_never_waits_unbounded(qtbot, make_dialog, gates, monkeypatch):
+    waits: list[tuple] = []
+    original = TaskWorker.wait
+
+    def recording_wait(self, *args):
+        waits.append(args)
+        return original(self, *args)
+
+    monkeypatch.setattr(TaskWorker, "wait", recording_wait)
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+    seen = list(waits)
+    assert seen  # the reaper joined at least the finished builds
+    assert all(len(args) == 1 and args[0] <= 2000 for args in seen)
+
+
+def test_open_during_build_opens_after_it_ends(qtbot, make_dialog, gates, tmp_path):
+    import shutil
+
+    second = tmp_path / "second.zip"
+    shutil.copy(UL_ZIP, second)
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    hold_a_build(qtbot, dialog, gates)
+
+    dialog.open_path(second)  # returns at once: the build is still gated
+    assert not gates[0].is_set()
+    assert dialog.is_finishing()
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert events == []
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog._package_label.text() == "Package: second.zip", timeout=30000)
+    assert not dialog.is_finishing()
+    assert events[:2] == ["build_end", "close"]  # the first package closed only after the build ended
+
+
+def test_finishing_cancel_restores_the_dialog(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    assert dialog.is_finishing()
+
+    dialog._finish_cancel.click()
+    assert not dialog.is_finishing()
+    assert not dialog._finish_strip.isVisible()
+    assert dialog._stack.isEnabled()
+    assert QGuiApplication.overrideCursor() is None
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog._building is None, timeout=30000)
+    qtbot.wait(150)  # the dropped Change must not run when the build ends
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert events == ["build_end"]
+
+
+def test_finishing_shows_slow_note(qtbot, make_dialog, gates, monkeypatch):
+    monkeypatch.setattr(import_dialog_module, "_SLOW_NOTE_MS", 20)
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    assert not dialog._finish_slow.isVisible()
+    qtbot.waitUntil(dialog._finish_slow.isVisible, timeout=5000)
+    assert dialog._finish_slow.text() == SLOW_CLI_TEXT
+
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+    assert not dialog._finish_slow.isVisible()
+
+
+def test_finishing_keeps_the_event_loop_running(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    fired: list[int] = []
+    QTimer.singleShot(10, lambda: fired.append(1))
+    qtbot.waitUntil(lambda: bool(fired), timeout=5000)
+    assert not gates[0].is_set()  # the timer ran while the build was still held
+    assert dialog.is_finishing()
+
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+
+
+def test_no_build_starts_while_finishing(qtbot, make_dialog, gates):
+    events: list[str] = []
+    builds: list = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events, builds)
+    hold_a_build(qtbot, dialog, gates)
+    held = len(builds)
+    dialog._on_change()
+
+    dialog._request_rebuild()
+    qtbot.wait(150)
+    assert len(builds) == held  # nothing started while Finishing
+    assert dialog._queued is not None
+
+    dialog._finish_cancel.click()
+    gates[0].set()
+    qtbot.waitUntil(lambda: len(builds) == held + 1, timeout=30000)  # the queued rebuild runs after Cancel
+    wait_plan(qtbot, dialog)
+
+
+# -- REV-03: a conflict view's one-off build and Install never overlap (D-08) ------------------------------
+
+
+def counting_oneoff_build(gates, calls: dict, gate_oneoff: bool = False):
+    """A build_plan fake that counts its calls; with gate_oneoff, the Overwrite one-off for the footprint is held."""
+
+    def build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        calls["n"] += 1
+        if gate_oneoff and options.resolutions.get(FP_KEY) == Resolution("overwrite"):
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    return build
+
+
+def skip_clash_dialog(qtbot, make_install_dialog, item_layout, **changes) -> ImportDialog:
+    """A planned dialog whose footprint clash is set to Skip, so Install is enabled."""
+    write_clashes(item_layout, model=False)
+    dialog = make_install_dialog(**changes)
+    dialog._conflict_rows[FP_KEY]._skip_btn.click()
+    wait_current(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    return dialog
+
+
+def gated_failing_apply(gates, started):
+    failing = failing_apply(Issue(Severity.ERROR, "install.test", "The install broke"))
+
+    def apply(plan, *, backup_root=None, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return failing(plan, backup_root=backup_root, progress=progress)
+
+    return apply
+
+
+def test_install_disabled_while_oneoff_runs(qtbot, make_install_dialog, item_layout, gates):
+    calls = {"n": 0}
+    dialog = skip_clash_dialog(
+        qtbot, make_install_dialog, item_layout, build_plan=counting_oneoff_build(gates, calls, gate_oneoff=True)
+    )
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog._install_btn.isEnabled()
+    assert dialog._updating_label.isVisible()
+
+    gates[0].set()
+    wait_view(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)  # back by itself, no other action
+    assert not dialog._updating_label.isVisible()
+
+
+def test_oneoff_held_during_install_runs_after_failure(qtbot, make_install_dialog, item_layout, gates):
+    calls = {"n": 0}
+    started = threading.Event()
+    dialog = skip_clash_dialog(
+        qtbot,
+        make_install_dialog,
+        item_layout,
+        build_plan=counting_oneoff_build(gates, calls),
+        apply_plan=gated_failing_apply(gates, started),
+    )
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    before = calls["n"]
+
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    qtbot.wait(150)
+    assert calls["n"] == before  # held: no build reads the files while the install writes them
+    assert len(dialog._oneoff_jobs) == 1
+
+    gates[-1].set()  # the install fails
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == f"{FP_PATH} - existing vs incoming"
+    assert calls["n"] > before
+
+
+def test_oneoff_held_during_install_dropped_after_success(qtbot, make_install_dialog, item_layout, gates):
+    calls = {"n": 0}
+    started = threading.Event()
+    dialog = skip_clash_dialog(
+        qtbot,
+        make_install_dialog,
+        item_layout,
+        build_plan=counting_oneoff_build(gates, calls),
+        apply_plan=blocking_apply(gates, started=started),
+    )
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    before = calls["n"]
+
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    dialog._request_rebuild()  # a rebuild asked for during the install is held too
+    qtbot.wait(150)
+    assert calls["n"] == before
+    assert len(dialog._oneoff_jobs) == 1 and dialog._queued is not None
+
+    gates[-1].set()  # the install succeeds
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    finish_workers(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._result_page
+    assert calls["n"] == before  # neither the one-off nor the rebuild ran
+    assert dialog._oneoff_jobs == []
+    assert dialog._queued is None
+    assert not open_views(dialog)
