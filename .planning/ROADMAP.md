@@ -254,7 +254,7 @@ Plans:
   4. The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes.
   5. On a case-sensitive folder, when a case twin was written under another spelling, rollback restores the original spelling and removes the twin on both the rollback and the overwrite branches, as the deferred Phase 4 UAT Test 3 (backlog 999.2) expected.
 
-**Plans**: 8/8 plans executed
+**Plans**: 8/10 plans executed (2 gap-closure plans pending)
 
 Plans:
 **Wave 1**
@@ -274,6 +274,10 @@ Plans:
 
 **Wave 5** *(blocked on Wave 4 completion)*
 - [x] 12-08-PLAN.md — Help text for the Phase 12 behaviour, 05-REVIEW dispositions, full-suite phase gate, live kicad-cli check (REV-01..REV-05)
+
+**Gap closure (UAT G-12-5..8)**
+- [ ] 12-09-PLAN.md — Wave 1: Cancel beside Install Part, required-field hints for Datasheet/Description/Manufacturer, "Choose another package..." header button, Help (G-12-6, G-12-7, G-12-8)
+- [ ] 12-10-PLAN.md — Wave 2: plain names "the KiCad command-line tool" / "KiCad's settings file" in all user-facing text, package-wide guard test, gap-closure suite gate (G-12-5)
 
 **UI hint**: yes
 
