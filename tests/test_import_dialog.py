@@ -5350,3 +5350,97 @@ def test_change_never_waits_unbounded(qtbot, make_dialog, gates, monkeypatch):
     seen = list(waits)
     assert seen  # the reaper joined at least the finished builds
     assert all(len(args) == 1 and args[0] <= 2000 for args in seen)
+
+
+def test_open_during_build_opens_after_it_ends(qtbot, make_dialog, gates, tmp_path):
+    import shutil
+
+    second = tmp_path / "second.zip"
+    shutil.copy(UL_ZIP, second)
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    hold_a_build(qtbot, dialog, gates)
+
+    dialog.open_path(second)  # returns at once: the build is still gated
+    assert not gates[0].is_set()
+    assert dialog.is_finishing()
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert events == []
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog._package_label.text() == "Package: second.zip", timeout=30000)
+    assert not dialog.is_finishing()
+    assert events[:2] == ["build_end", "close"]  # the first package closed only after the build ended
+
+
+def test_finishing_cancel_restores_the_dialog(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    assert dialog.is_finishing()
+
+    dialog._finish_cancel.click()
+    assert not dialog.is_finishing()
+    assert not dialog._finish_strip.isVisible()
+    assert dialog._stack.isEnabled()
+    assert QGuiApplication.overrideCursor() is None
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog._building is None, timeout=30000)
+    qtbot.wait(150)  # the dropped Change must not run when the build ends
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert events == ["build_end"]
+
+
+def test_finishing_shows_slow_note(qtbot, make_dialog, gates, monkeypatch):
+    monkeypatch.setattr(import_dialog_module, "_SLOW_NOTE_MS", 20)
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    assert not dialog._finish_slow.isVisible()
+    qtbot.waitUntil(dialog._finish_slow.isVisible, timeout=5000)
+    assert dialog._finish_slow.text() == SLOW_CLI_TEXT
+
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+    assert not dialog._finish_slow.isVisible()
+
+
+def test_finishing_keeps_the_event_loop_running(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    fired: list[int] = []
+    QTimer.singleShot(10, lambda: fired.append(1))
+    qtbot.waitUntil(lambda: bool(fired), timeout=5000)
+    assert not gates[0].is_set()  # the timer ran while the build was still held
+    assert dialog.is_finishing()
+
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+
+
+def test_no_build_starts_while_finishing(qtbot, make_dialog, gates):
+    events: list[str] = []
+    builds: list = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events, builds)
+    hold_a_build(qtbot, dialog, gates)
+    held = len(builds)
+    dialog._on_change()
+
+    dialog._request_rebuild()
+    qtbot.wait(150)
+    assert len(builds) == held  # nothing started while Finishing
+    assert dialog._queued is not None
+
+    dialog._finish_cancel.click()
+    gates[0].set()
+    qtbot.waitUntil(lambda: len(builds) == held + 1, timeout=30000)  # the queued rebuild runs after Cancel
+    wait_plan(qtbot, dialog)
