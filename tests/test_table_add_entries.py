@@ -37,7 +37,7 @@ def _entry(rel: str, eol: bytes) -> bytes:
 
 
 def _add_both(folder):
-    return tg.add_library_entries(folder, symbol=(NICK, SYM_REL), footprint=(NICK, FP_REL))
+    return tg.add_library_entries(folder, symbol=(NICK, SYM_REL), footprint=(NICK, FP_REL), repo_root=folder)
 
 
 def _seed(folder, sym=SYM_CRLF, fp=FP_LF):
@@ -183,7 +183,7 @@ def test_add_entries_quotes_values(tmp_path):
     sym_rel = 'Custom/Symbols/we"ird.kicad_sym'
     fp_rel = 'Custom/Footprints/we"ird.pretty'
 
-    issues = tg.add_library_entries(tmp_path, symbol=("we_ird", sym_rel), footprint=("we_ird", fp_rel))
+    issues = tg.add_library_entries(tmp_path, symbol=("we_ird", sym_rel), footprint=("we_ird", fp_rel), repo_root=tmp_path)
 
     assert not [i for i in issues if i.severity is Severity.ERROR]
     sym_info = tg.table_info(tmp_path / "sym-lib-table")
@@ -202,7 +202,7 @@ SHARED_REL = "Custom/Footprints/Atomic_Footprints.pretty"
 def test_symbol_only_leaves_the_footprint_table_alone(tmp_path):
     _seed(tmp_path)
 
-    issues = tg.add_library_entries(tmp_path, symbol=(NICK, SYM_REL))
+    issues = tg.add_library_entries(tmp_path, symbol=(NICK, SYM_REL), repo_root=tmp_path)
 
     sym_line = _entry(SYM_REL, b"\r\n")
     assert (tmp_path / "sym-lib-table").read_bytes() == SYM_CRLF[: -len(b")\r\n")] + sym_line + b")\r\n"
@@ -216,7 +216,7 @@ def test_symbol_only_leaves_the_footprint_table_alone(tmp_path):
 def test_footprint_only_leaves_the_symbol_table_alone(tmp_path):
     _seed(tmp_path)
 
-    issues = tg.add_library_entries(tmp_path, footprint=(SHARED, SHARED_REL))
+    issues = tg.add_library_entries(tmp_path, footprint=(SHARED, SHARED_REL), repo_root=tmp_path)
 
     fp_line = (
         f'  (lib (name "{SHARED}")(type "KiCad")(uri "${{KICAD_LIB_GITHUB}}/{SHARED_REL}")'
@@ -231,7 +231,7 @@ def test_footprint_only_leaves_the_symbol_table_alone(tmp_path):
 def test_nothing_requested_changes_nothing(tmp_path):
     _seed(tmp_path)
 
-    assert tg.add_library_entries(tmp_path) == []
+    assert tg.add_library_entries(tmp_path, repo_root=tmp_path) == []
 
     assert (tmp_path / "sym-lib-table").read_bytes() == SYM_CRLF
     assert (tmp_path / "fp-lib-table").read_bytes() == FP_LF
@@ -241,7 +241,7 @@ def test_nothing_requested_changes_nothing(tmp_path):
 def test_two_nicknames_added_give_the_combined_message(tmp_path):
     _seed(tmp_path)
 
-    issues = tg.add_library_entries(tmp_path, symbol=(NICK, SYM_REL), footprint=(SHARED, SHARED_REL))
+    issues = tg.add_library_entries(tmp_path, symbol=(NICK, SYM_REL), footprint=(SHARED, SHARED_REL), repo_root=tmp_path)
 
     assert [i.text for i in issues if i.code == "table.entries_added"] == [
         "Added IC_New_TI to sym-lib-table and Atomic_Footprints to fp-lib-table",
@@ -262,7 +262,7 @@ def test_a_listed_footprint_entry_is_kept_while_the_new_symbol_entry_is_added(tm
     )
     _seed(tmp_path, fp=fp)
 
-    issues = tg.add_library_entries(tmp_path, symbol=(NICK, SYM_REL), footprint=(SHARED, SHARED_REL))
+    issues = tg.add_library_entries(tmp_path, symbol=(NICK, SYM_REL), footprint=(SHARED, SHARED_REL), repo_root=tmp_path)
 
     assert (tmp_path / "fp-lib-table").read_bytes() == fp
     assert _entry(SYM_REL, b"\r\n") in (tmp_path / "sym-lib-table").read_bytes()
@@ -270,3 +270,158 @@ def test_a_listed_footprint_entry_is_kept_while_the_new_symbol_entry_is_added(tm
     assert "Added IC_New_TI to sym-lib-table" in texts
     assert "fp-lib-table already lists Atomic_Footprints; not changed" in texts
     assert not [i for i in issues if i.code == "table.entries_added"]
+
+
+# -- Stale and clashing entries (phase 12, REV-01, D-01..D-05) --------------------------------------
+
+def _sym_table(*entries: str, eol: str = "\r\n") -> bytes:
+    body = "".join(f"  {entry}{eol}" for entry in entries)
+    return f"(sym_lib_table{eol}  (version 7){eol}{body}){eol}".encode("utf-8")
+
+
+def _lib_line(nick: str, uri: str) -> str:
+    return f'(lib (name "{nick}")(type "KiCad")(uri "{uri}")(options "")(descr ""))'
+
+
+def _managed_line(rel: str, nick: str = NICK) -> str:
+    return _lib_line(nick, f"${{KICAD_LIB_GITHUB}}/{rel}")
+
+
+def _add_sym(folder, *, fold=None):
+    return tg.add_library_entries(folder, symbol=(NICK, SYM_REL), repo_root=folder, fold=fold)
+
+
+def test_stale_managed_entry_is_repointed(tmp_path):
+    original = _sym_table(_managed_line("Custom/Symbols/Old_Name.kicad_sym"))
+    (tmp_path / "sym-lib-table").write_bytes(original)
+
+    issues = _add_sym(tmp_path)
+
+    updated = [i for i in issues if i.code == "table.entry_updated"]
+    assert [(i.severity, i.text) for i in updated] == [
+        (Severity.SUCCESS, f"Updated: {NICK} in sym-lib-table now points at {SYM_REL}"),
+    ]
+    assert [i.severity for i in issues if i.code == "table.backed_up"] == [Severity.INFO]
+    assert (tmp_path / "sym-lib-table_backup_1").read_bytes() == original
+    assert (tmp_path / "sym-lib-table").read_bytes() == original.replace(
+        b"Old_Name.kicad_sym", b"IC_New_TI.kicad_sym"
+    )
+    assert (tmp_path / "sym-lib-table").read_bytes().count(b'(name "IC_New_TI")') == 1
+
+
+def test_live_managed_entry_warns_and_keeps_table(tmp_path):
+    other = "WurthElektronik/KiCad-Library/Symbols/IC_New_TI.kicad_sym"
+    (tmp_path / "WurthElektronik/KiCad-Library/Symbols").mkdir(parents=True)
+    (tmp_path / other).write_text("(kicad_symbol_lib)", encoding="utf-8")
+    original = _sym_table(_managed_line(other))
+    (tmp_path / "sym-lib-table").write_bytes(original)
+
+    issues = _add_sym(tmp_path)
+
+    assert (tmp_path / "sym-lib-table").read_bytes() == original
+    assert not _backups(tmp_path)
+    assert [(i.severity, i.code, i.text) for i in issues] == [
+        (
+            Severity.WARNING,
+            "table.path_clash",
+            f"Not added to sym-lib-table: the name {NICK} already points at {other}; "
+            "KiCad still loads that library. Rename one of them.",
+        ),
+    ]
+
+
+def test_matching_entry_ignores_case_when_folding(tmp_path):
+    original = _sym_table(_managed_line(SYM_REL.lower()))
+    (tmp_path / "sym-lib-table").write_bytes(original)
+
+    issues = _add_sym(tmp_path, fold=True)
+
+    assert (tmp_path / "sym-lib-table").read_bytes() == original
+    assert not _backups(tmp_path)
+    assert [(i.severity, i.code) for i in issues] == [(Severity.INFO, "table.already_listed")]
+
+
+def test_case_differs_without_folding_is_not_listed(tmp_path):
+    (tmp_path / "sym-lib-table").write_bytes(_sym_table(_managed_line(SYM_REL.lower())))
+
+    issues = _add_sym(tmp_path, fold=False)
+
+    assert [i.code for i in issues if i.severity is Severity.SUCCESS] == ["table.entry_updated"]
+    assert f"${{KICAD_LIB_GITHUB}}/{SYM_REL}".encode() in (tmp_path / "sym-lib-table").read_bytes()
+    assert _backups(tmp_path) == ["sym-lib-table_backup_1"]
+
+
+def test_hand_entry_is_never_edited_even_when_stale(tmp_path):
+    original = _sym_table(_lib_line(NICK, "D:/gone/IC_New_TI.kicad_sym"))
+    (tmp_path / "sym-lib-table").write_bytes(original)
+
+    issues = _add_sym(tmp_path)
+
+    assert (tmp_path / "sym-lib-table").read_bytes() == original
+    assert not _backups(tmp_path)
+    assert [(i.severity, i.code, i.text) for i in issues] == [
+        (
+            Severity.WARNING,
+            "table.external_clash",
+            f"Not added to sym-lib-table: {NICK} is already used by an entry you added by hand "
+            "(D:/gone/IC_New_TI.kicad_sym); KiCad keeps loading that one.",
+        ),
+    ]
+
+
+def test_precedence_with_two_entries_under_one_name(tmp_path):
+    stale = _managed_line("Custom/Symbols/Gone.kicad_sym")
+    live_rel = "WurthElektronik/KiCad-Library/Symbols/IC_New_TI.kicad_sym"
+    (tmp_path / "WurthElektronik/KiCad-Library/Symbols").mkdir(parents=True)
+    (tmp_path / live_rel).write_text("(kicad_symbol_lib)", encoding="utf-8")
+    cases = [
+        ([stale, _managed_line(SYM_REL)], "table.already_listed"),
+        ([stale, _managed_line(live_rel)], "table.path_clash"),
+        ([stale, _lib_line(NICK, "D:/gone/IC_New_TI.kicad_sym")], "table.external_clash"),
+    ]
+    for entries, code in cases:
+        original = _sym_table(*entries)
+        (tmp_path / "sym-lib-table").write_bytes(original)
+
+        issues = _add_sym(tmp_path)
+
+        assert [i.code for i in issues] == [code]
+        assert (tmp_path / "sym-lib-table").read_bytes() == original
+        assert not _backups(tmp_path)
+
+
+def test_existing_library_never_adds_an_entry(tmp_path):
+    original = _sym_table(_lib_line("Ext", "C:/ext/Ext.kicad_sym"))
+    (tmp_path / "sym-lib-table").write_bytes(original)
+
+    issues = tg.add_library_entries(
+        tmp_path, symbol=(NICK, SYM_REL), footprint=(NICK, FP_REL), repo_root=tmp_path, add_missing=False
+    )
+
+    assert [(i.severity, i.code, i.text) for i in issues] == [
+        (Severity.INFO, "table.not_listed", f"sym-lib-table does not list {NICK}"),
+        (Severity.INFO, "table.not_listed", f"fp-lib-table does not list {NICK}"),
+    ]
+    assert (tmp_path / "sym-lib-table").read_bytes() == original
+    assert not (tmp_path / "fp-lib-table").exists()
+    assert not _backups(tmp_path)
+
+
+def test_shared_footprint_entry_repointed(tmp_path):
+    original = (
+        b"(fp_lib_table\n  (version 7)\n"
+        b'  (lib (name "Atomic_Footprints")(type "KiCad")'
+        b'(uri "${KICAD_LIB_GITHUB}/Gone/Footprints/Atomic_Footprints.pretty")(options "")(descr ""))\n'
+        b")\n"
+    )
+    (tmp_path / "fp-lib-table").write_bytes(original)
+
+    issues = tg.add_library_entries(tmp_path, footprint=(SHARED, SHARED_REL), repo_root=tmp_path)
+
+    assert [i.text for i in issues if i.code == "table.entry_updated"] == [
+        f"Updated: {SHARED} in fp-lib-table now points at {SHARED_REL}",
+    ]
+    assert (tmp_path / "fp-lib-table").read_bytes() == original.replace(
+        b"Gone/Footprints/Atomic_Footprints.pretty", SHARED_REL.encode()
+    )
+    assert _backups(tmp_path) == ["fp-lib-table_backup_1"]

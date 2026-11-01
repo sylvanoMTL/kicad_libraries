@@ -433,6 +433,47 @@ def test_tables_new_library_declined_keeps_kicad_config(qtbot, make_window, tmp_
     assert "KiCad path variables left unchanged" in log_text(w)
 
 
+def test_tables_new_library_repoints_a_stale_entry(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, _ = usb_tables(repo, _managed(NEW_LIB, "Custom/Symbols/Gone.kicad_sym"))
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    dialog, _ = run_install(qtbot, w, repo, NEW_LIB, True)
+
+    sym_new = (repo / "sym-lib-table").read_bytes()
+    assert sym_new == old_sym.replace(b"Custom/Symbols/Gone.kicad_sym", NEW_SYM_REL.encode())
+    assert (repo / "sym-lib-table_backup_1").read_bytes() == old_sym
+    updated = f"Updated: {NEW_LIB} in sym-lib-table now points at {NEW_SYM_REL}"
+    assert updated in log_text(w)
+    text, severity = dialog.rows["tables"]
+    assert updated in text
+    assert severity is Severity.SUCCESS
+
+
+def test_tables_new_library_live_clash_warns(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    other = f"WurthElektronik/KiCad-Library/Symbols/{NEW_LIB}.kicad_sym"
+    (repo / other).parent.mkdir(parents=True)
+    (repo / other).write_text("(kicad_symbol_lib)", encoding="utf-8")
+    old_sym, _ = usb_tables(repo, _managed(NEW_LIB, other))
+    w = make_window([scan_with(with_installed=False), scan_with(lib=NEW_LIB)], repo=repo)
+
+    dialog, _ = run_install(qtbot, w, repo, NEW_LIB, True)
+
+    assert (repo / "sym-lib-table").read_bytes() == old_sym
+    assert not (repo / "sym-lib-table_backup_1").exists()
+    clash = (
+        f"Not added to sym-lib-table: the name {NEW_LIB} already points at {other}; "
+        "KiCad still loads that library. Rename one of them."
+    )
+    assert clash in log_text(w)
+    text, severity = dialog.rows["tables"]
+    assert clash in text
+    assert severity is Severity.WARNING
+
+
 def test_tables_existing_library_not_in_tables_warns(qtbot, make_window, tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -463,6 +504,52 @@ def test_tables_existing_library_listed_no_warning(qtbot, make_window, tmp_path)
     assert (repo / "fp-lib-table").read_bytes() == old_fp
     assert not list(repo.glob("*_backup_*"))
     assert "is not in the library tables" not in log_text(w)
+
+
+def test_tables_existing_library_repoints_a_stale_entry(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    old_sym, old_fp = usb_tables(repo, _managed(LIB, "Custom/Symbols/Gone.kicad_sym"))
+    w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
+
+    dialog, _ = run_install(qtbot, w, repo, LIB, False)
+
+    assert (repo / "sym-lib-table").read_bytes() == old_sym.replace(
+        b"Custom/Symbols/Gone.kicad_sym", SYM_REL.encode()
+    )
+    assert (repo / "fp-lib-table").read_bytes() == old_fp
+    assert (repo / "sym-lib-table_backup_1").read_bytes() == old_sym
+    updated = f"Updated: {LIB} in sym-lib-table now points at {SYM_REL}"
+    assert updated in log_text(w)
+    text, severity = dialog.rows["tables"]
+    assert updated in text
+    assert severity is Severity.SUCCESS
+    assert "generate_hint" not in dialog.rows
+    assert "is not in the library tables" not in log_text(w)
+
+
+def test_tables_existing_library_live_clash_warns(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    other = f"WurthElektronik/KiCad-Library/Symbols/{LIB}.kicad_sym"
+    (repo / other).parent.mkdir(parents=True)
+    (repo / other).write_text("(kicad_symbol_lib)", encoding="utf-8")
+    old_sym, old_fp = usb_tables(repo, _managed(LIB, other))
+    w = make_window([scan_with(with_installed=False), scan_with()], repo=repo)
+
+    dialog, _ = run_install(qtbot, w, repo, LIB, False)
+
+    assert (repo / "sym-lib-table").read_bytes() == old_sym
+    assert (repo / "fp-lib-table").read_bytes() == old_fp
+    assert not list(repo.glob("*_backup_*"))
+    clash = (
+        f"Not added to sym-lib-table: the name {LIB} already points at {other}; "
+        "KiCad still loads that library. Rename one of them."
+    )
+    assert clash in log_text(w)
+    text, severity = dialog.rows["tables"]
+    assert clash in text
+    assert severity is Severity.WARNING
 
 
 def test_tables_written_even_when_rescan_fails(qtbot, make_window, tmp_path):

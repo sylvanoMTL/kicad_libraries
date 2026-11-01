@@ -838,6 +838,7 @@ class MainWindow(QMainWindow):
                     if pending.footprint_library and pending.fp_rel_path
                     else None
                 ),
+                repo_root=REPO_ROOT,
             )
             self._log_issues(issues)
             text, severity = self._tables_outcome(issues)
@@ -848,18 +849,38 @@ class MainWindow(QMainWindow):
             return
 
         # The libraries the tables must list: the symbol library, and the footprint library when
-        # it is a folder of this repo (one outside the repo is never in fp-lib-table, D-16)
-        wanted = [(library, "sym-lib-table", pending.sym_rel_path)]
-        if pending.footprint_library and pending.fp_rel_path:
-            wanted.append((pending.footprint_library, "fp-lib-table", pending.fp_rel_path))
-        missing: list[str] = []
-        for name, table, rel_path in wanted:
-            info = table_info(dest / table)
-            if isinstance(info, Issue):
-                self._log.log_issue(info)
-                missing.append(name)
-            elif info is None or rel_path not in info.managed:
-                missing.append(name)
+        # it is a folder of this repo (one outside the repo is never in fp-lib-table, D-16).
+        # An existing library is never added here (D-04): a stale entry is repointed, a clash is
+        # warned about, and a library the tables lack keeps the Generate hint. An unreadable
+        # table now shows its read error in the tables row instead of the Generate hint.
+        issues = add_library_entries(
+            dest,
+            symbol=(library, pending.sym_rel_path),
+            footprint=(
+                (pending.footprint_library, pending.fp_rel_path)
+                if pending.footprint_library and pending.fp_rel_path
+                else None
+            ),
+            repo_root=REPO_ROOT,
+            add_missing=False,
+        )
+        not_listed = {issue.text for issue in issues if issue.code == "table.not_listed"}
+        missing = [
+            name for name, table in (
+                (library, "sym-lib-table"), (pending.footprint_library, "fp-lib-table"),
+            )
+            if f"{table} does not list {name}" in not_listed
+        ]
+        self._log_issues([issue for issue in issues if issue.code != "table.not_listed"])
+        if any(
+            issue.severity is Severity.ERROR
+            or issue.code in ("table.entry_updated", "table.path_clash", "table.external_clash")
+            for issue in issues
+        ):
+            text, severity = self._tables_outcome(issues)
+            self._set_import_status("tables", text, severity)
+        if any(issue.code == "table.entry_updated" for issue in issues):
+            self._sync_path_vars()
         if missing:
             names = " and ".join(dict.fromkeys(missing))
             two = len(set(missing)) > 1
@@ -878,7 +899,11 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _tables_outcome(issues: list[Issue]) -> tuple[str, Severity]:
-        """The Library tables row for a new library, from the Issues of add_library_entries (D-17)."""
+        """The Library tables row of the Result view, from the Issues of add_library_entries (D-17).
+
+        Used for a new library and, when a table was repointed or a name clashed, for an
+        existing one. A clash makes the row a warning; a repoint makes it a success.
+        """
         errors = [issue for issue in issues if issue.severity is Severity.ERROR]
         if errors:
             return errors[0].text, Severity.ERROR
@@ -888,9 +913,17 @@ class MainWindow(QMainWindow):
         warned = any(issue.severity is Severity.WARNING for issue in issues)
         parts = [
             issue.text for issue in issues
-            if issue.code in ("table.entry_added", "table.already_listed", "table.external_clash")
+            if issue.code in (
+                "table.entry_added", "table.entry_updated", "table.already_listed",
+                "table.path_clash", "table.external_clash",
+            )
         ]
-        return "; ".join(parts) or "Library tables checked", Severity.WARNING if warned else Severity.INFO
+        text = "; ".join(parts) or "Library tables checked"
+        if warned:
+            return text, Severity.WARNING
+        if any(issue.code == "table.entry_updated" for issue in issues):
+            return text, Severity.SUCCESS
+        return text, Severity.INFO
 
     def _import_busy(self) -> bool:
         """True while a scan runs or the import dialog is open (D-19)."""
