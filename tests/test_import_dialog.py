@@ -5562,3 +5562,120 @@ def test_oneoff_held_during_install_dropped_after_success(qtbot, make_install_di
     assert dialog._oneoff_jobs == []
     assert dialog._queued is None
     assert not open_views(dialog)
+
+
+# -- Phase 12 plan 12-07: closing through Finishing (D-06, D-07, REV-04) ---------------------------------------
+
+
+def test_escape_does_nothing_while_finishing(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog.reject()
+    assert dialog.is_finishing()
+
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert dialog.is_finishing()
+    assert dialog.isVisible()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert events == ["build_end", "close"]
+
+
+def test_x_upgrades_pending_change_to_close(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    assert dialog._pending_kind == "change"
+
+    dialog.close()  # the window X: the close wins over the pending Change...
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+    assert dialog._pending_kind == "close"
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert dialog._stack.currentWidget() is dialog._edit_page  # the Change never ran
+    assert events == ["build_end", "close"]
+
+
+def test_cancel_close_keeps_dialog_open(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    cancelled: list[int] = []
+    dialog.leave_cancelled.connect(lambda: cancelled.append(1))
+    hold_a_build(qtbot, dialog, gates)
+    dialog.reject()
+    assert dialog.is_finishing()
+
+    dialog._finish_cancel.click()
+    assert cancelled == [1]
+    assert not dialog.is_finishing()
+    assert dialog.isVisible()
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert dialog._stack.isEnabled()
+    assert QGuiApplication.overrideCursor() is None
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog._building is None, timeout=30000)
+    qtbot.wait(150)  # the dropped close must not run when the build ends
+    assert dialog.isVisible()
+    assert events == ["build_end"]
+
+
+def test_close_while_kicad_check_runs(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+
+    def running():
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return ["eeschema"]
+
+    dialog = make_install_dialog(kicad_running=running)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    install_ul(qtbot, dialog)
+    qtbot.waitUntil(started.is_set, timeout=30000)
+
+    dialog.close()  # returns at once: the KiCad check is still held
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert not dialog._result_view._kicad_notice.isVisible()
+    assert [i for i in logged if i.code == "import.kicad_running"] == []
+
+
+def test_cancelled_close_reprobes(qtbot, make_install_dialog):
+    calls: list[int] = []
+    started = threading.Event()
+
+    def probe(cplan, *, cancelled=None, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            started.set()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not (cancelled is not None and cancelled()):
+                time.sleep(0.01)
+            return CommitProbe(state="unavailable", reason="cancelled")
+        return fake_ready_probe()(cplan)
+
+    dialog = make_install_dialog(probe_commit=probe)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(started.is_set, timeout=30000)
+
+    dialog.close()
+    assert dialog.is_finishing()
+    dialog._finish_cancel.click()
+    assert dialog.isVisible()
+
+    qtbot.waitUntil(lambda: len(calls) == 2, timeout=30000)
+    qtbot.waitUntil(lambda: panel.state() == "ready" and not dialog.is_probing(), timeout=30000)
+    assert dialog.isVisible()

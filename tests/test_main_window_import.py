@@ -1197,6 +1197,28 @@ def test_main_window_close_waits_for_dialog_build(qtbot, held_build_window):
     assert w._import_dialog is None
 
 
+def test_main_window_close_cancelled_with_dialog(qtbot, held_build_window):
+    w, gates = held_build_window
+    dialog = w._import_dialog
+    w.close()
+    assert dialog.is_finishing() and w._close_after_dialog
+
+    dialog._finish_cancel.click()  # Cancel drops the window's pending close too
+    assert not w._close_after_dialog
+    gates[0].set()
+    qtbot.waitUntil(
+        lambda: dialog._building is None and not any(x.isRunning() for x in dialog._workers), timeout=30000
+    )
+    qtbot.wait(150)
+    assert w.isVisible()
+    assert w._import_dialog is dialog
+
+    dialog.reject()  # an idle close of the dialog alone leaves the main window open
+    qtbot.waitUntil(lambda: w._import_dialog is None, timeout=30000)
+    qtbot.wait(150)
+    assert w.isVisible()
+
+
 # -- two nicknames in the post-install table step (plan 10-11, D-15, D-16) -----------------------
 
 SHARED_FP = "Atomic_Footprints"
