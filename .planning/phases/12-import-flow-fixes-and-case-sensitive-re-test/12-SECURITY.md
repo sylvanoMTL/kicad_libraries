@@ -58,6 +58,12 @@ Plans 12-02 and 12-08 add no new boundary (static stylesheets, Help text and a p
 | T-12-20 | Tampering | package closed under a reader | high | mitigate | `_discard_package` runs inside `_shutdown`, only with no running worker; `test_close_finishes_after_build_and_closes_package` | closed |
 | T-12-21 | Repudiation | probe cancelled by a cancelled close | low | mitigate | Probe restarts on Cancel; superseded results dropped by the generation check; `test_cancelled_close_reprobes` | closed |
 | T-12-22 | Repudiation | review dispositions | low | mitigate | 05-REVIEW-DISPOSITION.md marks WR-01/02/03/05/06 fixed, each naming its Phase 12 plan and behaviour | closed |
+| T-12-23 | Tampering | `ImportDialog._cancel_btn` during an install | medium | mitigate | Cancel is wired to `reject()`; `done()` returns early while `is_installing()` or `is_committing()`; `_sync_cancel_button()` greys it out then; `test_cancel_button_disabled_while_installing` | closed |
+| T-12-24 | Denial of service | Cancel while a build or worker runs | low | mitigate | Cancel takes the same `done()` → `_enter_finishing("close", …)` path as the window X, no GUI-thread join; `test_cancel_button_during_build_enters_finishing` | closed |
+| T-12-25 | Repudiation | log and issue messages after rewording | low | mitigate | Reworded texts keep issue codes, severities and the matched phrases "Could not", "not found", "timed out after"; existing code/severity assertions in test_kicad_config, test_kicad_cli, test_install_plan, test_install_apply pass unchanged (full suite at 60df383) | closed |
+| T-12-26 | Tampering | `sync_kicad_path_vars` write path | low | mitigate | 12-10 Task 1 changes string literals only; read, compare, backup and atomic replace unchanged; whole tests/test_kicad_config.py passes | closed |
+| T-12-27 | Repudiation | `tests/test_plain_names.py` passing on an empty scan | low | mitigate | Guard asserts `len(files) > _SCAN_AT_LEAST` and that at least one allowed bare name was seen (tests/test_plain_names.py L41, L61) | closed |
+| T-12-28 | Tampering | `sync_kicad_path_vars` backup location | low | mitigate | Search tokens include ".json", so the `"kicad_common" / config_dir.name` backup segment (library_scanner.py L347) is not matched and stays unchanged | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
 *Severity: critical > high > medium > low — only open threats at or above workflow.security_block_on count toward threats_open*
@@ -92,4 +98,12 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-11-01
+**Approval:** verified 2026-11-01; re-verified 2026-11-02 after gap plans 12-09..12-11 (28 threats, all closed)
+
+## Security Audit 2026-11-02
+
+| Metric | Count |
+|---|---|
+| Threats found | 28 |
+| Closed | 28 |
+| Open | 0 |
