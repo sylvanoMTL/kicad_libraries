@@ -195,14 +195,16 @@ def test_help_describes_phase_12_behaviour():
     for claim in (
         import_dialog.FINISHING_TEXT.lower(), "press cancel to stay",
         "points at a library that no longer exists", "added by hand", "empty destination",
-        "install part waits",
+        "install part waits", "the kicad command-line tool is slow to respond",
     ):
         assert claim in importing, claim
 
-    # the new sentences stay in plain words: no raw field names (owner preference)
+    # the new sentences stay in plain words: no raw field names, program names or file names (owner preference)
     for key in ("generating", "importing"):
         text = _page_text(key).casefold()
         assert "ki_" not in text, key
+        assert "kicad-cli" not in text, key
+        assert "kicad_common" not in text, key
 
 
 def _panel_texts(panel) -> list[str]:
