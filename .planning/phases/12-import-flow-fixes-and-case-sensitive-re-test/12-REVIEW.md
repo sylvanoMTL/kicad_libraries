@@ -1,155 +1,134 @@
 ---
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
-reviewed: 2026-11-01T00:00:00Z
+reviewed: 2026-11-02T00:00:00Z
 depth: standard
-files_reviewed: 22
+files_reviewed: 14
 files_reviewed_list:
-  - .gitignore
+  - kicad_lib_manager/importer/applier.py
+  - kicad_lib_manager/importer/kicad_cli.py
   - kicad_lib_manager/importer/planner.py
+  - kicad_lib_manager/importer/preview.py
   - kicad_lib_manager/library_scanner.py
   - kicad_lib_manager/main_window.py
-  - kicad_lib_manager/table_generator.py
-  - kicad_lib_manager/widgets/backup_dialog.py
-  - kicad_lib_manager/widgets/conflict_row.py
   - kicad_lib_manager/widgets/help_dialog.py
   - kicad_lib_manager/widgets/import_dialog.py
-  - kicad_lib_manager/widgets/theme.py
-  - tests/README.md
-  - tests/casefixtures.py
-  - tests/conftest.py
-  - tests/test_backup_dialog.py
-  - tests/test_case_sensitive_install.py
   - tests/test_help_dialog.py
   - tests/test_import_dialog.py
-  - tests/test_install_plan.py
+  - tests/test_import_preview.py
   - tests/test_kicad_config.py
   - tests/test_main_window.py
-  - tests/test_main_window_import.py
-  - tests/test_table_add_entries.py
+  - tests/test_plain_names.py
 findings:
   critical: 0
-  warning: 5
-  info: 6
-  total: 11
+  warning: 2
+  info: 3
+  total: 5
 status: issues_found
 ---
 
-# Phase 12: Code Review Report
+# Phase 12: Code Review Report (gap-closure plans 12-09, 12-10, 12-11)
 
-**Reviewed:** 2026-11-01
+**Reviewed:** 2026-11-02
 **Depth:** standard
-**Files Reviewed:** 22
+**Files Reviewed:** 14
 **Status:** issues_found
 
 ## Summary
 
-I reviewed the Phase 12 diff (`59006ff..HEAD`) of every listed file. For the Finishing state in `import_dialog.py` I traced the signal order, the deferred-close gate, the Cancel path and the probe-cancel flag. For `main_window.py` I traced the off-thread KiCad-open check and the deferred close. I also traced the re-read-and-merge write in `library_scanner.py` and the repoint/clash rules in `table_generator.py`.
+Incremental review of `git diff 55d1107..HEAD` for the Cancel button beside Install Part, the
+required-field hints, the "Choose another package..." header button, and the plain-name rewrite for
+the KiCad command-line tool and KiCad's settings file.
 
-No Critical issues. The core thread design holds up:
-- `finished` is queued behind `result`, so `_try_finish` always sees up-to-date `_building` / `_oneoff` slots.
-- `_reap` joins the finishing thread with a bounded wait before the gate opens, so a dialog is not `deleteLater`'d under a running worker.
-- Lambda connections to `QThread.finished` run on the GUI thread. I checked this empirically with PySide6 6.12 in a throwaway script.
-- Finishing/Cancel keep the override cursor paired.
-- Close-over-change/open upgrade is consistent, and Cancel after a close re-probes the commit panel.
+The behavioural changes are sound. `_cancel_btn` is wired to `reject`, which reaches the existing
+`done()` override. That override already refuses while an install or commit runs, defers into
+Finishing while a worker is busy, and otherwise closes. `_sync_cancel_button` is called after
+`_install_worker` is set and cleared, and from `_set_git_worker`, so the enabled state tracks
+`is_installing()` and `is_committing()`. In Finishing the whole `_stack` is disabled, so the Edit
+page Cancel cannot be clicked there. The auto-default loop runs after `_build_edit_page`, so the new
+button is not a default button.
 
-The remaining issues are robustness gaps in the new main-window path-variable flow, a residual lost-update window in the `kicad_common.json` write, and several plain-language violations in new text.
+The message rewrites keep the load-bearing phrases ("Could not", "not found", "timed out after").
+No code classifies messages by "kicad-cli" or "kicad_common", and all old strings in tests are updated.
+
+The remaining problems are that the plain-name rule is only partly enforced, and some drift risks.
 
 ## Warnings
 
-### WR-01: An exception in the path-variable check leaves `_path_var_busy` set for the whole session
+### WR-01: Plain-name rule (G-12-5) still leaks `kicad_common.json` to the user through interpolated paths
 
-**File:** `kicad_lib_manager/main_window.py:1183-1199` (and `1161-1166`)
-**Issue:** `_sync_path_vars` sets `_path_var_busy = True`. It is only cleared at the end of `_on_path_var_check`, on the normal return path or when `_close_after_check` is set. `_on_path_var_check` runs `sync_kicad_path_vars` (file reads, JSON parse, config-dir discovery, backup, atomic write), `_log_issues` and a modal `QMessageBox.exec`. If any of these raises, for example a `PermissionError` from the config-dir scan, the slot aborts with the flag still True. Every later Generate or post-install repoint then returns at `if self._path_var_busy: return`, with no log line. The path-variable sync is dead until restart, and the owner is never told.
-**Fix:**
+**File:** `kicad_lib_manager/library_scanner.py:261` and `kicad_lib_manager/library_scanner.py:361`
+**Issue:** The commit renames the messages that build the name from `config_file.name`, but two
+messages still print the full path of the settings file. `config.not_found` shows
+`KiCad config not found: C:\...\kicad_common.json (...)`, and `config.written` shows
+`Updated C:\...\kicad_common.json (restart KiCad to apply)`. `config.backed_up` shows a path under
+`...\kicad_common\9.0\kicad_common.json_backup_1`. These reach the log panel and name the raw file the
+owner asked not to see. `tests/test_plain_names.py` cannot catch this, because it looks only at
+string constants and the name arrives at run time through the `{config_file}` interpolation. The
+guard therefore reports a pass while the rule is still broken. The `config.written` text is also
+inconsistent with the sibling messages that now say "KiCad's settings file".
+**Fix:** Say the plain name and show the folder, not the file:
 ```python
-def _on_path_var_check(self, names):
-    retry = False
-    try:
-        if self._close_after_check:
-            return
-        names = list(names)
-        issues = sync_kicad_path_vars(REPO_ROOT, running=lambda: names,
-                                      confirm=lambda c: self._confirm_path_var_changes(c, names))
-        self._log_issues(issues)
-        retry = any(i.code == "config.retry" for i in issues)
-    except Exception as e:  # slot boundary: never leave the busy flag set
-        self._log.log(f"Could not update KiCad's path settings: {e}", "error")
-    finally:
-        if not retry:
-            self._path_var_busy = False
-    if retry:
-        self._start_path_var_check()
+f"KiCad's settings file was not found in {config_dir} (start and close KiCad {config_dir.name} once, then Generate again)"
+...
+f"Updated KiCad's settings file in {config_dir} (restart KiCad to apply)"
 ```
+If the file path is wanted, accept it deliberately and document that in the guard. Then widen the
+guard to flag any f-string whose interpolated value is a variable named `config_file` (or
+extend the test with a runtime check on the produced `Issue.text`). Update
+`tests/test_kicad_config.py`, which asserts the `config.written` and `config.not_found` texts.
 
-### WR-02: A lost-update window remains in the `kicad_common.json` write
+### WR-02: The three required-field hints duplicate the atomic-strip sentences instead of deriving from them
 
-**File:** `kicad_lib_manager/library_scanner.py:329-355`
-**Issue:** The re-read after the confirm closes the long window, since the owner may read the dialog for minutes. A second, smaller window remains between that re-read (`_read_config`, around line 306) and `fsutil.atomic_write_text` (line 355). In between the code runs `deepcopy`, `json.dumps`, `_only_vars_changed` and `fsutil.backup_file`, which is a file copy plus a directory listing for pruning. The write replaces the whole file from the text read before the backup. Anything KiCad saves in that interval is silently lost. This is the situation the "KiCad is open" flow was built for: with KiCad open, "Change anyway" is exactly when KiCad may be saving.
-**Fix:** Take the backup before the final read, or re-read just before the replace and compare. For example, call `fsutil.read_source(config_file)` immediately before `atomic_write_text`. If its `.text` differs from `src.text`, loop back to the merge pass instead of writing. The merge is only the two `environment.vars` keys, so a retry is cheap.
-
-### WR-03: `_close_after_check` is a latch that is never cleared
-
-**File:** `kicad_lib_manager/main_window.py:1339-1343` (set), `1183-1186` (consumer)
-**Issue:** The flag is set when a close arrives during the KiCad-open check, and nothing ever resets it. If the deferred `self.close()` from `_on_path_var_check_finished` is itself vetoed, for example because `closeEvent` ignores the close while the dialog is installing, the window stays open and the flag stays True. From then on `_on_path_var_check` returns immediately for every later Generate or post-install repoint. No dialog is shown and nothing is logged, and `_path_var_busy` is cleared, so the sync looks as if it worked. `_close_after_dialog` has the matching reset (`leave_cancelled`); this flag has none.
-**Fix:** Clear `_close_after_check` at the top of `closeEvent` when the close is allowed to proceed. Also clear it whenever `closeEvent` takes an `event.ignore()` path that is not the check deferral. Alternatively, have the finished handler do `self._close_after_check = False` before calling `self.close()`, and re-set it only if `closeEvent` defers again.
-
-### WR-04: New user-facing text uses file names and tool names (owner preference: plain language)
-
-**File:** `kicad_lib_manager/widgets/import_dialog.py:107`, `kicad_lib_manager/widgets/help_dialog.py:320-321`, `kicad_lib_manager/library_scanner.py:323`, `kicad_lib_manager/main_window.py:1140`
-**Issue:** New Phase 12 text names code or tool identifiers:
-- `SLOW_CLI_TEXT` = "kicad-cli is slow to respond (it gives up after 60 s)", and the matching Help sentence "kicad-cli is slow to respond; kicad-cli gives up after 60 seconds".
-- The log warning "kicad_common.json kept changing while you were asked".
-- The "KiCad is open" dialog body "These KiCad path variables in kicad_common.json would change".
-
-This conflicts with the stored preference of no jargon or raw field and file names in user-facing text.
-**Fix:** Use wording such as "KiCad's converter is slow to respond (it gives up after 60 seconds)", "KiCad's settings file kept changing while you were asked; nothing was written", and "These KiCad path settings would change". Update the matching assertions in the tests.
-
-### WR-05: The "library missing from the tables" decision is derived by matching message text
-
-**File:** `kicad_lib_manager/main_window.py:888-894`
-**Issue:** `missing` is built by testing `f"{table} does not list {name}" in not_listed`, where `not_listed` is a set of `Issue.text` strings. The producing text lives in `table_generator.add_library_entries` (`f"{filename} does not list {nickname}"`). The two sites are coupled by an English sentence, so rewording either message (for example a WR-04 plain-language edit) silently makes `missing` empty. The "Press Generate Tables" hint then disappears and no test of the main window fails unless it asserts that exact text. `Issue` has a `code` but no structured payload.
-**Fix:** Have `add_library_entries` report the outcome in a structured way, for example a second return value or a small result dataclass listing `(table_filename, nickname, outcome)`. Alternatively, add a `target` or `nickname` field to `Issue`. Then build `missing` from that data instead of from the message text.
+**File:** `kicad_lib_manager/widgets/import_dialog.py:90-95`, `kicad_lib_manager/importer/form.py:151-158`
+**Issue:** The comment says the hints "mirror" `_ATOMIC_SENTENCES`, but they are separate literals
+("Required - enter a Datasheet link" against "Enter a Datasheet link", and so on). Nothing ties
+them together. `tests/test_import_dialog.py::test_required_field_hints_match_the_atomic_strip`
+checks only the Description field (`endswith("type a description")`). If someone rewords a strip
+sentence, for example "Enter the Manufacturer", the Datasheet and Manufacturer hints drift
+silently. The guarded property, that the hint matches the reason blocking Install, is only tested
+for one of the three fields.
+**Fix:** Either build the hints from the shared sentences:
+```python
+_REQUIRED_HINTS = {name: f"Required - {sentence[0].lower()}{sentence[1:]}"
+                   for name, sentence in REQUIRED_SENTENCES.items()}
+```
+with the sentences defined once in `form.py`, or loop the test over all three fields: empty each
+field, wait for the plan, and assert that the strip text ends with the hint's text after
+"Required - ".
 
 ## Info
 
-### IN-01: A second `_sync_path_vars` while one is in flight is dropped without a log line
+### IN-01: Two buttons labelled "Cancel" now exist and the help text uses the word for both
 
-**File:** `kicad_lib_manager/main_window.py:1161-1166`
-**Issue:** `if self._path_var_busy: return` gives no feedback. If the owner presses Generate while the KiCad-open check or its dialog is still active, or an install finishes mid-check, the request is lost. The Generate log has already said tables were written and the owner sees no path-variable result.
-**Fix:** Log an info line such as "KiCad path check already running" so the owner knows the request was not forgotten.
+**File:** `kicad_lib_manager/widgets/help_dialog.py:318-329`
+**Issue:** "Install and result" now says `Cancel` (Edit page) closes the dialog, and a few lines
+later says "Press `Cancel` to stay where you are" (the Finishing strip). In Finishing the Edit page
+is greyed out, so the second sentence is unambiguous in practice. A reader who has not seen the
+strip may think it is the first button, which closes the dialog, the opposite effect.
+**Fix:** Name the strip's button where it is first introduced, for example "the Cancel button in the
+Finishing strip", or rename one of them ("Keep working").
 
-### IN-02: `closeEvent` still joins the scan worker without a bound
+### IN-02: Cancel is missing from the hand-built tab order
 
-**File:** `kicad_lib_manager/main_window.py:1349` (and `578`)
-**Issue:** `self._worker.wait()` has no timeout, on the GUI thread, in `closeEvent`. Phase 12 removed the other unbounded GUI-thread joins. A long repository scan therefore freezes the window on close. Pre-existing, but the function was reworked in this phase around the same principle.
-**Fix:** Apply the same deferral used for the path-variable check: ignore the close, set a flag, and close from the worker's `finished` handler. Alternatively, accept the join and note it as an intentional exception.
+**File:** `kicad_lib_manager/widgets/import_dialog.py:1902-1918`
+**Issue:** `_set_tab_order` chains the header button through the last text Regenerate button and
+leaves Install Part and Cancel to the default order. The new Cancel is created after Install, so it
+should follow it, but this depends on the Qt focus chain after `setTabOrder` and no test pins it.
+**Fix:** Append `self._install_btn, self._cancel_btn` to `chain`, or add a test that tabs from
+Install and expects Cancel.
 
-### IN-03: `_same_rel` folds case only on Windows, so a case-insensitive macOS volume reports a false clash
+### IN-03: `test_install_progress_and_lock` assertion was weakened
 
-**File:** `kicad_lib_manager/table_generator.py:303-317`
-**Issue:** `fold=None` means `os.name == "nt"`. On default macOS (APFS, case-insensitive) a table entry differing from the new path only by letter case compares as different. The `(repo_root / tail).exists()` check then sees the same file and reports `table.path_clash` ("Rename one of them") instead of "already listed". This only affects the case-twin scenario Phase 12 targets, on a platform the project says to keep working.
-**Fix:** Decide `fold` from the real file system, for example by testing whether `(repo_root / rel).exists()` also holds for the case-swapped spelling, or by checking `Path.samefile`.
-
-### IN-04: A conflict-compare request is silently dropped if the dialog is Finishing when its build ends
-
-**File:** `kicad_lib_manager/widgets/import_dialog.py:2669`
-**Issue:** `on_result(plan, error)` is skipped when `_finishing`. If the owner then presses Cancel on the Finishing strip (the dialog stays open), the compare they asked for never appears and nothing says so. It is an edge case, but the one-off job is lost.
-**Fix:** On Cancel, re-queue the dropped job, or log "Comparison cancelled" when the on_result is skipped.
-
-### IN-05: Restore with a blank folder box does nothing and gives no feedback
-
-**File:** `kicad_lib_manager/widgets/backup_dialog.py:91-94`
-**Issue:** After a scan the owner clears the folder box. Restore stays enabled because the list still holds the old rows, and `_on_accept` returns silently when `_folder()` is None. Nothing happens and the dialog stays open. The same path can restore the list's backup number against a folder the owner typed after scanning, a mismatch that already existed before Phase 12.
-**Fix:** On a blank folder, either clear the list and disable Restore (call `_scan()`), or show a short label such as "Enter a backup folder". Optionally remember the folder that was actually scanned and use that for `selected_folder`.
-
-### IN-06: The Qt teardown hook can hide a hung worker for 60 s per widget
-
-**File:** `tests/conftest.py:36`
-**Issue:** `thread.wait(60000)` joins every `QThread` child of each registered widget. A test that leaves a gated worker running stalls 60 s per thread and then passes (or crashes at destruction) instead of failing clearly. The hook also relies on pytest-qt's undocumented `item.qt_widgets` attribute, which is present in the installed version.
-**Fix:** If `wait` returns False, `pytest.fail(...)` naming the thread so the leak is visible. Add a comment pinning the pytest-qt version this relies on.
+**File:** `tests/test_import_dialog.py:2767-2768`
+**Issue:** The assertion that no Cancel button is visible during an install became "no Cancel
+button is visible and enabled". The dedicated `test_cancel_button_disabled_while_installing` covers
+the disabled state, so nothing is lost today, but the old test no longer detects a stray visible
+Finishing-strip Cancel next to the Edit-page one.
+**Fix:** Keep the original visibility check for the strip's button (`dialog._finish_cancel.isVisible()`
+is False) in addition to the new one.
 
 ---
 
-_Reviewed: 2026-11-01_
+_Reviewed: 2026-11-02_
 _Reviewer: Claude (gsd-code-reviewer)_
 _Depth: standard_
