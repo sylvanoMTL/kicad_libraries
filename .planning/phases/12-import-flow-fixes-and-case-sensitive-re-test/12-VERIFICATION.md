@@ -1,6 +1,6 @@
 ---
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
-verified: 2026-11-01T18:00:00Z
+verified: 2026-11-02T09:00:00Z
 status: human_needed
 score: 5/5 must-haves verified
 covered_files:
@@ -20,7 +20,16 @@ covered_files:
   - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-07-SUMMARY.md
   - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-08-PLAN.md
   - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-08-SUMMARY.md
+  - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-09-PLAN.md
+  - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-09-SUMMARY.md
+  - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-10-PLAN.md
+  - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-10-SUMMARY.md
+  - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-11-PLAN.md
+  - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-11-SUMMARY.md
+  - kicad_lib_manager/importer/applier.py
+  - kicad_lib_manager/importer/kicad_cli.py
   - kicad_lib_manager/importer/planner.py
+  - kicad_lib_manager/importer/preview.py
   - kicad_lib_manager/library_scanner.py
   - kicad_lib_manager/main_window.py
   - kicad_lib_manager/table_generator.py
@@ -31,37 +40,38 @@ covered_files:
   - kicad_lib_manager/widgets/theme.py
   - tests/casefixtures.py
   - tests/test_case_sensitive_install.py
-covered_digest: "v3:sha256:67dd750abeb3ea1c2197417f604229c8535bd0ab243cc65c4083182f8ade5b87"
+  - tests/test_plain_names.py
+covered_digest: "v3:sha256:9b2a223080d43d3a8b9c0e6d5fc6bf76854bc319a780e7e66b88cd85f635502c"
 behavior_unverified: 0
 overrides_applied: 0
-unverified_prohibitions:
-  - statement: "User-facing Help text must never use raw KiCad field names or code identifiers (12-08, judgment tier)"
-    status: "unverified-prohibition - human review recommended"
-    note: "Non-authoritative judge verdict: no raw field names (ki_*) found, but new text names the tool 'kicad-cli' (Help page, FINISHING slow note) and 12-REVIEW WR-04 flags kicad_common.json in dialog and log text. Owner decides whether that counts."
+re_verification:
+  previous_status: human_needed
+  previous_score: 5/5
+  gaps_closed:
+    - "G-12-5 plain names for the KiCad command-line tool and KiCad's settings file (plans 12-10, 12-11)"
+    - "G-12-6 Cancel button beside Install Part (plan 12-09)"
+    - "G-12-7 Datasheet/Description/Manufacturer hints say the field is required (plan 12-09)"
+    - "G-12-8 header button reads 'Choose another package...' with a tooltip (plan 12-09)"
+  gaps_remaining: []
+  regressions: []
 human_verification:
-  - test: "Run tests/test_case_sensitive_install.py on the Windows workstation (D-13 owner UAT)"
-    expected: "5 passed, 0 skipped (no 'could not make a case-sensitive folder' skip)"
-    why_human: "The 12-01 plan makes the owner's own run the UAT; the verifier ran it here and it passed, but the owner run is the planned sign-off"
-  - test: "Look at the Help pages and the conflict rows at 100% and 200% display scale"
-    expected: "Headings still larger than body text, code and pre blocks readable, conflict row buttons look as before (Qt rich text does not draw the h2 underline or the left bars; unchanged from before 12-02)"
-    why_human: "Visual appearance cannot be checked by grep or unit test"
-  - test: "With real KiCad running, press Generate Tables (or install a part) and reach the kicad_common.json question"
-    expected: "Dialog titled 'KiCad is open' names the open programs, lists the changes, offers Retry (default), Change anyway, Not now; Retry after closing KiCad leads to the normal Yes/No; Not now writes nothing"
+  - test: "UAT 5-8 visual re-check in the running window: open a package with Ctrl+I"
+    expected: "Cancel sits right of Install Part and closes the window; empty Datasheet/Description/Manufacturer boxes read 'Required - ...' and agree with the atomic strip; the header button reads 'Choose another package...' with its tooltip; Help 'Importing Parts' and the 'KiCad is open' / Yes-No texts say 'the KiCad command-line tool' and 'KiCad's settings file'"
+    why_human: "Wording and layout in the live window; the executors flagged these human_judgment, tests assert strings and widget state, not appearance"
+  - test: "UAT 3 (blocked earlier by the worktree guard): from the main checkout change CUSTOM_3DMODEL_DIR in KiCad, leave KiCad open, press Generate Tables"
+    expected: "Dialog 'KiCad is open' with Retry (default), Change anyway, Not now; Retry after closing KiCad leads to the Yes/No question; Not now writes nothing"
     why_human: "Needs a live KiCad process and a modal dialog; tests replace kicad_running"
-  - test: "With a real kicad-cli rebuild running, press Change..., open another package, press Cancel on the strip, and close the dialog and the main window"
-    expected: "Dialog greys out with 'Finishing the preview...', window stays responsive, after 10 s the slow note appears, the action runs by itself, Cancel restores the dialog, no hang"
-    why_human: "Real kicad-cli timing and window responsiveness; tests use gated stand-in workers"
-  - test: "Judgment prohibition: read the new Help sentences and the KiCad-open dialog text"
-    expected: "Owner accepts or rejects the wording that names 'kicad-cli' and 'kicad_common.json' (12-REVIEW WR-04)"
-    why_human: "Plain-language preference is a judgment; verifier verdict is non-authoritative"
+  - test: "UAT 4 (skipped by owner): Finishing strip during a real kicad-cli rebuild"
+    expected: "Dialog greys out with 'Finishing the preview...', window stays live, slow note after 10 s, no hang"
+    why_human: "Real timing; covered only by gated stand-in workers. Owner chose to skip the manual check"
 ---
 
 # Phase 12: Import Flow Fixes and Case-Sensitive Re-test Verification Report
 
 **Phase Goal:** The import dialog, the post-install table step and the `kicad_common.json` write behave correctly in the cases the v1.0 reviews left open. The Help dialog follows the theme, and case-twin rollback is proven on a case-sensitive folder.
-**Verified:** 2026-11-01
+**Verified:** 2026-11-02
 **Status:** human_needed
-**Re-verification:** No, initial verification
+**Re-verification:** Yes, after gap closure plans 12-09, 12-10, 12-11 (UAT gaps G-12-5..G-12-8). Plans 12-01..12-08 were verified in the previous report; their code was spot-checked again and showed no regression.
 
 ## Goal Achievement
 
@@ -69,55 +79,56 @@ human_verification:
 
 | # | Truth | Status | Evidence |
 | - | ----- | ------ | -------- |
-| 1 | After install, "already listed" only when the managed entry really points at that library; empty Destination writes no table and never one in the working directory | VERIFIED | `table_generator._add_entry` (lines 319-410) returns "listed" only when `_same_rel(_tail(entry), rel_path)` holds for a tool-owned entry; stale entry repointed with backup (Edit over the uri value node only); live clash and hand entry warn. `main_window._dest_path()` (line 427) returns None for blank text; every call site (post-install line 837, Generate 1215, tables log, backup dialog `_folder()`) stops before reading or writing. No remaining bare `Path(currentText())`. Tests ran green: test_table_add_entries, test_backup_dialog, test_main_window_import (tables/blank/dest subset, 30 passed) |
-| 2 | One-off conflict build can never run while Install runs; window stays responsive while kicad-cli works, no GUI wait of up to 60 s | VERIFIED (live kicad-cli check is a human item) | `import_dialog`: `_updating()` counts `self._oneoff` so Install is disabled during a one-off; `_pump_builds` holds one-off jobs while `is_installing()` or `_finishing`; `_request_rebuild` queues during install. Change.../open/close enter `_enter_finishing` (stack disabled, wait cursor, strip with Cancel, 10 s slow note) and the action runs from `_reap` -> `_try_finish`; the only join left is `worker.wait(2000)` on an already finished thread (owner-approved bound). Remaining unbounded `wait()` calls in main_window are scan-worker joins, not kicad-cli. 31 targeted Finishing/close/one-off/cancel tests passed |
-| 3 | When KiCad is running the confirm dialog says so before anything is written; confirmed write starts from the file's current content | VERIFIED (real dialog is a human item) | `main_window._sync_path_vars` runs `kicad_running()` in a `TaskWorker` (off GUI thread), `_kicad_open_box` shows Retry (default) / Change anyway / Not now. `library_scanner.sync_kicad_path_vars` calls `confirm` then `_read_config` again, re-plans, re-asks if the change list differs (3-pass cap), verifies only `environment.vars` changed, backs up, writes atomically. tests/test_kicad_config.py + test_main_window.py: 109 passed |
-| 4 | Help dialog and conflict rows use theme tokens only: no hard-coded colours, no `#FFFFFF`, no px font sizes | VERIFIED | grep of `help_dialog.py` and `conflict_row.py` for hex colours, `rgb(`, `white`, `font-size: ..px` finds none; CSS is built from `theme` imports (`LINK, ACCENT, SURFACE, SURFACE_HEADER, BORDER, AMBER, AMBER_TINT, DISPLAY_PT, HEADING_PT, MONO_PT, MONO_FAMILY, SP_*`); `conflict_row` uses `SURFACE_BASE` (defined in `theme.py`). Remaining px values are paddings, 1-4 px borders, radius and min-height, not colours or font sizes. test_help_dialog 18 passed |
-| 5 | On a case-sensitive folder, case-twin rollback restores the original spelling and removes the twin on rollback and overwrite branches | VERIFIED | `tests/casefixtures.case_sensitive_dir` uses `fsutil setCaseSensitiveInfo` plus a probe file; `planner._decide_file` overwrite writes under `spec.identity_of(hit)` (on-disk spelling). tests/test_case_sensitive_install.py: 5 passed, none skipped, run by the verifier on this workstation. Tests build their own folder, do not mock listdir, do not touch live Custom/ |
+| 1 | "Already listed" only when the managed entry points at that library; empty Destination writes no table, never in the working directory | VERIFIED | `table_generator._add_entry` / `_same_rel`; `main_window._dest_path()` returns None for blank text and each caller stops. Not changed by 12-09..11; the 12-10 edit to `main_window.py` is message text only (diff 4 lines). tests/test_main_window.py path_var/settings subset passes |
+| 2 | One-off conflict build never runs during Install; window responsive while the command-line tool works | VERIFIED (live check is a human item) | `import_dialog` `_updating`, `_pump_builds`, Finishing state (`_enter_finishing`, `_try_finish`). 12-09 reuses it: `_cancel_btn.clicked` -> `self.reject` -> `done()` (import_dialog.py:3397) which returns while installing or committing, enters Finishing when a build runs. 29 targeted tests (cancel, required hints, change button, finishing, slow note, close) pass |
+| 3 | KiCad-running confirm says so before writing; confirmed write starts from current content | VERIFIED (real dialog is a human item) | `library_scanner.sync_kicad_path_vars` re-reads after confirm; `main_window._kicad_open_box` Retry/Change anyway/Not now. 12-10 changed text only ("KiCad's settings file would change", main_window.py:1118,1141); write logic untouched. tests/test_kicad_config.py passes (inside the 97-test run) |
+| 4 | Help dialog and conflict rows use theme tokens only | VERIFIED | No hex/px-font hits in help_dialog.py or conflict_row.py; tokens from `theme`. tests/test_help_dialog.py passes. 12-09/11 Help edits are text only |
+| 5 | Case-twin rollback proven on a case-sensitive folder | VERIFIED | tests/test_case_sensitive_install.py: 5 passed, no skips, re-run in this verification |
 
 **Score:** 5/5 truths verified (0 present-but-behavior-unverified).
+
+### Gap-closure truths (plans 12-09, 12-10, 12-11)
+
+| Gap | Truth | Status | Evidence |
+| --- | ----- | ------ | -------- |
+| G-12-6 | Cancel beside Install Part; closes without installing; greyed while installing/committing; Finishing during a build; Enter never presses it | VERIFIED | `_cancel_btn` built after `_install_btn` in the same row (import_dialog.py:806-809), connected to `reject`; `_sync_cancel_button` (line 2921) called from `_set_install_ui` (2919) and `_set_git_worker` (2997); the `setAutoDefault(False)` loop (511-513) runs after the edit page is built, so it covers Cancel. Tests: test_cancel_button_closes_without_installing, _disabled_while_installing, _enabled_again_after_failed_install, _during_build_enters_finishing pass |
+| G-12-7 | Required hints for Datasheet, Description, Manufacturer; no "written blank" text | VERIFIED | `_REQUIRED_HINTS` (lines 92-96) applied at line 1128; old `_BLANK_FIELD_HINT` is gone (grep finds only the Help test asserting "blank" absent). Help Fields paragraph (help_dialog.py:281) says the three fields are required. test_required_field_hints_match_the_atomic_strip passes |
+| G-12-8 | Header button says it picks another package, with tooltip; Help names it | VERIFIED | `CHANGE_PACKAGE_TEXT = "Choose another package..."` (87), tooltip `_CHANGE_PACKAGE_TIP` (88-90), button at 671-672; Help imports the constant; no literal `Change...` button text remains in user-facing strings (only code comments and a signal comment). test_change_button_says_it_picks_another_package and test_help_names_choose_another_package pass |
+| G-12-5 | No user-facing string names `kicad-cli` or `kicad_common.json`; slow note and Help use plain names; on-disk names unchanged | VERIFIED | `SLOW_CLI_TEXT` = "The KiCad command-line tool is slow to respond (it gives up after 60 s)" (116); Help line 328-329 matches. Own grep of every `kicad-cli` / `kicad_common.json` hit in `kicad_lib_manager`: all are docstrings, comments, or the bare file-finding names (`kicad-cli.exe`, `"kicad-cli"` in `which`, config file path). tests/test_plain_names.py (AST scan of non-docstring string constants, allowlist of the three bare names) passes; it is not vacuous (asserts an allowed name was seen and more than 20 files scanned) |
 
 ### Required Artifacts
 
 | Artifact | Status | Details |
 | -------- | ------ | ------- |
-| `importer/planner.py` (`identity_of(hit)` overwrite) | VERIFIED | lines 744-747 |
-| `tests/casefixtures.py` (`case_sensitive_dir`) | VERIFIED | real probe, stated skip text, README row at tests/README.md:47 |
-| `tests/test_case_sensitive_install.py` | VERIFIED | 5 tests, all pass |
-| `widgets/theme.py` `SURFACE_BASE` | VERIFIED | line 15, used by conflict_row |
-| `widgets/help_dialog.py` CSS from tokens, new Help text | VERIFIED | imports `FINISHING_TEXT` from import_dialog |
-| `table_generator.py` `_same_rel`, `_add_entry`, `add_library_entries(repo_root, add_missing, fold)` | VERIFIED | lines 303-450 |
-| `main_window.py` `_dest_path`, `_sync_path_vars`, `_ask_kicad_open`, both post-install branches | VERIFIED | callers pass `repo_root=REPO_ROOT`; existing-library branch uses `add_missing=False` |
-| `widgets/backup_dialog.py` `_folder` | VERIFIED | blank -> None |
-| `library_scanner.py` `ConfirmAnswer`, re-read merge loop | VERIFIED | lines 212-390 |
-| `widgets/import_dialog.py` `is_finishing`, `_enter_finishing`, `_try_finish`, `_finish_close`, `FINISHING_TEXT` | VERIFIED | |
-| `tests/conftest.py` teardown join | VERIFIED | pytest_runtest_teardown present; full suite clean |
+| `widgets/import_dialog.py` Cancel, `_REQUIRED_HINTS`, `CHANGE_PACKAGE_TEXT`, `SLOW_CLI_TEXT` | VERIFIED | all present, substantive, wired (see above) |
+| `widgets/help_dialog.py` Cancel / required / Choose another package / plain tool name sentences | VERIFIED | lines 281, 318-329 |
+| `tests/test_plain_names.py` | VERIFIED | 1 test, passes |
+| `tests/test_import_dialog.py`, `tests/test_help_dialog.py`, `tests/test_main_window.py`, `tests/test_kicad_config.py`, `tests/test_import_preview.py` additions | VERIFIED | named tests exist and pass |
+| 12-01..12-08 artifacts (planner `identity_of`, `casefixtures`, `table_generator`, `library_scanner` re-read loop, Finishing state, theme tokens) | VERIFIED | previous report; unchanged apart from message text |
 
 ### Key Link Verification
 
 | From | To | Status |
 | ---- | -- | ------ |
-| planner `_decide_file` -> `make_op(name=identity_of(hit))` | WIRED |
-| help_dialog -> theme tokens | WIRED |
-| conflict_row `_button_qss` -> `SURFACE_BASE` | WIRED |
-| main_window `_finish_post_install` -> `add_library_entries(repo_root=REPO_ROOT)` | WIRED |
-| `_finish_post_install` / `_on_generate` -> `_dest_path()` None stop | WIRED |
-| import_dialog `_reap` -> `_try_finish(exclude=worker)` | WIRED |
-| `_updating` -> `self._oneoff` | WIRED |
-| main_window `_sync_path_vars` -> `kicad_running` via TaskWorker | WIRED |
-| `_on_path_var_check` -> `sync_kicad_path_vars(running=lambda: names)` | WIRED |
-| main_window `closeEvent` -> `is_finishing()` / `_close_after_dialog` | WIRED |
-| help_dialog -> `import_dialog.FINISHING_TEXT` | WIRED |
+| `_cancel_btn.clicked` -> `self.reject` -> `done()` | WIRED |
+| `_set_install_ui` / `_set_git_worker` -> `_sync_cancel_button` | WIRED |
+| `help_dialog` -> `CHANGE_PACKAGE_TEXT`, `FINISHING_TEXT` | WIRED |
+| `test_plain_names` -> every module under `kicad_lib_manager` (ast scan) | WIRED |
+| `library_scanner.sync_kicad_path_vars` -> `main_window._confirm_path_var_changes` / `_kicad_open_box` | WIRED |
+| 12-01..12-08 links (planner, table_generator, `_dest_path`, `_reap`/`_try_finish`, theme tokens) | WIRED (previous report) |
 
 ### Behavioral Spot-Checks
 
 | Behavior | Command | Result | Status |
 | -------- | ------- | ------ | ------ |
-| VER-02 on a real case-sensitive folder, plus Help, table entries, backup dialog | `env/Scripts/python.exe -m pytest tests/test_case_sensitive_install.py tests/test_help_dialog.py tests/test_table_add_entries.py tests/test_backup_dialog.py -q -rs` | 50 passed, no skips | PASS |
-| REV-05 config merge and main window | `pytest tests/test_kicad_config.py tests/test_main_window.py -q -rs` | 109 passed | PASS |
-| REV-03/04 Finishing, close, one-off, cancel, escape | `pytest tests/test_import_dialog.py -k "finishing or change_waits or close or oneoff or one_off or cancel or escape"` | 31 passed | PASS |
-| REV-01/02/05 window level | `pytest tests/test_main_window_import.py -k "tables or dest or blank or close or retry or kicad"` | 30 passed | PASS |
-| Full suite at 9412c80 (orchestrator evidence, log checked) | log `fullsuite-9412c80.log` | 9267 passed, 4 skipped (the four documented workstation skips), 0 failed. `git diff 9412c80..HEAD` touches only help_dialog.py, test_help_dialog.py and planning docs, so HEAD code equals the tested code apart from Help text, which test_help_dialog covers | PASS |
+| Plain-name guard, Help, config sync, preview rows | `env/Scripts/python.exe -m pytest tests/test_plain_names.py tests/test_help_dialog.py tests/test_kicad_config.py tests/test_import_preview.py -q` | 97 passed | PASS |
+| Cancel, required hints, change button, Finishing, slow note, close | `pytest tests/test_import_dialog.py -k "cancel or required_field or change_button or finishing or slow_note or close"` | 29 passed | PASS |
+| Case-twin (VER-02) and path-variable dialogs | `pytest tests/test_main_window.py tests/test_case_sensitive_install.py -rs -k "path_var or kicad_open or case or settings"` | 11 passed, no skips | PASS |
+| Full suite at 60df383 (orchestrator evidence; not re-run, 27 min) | n/a | 9281 passed, 4 skipped (listed in tests/README.md), 0 failed. `git diff 9412c80..HEAD` limited to the 12-09..11 files above plus planning docs | PASS (reported) |
+
+### Probe Execution
+
+No `probe-*.sh` declared or found. SKIPPED.
 
 ### Requirements Coverage
 
@@ -128,40 +139,31 @@ human_verification:
 | REV-01 | 12-03, 12-08 | SATISFIED | SC1 |
 | REV-02 | 12-04, 12-08 | SATISFIED | SC1 |
 | REV-03 | 12-05, 12-08 | SATISFIED | SC2 |
-| REV-04 | 12-05, 12-07, 12-08 | SATISFIED | SC2 (live check pending) |
-| REV-05 | 12-06, 12-08 | SATISFIED | SC3 (live dialog pending) |
+| REV-04 | 12-05, 12-07, 12-08, 12-09, 12-11 | SATISFIED | SC2 and G-12-6 (live check pending) |
+| REV-05 | 12-06, 12-08, 12-10 | SATISFIED | SC3 and G-12-5 text (live dialog pending) |
 
-All seven phase IDs appear in PLAN frontmatter and in REQUIREMENTS.md; no orphaned requirements. Bookkeeping: REQUIREMENTS.md still shows these seven as `[ ]` / "Pending" and ROADMAP lists Phase 12 as not yet checked at the top list (line 33); the orchestrator should flip them on phase completion.
+All seven IDs appear in PLAN frontmatter and REQUIREMENTS.md; no orphaned requirements. Bookkeeping: REQUIREMENTS.md still shows all seven as `[ ]` / "Pending", and ROADMAP line 33 still shows Phase 12 unchecked ("3 gap-closure plans pending" at line 257 is stale since all 11 plan boxes are checked). The orchestrator should flip these on phase completion.
 
 ### Anti-Patterns Found
 
-No TBD/FIXME/XXX/TODO/HACK markers in the files changed by this phase. No stubs or hollow props found in the traced paths.
+No TBD/FIXME/XXX/TODO/HACK in the changed source files or tests/test_plain_names.py. No stubs or hollow props in the traced paths. 12-REVIEW.md (0 critical, 2 warning, 3 info after disposition, ledger 12-REVIEW-DISPOSITION.md) is advisory and does not block a success criterion. 12-SECURITY.md reports 28 threats, 0 open. 12-UI-REVIEW.md scores 17/24 (advisory).
 
-12-REVIEW.md lists 0 critical, 5 warning, 6 info, all open in 12-REVIEW-DISPOSITION.md and advisory. Relevant to this phase's goal but not blocking any success criterion:
+### Prohibitions
 
-- WR-01: an exception inside `_on_path_var_check` leaves `_path_var_busy` set until restart.
-- WR-02: a small lost-update window remains between the re-read and the atomic write of `kicad_common.json`; SC3 as written (start from the current content) is met.
-- WR-03: `_close_after_check` is never reset if the deferred close is vetoed.
-- WR-04: new text names `kicad-cli` and `kicad_common.json` (see judgment prohibition below).
-- WR-05: the "missing from tables" hint depends on matching message text.
-
-### Judgment-tier prohibition (flagged, non-authoritative)
-
-12-08: "User-facing Help text must never use raw KiCad field names or code identifiers." Verifier verdict: no `ki_*` field names in the new text, test asserts that. The new Help sentences and the slow-note do name `kicad-cli`, which the Help did not mention before this phase. Flagged `unverified-prohibition - human review recommended`; not treated as a pass or a gap.
+- Judgment-tier (12-08) "User-facing text must not use raw KiCad field names or code identifiers": previously flagged because of `kicad-cli` / `kicad_common.json` wording. Resolved by G-12-5: the guard test passes and my own grep found no remaining user-visible raw names. Verdict is mechanical for these two tokens; the broader plain-language judgment of the new Cancel/Required/Choose-another-package wording stays with the owner (human item 1).
+- Test-tier prohibitions in 12-09/10/11 (Cancel never closes during install/commit; settings-file write logic and backup folder names unchanged; guard not satisfied by renaming on-disk names) have wired tests: test_cancel_button_disabled_while_installing, test_kicad_config.py backup-folder assertions, test_plain_names (allowlist and the explicit "kicad_common" segment note). All pass.
 
 ### Human Verification Required
 
-1. **D-13 owner run.** Run `env/Scripts/python.exe -m pytest tests/test_case_sensitive_install.py -rs`. Expected 5 passed, 0 skipped. Why human: planned owner UAT (verifier run already passed).
-2. **Help and conflict-row look** at 100% and 200%. Expected as before; headings larger than body. Why human: visual.
-3. **KiCad-open dialog with real KiCad running.** Expected wording, three buttons, Retry default, Not now writes nothing. Why human: live process, modal dialog.
-4. **Live kicad-cli rebuild:** Change..., another package, Cancel on the strip, close dialog and main window. Expected window stays live, action runs by itself, slow note after 10 s. Why human: real timing and responsiveness.
-5. **Wording judgment** for `kicad-cli` and `kicad_common.json` in new user-facing text (WR-04). Why human: owner preference.
+1. **UAT 5-8 wording and layout.** Test: start the app, open `downloaded_examples\ul_CSD85301Q2.zip` with Ctrl+I. Expected: Cancel right of Install Part and closes the window; empty Datasheet, Description, Manufacturer boxes read "Required - ..." and match the atomic strip; header button reads "Choose another package..." with tooltip; Help and the path-variable dialogs say "the KiCad command-line tool" / "KiCad's settings file". Why human: appearance and wording judgment.
+2. **UAT 3 live KiCad-open dialog** from the main checkout (the worktree guard blocked it earlier). Why human: live KiCad process and modal dialog.
+3. **UAT 4 (owner skipped)**: Finishing strip with a real kicad-cli rebuild. Covered only by stand-in workers.
 
 ### Gaps Summary
 
-No gaps. All five roadmap success criteria are backed by code and by passing tests, and every requirement ID is accounted for. Status is `human_needed` only because the phase's own plans and validation table reserve live, visual and owner-judgment checks that cannot be done programmatically, plus one flagged judgment-tier prohibition.
+No gaps. All five roadmap success criteria and the four gap-closure truths (G-12-5..G-12-8) are verified in code and by targeted tests run in this verification; the full-suite result is the orchestrator's. Status is `human_needed` solely because the live-window wording/layout re-check (UAT 5-8), the live KiCad-open dialog (UAT 3) and the live rebuild (UAT 4) cannot be confirmed programmatically.
 
 ---
 
-_Verified: 2026-11-01_
+_Verified: 2026-11-02_
 _Verifier: Claude (gsd-verifier)_
