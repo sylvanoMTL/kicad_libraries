@@ -1247,10 +1247,34 @@ def test_fields_symbol_label_shows_rename(qtbot, make_item_dialog, tmp_path):
     assert dialog._field_edits["value"].text() == dialog._field_edits["mpn"].text() == "PART/1"
 
 
+REQUIRED_HINTS = {
+    "datasheet": "Required - enter a Datasheet link",
+    "description": "Required - type a Description",
+    "manufacturer": "Required - enter the Manufacturer",
+}
+
+
+def test_required_field_hints_match_the_atomic_strip(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    for name, hint in REQUIRED_HINTS.items():
+        placeholder = dialog._field_edits[name].placeholderText()
+        assert placeholder == hint
+        assert "blank" not in placeholder.casefold()
+    for name in ("value", "mpn"):
+        assert dialog._field_edits[name].placeholderText() == ""
+
+    # the hint says the same thing as the reason that blocks Install Part
+    type_text(qtbot, dialog._field_edits["description"], "")
+    wait_current(qtbot, dialog)
+    assert not dialog._install_btn.isEnabled()
+    assert "Type a Description" in strip_links(dialog)
+    assert dialog._field_edits["description"].placeholderText().casefold().endswith("type a description")
+
+
 def test_fields_clear_and_restore(qtbot, make_item_dialog, recorded):
     dialog = ul_dialog(make_item_dialog, qtbot)
     datasheet = dialog._field_edits["datasheet"]
-    assert datasheet.placeholderText() == "Empty - the field will be written blank"
+    assert datasheet.placeholderText() == "Required - enter a Datasheet link"
     assert not dialog._field_restore["datasheet"].isEnabled()
 
     type_text(qtbot, datasheet, "")
@@ -1297,8 +1321,8 @@ def test_fields_clear_and_restore(qtbot, make_item_dialog, recorded):
     assert dialog._field_edits["value"].text() == UL_DEFAULTS["mpn"]
     assert not dialog._field_restore["value"].isEnabled()
 
-    for name in ("datasheet", "description", "manufacturer"):
-        assert dialog._field_edits[name].placeholderText() == "Empty - the field will be written blank"
+    for name, hint in REQUIRED_HINTS.items():
+        assert dialog._field_edits[name].placeholderText() == hint
     for name in ("value", "mpn"):
         assert dialog._field_edits[name].placeholderText() == ""
 

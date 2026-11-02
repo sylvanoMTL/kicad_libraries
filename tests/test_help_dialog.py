@@ -311,8 +311,9 @@ def test_help_import_page_explains_the_atomic_scheme():
 def test_help_import_page_explains_fields_and_the_install_gate():
     fields = _section("Fields")
     for text in ("Value always equals the MPN", "Texas Instruments", "Regenerate", "Keywords", "Footprint description",
-                 "Footprint tags", "MPN cannot be empty"):
+                 "Footprint tags", "MPN cannot be empty", "required", "Datasheet", "Description", "Manufacturer"):
         assert text in fields, text
+    assert "blank" not in fields.casefold()  # the three fields are required, never written blank
     gate = _section("Atomic check")
     for text in ("Install Part", "blocked", "MPN", "Manufacturer", "Datasheet", "Description", "3D model", "Click a problem",
                  import_dialog.ADD_MODEL_TEXT, "official KiCad footprint"):
