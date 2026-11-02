@@ -325,8 +325,8 @@ HELP_PAGES["importing"] = _wrap(
     "built, the dialog greys out and a strip at the bottom reads <b>" + FINISHING_TEXT
     + "</b> The window stays live. The dialog then carries on by itself once the preview "
     "is ready: it returns to the start page, opens the other package, or closes. Press "
-    "<b>Cancel</b> to stay where you are. After 10 seconds the strip adds that kicad-cli "
-    "is slow to respond; kicad-cli gives up after 60 seconds.</p>"
+    "<b>Cancel</b> to stay where you are. After 10 seconds the strip adds that "
+    "the KiCad command-line tool is slow to respond; it gives up after 60 seconds.</p>"
     "<p>If the install fails, the dialog returns to the preview with a red banner "
     "that lists the reasons. Every file is restored; if a restore itself fails, the "
     "banner names the backup folder that holds the original files. Fix the problem "
