@@ -342,11 +342,11 @@ def _format_section(plan: InstallPlan) -> PreviewSection:
     if newer:
         action = ("✖", "error", "Incoming file is newer than the library - refused")
     elif plan.normalised:
-        action = ("", "default", "kicad-cli will normalise the incoming symbol")
+        action = ("", "default", "The KiCad command-line tool will normalise the incoming symbol")
     elif plan.source_version is not None and plan.source_version == plan.target_version:
         action = ("", "default", "Already in the target format")
     elif plan.tools.kicad_cli is None:
-        action = ("⚠", "warning", "kicad-cli not found - symbol merged as-is")
+        action = ("⚠", "warning", "KiCad command-line tool not found - symbol merged as-is")
     else:
         action = ("⚠", "warning", "Symbol merged as-is - see Issues")
     glyph, tone, text = action

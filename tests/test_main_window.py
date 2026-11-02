@@ -530,6 +530,8 @@ def test_kicad_open_box_texts_and_buttons(make_window):
     text = box.text()
     assert "KiCad is open (eeschema, kicad)" in text
     assert "Close KiCad, then press Retry" in text
+    assert "These KiCad path variables in KiCad's settings file would change:" in text
+    assert "kicad_common" not in text
     assert "KICAD_LIB_GITHUB: (not set) -> C:/repo" in text
     assert "CUSTOM_3DMODEL_DIR: D:/old -> C:/repo/Custom/3DModels" in text
     # The platform orders the buttons by role, so compare by text
@@ -541,6 +543,19 @@ def test_kicad_open_box_texts_and_buttons(make_window):
         "Not now": ConfirmAnswer.DECLINE,
     }
     assert box.escapeButton().text() == "Not now"
+
+
+def test_path_var_question_names_the_settings_file(make_window):
+    w = make_window([_new_lib_scan()])
+    make_window.questions.clear()
+    make_window.answer = QMessageBox.StandardButton.No
+
+    assert w._confirm_path_var_changes([("KICAD_LIB_GITHUB", None, "C:/repo")]) is False
+
+    text = make_window.questions[-1][2]
+    assert "These KiCad path variables in KiCad's settings file would change:" in text
+    assert "KICAD_LIB_GITHUB: (not set) -> C:/repo" in text
+    assert "kicad_common" not in text
 
 
 # ── Scan funnel and busy guard (HARD-05) ──────────────────────────────────

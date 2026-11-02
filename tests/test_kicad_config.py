@@ -193,6 +193,8 @@ def test_null_vars_is_rewritten_with_only_vars_changed(repo, cfg, backups):
     (written,) = _by_code(issues, "config.written")
     assert written.severity is Severity.SUCCESS
     assert (_backup_dir(backups) / "kicad_common.json_backup_1").read_bytes() == original_bytes
+    (backed_up,) = _by_code(issues, "config.backed_up")
+    assert backed_up.text.startswith("Backed up KiCad's settings file to ")
 
 
 def test_populated_vars_keep_other_entries_and_report_update(repo, cfg, backups):
@@ -261,6 +263,8 @@ def test_invalid_json_is_an_error_and_writes_nothing(repo, cfg, backups):
     issues = _sync(repo, cfg, backups)
     (bad,) = issues
     assert bad.code == "config.bad_json" and bad.severity is Severity.ERROR
+    assert bad.text.startswith("Could not read KiCad's settings file")
+    assert "kicad_common.json" not in bad.text
     _assert_untouched(path, b'{"environment": ', backups)
 
 
@@ -274,6 +278,9 @@ def test_wrong_shape_is_an_error_and_writes_nothing(repo, cfg, backups, obj):
     issues = _sync(repo, cfg, backups)
     (bad,) = issues
     assert bad.code == "config.bad_shape" and bad.severity is Severity.ERROR
+    assert bad.text.startswith("KiCad's settings file has an unexpected structure")
+    assert "kicad_common.json" not in bad.text
+    assert "environment.vars" not in bad.text
     _assert_untouched(path, before, backups)
 
 
@@ -321,6 +328,8 @@ def test_verification_failure_aborts_before_backup_and_write(repo, cfg, backups,
     issues = _sync(repo, cfg, backups)
     (bad,) = issues
     assert bad.code == "config.verify_failed" and bad.severity is Severity.ERROR
+    assert bad.text.startswith("Did not write KiCad's settings file")
+    assert "environment.vars" not in bad.text
     _assert_untouched(path, before, backups)
 
 
@@ -704,7 +713,7 @@ def test_unstable_file_stops_after_three_passes(repo, cfg, backups):
     (warn,) = _by_code(issues, "config.keeps_changing")
     assert warn.severity is Severity.WARNING
     assert warn.text == (
-        "kicad_common.json kept changing while you were asked; nothing was written. "
+        "KiCad's settings file kept changing while you were asked; nothing was written. "
         "Press Generate Tables to try again."
     )
     assert not _by_code(issues, "config.written")
