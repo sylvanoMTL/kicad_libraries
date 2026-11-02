@@ -139,6 +139,16 @@ def test_help_names_the_cancel_button():
         assert claim in section, claim
 
 
+def test_help_names_choose_another_package():
+    label = import_dialog.CHANGE_PACKAGE_TEXT
+    assert label == "Choose another package..."
+    for heading in ("Start", "Install and result"):
+        assert label in _section(heading), heading
+    page = _page_text("importing")
+    assert "CHANGE_PACKAGE_TEXT" not in page
+    assert "Change..." not in page
+
+
 def test_help_import_page_describes_add_model():
     page = _page_text("importing")
     assert import_dialog.ADD_MODEL_TEXT in page

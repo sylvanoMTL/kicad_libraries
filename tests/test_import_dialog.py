@@ -2913,6 +2913,20 @@ def test_cancel_button_enabled_again_after_failed_install(qtbot, make_install_di
     assert dialog._cancel_btn.isEnabled()
 
 
+def test_change_button_says_it_picks_another_package(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    button = dialog._change_btn
+    assert button.text() == import_dialog_module.CHANGE_PACKAGE_TEXT == "Choose another package..."
+    assert button.toolTip() == (
+        "Close this package and pick another package. Your edits to it are dropped; nothing has been written."
+    )
+    assert "another package" in button.toolTip() and "nothing has been written" in button.toolTip()
+    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Change..."]
+    # it is still the header button that returns to the Start page
+    button.click()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._start_page, timeout=30000)
+
+
 def test_cancel_button_during_build_enters_finishing(qtbot, make_dialog, gates):
     count = {"n": 0}
 
