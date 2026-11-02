@@ -6,11 +6,23 @@ findings:
   - id: WR-01
     severity: warning
     disposition: open
-    title: "An exception in the path-variable check leaves `_path_var_busy` set for the whole session"
+    title: "Plain-name rule (G-12-5) still leaks `kicad_common.json` to the user through interpolated paths"
   - id: WR-02
     severity: warning
     disposition: open
-    title: "A lost-update window remains in the `kicad_common.json` write"
+    title: "The three required-field hints duplicate the atomic-strip sentences instead of deriving from them"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "Two buttons labelled \"Cancel\" now exist and the help text uses the word for both"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "Cancel is missing from the hand-built tab order"
+  - id: IN-03
+    severity: info
+    disposition: open
+    title: "`test_install_progress_and_lock` assertion was weakened"
   - id: WR-03
     severity: warning
     disposition: open
@@ -23,18 +35,6 @@ findings:
     severity: warning
     disposition: open
     title: "The \"library missing from the tables\" decision is derived by matching message text"
-  - id: IN-01
-    severity: info
-    disposition: open
-    title: "A second `_sync_path_vars` while one is in flight is dropped without a log line"
-  - id: IN-02
-    severity: info
-    disposition: open
-    title: "`closeEvent` still joins the scan worker without a bound"
-  - id: IN-03
-    severity: info
-    disposition: open
-    title: "`_same_rel` folds case only on Windows, so a case-insensitive macOS volume reports a false clash"
   - id: IN-04
     severity: info
     disposition: open
@@ -49,7 +49,7 @@ findings:
     title: "The Qt teardown hook can hide a hung worker for 60 s per widget"
 open: 11
 total: 11
-recorded: 2026-11-01T15:21:13.928Z
+recorded: 2026-11-02T12:26:46.656Z
 ---
 
 # Phase 12: Code Review Disposition
@@ -58,15 +58,15 @@ recorded: 2026-11-01T15:21:13.928Z
 |---------|----------|-------------|--------|
 | WR-01 | warning | open | - |
 | WR-02 | warning | open | - |
-| WR-03 | warning | open | - |
-| WR-04 | warning | open | - |
-| WR-05 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
-| IN-04 | info | open | - |
-| IN-05 | info | open | - |
-| IN-06 | info | open | - |
+| WR-03 | warning | open | - (not in the current review) |
+| WR-04 | warning | open | - (not in the current review) |
+| WR-05 | warning | open | - (not in the current review) |
+| IN-04 | info | open | - (not in the current review) |
+| IN-05 | info | open | - (not in the current review) |
+| IN-06 | info | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
 Set `deferred` by hand and put the reason in the Source cell; both are preserved. A `|` in the reason is kept as prose and escaped on the next run.
