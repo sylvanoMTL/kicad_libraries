@@ -84,7 +84,16 @@ _CLOSING_EMPTY = "Check that you downloaded the KiCad format, then pick another 
 _NO_MODEL = "No model"
 ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
 REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
-_BLANK_FIELD_HINT = "Empty - the field will be written blank"
+CHANGE_PACKAGE_TEXT = "Choose another package..."  # public: the help page names the button with this text
+_CHANGE_PACKAGE_TIP = (
+    "Close this package and pick another package. Your edits to it are dropped; nothing has been written."
+)
+# Mirror the atomic strip sentences in importer/form.py: every Atomic_ library needs all three fields
+_REQUIRED_HINTS = {
+    "datasheet": "Required - enter a Datasheet link",
+    "description": "Required - type a Description",
+    "manufacturer": "Required - enter the Manufacturer",
+}
 _REGENERATE = "Regenerate"
 _TEXT_TIPS = {
     "keywords": "Words KiCad's symbol chooser searches. The vendor's words come first, then the generated ones.",
@@ -659,7 +668,8 @@ class ImportDialog(QDialog):
         self._vendor_label.setStyleSheet(f"color: {MUTED};")
         header.addWidget(self._vendor_label)
         header.addStretch(1)
-        self._change_btn = QPushButton("Change...")
+        self._change_btn = QPushButton(CHANGE_PACKAGE_TEXT)
+        self._change_btn.setToolTip(_CHANGE_PACKAGE_TIP)
         self._change_btn.clicked.connect(self._on_change)
         header.addWidget(self._change_btn)
         lay.addWidget(self._header_row)
@@ -791,6 +801,12 @@ class ImportDialog(QDialog):
         self._install_btn.setMinimumWidth(112)
         self._install_btn.clicked.connect(self._on_install_clicked)
         bottom.addWidget(self._install_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
+        # Cancel closes the window through the same path as the window's X, so Finishing and the
+        # install/commit refusal in done() are reused (G-12-6)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setToolTip("Close without installing. Nothing is written.")
+        self._cancel_btn.clicked.connect(self.reject)
+        bottom.addWidget(self._cancel_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(bottom)
 
         self._edit_page = page
@@ -1109,7 +1125,7 @@ class ImportDialog(QDialog):
             edit.setAccessibleName(label)
             edit.setMinimumHeight(28)
             if name in ("datasheet", "description", "manufacturer"):
-                edit.setPlaceholderText(_BLANK_FIELD_HINT)
+                edit.setPlaceholderText(_REQUIRED_HINTS[name])
             if name == "mpn":
                 edit.setToolTip("MPN names the 3D model file")
             if name == "value":
@@ -2900,6 +2916,11 @@ class ImportDialog(QDialog):
         if installing:
             self._install_btn.setEnabled(False)
             self._install_btn.setText("Installing...")
+        self._sync_cancel_button()
+
+    def _sync_cancel_button(self):
+        """Cancel works only while nothing is written: an install or a commit cannot be cancelled (D-10, D-07)."""
+        self._cancel_btn.setEnabled(not self.is_installing() and not self.is_committing())
 
     def _on_install_progress(self, message: str, current: int, total: int):
         """A step of the install. A callback that stops arriving leaves the last text and value in place."""
@@ -2973,6 +2994,7 @@ class ImportDialog(QDialog):
         """
         self._git_worker = worker
         self._sync_add_model_button()
+        self._sync_cancel_button()
         button = self._result_view.close_button
         busy = worker is not None
         if busy == (not button.isEnabled()):

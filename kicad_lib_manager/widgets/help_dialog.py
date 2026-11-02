@@ -5,7 +5,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from .import_dialog import (
-    ADD_MODEL_TEXT, FINISHING_TEXT, OFFICIAL_FOOTPRINT_TEXT, REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT,
+    ADD_MODEL_TEXT, CHANGE_PACKAGE_TEXT, FINISHING_TEXT, OFFICIAL_FOOTPRINT_TEXT, REMOVE_MODEL_TEXT,
+    VENDOR_FOOTPRINT_TEXT,
 )
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
@@ -218,6 +219,9 @@ HELP_PAGES["importing"] = _wrap(
     "one <b>folder</b> onto the main window; the dialog then opens with that package "
     "loaded. The newest zip in your Downloads folder is offered, but it is never "
     "opened by itself.</p>"
+    "<p>Once a package is open, the button <b>" + CHANGE_PACKAGE_TEXT + "</b> at the top right "
+    "closes it and goes back to this start step so you can pick another package. "
+    "Your edits to the open package are dropped and nothing has been written.</p>"
     "<h3>Items</h3>"
     "<p>Pick the symbol, one footprint and the 3D model to import. When the package "
     "holds several footprints, only the one you pick is installed; the others are "
@@ -274,7 +278,9 @@ HELP_PAGES["importing"] = _wrap(
     "</ul>"
     "<h3>Fields</h3>"
     "<p>Edit the footprint name and the Datasheet, Description, Manufacturer "
-    "and MPN fields. An emptied optional field is written blank. The MPN cannot "
+    "and MPN fields. The Datasheet, Description and Manufacturer are required: while "
+    "one is empty, its box says what to type and <b>Install Part</b> stays blocked "
+    "(see Atomic check). The MPN cannot "
     "be empty. Value always equals the MPN, so it is shown but cannot be "
     "edited.</p>"
     "<p>The Manufacturer is written in its standard spelling: <i>TI</i> becomes "
@@ -309,11 +315,13 @@ HELP_PAGES["importing"] = _wrap(
     "one. While that comparison is being prepared, <b>Install Part</b> waits, and it "
     "becomes available again when the comparison is ready.</p>"
     "<h3>Install and result</h3>"
-    "<p>Nothing is written until you click <b>Install Part</b>. While it installs, "
-    "your choices are locked, a progress bar shows each step, and the dialog cannot "
-    "be closed or cancelled.</p>"
+    "<p>Nothing is written until you click <b>Install Part</b>. <b>Cancel</b>, to its "
+    "right, closes the dialog without installing anything, the same as the window's "
+    "close button. While it installs, your choices are locked, a progress bar shows "
+    "each step, <b>Cancel</b> is greyed out, and the dialog cannot be closed or "
+    "cancelled.</p>"
     "<p>The preview is rebuilt in the background when you edit a field. If you press "
-    "<b>Change...</b>, pick another package or close the dialog while it is still being "
+    "<b>" + CHANGE_PACKAGE_TEXT + "</b>, pick another package or close the dialog while it is still being "
     "built, the dialog greys out and a strip at the bottom reads <b>" + FINISHING_TEXT
     + "</b> The window stays live. The dialog then carries on by itself once the preview "
     "is ready: it returns to the start page, opens the other package, or closes. Press "

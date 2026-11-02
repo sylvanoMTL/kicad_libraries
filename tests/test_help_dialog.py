@@ -133,6 +133,22 @@ def _section(heading: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def test_help_names_the_cancel_button():
+    section = _section("Install and result").casefold()
+    for claim in ("cancel", "without installing", "greyed out", "cannot be closed or cancelled", "press cancel to stay"):
+        assert claim in section, claim
+
+
+def test_help_names_choose_another_package():
+    label = import_dialog.CHANGE_PACKAGE_TEXT
+    assert label == "Choose another package..."
+    for heading in ("Start", "Install and result"):
+        assert label in _section(heading), heading
+    page = _page_text("importing")
+    assert "CHANGE_PACKAGE_TEXT" not in page
+    assert "Change..." not in page
+
+
 def test_help_import_page_describes_add_model():
     page = _page_text("importing")
     assert import_dialog.ADD_MODEL_TEXT in page
@@ -305,8 +321,9 @@ def test_help_import_page_explains_the_atomic_scheme():
 def test_help_import_page_explains_fields_and_the_install_gate():
     fields = _section("Fields")
     for text in ("Value always equals the MPN", "Texas Instruments", "Regenerate", "Keywords", "Footprint description",
-                 "Footprint tags", "MPN cannot be empty"):
+                 "Footprint tags", "MPN cannot be empty", "required", "Datasheet", "Description", "Manufacturer"):
         assert text in fields, text
+    assert "blank" not in fields.casefold()  # the three fields are required, never written blank
     gate = _section("Atomic check")
     for text in ("Install Part", "blocked", "MPN", "Manufacturer", "Datasheet", "Description", "3D model", "Click a problem",
                  import_dialog.ADD_MODEL_TEXT, "official KiCad footprint"):
