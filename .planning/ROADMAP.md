@@ -254,7 +254,7 @@ Plans:
   4. The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes.
   5. On a case-sensitive folder, when a case twin was written under another spelling, rollback restores the original spelling and removes the twin on both the rollback and the overwrite branches, as the deferred Phase 4 UAT Test 3 (backlog 999.2) expected.
 
-**Plans**: 8/11 plans executed (3 gap-closure plans pending)
+**Plans**: 10/11 plans executed (3 gap-closure plans pending)
 
 Plans:
 **Wave 1**
@@ -276,8 +276,8 @@ Plans:
 - [x] 12-08-PLAN.md — Help text for the Phase 12 behaviour, 05-REVIEW dispositions, full-suite phase gate, live kicad-cli check (REV-01..REV-05)
 
 **Gap closure (UAT G-12-5..8)**
-- [ ] 12-09-PLAN.md — Wave 1: Cancel beside Install Part, required-field hints for Datasheet/Description/Manufacturer, "Choose another package..." header button, Help (G-12-6, G-12-7, G-12-8)
-- [ ] 12-10-PLAN.md — Wave 1: plain names "KiCad's settings file" / "the KiCad command-line tool" in the path-variable dialogs, settings log lines, import preview rows and importer issue texts (G-12-5)
+- [x] 12-09-PLAN.md — Wave 1: Cancel beside Install Part, required-field hints for Datasheet/Description/Manufacturer, "Choose another package..." header button, Help (G-12-6, G-12-7, G-12-8)
+- [x] 12-10-PLAN.md — Wave 1: plain names "KiCad's settings file" / "the KiCad command-line tool" in the path-variable dialogs, settings log lines, import preview rows and importer issue texts (G-12-5)
 - [ ] 12-11-PLAN.md — Wave 2: plain slow note and Help sentence, package-wide guard test, gap-closure suite gate (G-12-5)
 
 **UI hint**: yes
@@ -308,7 +308,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
-| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 8/8 | In Progress | - |
+| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 10/11 | In Progress | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
 ## Backlog
