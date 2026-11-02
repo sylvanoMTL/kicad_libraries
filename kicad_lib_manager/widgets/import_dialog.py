@@ -791,6 +791,12 @@ class ImportDialog(QDialog):
         self._install_btn.setMinimumWidth(112)
         self._install_btn.clicked.connect(self._on_install_clicked)
         bottom.addWidget(self._install_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
+        # Cancel closes the window through the same path as the window's X, so Finishing and the
+        # install/commit refusal in done() are reused (G-12-6)
+        self._cancel_btn = QPushButton("Cancel")
+        self._cancel_btn.setToolTip("Close without installing. Nothing is written.")
+        self._cancel_btn.clicked.connect(self.reject)
+        bottom.addWidget(self._cancel_btn, alignment=Qt.AlignmentFlag.AlignVCenter)
         lay.addLayout(bottom)
 
         self._edit_page = page
@@ -2900,6 +2906,11 @@ class ImportDialog(QDialog):
         if installing:
             self._install_btn.setEnabled(False)
             self._install_btn.setText("Installing...")
+        self._sync_cancel_button()
+
+    def _sync_cancel_button(self):
+        """Cancel works only while nothing is written: an install or a commit cannot be cancelled (D-10, D-07)."""
+        self._cancel_btn.setEnabled(not self.is_installing() and not self.is_committing())
 
     def _on_install_progress(self, message: str, current: int, total: int):
         """A step of the install. A callback that stops arriving leaves the last text and value in place."""
@@ -2973,6 +2984,7 @@ class ImportDialog(QDialog):
         """
         self._git_worker = worker
         self._sync_add_model_button()
+        self._sync_cancel_button()
         button = self._result_view.close_button
         busy = worker is not None
         if busy == (not button.isEnabled()):
