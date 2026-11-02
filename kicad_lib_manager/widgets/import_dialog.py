@@ -84,7 +84,12 @@ _CLOSING_EMPTY = "Check that you downloaded the KiCad format, then pick another 
 _NO_MODEL = "No model"
 ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
 REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
-_BLANK_FIELD_HINT = "Empty - the field will be written blank"
+# Mirror the atomic strip sentences in importer/form.py: every Atomic_ library needs all three fields
+_REQUIRED_HINTS = {
+    "datasheet": "Required - enter a Datasheet link",
+    "description": "Required - type a Description",
+    "manufacturer": "Required - enter the Manufacturer",
+}
 _REGENERATE = "Regenerate"
 _TEXT_TIPS = {
     "keywords": "Words KiCad's symbol chooser searches. The vendor's words come first, then the generated ones.",
@@ -1115,7 +1120,7 @@ class ImportDialog(QDialog):
             edit.setAccessibleName(label)
             edit.setMinimumHeight(28)
             if name in ("datasheet", "description", "manufacturer"):
-                edit.setPlaceholderText(_BLANK_FIELD_HINT)
+                edit.setPlaceholderText(_REQUIRED_HINTS[name])
             if name == "mpn":
                 edit.setToolTip("MPN names the 3D model file")
             if name == "value":
