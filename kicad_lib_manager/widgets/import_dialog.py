@@ -84,6 +84,10 @@ _CLOSING_EMPTY = "Check that you downloaded the KiCad format, then pick another 
 _NO_MODEL = "No model"
 ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
 REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
+CHANGE_PACKAGE_TEXT = "Choose another package..."  # public: the help page names the button with this text
+_CHANGE_PACKAGE_TIP = (
+    "Close this package and pick another package. Your edits to it are dropped; nothing has been written."
+)
 # Mirror the atomic strip sentences in importer/form.py: every Atomic_ library needs all three fields
 _REQUIRED_HINTS = {
     "datasheet": "Required - enter a Datasheet link",
@@ -664,7 +668,8 @@ class ImportDialog(QDialog):
         self._vendor_label.setStyleSheet(f"color: {MUTED};")
         header.addWidget(self._vendor_label)
         header.addStretch(1)
-        self._change_btn = QPushButton("Change...")
+        self._change_btn = QPushButton(CHANGE_PACKAGE_TEXT)
+        self._change_btn.setToolTip(_CHANGE_PACKAGE_TIP)
         self._change_btn.clicked.connect(self._on_change)
         header.addWidget(self._change_btn)
         lay.addWidget(self._header_row)
