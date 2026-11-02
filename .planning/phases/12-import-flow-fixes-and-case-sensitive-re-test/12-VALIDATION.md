@@ -58,6 +58,13 @@ created: "2026-11-01"
 | 12-07-T2 | 12-07 | 4 | REV-04 | T-12-18, T-12-21 | Escape inert while Finishing; Cancel restores; probe re-run after a cancelled close | dialog + window | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py tests/test_main_window_import.py -q -k "close or finishing or escape or cancel or probe or kicad_running or add_model_close"` (then the whole `tests/test_import_dialog.py` in the background) | ✅ rewrite + add | ✅ green |
 | 12-08-T1 | 12-08 | 5 | REV-01..REV-05 | — | N/A | unit | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py -q` | ✅ extend | ✅ green |
 | 12-08-T2 | 12-08 | 5 | REV-01..REV-05 | T-12-22 | Phase gate | per-wave set + full suite (background) + manual | `env/Scripts/python.exe -m pytest tests/test_table_add_entries.py tests/test_kicad_config.py tests/test_help_dialog.py tests/test_main_window.py tests/test_main_window_import.py tests/test_install_apply.py tests/test_install_plan.py tests/test_case_sensitive_install.py tests/test_backup_dialog.py -q`; full: `env/Scripts/python.exe -m pytest -q -rs` | ✅ | ✅ green |
+| 12-09-T1 | 12-09 | gap 1 | REV-04 | T-12-23, T-12-24 | Cancel beside Install Part goes through `done()`: greyed out while installing or committing, enters Finishing during a build (G-12-6) | dialog | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py tests/test_help_dialog.py -q -k "cancel_button or install_progress_and_lock or install_failure_banner or close_finishes_after_build or close_refused_while_installing or commit_close_button_disabled or help_names_the_cancel or failure_and_tables_claims or phase_12_behaviour"` | ✅ extend | ✅ green |
+| 12-09-T2 | 12-09 | gap 1 | REV-04 | — | N/A (required-field hints, G-12-7) | dialog | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py tests/test_help_dialog.py -q -k "required_field_hints or fields_clear_and_restore or explains_fields or uses_plain_words"` | ✅ extend | ✅ green |
+| 12-09-T3 | 12-09 | gap 1 | REV-04 | — | N/A ("Choose another package..." header button, G-12-8) | dialog | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py tests/test_help_dialog.py -q -k "change_button or change_returns or choose_another or phase_12_behaviour or help_import_page"` | ✅ extend | ✅ green |
+| 12-10-T1 | 12-10 | gap 1 | REV-05 | T-12-26 | Only message text changes; read, back-up and atomic write of KiCad's settings file unchanged (G-12-5) | unit + window | `env/Scripts/python.exe -m pytest tests/test_kicad_config.py tests/test_main_window.py -q -k "kicad_open or path_var or unstable_file or invalid_json or wrong_shape or verification_failure or null_vars or bad_json or running"` | ✅ extend | ✅ green |
+| 12-10-T2 | 12-10 | gap 1 | REV-05 | T-12-25 | Issue codes, severities and matched phrases kept while texts name the command-line tool plainly (G-12-5) | unit | `env/Scripts/python.exe -m pytest tests/test_import_preview.py tests/test_kicad_cli.py tests/test_install_apply.py -q` | ✅ extend | ✅ green |
+| 12-11-T1 | 12-11 | gap 2 | REV-04 | — | N/A (slow note and Help sentence, G-12-5) | dialog | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py tests/test_import_dialog.py -q -k "phase_12_behaviour or slow_note or help_import_page or choose_another or cancel_button"` | ✅ extend | ✅ green |
+| 12-11-T2 | 12-11 | gap 2 | REV-04 | T-12-27, T-12-28 | Package-wide guard: no user-facing string names the raw tool or settings file; fails on an empty scan; backup folder untouched | source scan | `env/Scripts/python.exe -m pytest tests/test_plain_names.py tests/test_kicad_config.py -q` | ❌ W0 (this task creates `tests/test_plain_names.py`) | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -84,6 +91,7 @@ created: "2026-11-01"
 | Case-sensitive tests pass (not skip) on the owner's Windows machine | VER-02 | Skips are environment-dependent; only the workstation proves the fsutil path | From the repo root run `.\env\Scripts\python.exe -m pytest tests/test_case_sensitive_install.py -v -rs`; every test PASSED, no "skipped" in the summary |
 | Help dialog and conflict rows look right with theme tokens | UI-01 | Visual check | Owner reviews rendered screenshots, as in Phase 11 UAT |
 | Window stays responsive while kicad-cli works | REV-04 | Real kicad-cli timing | Open a package with a slow build, press Change...; window moves/repaints, strip shows, action runs by itself |
+| Gap re-check: plain names, Cancel, required hints, Choose another package (UAT 5–8) | REV-04, REV-05 | Wording and layout in the running window | Re-run UAT tests 5–8 from 12-UAT.md in the GUI |
 
 ---
 
@@ -96,7 +104,7 @@ created: "2026-11-01"
 - [x] Feedback latency < 60s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** validated 2026-11-01 (all 18 tasks green in the full suite at 9412c80: 9267 passed, 4 expected skips; manual-only rows stay with the owner UAT)
+**Approval:** validated 2026-11-01 (all 18 tasks green in the full suite at 9412c80: 9267 passed, 4 expected skips; manual-only rows stay with the owner UAT). Re-validated 2026-11-02 after gap plans 12-09..12-11: all 25 tasks green in the full suite at 60df383 (9281 passed, 4 expected skips)
 
 ## Validation Audit 2026-11-01
 
