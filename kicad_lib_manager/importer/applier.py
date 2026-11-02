@@ -228,7 +228,7 @@ def _current_bytes(op: FileOp) -> bytes | Issue:
 def _gate(plan: InstallPlan, original_symbol_lib: bytes | None) -> list[Issue]:
     exe = plan.tools.kicad_cli
     if exe is None:
-        return [Issue(Severity.INFO, "install.cli_not_found", "kicad-cli was not found, so the KiCad load check was skipped")]
+        return [Issue(Severity.INFO, "install.cli_not_found", "The KiCad command-line tool was not found, so the KiCad load check was skipped")]
     symbol_op = next((op for op in plan.ops if op.kind == "symbol_lib"), None)
     footprints = [(op.path.stem, op.data) for op in plan.ops if op.kind == "footprint" and op.data is not None]
     if symbol_op is None and not footprints:

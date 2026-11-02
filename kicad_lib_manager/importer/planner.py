@@ -494,7 +494,7 @@ def _existing_source(
     both = f"{name} is format {incoming} but {library} is {target_version}"
     if tools.kicad_cli is None:
         return as_is, [
-            Issue(Severity.WARNING, "install.version_mismatch", f"{both}; kicad-cli was not found, so {name} is merged unchanged"),
+            Issue(Severity.WARNING, "install.version_mismatch", f"{both}; the KiCad command-line tool was not found, so {name} is merged unchanged"),
             _cli_not_found(),
         ]
     result = kicad_cli.upgrade_symbol_text(
@@ -503,7 +503,7 @@ def _existing_source(
     if isinstance(result, Issue):
         return None, [result]
     if result.version == target_version:
-        loaded = _loaded_text(result.text, False, "the kicad-cli output", "install.cli_gate_failed")
+        loaded = _loaded_text(result.text, False, "the KiCad command-line tool's output", "install.cli_gate_failed")
         if isinstance(loaded, Issue):
             return None, [loaded]
         return _SymbolSource(loaded, True, target_version), []
@@ -511,7 +511,7 @@ def _existing_source(
     return as_is, [Issue(
         Severity.WARNING,
         "install.version_mismatch",
-        f"{both}; kicad-cli would write {written}, so {name} is merged unchanged",
+        f"{both}; the KiCad command-line tool would write {written}, so {name} is merged unchanged",
     )]
 
 
@@ -536,7 +536,7 @@ def _new_source(
     )
     if isinstance(result, Issue):
         return None, [result]
-    loaded = _loaded_text(result.text, False, "the kicad-cli output", "install.cli_gate_failed")
+    loaded = _loaded_text(result.text, False, "the KiCad command-line tool's output", "install.cli_gate_failed")
     if isinstance(loaded, Issue):
         return None, [loaded]
     return _SymbolSource(loaded, result.changed, result.version), []
@@ -546,7 +546,7 @@ def _cli_not_found() -> Issue:
     return Issue(
         Severity.INFO,
         "install.cli_not_found",
-        "kicad-cli not found; the incoming symbol is merged without normalisation and the KiCad load check is skipped",
+        "The KiCad command-line tool was not found; the incoming symbol is merged without normalisation and the KiCad load check is skipped",
     )
 
 
@@ -1032,7 +1032,7 @@ def build_plan(
         return refuse()
     source_unit = symbol_unit(source.loaded.root, sym_item.name)
     if source_unit is None:
-        return refuse(_err("install.cli_gate_failed", f"kicad-cli output no longer holds the symbol {sym_item.name}"))
+        return refuse(_err("install.cli_gate_failed", f"The KiCad command-line tool's output no longer holds the symbol {sym_item.name}"))
     source_version = file_version(vendor_sym.root)
     target_version = file_version(target.root) if target is not None else source.version
 

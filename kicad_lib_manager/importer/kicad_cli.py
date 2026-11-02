@@ -78,9 +78,9 @@ def run_cli(
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except subprocess.TimeoutExpired:
-        return Issue(Severity.ERROR, "install.cli_failed", f"kicad-cli timed out after {timeout:g} s")
+        return Issue(Severity.ERROR, "install.cli_failed", f"The KiCad command-line tool timed out after {timeout:g} s")
     except OSError as e:
-        return Issue(Severity.ERROR, "install.cli_failed", f"Could not run kicad-cli: {e.strerror or e}")
+        return Issue(Severity.ERROR, "install.cli_failed", f"Could not run the KiCad command-line tool: {e.strerror or e}")
     return CliRun(result.returncode, result.stdout or "", result.stderr or "")
 
 
@@ -168,11 +168,11 @@ def upgrade_symbol_text(
         if isinstance(run, Issue):
             return run
         if _failed(run):
-            return _gate_failed(f"kicad-cli could not load {label} ({_detail(run)})")
+            return _gate_failed(f"The KiCad command-line tool could not load {label} ({_detail(run)})")
         if target.is_file():
-            parsed = parse_bytes(target.read_bytes(), "the kicad-cli output")
+            parsed = parse_bytes(target.read_bytes(), "the KiCad command-line tool's output")
             if isinstance(parsed, Issue):
-                return _gate_failed(f"kicad-cli wrote output for {label} that could not be read: {parsed.text}")
+                return _gate_failed(f"The KiCad command-line tool wrote output for {label} that could not be read: {parsed.text}")
             result = SymbolUpgrade(parsed.source.text, file_version(parsed.root), True)
         else:
             # Exit 0 and no output file: KiCad judged the input already current
@@ -180,7 +180,7 @@ def upgrade_symbol_text(
             version = file_version(original.root) if isinstance(original, LoadedFile) else None
             result = SymbolUpgrade(text, version, False)
     except OSError as e:
-        return Issue(Severity.ERROR, "install.cli_failed", f"Could not stage {label} for kicad-cli: {e.strerror or e}")
+        return Issue(Severity.ERROR, "install.cli_failed", f"Could not stage {label} for the KiCad command-line tool: {e.strerror or e}")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     if key is not None:
@@ -247,7 +247,7 @@ def load_gate(
             if isinstance(run, Issue):
                 issues.append(run)
             elif _failed(run):
-                text = f"kicad-cli could not load the merged symbol library {library}.kicad_sym ({_detail(run)})"
+                text = f"The KiCad command-line tool could not load the merged symbol library {library}.kicad_sym ({_detail(run)})"
                 if original_symbol_lib is not None:
                     blame = _check_symbol(exe, tmp / "original", library, original_symbol_lib, runner, timeout)
                     if isinstance(blame, CliRun):
@@ -272,10 +272,10 @@ def load_gate(
             elif _failed(run):
                 names = ", ".join(fp_name for fp_name, _ in footprints)
                 issues.append(
-                    _gate_failed(f"kicad-cli could not load the incoming footprint(s) {names} ({_detail(run)})")
+                    _gate_failed(f"The KiCad command-line tool could not load the incoming footprint(s) {names} ({_detail(run)})")
                 )
     except OSError as e:
-        issues.append(Issue(Severity.ERROR, "install.cli_failed", f"Could not stage files for kicad-cli: {e.strerror or e}"))
+        issues.append(Issue(Severity.ERROR, "install.cli_failed", f"Could not stage files for the KiCad command-line tool: {e.strerror or e}"))
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
     return issues

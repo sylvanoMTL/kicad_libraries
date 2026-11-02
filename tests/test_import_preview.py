@@ -284,7 +284,7 @@ def test_rewrites_skip_a_kept_symbol(tmp_path):
 FORMAT_CASES = [
     pytest.param(
         V9, V6, "fake", "Symbol format 20211014 → 20241209",
-        "kicad-cli will normalise the incoming symbol", "", "default", id="normalise",
+        "The KiCad command-line tool will normalise the incoming symbol", "", "default", id="normalise",
     ),
     pytest.param(
         V6, V6, None, "Symbol format 20211014 → 20211014",
@@ -292,7 +292,7 @@ FORMAT_CASES = [
     ),
     pytest.param(
         V9, V6, None, "Symbol format 20211014 → 20241209",
-        "⚠ kicad-cli not found - symbol merged as-is", "⚠", "warning", id="cli_not_found",
+        "⚠ KiCad command-line tool not found - symbol merged as-is", "⚠", "warning", id="cli_not_found",
     ),
     pytest.param(
         V9, V6, "differs", "Symbol format 20211014 → 20241209",
