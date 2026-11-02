@@ -2740,8 +2740,8 @@ def test_install_progress_and_lock(qtbot, make_install_dialog, gates):
     assert dialog._preview.isEnabled()  # the tree stays scrollable and its rows can be opened
     assert dialog._install_row.isVisible() and not dialog._strip.isVisible()
     assert MUTED.lower() in dialog._install_step.styleSheet().lower()
-    # An install cannot be cancelled; the hidden Cancel of the Finishing strip is not a way to do it
-    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel" and b.isVisible()]
+    # An install cannot be cancelled: the Edit page's Cancel is greyed out and the Finishing strip's is hidden
+    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel" and b.isVisible() and b.isEnabled()]
 
     gates[0].set()
     qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
@@ -2820,6 +2820,99 @@ def test_install_failure_without_backup_dir_keeps_retry_line(qtbot, make_install
     assert dialog._failure_title.text() == TITLE_NOT_RESTORED
     assert banner_lines(dialog)[-1] == CLOSING_RETRY
     wait_current(qtbot, dialog)
+
+
+# -- Cancel beside Install Part (plan 12-09, G-12-6) ---------------------------------------
+
+
+def custom_snapshot(layout) -> dict[str, bytes]:
+    """Every file under the Custom folder, by relative path, with its bytes."""
+    return {
+        path.relative_to(layout.custom_dir).as_posix(): path.read_bytes()
+        for path in sorted(layout.custom_dir.rglob("*"))
+        if path.is_file()
+    }
+
+
+def edit_bottom_row(dialog: ImportDialog):
+    """The layout of the Edit page that holds Install Part."""
+    page_layout = dialog._edit_page.layout()
+    for index in range(page_layout.count()):
+        row = page_layout.itemAt(index).layout()
+        if row is not None and row.indexOf(dialog._install_btn) != -1:
+            return row
+    raise AssertionError("no bottom row holds Install Part")
+
+
+def test_cancel_button_closes_without_installing(qtbot, make_install_dialog, item_layout):
+    dialog = make_install_dialog()
+    cancel = dialog._cancel_btn
+    assert cancel.text() == "Cancel"
+    assert cancel.toolTip() == "Close without installing. Nothing is written."
+    row = edit_bottom_row(dialog)
+    assert row.indexOf(cancel) == row.indexOf(dialog._install_btn) + 1
+    assert cancel.mapTo(dialog, QPoint(0, 0)).x() > dialog._install_btn.mapTo(dialog, QPoint(0, 0)).x()
+    assert not cancel.isDefault() and not cancel.autoDefault()
+    assert not dialog._install_btn.isDefault() and not dialog._install_btn.autoDefault()
+    assert cancel.isEnabled()
+
+    before = custom_snapshot(item_layout)
+    cancel.click()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert dialog.result is None
+    assert not dialog.is_installing()
+    assert custom_snapshot(item_layout) == before
+
+
+def test_cancel_button_disabled_while_installing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+    assert dialog._cancel_btn.isEnabled()
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+
+    assert not dialog._cancel_btn.isEnabled()
+    dialog._cancel_btn.click()  # a click on a greyed-out button does nothing
+    assert dialog.isVisible() and dialog.is_installing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    qtbot.waitUntil(lambda: not dialog.is_installing(), timeout=30000)
+
+
+def test_cancel_button_enabled_again_after_failed_install(qtbot, make_install_dialog):
+    dialog = make_install_dialog(apply_plan=failing_apply(stale("X appeared")))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    wait_current(qtbot, dialog)
+    assert not dialog.is_installing()
+    assert dialog._cancel_btn.isEnabled()
+
+
+def test_cancel_button_during_build_enters_finishing(qtbot, make_dialog, gates):
+    count = {"n": 0}
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if count["n"] == 2:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(build_plan=gated_build), show=True)
+    wait_plan(qtbot, dialog)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert dialog._cancel_btn.isEnabled()
+    dialog._cancel_btn.click()  # returns at once: the build is still gated, exactly as the window's X does
+    assert not gates[0].is_set()
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert QGuiApplication.overrideCursor() is None
 
 
 def test_install_failure_ignores_non_error_issues(qtbot, make_install_dialog):
@@ -3536,6 +3629,7 @@ def test_commit_close_button_disabled_while_git_runs(qtbot, make_install_dialog,
     qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
     close_button = dialog._result_view.close_button
     assert not close_button.isEnabled()
+    assert not dialog._cancel_btn.isEnabled()
     QTest.keyClick(dialog, Qt.Key.Key_Escape)
     dialog.reject()
     dialog.close()

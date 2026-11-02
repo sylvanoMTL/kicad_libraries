@@ -133,6 +133,12 @@ def _section(heading: str) -> str:
     return re.sub(r"\s+", " ", text)
 
 
+def test_help_names_the_cancel_button():
+    section = _section("Install and result").casefold()
+    for claim in ("cancel", "without installing", "greyed out", "cannot be closed or cancelled", "press cancel to stay"):
+        assert claim in section, claim
+
+
 def test_help_import_page_describes_add_model():
     page = _page_text("importing")
     assert import_dialog.ADD_MODEL_TEXT in page
