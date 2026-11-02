@@ -1115,7 +1115,7 @@ class MainWindow(QMainWindow):
             f"{var}: {old if old else '(not set)'} -> {new}" for var, old, new in changes
         ]
         text = (
-            "These KiCad path variables in kicad_common.json would change:\n\n"
+            "These KiCad path variables in KiCad's settings file would change:\n\n"
             + "\n".join(lines)
             + "\n\nKiCad loads its libraries from these paths after a restart. Change them?"
         )
@@ -1138,7 +1138,7 @@ class MainWindow(QMainWindow):
         box.setWindowTitle("KiCad is open")
         box.setText(
             f"KiCad is open ({', '.join(names)}). These KiCad path variables in "
-            "kicad_common.json would change:\n\n"
+            "KiCad's settings file would change:\n\n"
             + "\n".join(lines)
             + "\n\nKiCad may undo them when it exits. Close KiCad, then press Retry."
         )

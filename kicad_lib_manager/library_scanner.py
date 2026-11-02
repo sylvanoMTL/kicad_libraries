@@ -159,7 +159,7 @@ def _read_config(config_file: Path) -> tuple[fsutil.SourceText, dict, dict] | Is
         return Issue(
             Severity.ERROR,
             "config.bad_json",
-            f"Could not read {config_file.name}: invalid JSON at line {e.lineno}, "
+            f"Could not read KiCad's settings file: invalid JSON at line {e.lineno}, "
             f"col {e.colno}; nothing was written",
         )
 
@@ -175,8 +175,8 @@ def _read_config(config_file: Path) -> tuple[fsutil.SourceText, dict, dict] | Is
         return Issue(
             Severity.ERROR,
             "config.bad_shape",
-            f"{config_file.name} has an unexpected structure "
-            f"(environment.vars is not an object); nothing was written",
+            "KiCad's settings file has an unexpected structure "
+            "(its path variables section cannot be read); nothing was written",
         )
     return src, config, old_vars
 
@@ -320,7 +320,7 @@ def sync_kicad_path_vars(
         return [Issue(
             Severity.WARNING,
             "config.keeps_changing",
-            "kicad_common.json kept changing while you were asked; nothing was written. "
+            "KiCad's settings file kept changing while you were asked; nothing was written. "
             "Press Generate Tables to try again.",
         )]
 
@@ -331,8 +331,8 @@ def sync_kicad_path_vars(
         return issues + [Issue(
             Severity.ERROR,
             "config.verify_failed",
-            f"Did not write {config_file.name}: the new content would change "
-            f"more than environment.vars",
+            "Did not write KiCad's settings file: the new content would change "
+            "more than the path variables",
         )]
     new_text = fsutil.normalize_eol(new_text, src.eol)
 
@@ -349,7 +349,7 @@ def sync_kicad_path_vars(
     if isinstance(backup, Issue):
         return issues + [backup]
     issues.append(Issue(
-        Severity.INFO, "config.backed_up", f"Backed up {config_file.name} to {backup}"
+        Severity.INFO, "config.backed_up", f"Backed up KiCad's settings file to {backup}"
     ))
 
     failure = fsutil.atomic_write_text(config_file, new_text, bom=src.bom)
