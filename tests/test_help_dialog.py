@@ -392,3 +392,30 @@ def test_conflict_row_styles_use_theme_tokens():
     assert f"background-color: {SURFACE_BASE}" in qss
     assert f"color: {SURFACE_BASE}" in qss
     assert re.fullmatch(r"#FFFFFF", theme.SURFACE_BASE)
+
+
+def test_help_dialog_opens_on_a_given_topic(qtbot):
+    dialog = HelpDialog(topic="importing")
+    qtbot.addWidget(dialog)
+    assert dialog._toc.currentItem().data(0, Qt.ItemDataRole.UserRole) == "importing"
+    assert "Importing Parts" in dialog._browser.toPlainText()
+
+    # no topic: the first topic, as before
+    default = HelpDialog()
+    qtbot.addWidget(default)
+    assert default._toc.currentItem() is default._toc.topLevelItem(0)
+    assert default._toc.currentItem().data(0, Qt.ItemDataRole.UserRole) == "overview"
+    assert "Overview" in default._browser.toPlainText()
+
+    # an unknown key raises nothing and opens on Overview
+    unknown = HelpDialog(topic="no_such_page")
+    qtbot.addWidget(unknown)
+    assert unknown._toc.currentItem().data(0, Qt.ItemDataRole.UserRole) == "overview"
+
+    # an open dialog moves to another topic, or stays put when the key is unknown
+    assert dialog.show_topic("shortcuts") is True
+    assert dialog._toc.currentItem().data(0, Qt.ItemDataRole.UserRole) == "shortcuts"
+    assert "Keyboard Shortcuts" in dialog._browser.toPlainText()
+    before = dialog._toc.currentItem()
+    assert dialog.show_topic("no_such_page") is False
+    assert dialog._toc.currentItem() is before

@@ -5811,3 +5811,63 @@ def test_cancelled_close_reprobes(qtbot, make_install_dialog):
     qtbot.waitUntil(lambda: len(calls) == 2, timeout=30000)
     qtbot.waitUntil(lambda: panel.state() == "ready" and not dialog.is_probing(), timeout=30000)
     assert dialog.isVisible()
+
+
+# -- Toolbar Help (plan 12-12, G-12-9) ---------------------------------------------------------------
+
+from PySide6.QtGui import QKeySequence, QShortcut  # noqa: E402
+from PySide6.QtWidgets import QToolBar  # noqa: E402
+
+from kicad_lib_manager.widgets.help_dialog import HelpDialog  # noqa: E402
+
+HELP_TIP = "Open the User Guide on the Importing Parts page (F1). This window stays open."
+
+
+def help_key(help_window: HelpDialog) -> str:
+    return help_window._toc.currentItem().data(0, Qt.ItemDataRole.UserRole)
+
+
+def test_toolbar_help_opens_importing_page(qtbot, make_dialog):
+    dialog = make_dialog(open_now=False, show=True)
+    toolbar = dialog._toolbar
+    assert isinstance(toolbar, QToolBar)
+    layout = dialog.layout()
+    assert layout.itemAt(0).widget() is toolbar
+    assert layout.indexOf(toolbar) < layout.indexOf(dialog._stack)
+    assert not dialog._stack.isAncestorOf(toolbar)
+    assert toolbar.isVisible() and not toolbar.isMovable() and toolbar.styleSheet() == ""
+    assert toolbar.actions() == [dialog._help_action]
+    action = dialog._help_action
+    assert action.text() == import_dialog_module.HELP_ACTION_TEXT == "Help"
+    assert action.toolTip() == HELP_TIP
+    assert action.shortcut() == QKeySequence("F1")
+    assert dialog._stack.currentWidget() is dialog._start_page
+
+    action.trigger()
+    first = dialog._help_dialog
+    assert isinstance(first, HelpDialog) and first.isVisible()
+    assert first.parent() is dialog
+    assert help_key(first) == "importing"
+    assert "Importing Parts" in first._browser.toPlainText()
+    assert dialog.isVisible() and dialog._stack.currentWidget() is dialog._start_page
+    assert len(dialog.findChildren(HelpDialog)) == 1
+
+    first.close()
+    assert not first.isVisible()
+    action.trigger()
+    assert dialog._help_dialog is first and first.isVisible()
+    assert len(dialog.findChildren(HelpDialog)) == 1
+    assert dialog.isVisible()
+
+
+def test_f1_opens_help_from_the_start_page(qtbot, make_dialog):
+    dialog = make_dialog(open_now=False, show=True)
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    qtbot.keyClick(dialog, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: dialog._help_dialog is not None and dialog._help_dialog.isVisible(), timeout=5000)
+    assert help_key(dialog._help_dialog) == "importing"
+    assert dialog.isVisible()
+    keys = [s.key() for s in dialog.findChildren(QShortcut)]
+    assert QKeySequence("F1") not in keys  # the Help action owns F1: a second binding makes both ambiguous
+    assert QKeySequence("Ctrl+Return") in keys
