@@ -5,8 +5,8 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt
 
 from .import_dialog import (
-    ADD_MODEL_TEXT, CHANGE_PACKAGE_TEXT, FINISHING_TEXT, OFFICIAL_FOOTPRINT_TEXT, REMOVE_MODEL_TEXT,
-    VENDOR_FOOTPRINT_TEXT,
+    ADD_MODEL_TEXT, CHANGE_PACKAGE_TEXT, FINISHING_TEXT, HELP_ACTION_TEXT, OFFICIAL_FOOTPRINT_TEXT,
+    REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT,
 )
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
@@ -222,6 +222,9 @@ HELP_PAGES["importing"] = _wrap(
     "<p>Once a package is open, the button <b>" + CHANGE_PACKAGE_TEXT + "</b> at the top right "
     "closes it and goes back to this start step so you can pick another package. "
     "Your edits to the open package are dropped and nothing has been written.</p>"
+    "<p>The import window has a toolbar at the top with <b>" + HELP_ACTION_TEXT + "</b>. Click it, or press "
+    "<code>F1</code>, at every step (choosing a package, editing the part, the result) to open this page of "
+    "the User Guide. The import window stays open, so you can read the guide while you work.</p>"
     "<h3>Items</h3>"
     "<p>Pick the symbol, one footprint and the 3D model to import. When the package "
     "holds several footprints, only the one you pick is installed; the others are "
@@ -432,7 +435,8 @@ HELP_PAGES["shortcuts"] = _wrap(
     "<tr><td><code>Ctrl+Shift+A</code></td><td>Check Atomic Parts</td></tr>"
     "<tr><td><code>Ctrl+K</code></td><td>Set KiCad Footprint Path</td></tr>"
     "<tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>"
-    "<tr><td><code>F1</code></td><td>Open this User Guide</td></tr>"
+    "<tr><td><code>F1</code></td><td>Open this User Guide. In the import window it opens on Importing Parts, "
+    "the same as <b>" + HELP_ACTION_TEXT + "</b> on that window's toolbar.</td></tr>"
     "</table>"
 )
 
