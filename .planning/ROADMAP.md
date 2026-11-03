@@ -254,7 +254,7 @@ Plans:
   4. The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes.
   5. On a case-sensitive folder, when a case twin was written under another spelling, rollback restores the original spelling and removes the twin on both the rollback and the overwrite branches, as the deferred Phase 4 UAT Test 3 (backlog 999.2) expected.
 
-**Plans**: 11/12 plans executed (1 gap-closure plan pending: 12-12)
+**Plans**: 12/12 plans executed (1 gap-closure plan pending: 12-12)
 
 Plans:
 **Wave 1**
@@ -281,7 +281,7 @@ Plans:
 - [x] 12-11-PLAN.md — Wave 2: plain slow note and Help sentence, package-wide guard test, gap-closure suite gate (G-12-5)
 
 **Gap closure (UAT G-12-9)**
-- [ ] 12-12-PLAN.md — Wave 1: toolbar at the top of the import window with Help (F1) on every page, opening the User Guide on Importing Parts while the import window stays open; HelpDialog topic key; Help text; gap-closure suite gate (G-12-9)
+- [x] 12-12-PLAN.md — Wave 1: toolbar at the top of the import window with Help (F1) on every page, opening the User Guide on Importing Parts while the import window stays open; HelpDialog topic key; Help text; gap-closure suite gate (G-12-9)
 
 **UI hint**: yes
 
@@ -311,7 +311,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
-| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 11/12 | In Progress | - |
+| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 12/12 | In Progress | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
 ## Backlog
