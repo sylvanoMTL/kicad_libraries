@@ -419,3 +419,15 @@ def test_help_dialog_opens_on_a_given_topic(qtbot):
     before = dialog._toc.currentItem()
     assert dialog.show_topic("no_such_page") is False
     assert dialog._toc.currentItem() is before
+
+
+def test_help_names_the_toolbar_help():
+    start = _section("Start")
+    for text in ("toolbar", import_dialog.HELP_ACTION_TEXT, "F1", "every step", "stays open"):
+        assert text in start, text
+    shortcuts = _page_text("shortcuts")
+    for text in ("F1", "User Guide", "import window", "Importing Parts", "toolbar"):
+        assert text in shortcuts, text
+    for key in ("importing", "shortcuts"):
+        assert "HELP_ACTION_TEXT" not in _page_text(key)
+        assert "HELP_ACTION_TEXT" not in HELP_PAGES[key]
