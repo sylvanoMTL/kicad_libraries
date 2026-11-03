@@ -64,6 +64,9 @@ Plans 12-02 and 12-08 add no new boundary (static stylesheets, Help text and a p
 | T-12-26 | Tampering | `sync_kicad_path_vars` write path | low | mitigate | 12-10 Task 1 changes string literals only; read, compare, backup and atomic replace unchanged; whole tests/test_kicad_config.py passes | closed |
 | T-12-27 | Repudiation | `tests/test_plain_names.py` passing on an empty scan | low | mitigate | Guard asserts `len(files) > _SCAN_AT_LEAST` and that at least one allowed bare name was seen (tests/test_plain_names.py L41, L61) | closed |
 | T-12-28 | Tampering | `sync_kicad_path_vars` backup location | low | mitigate | Search tokens include ".json", so the `"kicad_common" / config_dir.name` backup segment (library_scanner.py L347) is not matched and stays unchanged | closed |
+| T-12-29 | Tampering | `ImportDialog._on_help` during an install or commit | medium | mitigate | `_on_help` returns while closing and otherwise only creates or shows HelpDialog with `show()`; no `done`, `reject`, install or git call, no import state read (import_dialog.py L547-561); `test_help_works_while_installing`, `test_help_works_while_committing` | closed |
+| T-12-30 | Denial of service | Help opened while a close waits in Finishing | low | mitigate | Guide shown with `show()`, never `exec()`, so no nested event loop; `_shutdown` takes and closes `_help_dialog`; `test_help_works_while_finishing_and_closes_with_the_dialog` | closed |
+| T-12-31 | Information disclosure | HelpDialog pages | low | accept | Static text from constants; 12-12 adds only static sentences; see Accepted Risks Log | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
 *Severity: critical > high > medium > low — only open threats at or above workflow.security_block_on count toward threats_open*
@@ -78,6 +81,7 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 | Risk ID | Threat Ref | Rationale | Accepted By | Date |
 |---------|------------|-----------|-------------|------|
 | AR-12-01 | T-12-04 | The Help stylesheet and pages are fixed strings built from theme constants; no user or vendor text reaches the Help rich text, so there is nothing to spoof. | plan 12-02 threat model (owner-approved plan) | 2026-11-01 |
+| AR-12-02 | T-12-31 | The Help pages are static text built from constants; plan 12-12 adds only static sentences naming the toolbar Help and F1, and no vendor, user or path value is formatted into them. | plan 12-12 threat model (owner-approved plan) | 2026-11-03 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -98,7 +102,7 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-11-01; re-verified 2026-11-02 after gap plans 12-09..12-11 (28 threats, all closed)
+**Approval:** verified 2026-11-01; re-verified 2026-11-02 after gap plans 12-09..12-11 (28 threats, all closed); re-verified 2026-11-03 after gap plan 12-12 (31 threats, all closed)
 
 ## Security Audit 2026-11-02
 
@@ -106,4 +110,12 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 |---|---|
 | Threats found | 28 |
 | Closed | 28 |
+| Open | 0 |
+
+## Security Audit 2026-11-03
+
+| Metric | Count |
+|---|---|
+| Threats found | 31 |
+| Closed | 31 |
 | Open | 0 |
