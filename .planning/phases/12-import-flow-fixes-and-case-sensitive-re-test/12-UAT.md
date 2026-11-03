@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: partial
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
-source: [12-VERIFICATION.md]
+source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
-updated: 2026-11-01T19:30:00Z
+updated: 2026-11-03T17:25:34.311Z
 ---
 
 ## Current Test
@@ -65,11 +65,19 @@ result: issue
 reported: "YOU HAVE TO ADMIT THE UI IS SUPER CONFUSING" - Change... alone at the top right does not say it picks another package (owner chose: fix now)
 severity: minor
 
+### 9. Gap fixes re-check (UAT 5-8)
+setup: start the app with `.\env\Scripts\python.exe kicad_lib_manager.py`; press Ctrl+I, open `downloaded_examples\ul_CSD85301Q2.zip`, pick an Atomic_ target library.
+steps: (a) look at the bottom row; (b) clear the Description box; (c) hover the top-right header button; (d) open Help > Importing Parts and read the Finishing paragraph; (e) press Cancel.
+expected: (a) a Cancel button right of Install Part; (b) the empty box reads "Required - type a Description" (Datasheet and Manufacturer likewise say "Required - ..."), matching the "Install is blocked" strip; (c) the button reads "Choose another package..." and its tooltip says the package and edits are dropped and nothing is written; (d) Help says "the KiCad command-line tool", not kicad-cli; (e) the window closes and nothing is written to `Custom/`.
+result: issue
+reported: "a) ok b) ok c) ok d) where is the help? e) pass" then "Help user guide is not accessible from the import part window"
+severity: major
+
 ## Summary
 
-total: 8
+total: 9
 passed: 2
-issues: 4
+issues: 5
 pending: 0
 skipped: 1
 blocked: 1
@@ -78,7 +86,9 @@ blocked: 1
 
 - gap_id: G-12-6
   truth: "The import window has a Cancel button to the right of Install Part that closes the window without installing; it is greyed out while an install runs."
-  status: failed
+  status: resolved
+  resolved_by: 12-09-PLAN.md
+  resolved_at: 2026-11-02
   reason: "User reported: a cancel button on the right side of instal part is misisng"
   severity: major
   test: 6
@@ -95,7 +105,9 @@ blocked: 1
 
 - gap_id: G-12-5
   truth: "User-facing text names no raw tools or files: the Help page, the Finishing strip slow note, the path-variable questions (Yes/No and KiCad is open) and the keeps-changing log line say \"the KiCad command-line tool\" and \"KiCad's settings file\" instead of kicad-cli and kicad_common.json."
-  status: failed
+  status: resolved
+  resolved_by: 12-11-PLAN.md
+  resolved_at: 2026-11-02
   reason: "User reported: plain (replace kicad-cli / kicad_common.json with plain names)"
   severity: minor
   test: 5
@@ -116,7 +128,9 @@ blocked: 1
 
 - gap_id: G-12-7
   truth: "In an Atomic_ library the empty Description box's hint says a Description is required (not that it will be written blank), matching the atomic check that blocks Install."
-  status: failed
+  status: resolved
+  resolved_by: 12-09-PLAN.md
+  resolved_at: 2026-11-02
   reason: "User reported: the UI is super confusing - Description placeholder says it will be written blank while Install is blocked for no description"
   severity: major
   test: 7
@@ -133,7 +147,9 @@ blocked: 1
 
 - gap_id: G-12-8
   truth: "The Change... button makes clear it picks a different package."
-  status: failed
+  status: resolved
+  resolved_by: 12-09-PLAN.md
+  resolved_at: 2026-11-02
   reason: "User reported: the UI is super confusing - Change... does not say it picks another package"
   severity: minor
   test: 8
@@ -146,3 +162,12 @@ blocked: 1
   missing:
     - "Clearer label (e.g. 'Choose another package...') and a tooltip saying the current package and its edits are discarded and nothing has been written"
     - "Help pages and tests that name the button updated to the new label (grep 'Change...' in kicad_lib_manager and tests)"
+
+- gap_id: G-12-9
+  truth: "The User Guide can be opened from the import window (Help button and F1) without closing it, so the Importing Parts page can be read while importing."
+  status: failed
+  reason: "User reported: Help user guide is not accessible from the import part window"
+  severity: major
+  test: 9
+  artifacts: []
+  missing: []
