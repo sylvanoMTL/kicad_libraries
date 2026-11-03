@@ -5871,3 +5871,158 @@ def test_f1_opens_help_from_the_start_page(qtbot, make_dialog):
     keys = [s.key() for s in dialog.findChildren(QShortcut)]
     assert QKeySequence("F1") not in keys  # the Help action owns F1: a second binding makes both ambiguous
     assert QKeySequence("Ctrl+Return") in keys
+
+
+def test_help_reachable_on_edit_and_result_pages(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._toolbar.isVisible()
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    edit = dialog._field_edits["description"]
+    edit.setFocus()
+    text = edit.text()
+    qtbot.keyClick(edit, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: dialog._help_dialog is not None and dialog._help_dialog.isVisible(), timeout=5000)
+    help_window = dialog._help_dialog
+    assert help_key(help_window) == "importing"
+    assert dialog.isVisible() and dialog._stack.currentWidget() is dialog._edit_page
+    assert edit.text() == text
+    help_window.close()
+
+    install_ul(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._result_page
+    assert dialog._toolbar.isVisible()
+    help_window.show_topic("shortcuts")
+    dialog._help_action.trigger()
+    assert dialog._help_dialog is help_window and help_window.isVisible()
+    assert help_key(help_window) == "importing"
+    assert dialog.isVisible() and dialog._stack.currentWidget() is dialog._result_page
+    assert len(dialog.findChildren(HelpDialog)) == 1
+
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    dialog._result_view.close_button.click()
+    assert not dialog.isVisible()
+    assert not help_window.isVisible()
+
+
+def test_help_works_while_installing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    assert dialog._help_action.isEnabled() and dialog._toolbar.isEnabled()
+
+    dialog._help_action.trigger()
+    help_window = dialog._help_dialog
+    assert help_window is not None and help_window.isVisible()
+    assert help_key(help_window) == "importing"
+    assert dialog.is_installing() and dialog.isVisible()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    qtbot.waitUntil(lambda: not dialog.is_installing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert not help_window.isVisible()
+
+
+def test_help_works_while_committing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(
+        probe_commit=fake_ready_probe(), run_commit=gated(gates, started, fake_committed)
+    )
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
+    assert dialog._help_action.isEnabled()
+
+    dialog._help_action.trigger()
+    help_window = dialog._help_dialog
+    assert help_window is not None and help_window.isVisible()
+    assert help_key(help_window) == "importing"
+    assert dialog.is_committing() and dialog.isVisible()
+    assert dialog._stack.currentWidget() is dialog._result_page
+    assert not dialog._result_view.close_button.isEnabled()  # Help changed no commit state
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    dialog.close()
+    assert not dialog.isVisible()
+    assert not help_window.isVisible()
+
+
+def test_help_works_while_finishing_and_closes_with_the_dialog(qtbot, make_dialog, gates):
+    count = {"n": 0}
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if count["n"] == 2:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(build_plan=gated_build), show=True)
+    wait_plan(qtbot, dialog)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog.is_finishing()
+    assert dialog._help_action.isEnabled()
+
+    dialog._help_action.trigger()  # the preview rebuilds
+    help_window = dialog._help_dialog
+    assert help_window is not None and help_window.isVisible()
+    assert help_key(help_window) == "importing"
+    help_window.close()
+
+    dialog.reject()
+    assert dialog.is_finishing() and not dialog._stack.isEnabled()
+    assert dialog._help_action.isEnabled()
+    dialog._help_action.trigger()  # Finishing
+    assert dialog._help_dialog is help_window and help_window.isVisible()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert not help_window.isVisible()
+    assert QGuiApplication.overrideCursor() is None
+
+
+def help_shortcuts_item(help_window: HelpDialog):
+    stack = [help_window._toc.topLevelItem(i) for i in range(help_window._toc.topLevelItemCount())]
+    while stack:
+        item = stack.pop()
+        if item.data(0, Qt.ItemDataRole.UserRole) == "shortcuts":
+            return item
+        stack.extend(item.child(i) for i in range(item.childCount()))
+    raise AssertionError("no Keyboard Shortcuts topic")
+
+
+def test_import_window_takes_input_while_help_is_open(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    dialog._help_action.trigger()
+    qtbot.waitUntil(lambda: dialog._help_dialog is not None and dialog._help_dialog.isVisible(), timeout=5000)
+    help_window = dialog._help_dialog
+    assert not help_window.isModal()
+    assert help_window.windowModality() == Qt.WindowModality.NonModal
+    assert QApplication.activeModalWidget() is not help_window
+
+    # Clicks go through the window system (the QWindow overload), which drops a click aimed at a blocked window
+    item = help_shortcuts_item(help_window)
+    toc = help_window._toc
+    point = toc.viewport().mapTo(help_window, toc.visualItemRect(item).center())
+    QTest.mouseClick(help_window.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    qtbot.waitUntil(lambda: help_key(help_window) == "shortcuts", timeout=5000)
+
+    cancel = dialog._cancel_btn
+    point = cancel.mapTo(dialog, cancel.rect().center())
+    QTest.mouseClick(dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert not help_window.isVisible()
+    assert dialog._help_dialog is None
