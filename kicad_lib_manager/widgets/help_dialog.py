@@ -479,7 +479,7 @@ TOC_STRUCTURE: list[tuple[str, str, list[tuple[str, str]]]] = [
 
 
 class HelpDialog(QDialog):
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, *, topic: str | None = None):
         super().__init__(parent)
         self.setWindowTitle("User Guide — KiCad External Lib Manager")
         self.resize(860, 620)
@@ -509,8 +509,21 @@ class HelpDialog(QDialog):
         buttons.rejected.connect(self.close)
         layout.addWidget(buttons)
 
-        # Select first topic
-        self._toc.setCurrentItem(self._toc.topLevelItem(0))
+        # Open on the asked topic, or the first one when there is none or the key is unknown
+        if topic is None or not self.show_topic(topic):
+            self._toc.setCurrentItem(self._toc.topLevelItem(0))
+
+    def show_topic(self, key: str) -> bool:
+        """Select the topic with this key and show its page; False (nothing changes) when there is none."""
+        stack = [self._toc.topLevelItem(i) for i in range(self._toc.topLevelItemCount())]
+        while stack:
+            item = stack.pop(0)
+            if item.data(0, Qt.ItemDataRole.UserRole) == key:
+                self._toc.setCurrentItem(item)
+                self._toc.scrollToItem(item)
+                return True
+            stack.extend(item.child(i) for i in range(item.childCount()))
+        return False
 
     def _build_toc(self):
         bold_font = self._toc.font()

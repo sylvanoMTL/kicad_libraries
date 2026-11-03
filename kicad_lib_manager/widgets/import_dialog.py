@@ -23,14 +23,14 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, QSize, QStandardPaths, QThread, QTimer, Signal
 from PySide6.QtGui import (
-    QCloseEvent, QColor, QCursor, QFont, QGuiApplication, QKeyEvent, QKeySequence, QPalette, QResizeEvent, QShortcut,
-    QShowEvent,
+    QAction, QCloseEvent, QColor, QCursor, QFont, QGuiApplication, QKeyEvent, QKeySequence, QPalette, QResizeEvent,
+    QShortcut, QShowEvent,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QCompleter, QDialog, QFileDialog, QFormLayout, QFrame,
     QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar,
-    QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QToolButton, QVBoxLayout,
-    QWidget,
+    QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QStyle, QToolBar, QToolButton,
+    QVBoxLayout, QWidget,
 )
 
 from ..importer.adapters.base import attach_models
@@ -85,6 +85,9 @@ _NO_MODEL = "No model"
 ADD_MODEL_TEXT = "Add 3D model..."  # public: the help page names the button with this text
 REMOVE_MODEL_TEXT = "Remove"  # public: the help page names the button with this text
 CHANGE_PACKAGE_TEXT = "Choose another package..."  # public: the help page names the button with this text
+HELP_ACTION_TEXT = "Help"  # public: the help page names the action with this text
+_HELP_TIP = "Open the User Guide on the Importing Parts page (F1). This window stays open."
+_HELP_TOPIC = "importing"  # the User Guide's key for the Importing Parts page
 _CHANGE_PACKAGE_TIP = (
     "Close this package and pick another package. Your edits to it are dropped; nothing has been written."
 )
@@ -386,6 +389,7 @@ class ImportDialog(QDialog):
         # Where the Check Atomic Parts dialog keeps the backups of the fixes it applies; None = its own default
         self._atomic_backup_root = atomic_backup_root
         self._atomic_dialog: AtomicCheckDialog | None = None
+        self._help_dialog: QDialog | None = None  # the User Guide window this import window opened
 
         # Public: the successful InstallResult. Shadows QDialog.result() on this instance (by design).
         self.result: InstallResult | None = None
@@ -499,6 +503,7 @@ class ImportDialog(QDialog):
         outer.setContentsMargins(16, 16, 16, 16)
         outer.setSpacing(8)
         self._stack = QStackedWidget()
+        self._build_toolbar(outer)
         outer.addWidget(self._stack)
         self._build_finish_strip(outer)
         self._build_start_page()
@@ -519,6 +524,41 @@ class ImportDialog(QDialog):
             QTimer.singleShot(0, lambda: self.open_path(Path(package_path)))
 
     # -- pages ------------------------------------------------------------------
+
+    def _build_toolbar(self, outer: QVBoxLayout):
+        """The toolbar above the page stack, shared by every page; Help is its only action (G-12-9)."""
+        toolbar = QToolBar()
+        toolbar.setAccessibleName("Import window toolbar")
+        toolbar.setMovable(False)
+        toolbar.setFloatable(False)
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        # F1 is this action's own shortcut: a second binding of one key in a window makes both ambiguous
+        action = QAction(HELP_ACTION_TEXT, self)
+        action.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DialogHelpButton))
+        action.setToolTip(_HELP_TIP)
+        action.setShortcut(QKeySequence("F1"))
+        action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+        action.triggered.connect(self._on_help)
+        toolbar.addAction(action)
+        self._toolbar = toolbar
+        self._help_action = action
+        outer.addWidget(toolbar)
+
+    def _on_help(self):
+        """Show the User Guide on Importing Parts, non-modal, and reuse the one window (G-12-9)."""
+        if self._closing:
+            return
+        # help_dialog imports this module's texts, so a module-level import would be circular
+        from .help_dialog import HelpDialog
+
+        if self._help_dialog is None:
+            # A child of this window-modal dialog is not blocked by it; a window parented to the main window would be
+            self._help_dialog = HelpDialog(topic=_HELP_TOPIC, parent=self)
+        else:
+            self._help_dialog.show_topic(_HELP_TOPIC)
+        self._help_dialog.show()
+        self._help_dialog.raise_()
+        self._help_dialog.activateWindow()
 
     def _build_finish_strip(self, outer: QVBoxLayout):
         """The Finishing strip (D-06, D-07), beside the stack so Cancel stays enabled while the stack is off."""
