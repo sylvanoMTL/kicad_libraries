@@ -3406,6 +3406,9 @@ class ImportDialog(QDialog):
         self._oneoff_jobs.clear()
         for view in list(self._content_views):
             view.close()
+        guide, self._help_dialog = self._help_dialog, None
+        if guide is not None:
+            guide.close()  # the User Guide this window opened never outlives it
         for worker in list(self._workers):
             value = worker.value
             if isinstance(value, (OpenOutcome, ModelOutcome)):
