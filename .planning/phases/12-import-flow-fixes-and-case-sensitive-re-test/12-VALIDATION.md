@@ -65,6 +65,9 @@ created: "2026-11-01"
 | 12-10-T2 | 12-10 | gap 1 | REV-05 | T-12-25 | Issue codes, severities and matched phrases kept while texts name the command-line tool plainly (G-12-5) | unit | `env/Scripts/python.exe -m pytest tests/test_import_preview.py tests/test_kicad_cli.py tests/test_install_apply.py -q` | ✅ extend | ✅ green |
 | 12-11-T1 | 12-11 | gap 2 | REV-04 | — | N/A (slow note and Help sentence, G-12-5) | dialog | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py tests/test_import_dialog.py -q -k "phase_12_behaviour or slow_note or help_import_page or choose_another or cancel_button"` | ✅ extend | ✅ green |
 | 12-11-T2 | 12-11 | gap 2 | REV-04 | T-12-27, T-12-28 | Package-wide guard: no user-facing string names the raw tool or settings file; fails on an empty scan; backup folder untouched | source scan | `env/Scripts/python.exe -m pytest tests/test_plain_names.py tests/test_kicad_config.py -q` | ❌ W0 (this task creates `tests/test_plain_names.py`) | ✅ green |
+| 12-12-T1 | 12-12 | gap 3 | UI-01 | — | N/A (toolbar Help opens the User Guide on Importing Parts; F1 is the only binding, G-12-9) | dialog | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py tests/test_import_dialog.py -q -k "given_topic or opens_importing_page or toolbar_help or f1_opens or ctrl_return"` | ✅ extend | ✅ green |
+| 12-12-T2 | 12-12 | gap 3 | UI-01 | T-12-29, T-12-30 | Help never touches install, build, Finishing or commit state; shown non-modal and closed with the import window (G-12-9) | dialog | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py -q -k "help_ or toolbar_help or f1_opens or cancel_button or close_finishes_after_build or escape_does_nothing_while_finishing or commit_close_button_disabled"` | ✅ extend | ✅ green |
+| 12-12-T3 | 12-12 | gap 3 | UI-01 | T-12-31 | Static Help text only; plain words (G-12-9) | unit + dialog | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py tests/test_import_dialog.py tests/test_plain_names.py tests/test_main_window_import.py -q` | ✅ extend | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -92,6 +95,7 @@ created: "2026-11-01"
 | Help dialog and conflict rows look right with theme tokens | UI-01 | Visual check | Owner reviews rendered screenshots, as in Phase 11 UAT |
 | Window stays responsive while kicad-cli works | REV-04 | Real kicad-cli timing | Open a package with a slow build, press Change...; window moves/repaints, strip shows, action runs by itself |
 | Gap re-check: plain names, Cancel, required hints, Choose another package (UAT 5–8) | REV-04, REV-05 | Wording and layout in the running window | Re-run UAT tests 5–8 from 12-UAT.md in the GUI |
+| Toolbar Help looks right in the import window (G-12-9) | UI-01 | Visual fit of the toolbar in the real window | Open an import, check the toolbar sits above every page and Help (or F1) opens the User Guide on Importing Parts while the import window stays usable (UAT test 9) |
 
 ---
 
@@ -104,7 +108,7 @@ created: "2026-11-01"
 - [x] Feedback latency < 60s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** validated 2026-11-01 (all 18 tasks green in the full suite at 9412c80: 9267 passed, 4 expected skips; manual-only rows stay with the owner UAT). Re-validated 2026-11-02 after gap plans 12-09..12-11: all 25 tasks green in the full suite at 60df383 (9281 passed, 4 expected skips)
+**Approval:** validated 2026-11-01 (all 18 tasks green in the full suite at 9412c80: 9267 passed, 4 expected skips; manual-only rows stay with the owner UAT). Re-validated 2026-11-02 after gap plans 12-09..12-11: all 25 tasks green in the full suite at 60df383 (9281 passed, 4 expected skips). Re-validated 2026-11-03 after gap plan 12-12: all 28 tasks green in the full suite at 859170c (9290 passed, 4 expected skips)
 
 ## Validation Audit 2026-11-01
 
