@@ -1,9 +1,9 @@
 ---
-status: partial
+status: diagnosed
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
 source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
-updated: 2026-11-03T17:25:34.311Z
+updated: 2026-11-03T09:30:00Z
 ---
 
 ## Current Test
@@ -70,7 +70,7 @@ setup: start the app with `.\env\Scripts\python.exe kicad_lib_manager.py`; press
 steps: (a) look at the bottom row; (b) clear the Description box; (c) hover the top-right header button; (d) open Help > Importing Parts and read the Finishing paragraph; (e) press Cancel.
 expected: (a) a Cancel button right of Install Part; (b) the empty box reads "Required - type a Description" (Datasheet and Manufacturer likewise say "Required - ..."), matching the "Install is blocked" strip; (c) the button reads "Choose another package..." and its tooltip says the package and edits are dropped and nothing is written; (d) Help says "the KiCad command-line tool", not kicad-cli; (e) the window closes and nothing is written to `Custom/`.
 result: issue
-reported: "a) ok b) ok c) ok d) where is the help? e) pass" then "Help user guide is not accessible from the import part window"
+reported: "a) ok b) ok c) ok d) where is the help? e) pass" then "Help user guide is not accessible from the import part window"; then "There is no access to help also when on the import part to open package"
 severity: major
 
 ## Summary
@@ -164,10 +164,22 @@ blocked: 1
     - "Help pages and tests that name the button updated to the new label (grep 'Change...' in kicad_lib_manager and tests)"
 
 - gap_id: G-12-9
-  truth: "The User Guide can be opened from the import window (Help button and F1) without closing it, so the Importing Parts page can be read while importing."
+  truth: "From every page of the import window (the open-package start page and the edit/preview page), the User Guide opens without closing the import window: a Help button and F1 open it on the Importing Parts page."
   status: failed
-  reason: "User reported: Help user guide is not accessible from the import part window"
+  reason: "User reported: Help user guide is not accessible from the import part window; also not from the open-package page"
   severity: major
   test: 9
-  artifacts: []
-  missing: []
+  root_cause: "ImportDialog sets Qt.WindowModality.WindowModal (import_dialog.py L494), so while it is open the main window's Help menu and its F1 QAction (main_window.py L297-304, window-scoped shortcut) cannot be reached. The import dialog itself has no Help button and no F1 shortcut on any page (start page _build_start_page ~L547-642, edit page bottom row ~L790-810, result page ~L897). HelpDialog (help_dialog.py L481) always opens on the first topic; it has no way to open on a given page such as 'importing'."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "WindowModal at L494; no Help button or F1 shortcut on the start, edit or result pages"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "HelpDialog.__init__ selects topLevelItem(0); no topic argument to open on Importing Parts (TOC key 'importing')"
+    - path: "kicad_lib_manager/main_window.py"
+      issue: "_on_help (L1307) opens HelpDialog(parent=self).exec(); only reachable when no import dialog is open"
+  missing:
+    - "HelpDialog accepts an optional topic key (e.g. topic='importing') and selects that TOC item on open; default unchanged"
+    - "A Help button on the import window reachable from every page (start, edit, result), e.g. in a shared top or bottom row, opening HelpDialog(topic='importing', parent=self) without closing the import dialog"
+    - "F1 inside the import window opens the same page (QShortcut on the dialog)"
+    - "Help page Importing Parts and Keyboard Shortcuts mention the Help button / F1 inside the import window"
+    - "Tests in tests/test_import_dialog.py and tests/test_help_dialog.py: Help button exists on start and edit pages, F1 opens HelpDialog on 'Importing Parts', import dialog stays open; HelpDialog(topic=...) selects the topic"
