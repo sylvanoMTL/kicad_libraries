@@ -30,6 +30,12 @@ created: "2026-11-01"
 | user -> import dialog (start-page Cancel) | a Cancel click ends the import session; no new input is parsed (12-13) | UI event |
 | OS screen geometry -> import dialog / User Guide | the free area of the screen decides the window size and position; trusted platform data (12-13, 12-14) | screen rectangle |
 | static help text -> menu and rendered page | menu labels and anchors are derived from the guide's own static text; no user, vendor or path value enters it (12-14) | heading text, anchor names |
+| package issue texts -> start page list | rows stay plain QListWidgetItem text; only the start window size follows their count (12-15) | issue texts |
+| saved scan file -> scan_cache.decode_result | untrusted JSON read back at startup; the new skipped_sources / models_unchecked fields cross here (12-16) | saved scan fields |
+| package source files -> code signature | the scan's own modules, found through the import graph, decide whether a saved scan is still valid (12-16) | module source bytes |
+| GUI thread -> scan worker thread | the Skip click becomes a request the worker reads per file (12-17) | source name |
+| main window -> import window / User Guide | the import window gets a callable, never the main window object; the guide is a parentless window that takes input beside window-modal dialogs by design (12-18, 12-20) | UI events |
+| settings.ini -> HelpDialog | the remembered guide place is read back at every no-topic open; the file is user-editable (12-19) | topic key |
 
 Plans 12-02 and 12-08 add no new boundary (static stylesheets, Help text and a planning document).
 
@@ -76,7 +82,20 @@ Plans 12-02 and 12-08 add no new boundary (static stylesheets, Help text and a p
 | T-12-35 | Tampering | `render_page` anchors built from heading text | low | mitigate | `section_anchor` (help_dialog.py L515) keeps only a-z, 0-9 and hyphens, ends trimmed; menu rows are plain `QTreeWidgetItem([entry.text])`; `test_every_page_heading_is_in_the_menu_under_its_page` asserts `re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", anchor)` | closed |
 | T-12-36 | Information disclosure | HelpDialog pages (numbers and anchors) | low | accept | Static text from constants; 12-14 adds only numbers and anchors; see Accepted Risks Log | closed |
 | T-12-37 | Denial of service | User Guide window partly off screen at 200% (Close hidden) | low | mitigate | `HelpDialog.showEvent` calls the shared `fit_window(self, self.size())` (help_dialog.py L602-605); `test_help_window_fits_the_screen` (Help and F1, 100% and 200%), `test_help_dialog_fits_the_screen` | closed |
-| T-12-SC | Tampering | npm/pip/cargo installs (12-13, 12-14) | low | accept | Neither plan installs or upgrades a package; see Accepted Risks Log | closed |
+| T-12-38 | Denial of service | start window sized to its content pushing Cancel off screen when issues show at 200% | low | mitigate | Every start size goes through `fit_window` (import_dialog.py L175); `_show_start_issues` / `_hide_issue_box` refit via `_fit_to_screen(self._start_size())` (L1581-1585); `test_start_issues_refit_the_window`, `test_start_page_is_as_tall_as_its_content` | closed |
+| T-12-39 | Repudiation | skipped scan reused at startup as if complete | medium | mitigate | `skipped_sources` / `models_unchecked` saved and decoded (scan_cache.py L432-445); reuse note names the skipped sources (L591-594); `models_skipped_issue` builds the skip line (library_scanner.py L621); `test_reuse_note_names_the_skipped_sources`, `test_skipped_scan_round_trips`, `test_library_rescan_keeps_the_skip_line` | closed |
+| T-12-40 | Tampering | narrowed code signature missing a module that changes scan results | medium | mitigate | `_scan_code_files` walks the real import graph with `ast` (scan_cache.py L220-222); `_code_signature_of` returns "" (never fresh) on OSError/SyntaxError/UnicodeDecodeError/ValueError (L245-253); `test_code_signature_follows_scan_code_edits` | closed |
+| T-12-41 | Tampering | odd skipped_sources values in an edited saved scan | low | mitigate | `decode_result` passes them through `_list` / `_text`, which raise on any other type, giving "The saved scan could not be read" and a full scan (scan_cache.py L269-289, L508); parametrized rejection test in tests/test_scan_cache.py | closed |
+| T-12-42 | Denial of service | skip dropping libraries so Generate Tables removes managed entries | high | mitigate | Skip only filters 3D path lines (`check_model_paths`, library_scanner.py L556-615); `scan_all` docstring and code keep finders and links ("A skip never drops a library or a footprint link", L680); `test_skip_keeps_every_library_and_link` | closed |
+| T-12-43 | Tampering | skip request shared between GUI thread and worker | low | mitigate | `request_skip` / `_skip_requested` read and write the set only under `self._skip_lock = threading.Lock()` (main_window.py L90-99); `test_loading_dialog_skips_the_source_being_checked` | closed |
+| T-12-44 | Denial of service | skipped scan dropping libraries so Generate removes WurthElektronik entries | high | mitigate | Same skip scope as T-12-42; `test_generate_after_a_skip_removes_no_entry` runs the real `scan_all` with a skip and checks both WurthElektronik entries stay and no line says "removed" | closed |
+| T-12-45 | Repudiation | reused skipped scan logged as "No warnings." | medium | mitigate | No-warnings line reads "No warnings in the checks that ran." when `result.skipped_sources` is set (main_window.py L648-649); skip line built from `ScanResult.skipped_sources` only; `test_skipped_scan_is_saved_and_the_next_start_says_so`, `test_a_skip_click_after_the_check_ended_logs_no_skip` | closed |
+| T-12-46 | Elevation of privilege | main window acting during an import because the guide changed modality | medium | mitigate | Import dialog stays window-modal over the main window; the guide is a parentless `HelpDialog()` (main_window.py L1352) reached only through the `show_guide` callable (L1045); `test_guide_takes_clicks_beside_the_import_window_and_its_dialogs`, `test_import_dialog_opens_window_modal` | closed |
+| T-12-47 | Denial of service | visible parentless guide keeping the app alive after the main window closes | low | mitigate | `closeEvent` closes `self._guide` only after every refusal branch has returned (main_window.py L1421-1422); `test_closing_the_main_window_closes_the_guide`, `test_a_refused_close_keeps_the_guide` | closed |
+| T-12-48 | Tampering | KiCad settings confirm dialogs answered while the guide has focus | low | accept | Questions stay window-modal for the main window with default No / Retry and escape Not now (main_window.py L1136-1190); the guide holds only static help; see Accepted Risks Log | closed |
+| T-12-49 | Tampering | edited or stale "help/last_topic" value | low | mitigate | `load_help_topic` returns only a non-empty str (settings.py L74-77); `show_topic` only compares the key with known menu items and returns False otherwise (help_dialog.py L640-658), never formatting it into HTML or a path; `test_help_topic_settings_round_trip`, `test_stale_saved_places_fall_back` | closed |
+| T-12-50 | Tampering | tests writing the owner's real settings.ini while browsing the guide | medium | mitigate | Autouse `_isolated_settings(tmp_path)` in tests/test_help_dialog.py (L40-48) points QSettings under tmp_path and asserts the settings file lies there | closed |
+| T-12-SC | Tampering | npm/pip/cargo installs (12-13 .. 12-20) | low | accept | Neither plan installs or upgrades a package; see Accepted Risks Log | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
 *Severity: critical > high > medium > low — only open threats at or above workflow.security_block_on count toward threats_open*
@@ -93,7 +112,8 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 | AR-12-01 | T-12-04 | The Help stylesheet and pages are fixed strings built from theme constants; no user or vendor text reaches the Help rich text, so there is nothing to spoof. | plan 12-02 threat model (owner-approved plan) | 2026-11-01 |
 | AR-12-02 | T-12-31 | The Help pages are static text built from constants; plan 12-12 adds only static sentences naming the toolbar Help and F1, and no vendor, user or path value is formatted into them. | plan 12-12 threat model (owner-approved plan) | 2026-11-03 |
 | AR-12-03 | T-12-36 | The Help pages stay static text built from constants; plan 12-14 adds only rendered menu numbers and anchors derived from that static text, and no vendor, user or path value is formatted into them. | plan 12-14 threat model (owner-approved plan) | 2026-11-04 |
-| AR-12-04 | T-12-SC | Plans 12-13 and 12-14 install and upgrade no package, so there is no new supply-chain surface. | plans 12-13 / 12-14 threat models (owner-approved plans) | 2026-11-04 |
+| AR-12-04 | T-12-SC | Plans 12-13 to 12-20 install and upgrade no package (12-16's `ast` is stdlib), so there is no new supply-chain surface. | plans 12-13 .. 12-20 threat models (owner-approved plans) | 2026-11-04 |
+| AR-12-05 | T-12-48 | The main window's KiCad-settings questions stay window-modal with their safe defaults (No / Retry, escape Not now); the User Guide beside them holds only static help text and has no action that can answer them. | plan 12-20 threat model (owner-approved plan) | 2026-11-04 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -114,7 +134,7 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-11-01; re-verified 2026-11-02 after gap plans 12-09..12-11 (28 threats, all closed); re-verified 2026-11-03 after gap plan 12-12 (31 threats, all closed); re-verified 2026-11-04 after gap plans 12-13 and 12-14 (38 threats, all closed)
+**Approval:** verified 2026-11-01; re-verified 2026-11-02 after gap plans 12-09..12-11 (28 threats, all closed); re-verified 2026-11-03 after gap plan 12-12 (31 threats, all closed); re-verified 2026-11-04 after gap plans 12-13 and 12-14 (38 threats, all closed); re-verified 2026-11-04 after gap plans 12-15..12-20 (51 threats, all closed)
 
 ## Security Audit 2026-11-02
 
@@ -138,4 +158,12 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 |---|---|
 | Threats found | 38 |
 | Closed | 38 |
+| Open | 0 |
+
+## Security Audit 2026-11-04
+
+| Metric | Count |
+|---|---|
+| Threats found | 51 |
+| Closed | 51 |
 | Open | 0 |
