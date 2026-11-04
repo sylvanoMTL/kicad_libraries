@@ -1799,3 +1799,60 @@ def test_guide_first_shows_over_the_main_window(qtbot, make_window):
     here, there = w.frameGeometry().center(), guide.frameGeometry().center()
     assert abs(here.x() - there.x()) <= 2 and abs(here.y() - there.y()) <= 2, (here, there)
     assert QRect(0, 0, 1920, 1032).contains(guide.frameGeometry())
+
+
+# -- Help and F1 reopen the owner's place in the guide (plan 12-19, G-12-23) ----------------------------
+
+
+def test_main_window_help_reopens_the_owner_choice(qtbot, make_window):
+    w = make_window([ScanResult()])
+    w.show()
+    qtbot.waitExposed(w)
+    help_menu_action(w).trigger()
+    guide = w._guide
+    qtbot.waitExposed(guide)
+    click_guide_row(guide, "generating")
+    qtbot.waitUntil(lambda: guide_key(guide) == "generating", timeout=5000)
+    assert settings.load_help_topic() == "generating"
+
+    # what the import window does: a given topic, which is not the owner's move
+    w.show_guide("importing")
+    assert guide_key(guide) == "importing"
+    assert settings.load_help_topic() == "generating"
+
+    guide.close()
+    assert not guide.isVisible()
+    help_menu_action(w).trigger()
+    assert w._guide is guide and guide.isVisible()
+    assert guide_key(guide) == "generating"
+    assert settings.load_help_topic() == "generating"
+
+
+def test_main_window_help_on_a_visible_guide_only_raises(qtbot, make_window):
+    w = make_window([ScanResult()])
+    w.show()
+    qtbot.waitExposed(w)
+    help_menu_action(w).trigger()
+    guide = w._guide
+    qtbot.waitExposed(guide)
+    click_guide_row(guide, "generating")
+    qtbot.waitUntil(lambda: guide_key(guide) == "generating", timeout=5000)
+    w.show_guide("importing")
+    assert guide_key(guide) == "importing"
+
+    w.activateWindow()
+    qtbot.waitUntil(w.isActiveWindow, timeout=5000)
+    help_menu_action(w).trigger()
+    assert w._guide is guide and guide.isVisible()
+    assert guide_key(guide) == "importing"  # a page being read is not pulled away
+    qtbot.waitUntil(guide.isActiveWindow, timeout=5000)
+
+
+def test_main_window_help_after_restart_opens_the_saved_place(qtbot, make_window):
+    settings.save_help_topic("restoring")
+    w = make_window([ScanResult()])
+    w.show()
+    help_menu_action(w).trigger()
+    assert w._guide.isVisible()
+    assert guide_key(w._guide) == "restoring"
+    assert settings.load_help_topic() == "restoring"
