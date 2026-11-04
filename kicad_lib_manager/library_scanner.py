@@ -4,6 +4,7 @@ import os
 import re
 import stat
 import sys
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -551,46 +552,101 @@ def _custom_model_names(root: Path) -> set[str]:
 
 
 def _check_model_files(root: Path, mod_files: list[Path], custom_names: set[str],
-                       progress: Callable | None = None) -> list[Issue]:
-    """The 3D model path lines for the given footprint files."""
-    issues = []
+                       progress: Callable | None = None, *,
+                       skip: Callable[[str], bool] | None = None,
+                       checking: Callable[[str | None], None] | None = None,
+                       skipped: set[str] | None = None) -> list[Issue]:
+    """The 3D model path lines for the given footprint files.
+
+    skip is asked for a file's source before the file is read; once it answers True the source goes
+    into skipped, none of its files is read again and none of its lines is returned, even those found
+    before the answer. checking is told each source as its first file is reached, then None at the end.
+    """
+    found: list[tuple[str, Issue]] = []
+    skipped = skipped if skipped is not None else set()
+    previous: str | None = None
     for i, mod_file in enumerate(mod_files):
         if progress:
             progress(f"Checking 3D paths: {mod_file.stem}", i, len(mod_files))
         rel = mod_file.relative_to(root).as_posix()
+        source = _determine_source(rel)
+        if checking is not None and source != previous:
+            checking(source)
+        previous = source
+        if source in skipped:
+            continue
+        if skip is not None and skip(source):
+            skipped.add(source)
+            continue
 
         loaded = kicad_files.load(mod_file)
         if isinstance(loaded, Issue):
-            issues.append(Issue(Severity.WARNING, "scan.unreadable", f"[{rel}] {loaded.text}"))
+            found.append((source, Issue(Severity.WARNING, "scan.unreadable", f"[{rel}] {loaded.text}")))
             continue
         name = kicad_files.footprint_name(loaded.root)
         if name is None:
             continue
 
-        is_custom = _determine_source(rel) == "Custom"
+        is_custom = source == "Custom"
         for model in kicad_files.find_models(name.node):
             path = model.path
             if is_custom:
                 if not path.startswith(CUSTOM_MODEL_PREFIX):
-                    issues.append(Issue(
+                    found.append((source, Issue(
                         Severity.WARNING,
                         "scan.model_var",
                         f"[{rel}] 3D model path does not use {CUSTOM_MODEL_PREFIX}: {path}",
-                    ))
+                    )))
                 elif path[len(CUSTOM_MODEL_PREFIX):] not in custom_names:
-                    issues.append(Issue(
+                    found.append((source, Issue(
                         Severity.WARNING,
                         "scan.model_missing",
                         f"[{rel}] 3D model not found in Custom/3DModels "
                         f"(names are case-sensitive): {path}",
-                    ))
+                    )))
             elif not path.startswith("${") and ("/" in path or "\\" in path):
-                issues.append(Issue(
+                found.append((source, Issue(
                     Severity.WARNING,
                     "scan.model_absolute",
                     f"[{rel}] Absolute/non-variable 3D model path: {path}",
-                ))
-    return issues
+                )))
+    if checking is not None:
+        checking(None)
+    return [issue for source, issue in found if source not in skipped]
+
+
+_SKIP_CODE = "scan.models_skipped"
+
+
+def models_skipped_issue(sources: Sequence[str], rechecked: Sequence[str] = ()) -> Issue:
+    """The plain line saying which sources' 3D model paths were not checked.
+
+    rechecked names the footprint libraries of those sources that were read again since.
+    """
+    names = " and ".join(sorted(sources))
+    if rechecked:
+        libs = ", ".join(sorted(rechecked))
+        text = (f"3D model paths of {names} were not checked, except {libs} (rescanned since): "
+                "skipped while the libraries loaded. Rescan checks them.")
+    else:
+        text = f"3D model paths of {names} were not checked: skipped while the libraries loaded. Rescan checks them."
+    return Issue(Severity.INFO, _SKIP_CODE, text)
+
+
+def models_rechecked(result: ScanResult) -> list[str]:
+    """Sorted nicknames of the footprint libraries of a skipped source that were checked since.
+
+    Counted only for skipped sources that still have an unchecked entry in models_unchecked; a
+    result with skipped sources and an empty record reads as wholly unchecked.
+    """
+    active = {
+        source for source in result.skipped_sources
+        if any(_determine_source(path) == source for path in result.models_unchecked)
+    }
+    return sorted(
+        lib.nickname for lib in result.footprint_libs
+        if lib.source in active and lib.rel_path not in result.models_unchecked
+    )
 
 
 def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[Issue]:
@@ -600,8 +656,29 @@ def check_3d_model_paths(root: Path, progress: Callable | None = None) -> list[I
     )
 
 
+def _unchecked_models(mod_files: list[Path], root: Path, fp_libs: list[FootprintLibrary],
+                      skipped: set[str]) -> list[str]:
+    """Footprint libraries of skipped sources, plus loose footprint files of theirs in no library."""
+    unchecked = {lib.rel_path for lib in fp_libs if lib.source in skipped}
+    for mod_file in mod_files:
+        rel = mod_file.relative_to(root).as_posix()
+        if _determine_source(rel) in skipped and not any(rel.startswith(f"{lib.rel_path}/") for lib in fp_libs):
+            unchecked.add(rel)
+    return sorted(unchecked)
+
+
 def scan_all(repo_root: Path, progress: Callable | None = None,
-             kicad_fp_dir: Path | None = None) -> ScanResult:
+             kicad_fp_dir: Path | None = None, *,
+             skip: Callable[[str], bool] | None = None,
+             checking: Callable[[str | None], None] | None = None) -> ScanResult:
+    """Scan the whole repo.
+
+    checking(source) is called as the 3D model path check reaches each source's first file, then
+    checking(None) at its end. skip(source) is asked before each file of a source not yet skipped; True
+    stops that source's 3D model path check at once and drops its lines (the result records the source
+    in skipped_sources and what is left unchecked in models_unchecked). Both are plain callables, called
+    from the scanning thread. A skip never drops a library or a footprint link.
+    """
     if progress:
         progress("Discovering files...", 0, 100)
 
@@ -612,7 +689,16 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
         progress("Cross-referencing...", 95, 100)
     issues = find_nickname_collisions(sym_libs, fp_libs)
     issues.extend(cross_reference(sym_libs, fp_libs, kicad_fp_dir))
-    issues.extend(check_3d_model_paths(repo_root, progress))
+    mod_files = _collect_files(repo_root, "*.kicad_mod")
+    skipped: set[str] = set()
+    issues.extend(_check_model_files(
+        repo_root, mod_files, _custom_model_names(repo_root), progress,
+        skip=skip, checking=checking, skipped=skipped,
+    ))
+    models_unchecked: list[str] = []
+    if skipped:
+        issues.append(models_skipped_issue(sorted(skipped)))
+        models_unchecked = _unchecked_models(mod_files, repo_root, fp_libs, skipped)
 
     if progress:
         progress("Checking atomic parts...", 96, 100)
@@ -631,6 +717,8 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
         symbol_libs=sym_libs,
         footprint_libs=fp_libs,
         issues=issues,
+        skipped_sources=sorted(skipped),
+        models_unchecked=models_unchecked,
     )
 
 
@@ -705,8 +793,8 @@ def _skip_line_file(issue: Issue) -> str | None:
 
 
 def _rank(issue: Issue) -> int:
-    """scan_all's order: 3D path lines, atomic lines, the atomic summary, then change lines."""
-    if issue.code in _MODEL_CODES:
+    """scan_all's order: 3D path lines and the skip line, atomic lines, the atomic summary, then change lines."""
+    if issue.code in _MODEL_CODES or issue.code == _SKIP_CODE:
         return 0
     if issue.code == "atomic.summary":
         return 2
@@ -823,8 +911,13 @@ def rescan_library(
             )
         return False
 
+    # The skip line is taken out and put back after the 3D path lines, so it stays beside them
+    skip_line: Issue | None = None
     kept: list[Issue] = []
     for issue in previous.issues:
+        if issue.code == _SKIP_CODE:
+            skip_line = issue
+            continue
         if issue.code in _GLOBAL_CODES:
             continue
         if any(_owns_symbol_issue(lib, issue) for lib in refreshed_symbols):
@@ -842,6 +935,20 @@ def rescan_library(
         if issue.code == "scan.changes_skipped" and _skip_line_file(issue) is None and issue in kept:
             continue
         kept.append(issue)
+
+    # A footprint library that a skip left unchecked was just checked: update the record and the line
+    if refreshed_footprint is not None and rel_path in merged.models_unchecked:
+        merged.models_unchecked.remove(rel_path)
+        merged.skipped_sources = [
+            source for source in merged.skipped_sources
+            if any(_determine_source(path) == source for path in merged.models_unchecked)
+        ]
+        skip_line = (
+            models_skipped_issue(merged.skipped_sources, models_rechecked(merged))
+            if merged.skipped_sources else None
+        )
+    if skip_line is not None:
+        kept.append(skip_line)
 
     collisions = find_nickname_collisions(merged.symbol_libs, merged.footprint_libs)
     cross = cross_reference(merged.symbol_libs, merged.footprint_libs, kicad_fp_dir)
