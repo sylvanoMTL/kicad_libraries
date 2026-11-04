@@ -69,6 +69,18 @@ def save_import_dir(path: Path) -> None:
     s.setValue("import/last_dir", str(path))
 
 
+# ── User Guide ───────────────────────────────────────────────────────
+
+def load_help_topic() -> str | None:
+    """The page or section the owner last chose in the User Guide; anything but a non-empty text reads as None."""
+    val = get_settings().value("help/last_topic", "")
+    return val if isinstance(val, str) and val else None
+
+
+def save_help_topic(key: str) -> None:
+    get_settings().setValue("help/last_topic", key)
+
+
 # ── Destination folder history ────────────────────────────────────────
 
 def load_dest_history() -> list[str]:
