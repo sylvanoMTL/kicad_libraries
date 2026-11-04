@@ -144,7 +144,10 @@ def test_help_names_the_cancel_button():
 
 def test_help_names_the_start_page_cancel():
     section = _section("Start").casefold()
-    for claim in ("cancel", "bottom right", "without importing", "nothing is written"):
+    for claim in (
+        "cancel", "next to", "browse zip...", "browse folder...", "without importing", "nothing is written",
+        "bottom right", "install part",
+    ):
         assert claim in section, claim
 
 
