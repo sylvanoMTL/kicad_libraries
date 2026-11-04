@@ -6016,6 +6016,7 @@ def test_import_window_takes_input_while_help_is_open(qtbot, make_install_dialog
     # Clicks go through the window system (the QWindow overload), which drops a click aimed at a blocked window
     item = help_shortcuts_item(help_window)
     toc = help_window._toc
+    toc.scrollToItem(item)  # Importing Parts' sections are open above it, so the row may sit below the visible menu
     point = toc.viewport().mapTo(help_window, toc.visualItemRect(item).center())
     QTest.mouseClick(help_window.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
     qtbot.waitUntil(lambda: help_key(help_window) == "shortcuts", timeout=5000)
@@ -6190,3 +6191,32 @@ def test_result_page_keeps_the_size_and_has_close(qtbot, make_install_dialog):
     assert dialog.size() == before
     assert dialog._result_view.close_button.isVisible()
     assert dialog._result_view.close_button.isEnabled()
+
+
+# -- The User Guide window fits the screen too (plan 12-14, G-12-11) ----------------------------------
+
+from PySide6.QtWidgets import QDialogButtonBox  # noqa: E402
+
+
+@pytest.mark.parametrize("opener", ["toolbar", "f1"])
+@pytest.mark.parametrize("area", [DESKTOP_100, DESKTOP_200], ids=["full_hd_100", "full_hd_200"])
+def test_help_window_fits_the_screen(qtbot, make_dialog, monkeypatch, area, opener):
+    use_screen(monkeypatch, area)
+    dialog = make_dialog(open_now=False, show=True)
+    if opener == "toolbar":
+        dialog._help_action.trigger()
+    else:
+        dialog.activateWindow()
+        qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+        qtbot.keyClick(dialog, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: dialog._help_dialog is not None and dialog._help_dialog.isVisible(), timeout=5000)
+    help_window = dialog._help_dialog
+    assert help_key(help_window) == "importing"
+    assert area.contains(help_window.frameGeometry())
+    close = help_window.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Close)
+    assert close.isVisible()
+    assert inside_window(help_window, close)
+    if area == DESKTOP_100:
+        assert help_window.size() == QSize(860, 620)
+    if area == DESKTOP_200:
+        assert help_window.width() <= 944 and help_window.height() <= 452

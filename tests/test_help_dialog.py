@@ -5,7 +5,7 @@ import re
 import types
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QRect, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTextBrowser, QTreeWidgetItem
 
@@ -433,6 +433,18 @@ def test_help_dialog_opens_on_a_given_topic(qtbot):
     assert dialog.show_topic("no_such_page") is False
     assert dialog._toc.currentItem() is before
 
+    # a page key still selects the page item, and a section key opens its page at that heading (plan 12-14)
+    assert dialog.show_topic("importing") is True
+    assert dialog._toc.currentItem().data(0, Qt.ItemDataRole.UserRole) == "importing"
+    sectioned = HelpDialog(topic="importing#conflicts")
+    qtbot.addWidget(sectioned)
+    assert sectioned._toc.currentItem().data(0, Qt.ItemDataRole.UserRole) == "importing#conflicts"
+    assert _headings(sectioned._browser, 2)[0][1] == "4.4 Importing Parts"
+    sectioned.show()
+    qtbot.waitExposed(sectioned)
+    qtbot.waitUntil(lambda: _heading_is_in_view(sectioned._browser, "4.4.7 Conflicts"), timeout=5000)
+    assert sectioned._browser.verticalScrollBar().value() > 0
+
 
 def test_help_names_the_toolbar_help():
     start = _section("Start")
@@ -574,6 +586,52 @@ def test_clicking_a_section_scrolls_to_its_heading(qtbot):
     _click_row(dialog, _find_item(dialog, "importing#commit"))
     qtbot.waitUntil(lambda: _current_key(dialog) == "importing#commit", timeout=5000)
     qtbot.waitUntil(lambda: _heading_is_in_view(browser, "4.4.9 Commit"), timeout=5000)
+
+
+def test_menu_expands_the_shown_page_only(qtbot):
+    dialog = HelpDialog(topic="importing")
+    qtbot.addWidget(dialog)
+    paged = ("importing", "generating", "library_tree", "kicad_detection", "filter")
+    groups = ("_getting_started", "_on_launch", "_how_to_use")
+
+    def expanded() -> dict[str, bool]:
+        return {key: _find_item(dialog, key).isExpanded() for key in paged}
+
+    assert expanded() == {"importing": True, "generating": False, "library_tree": False, "kicad_detection": False, "filter": False}
+    assert all(_find_item(dialog, key).isExpanded() for key in groups)
+
+    assert dialog.show_topic("generating") is True
+    assert expanded() == {"importing": False, "generating": True, "library_tree": False, "kicad_detection": False, "filter": False}
+    assert dialog.show_topic("filter#how-it-works") is True
+    assert expanded() == {"importing": False, "generating": False, "library_tree": False, "kicad_detection": False, "filter": True}
+    assert all(_find_item(dialog, key).isExpanded() for key in groups)
+
+
+def test_clicking_the_selected_section_again_scrolls_back(qtbot):
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    browser = dialog._browser
+    dialog.show_topic("importing#conflicts")
+    qtbot.waitUntil(lambda: _heading_is_in_view(browser, "4.4.7 Conflicts"), timeout=5000)
+
+    browser.verticalScrollBar().setValue(0)
+    assert not _heading_is_in_view(browser, "4.4.7 Conflicts")
+    _click_row(dialog, _find_item(dialog, "importing#conflicts"))
+    assert _current_key(dialog) == "importing#conflicts"
+    qtbot.waitUntil(lambda: _heading_is_in_view(browser, "4.4.7 Conflicts"), timeout=5000)
+
+
+def test_help_dialog_fits_the_screen(qtbot, monkeypatch):
+    area = QRect(0, 0, 960, 492)  # Full HD at 200%
+    monkeypatch.setattr(import_dialog, "screen_area", lambda widget: area)
+    dialog = HelpDialog()  # the way the main window opens it, with no parent
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert area.contains(dialog.frameGeometry())
+    assert dialog.height() <= 452
 
 
 def test_numbers_are_rendered_not_typed():
