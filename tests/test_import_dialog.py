@@ -6039,15 +6039,29 @@ def test_start_page_cancel_closes_without_writing(qtbot, make_start_dialog, star
     assert cancel.toolTip() == "Close without importing. Nothing is written."
     assert cancel.isVisible()
     assert not cancel.isDefault() and not cancel.autoDefault()
-    row = dialog._start_bottom
+    row = dialog._start_buttons
     assert row.indexOf(cancel) == row.count() - 1
-    assert row.itemAt(0).spacerItem() is not None  # a stretch first, so Cancel sits at the right
+    assert row.itemAt(row.count() - 2).spacerItem() is not None  # a stretch before it, so Cancel sits at the right
 
     before = custom_snapshot(start_layout)
     cancel.click()
     qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
     assert dialog.result is None
     assert custom_snapshot(start_layout) == before
+
+
+def test_start_page_cancel_shares_the_browse_row(qtbot, make_start_dialog):
+    dialog = make_start_dialog()
+    row = dialog._start_buttons
+    assert row.count() == 4
+    assert row.itemAt(0).widget() is dialog._browse_btn
+    assert row.itemAt(1).widget() is dialog._browse_folder_btn
+    assert row.itemAt(2).spacerItem() is not None
+    assert row.itemAt(3).widget() is dialog._start_cancel_btn
+    browse_top = dialog._browse_btn.mapTo(dialog, QPoint(0, 0)).y()
+    cancel_top = dialog._start_cancel_btn.mapTo(dialog, QPoint(0, 0)).y()
+    assert cancel_top == browse_top
+    assert not hasattr(dialog, "_start_bottom")  # the separate bottom row is gone
 
 
 def test_start_page_cancel_while_reading_waits_then_closes(qtbot, make_start_dialog, gates):
@@ -6145,10 +6159,26 @@ def test_screen_area_reads_the_widget_screen(qtbot, make_start_dialog):
 
 
 @pytest.mark.parametrize("area", [DESKTOP_100, DESKTOP_200], ids=["full_hd_100", "full_hd_200"])
+def test_start_page_is_as_tall_as_its_content(qtbot, make_start_dialog, monkeypatch, area):
+    use_screen(monkeypatch, area)
+    dialog = make_start_dialog()
+    assert dialog.size() == dialog._start_size()
+    assert dialog.width() == 640
+    layout = dialog.layout()
+    assert dialog.height() == max(layout.totalHeightForWidth(640), dialog.minimumSizeHint().height())
+    cancel = dialog._start_cancel_btn
+    bottom = cancel.mapTo(dialog, QPoint(0, cancel.height())).y()
+    assert dialog.height() - bottom <= 24  # the 16 px window margin plus slack: no empty band below the row
+    assert area.contains(dialog.frameGeometry())
+    assert inside_window(dialog, cancel)
+
+
+@pytest.mark.parametrize("area", [DESKTOP_100, DESKTOP_200], ids=["full_hd_100", "full_hd_200"])
 def test_start_page_opens_small(qtbot, make_start_dialog, monkeypatch, area):
     use_screen(monkeypatch, area)
     dialog = make_start_dialog()
-    assert dialog.size() == QSize(640, 440)
+    assert dialog.size() == dialog._start_size()
+    assert dialog.height() < 440  # as tall as its content, not the old fixed 440
     assert dialog.minimumSizeHint().width() < 640  # the edit page's minimum no longer counts
     assert area.contains(dialog.frameGeometry())
     assert dialog._start_cancel_btn.isVisible()
@@ -6167,7 +6197,7 @@ def test_window_grows_for_the_edit_page_and_shrinks_back(qtbot, make_dialog, mon
     resize_and_wait(qtbot, dialog, 1200, 760)
     dialog._change_btn.click()
     qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._start_page, timeout=30000)
-    assert dialog.size() == QSize(640, 440)
+    assert dialog.size() == dialog._start_size()
     assert dialog._start_cancel_btn.isVisible()
 
     dialog.open_path(UL_ZIP)
