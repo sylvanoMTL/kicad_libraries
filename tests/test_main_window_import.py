@@ -68,8 +68,10 @@ def make_window(qtbot, monkeypatch, tmp_path):
         queue = list(results)
         calls = []
 
-        def fake_scan(root, progress=None, kicad_fp_dir=None):
+        def fake_scan(root, progress=None, kicad_fp_dir=None, *, skip=None, checking=None):
             calls.append((root, kicad_fp_dir))
+            # A gated item reads the hooks to play the part of the real scan
+            make.hooks = (skip, checking)
             item = queue.pop(0) if len(queue) > 1 else queue[0]
             return item() if callable(item) else item
 
@@ -106,6 +108,7 @@ def make_window(qtbot, monkeypatch, tmp_path):
 
     make.calls = []
     make.repo = None
+    make.hooks = None
 
     # Patched at fixture level so no test can block on a real modal dialog;
     # tests set make.answer to choose the reply and read make.questions for the calls

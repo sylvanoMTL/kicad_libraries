@@ -1,10 +1,10 @@
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QPushButton, QComboBox, QLabel, QFileDialog, QMessageBox,
-    QProgressDialog,
 )
 from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
@@ -27,6 +27,7 @@ from .settings import (
 )
 from .widgets.library_table import LibraryTableWidget
 from .widgets.log_panel import LogPanel
+from .widgets.scan_progress import ScanProgressDialog
 from .widgets.atomic_check_dialog import AtomicCheckDialog
 from .widgets.backup_dialog import BackupDialog
 from .widgets.help_dialog import HelpDialog
@@ -75,6 +76,7 @@ class ScanWorker(QThread):
     finished = Signal(object)    # ScanResult
     error = Signal(str)
     note = Signal(object)        # Issue about the saved scan
+    checking = Signal(object)    # source whose 3D model paths are checked now, or None
 
     def __init__(self, repo_root: Path, kicad_fp_dir: Path | None = None, *,
                  cache_file: Path | None = None, reuse_cache: bool = False):
@@ -83,6 +85,19 @@ class ScanWorker(QThread):
         self._kicad_fp_dir = kicad_fp_dir
         self._cache_file = cache_file
         self._reuse_cache = reuse_cache
+        # Sources whose 3D model path check the user asked to stop; written by the GUI
+        # thread, read by this thread once per file
+        self._skip_lock = threading.Lock()
+        self._skip_sources: set[str] = set()
+
+    def request_skip(self, source: str):
+        """GUI thread: the scan stops that source's 3D model path check."""
+        with self._skip_lock:
+            self._skip_sources.add(source)
+
+    def _skip_requested(self, source: str) -> bool:
+        with self._skip_lock:
+            return source in self._skip_sources
 
     def run(self):
         try:
@@ -117,7 +132,8 @@ class ScanWorker(QThread):
                         fingerprint = None
 
             result = scan_all(self._repo_root, progress=on_progress,
-                              kicad_fp_dir=self._kicad_fp_dir)
+                              kicad_fp_dir=self._kicad_fp_dir,
+                              skip=self._skip_requested, checking=self.checking.emit)
 
             if self._cache_file is not None:
                 # Before finished: the GUI has not yet touched the selected flags
@@ -206,7 +222,7 @@ class MainWindow(QMainWindow):
         # however that scan ended. Only that scan pre-selects from the tables.
         self._startup_pending = True
         self._kicad_fp_dir: Path | None = None
-        self._progress: QProgressDialog | None = None
+        self._progress: ScanProgressDialog | None = None
         self._import_dialog: ImportDialog | None = None
         self._atomic_dialog: AtomicCheckDialog | None = None
         self._pending_post_install: _PostInstall | None = None
@@ -461,7 +477,7 @@ class MainWindow(QMainWindow):
     def _start_scan(self, show_progress: bool = True, reuse_cache: bool = False):
         """Start a scan; every scan request must go through here.
 
-        show_progress=False runs the scan quietly (no QProgressDialog); only the
+        show_progress=False runs the scan quietly (no Loading Libraries window); only the
         post-install rescan uses it, so the trees update behind the import dialog.
         reuse_cache=True (app start only) shows the saved scan when no library file
         changed; every other scan is a full scan, and every full scan saves its result.
@@ -477,16 +493,9 @@ class MainWindow(QMainWindow):
 
         self._set_scan_running(True)
         if show_progress:
-            self._progress = QProgressDialog(
-                "Scanning libraries...", None, 0, 100, self
-            )
-            self._progress.setWindowTitle("Loading Libraries")
-            self._progress.setWindowModality(Qt.WindowModality.WindowModal)
-            self._progress.setMinimumDuration(0)
-            self._progress.setAutoClose(True)
-            self._progress.setAutoReset(True)
-            self._progress.setCancelButton(None)
-            self._progress.setValue(0)
+            self._progress = ScanProgressDialog(parent=self)
+            self._progress.skip_requested.connect(self._on_skip_requested)
+            self._progress.set_progress("Scanning libraries...", 0)
             self._progress.show()
         else:
             self._progress = None
@@ -504,6 +513,7 @@ class MainWindow(QMainWindow):
             cache_file=scan_cache_file(REPO_ROOT), reuse_cache=reuse_cache,
         )
         self._worker.progress.connect(self._on_scan_progress)
+        self._worker.checking.connect(self._on_scan_checking)
         self._worker.note.connect(self._log.log_issue)
         self._worker.finished.connect(self._on_scan_finished)
         self._worker.error.connect(self._on_scan_error)
@@ -511,8 +521,20 @@ class MainWindow(QMainWindow):
 
     def _on_scan_progress(self, message: str, percentage: int):
         if self._progress is not None:
-            self._progress.setLabelText(message)
-            self._progress.setValue(min(percentage, 99))
+            self._progress.set_progress(message, min(percentage, 99))
+
+    def _on_scan_checking(self, source: str | None):
+        if self._progress is not None:
+            self._progress.set_skippable(source)
+
+    def _on_skip_requested(self, source: str):
+        """Forward the Skip click to the running scan.
+
+        Writes no log line: the click can arrive after the scan asked about that source's last
+        file, so the one skip line comes from the finished scan's own result.
+        """
+        if isinstance(self._worker, ScanWorker):
+            self._worker.request_skip(source)
 
     def _on_library_rescan_requested(self, kind: str, rel_path: str):
         """Rescan one library from the right-click menu; same busy guard as _start_scan (O-09)."""
@@ -586,7 +608,7 @@ class MainWindow(QMainWindow):
     def _on_scan_finished(self, result: ScanResult):
         try:
             if self._progress is not None:
-                self._progress.setValue(100)
+                self._progress.finish()
             startup = self._startup_pending
             previous = self._scan_result
             self._scan_result = result
@@ -620,7 +642,11 @@ class MainWindow(QMainWindow):
             if not any(
                 i.severity in (Severity.WARNING, Severity.ERROR) for i in result.issues
             ):
-                self._log.log("No warnings.", "success")
+                self._log.log(
+                    "No warnings in the checks that ran." if result.skipped_sources
+                    else "No warnings.",
+                    "success",
+                )
         finally:
             self._finish_scan()
 
@@ -767,7 +793,7 @@ class MainWindow(QMainWindow):
     def _on_scan_error(self, error_msg: str):
         try:
             if self._progress is not None:
-                self._progress.close()
+                self._progress.finish()
             self._log.log(f"Scan error: {error_msg}", "error")
             if self._startup_pending:
                 self._log.log(

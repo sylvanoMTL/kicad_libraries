@@ -10,6 +10,7 @@ import json
 import os
 import stat
 import threading
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -46,8 +47,10 @@ def make_window(qtbot, monkeypatch, tmp_path):
         queue = list(results)
         calls = []
 
-        def fake_scan(root, progress=None, kicad_fp_dir=None):
+        def fake_scan(root, progress=None, kicad_fp_dir=None, *, skip=None, checking=None):
             calls.append((root, kicad_fp_dir))
+            # A gated item reads the hooks to play the part of the real scan
+            make.hooks = (skip, checking)
             item = queue.pop(0) if len(queue) > 1 else queue[0]
             return item() if callable(item) else item
 
@@ -86,6 +89,7 @@ def make_window(qtbot, monkeypatch, tmp_path):
 
     make.calls = []
     make.repo = None
+    make.hooks = None
 
     # Patched at fixture level so no test can block on a real modal dialog;
     # tests set make.answer to choose the reply and read make.questions for the calls
@@ -1403,3 +1407,249 @@ def test_library_rescan_updates_the_saved_scan(make_window, qtbot, monkeypatch, 
     assert check.note.code == "cache.reused"
     assert check.result.symbol_libs[0].footprint_refs[0].footprint_name == "Changed"
     assert check.result.symbol_libs[0].selected is False
+
+
+# ── Skip on the Loading Libraries window (plan 12-17, G-12-21) ─────────────
+
+SKIP_TIP = (
+    "Stop checking the 3D model paths of WurthElektronik. "
+    "Its libraries are still listed, and Rescan checks them again."
+)
+
+
+def test_scan_progress_dialog_skip_button_follows_the_source(qtbot):
+    from kicad_lib_manager.widgets.scan_progress import ScanProgressDialog
+
+    dialog = ScanProgressDialog()
+    qtbot.addWidget(dialog)
+    button = dialog.skip_button
+    assert dialog.windowTitle() == "Loading Libraries"
+    assert button.text() == "Skip"
+    assert not button.isEnabled()
+    assert not button.isDefault() and not button.autoDefault()
+
+    emitted = []
+    dialog.skip_requested.connect(emitted.append)
+    dialog.set_skippable("WurthElektronik")
+    assert button.text() == "Skip WurthElektronik"
+    assert button.isEnabled()
+    assert button.toolTip() == SKIP_TIP
+
+    button.click()
+    button.click()
+    assert emitted == ["WurthElektronik"]
+    assert button.text() == "Skipping WurthElektronik..."
+    assert not button.isEnabled()
+
+    dialog.set_skippable(None)
+    assert button.text() == "Skip"
+    assert not button.isEnabled()
+
+    dialog.set_progress("Checking 3D paths: X", 42)
+    assert dialog._label.text() == "Checking 3D paths: X"
+    assert dialog._bar.value() == 42
+
+
+def test_scan_progress_dialog_ignores_escape_and_close(qtbot):
+    from PySide6.QtTest import QTest
+    from kicad_lib_manager.widgets.scan_progress import ScanProgressDialog
+
+    dialog = ScanProgressDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    dialog.close()
+    assert dialog.isVisible()
+
+    dialog.finish()
+    assert not dialog.isVisible()
+
+
+def _wurth_scan_result(skipped):
+    return ScanResult(
+        symbol_libs=[
+            _sym("WE_S", "WurthElektronik", refs=[("WE_F", "X", True)]),
+        ],
+        footprint_libs=[_fp("WE_F", "WurthElektronik")],
+        skipped_sources=list(skipped),
+        issues=[library_scanner.models_skipped_issue(skipped)] if skipped else [],
+    )
+
+
+def _skip_line():
+    return library_scanner.models_skipped_issue(["WurthElektronik"]).text
+
+
+def test_loading_dialog_skips_the_source_being_checked(make_window, qtbot):
+    answers = []
+
+    def scan():
+        skip, checking = make_window.hooks
+        checking("WurthElektronik")
+        for _ in range(500):
+            if skip("WurthElektronik"):
+                break
+            threading.Event().wait(0.01)
+        answers.append(skip("WurthElektronik"))
+        checking(None)
+        return _wurth_scan_result(["WurthElektronik"])
+
+    w = make_window([scan], wait=False)
+    qtbot.waitUntil(lambda: w._progress is not None
+                    and w._progress.skip_button.text() == "Skip WurthElektronik"
+                    and w._progress.skip_button.isEnabled(), timeout=5000)
+    w._progress.skip_button.click()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert answers == [True]
+    lines = _log_text(w).splitlines()
+    assert sum(1 for line in lines if _skip_line() in line) == 1
+    assert any("No warnings in the checks that ran." in line for line in lines)
+    assert not any(line.strip().endswith("No warnings.") for line in lines)
+    assert not any("Skipping" in line for line in lines)
+    assert not w._progress.isVisible()
+    assert [lib.nickname for lib in w._scan_result.symbol_libs] == ["WE_S"]
+    assert [lib.nickname for lib in w._scan_result.footprint_libs] == ["WE_F"]
+
+
+def test_a_skip_click_after_the_check_ended_logs_no_skip(make_window, qtbot):
+    clicked = threading.Event()
+    release = threading.Event()
+
+    def scan():
+        _skip, checking = make_window.hooks
+        checking("WurthElektronik")
+        clicked.wait(5)
+        checking(None)
+        release.wait(5)
+        return _wurth_scan_result([])
+
+    w = make_window([scan], wait=False)
+    try:
+        qtbot.waitUntil(lambda: w._progress is not None
+                        and w._progress.skip_button.text() == "Skip WurthElektronik"
+                        and w._progress.skip_button.isEnabled(), timeout=5000)
+        button = w._progress.skip_button
+        button.click()
+        assert button.text() == "Skipping WurthElektronik..."
+        assert not button.isEnabled()
+        clicked.set()
+        qtbot.waitUntil(lambda: button.text() == "Skip" and not button.isEnabled(),
+                        timeout=5000)
+    finally:
+        clicked.set()
+        release.set()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    text = _log_text(w)
+    assert "Skipping" not in text and "were not checked" not in text
+    assert "No warnings." in text
+    assert w._scan_result.skipped_sources == []
+
+
+# ── A skipped scan: Generate Tables and the saved scan (plan 12-17, G-12-21) ──
+
+_WE_ROOT = "WurthElektronik/KiCad-Library"
+_WE_SKIP_SYM = f"{_WE_ROOT}/symbols/WE_Test.kicad_sym"
+_WE_SKIP_FP = f"{_WE_ROOT}/footprints/WE_Test.pretty"
+_WE_SKIP_SYMBOL_TEXT = (
+    '(kicad_symbol_lib (version 20231120) (generator "test")\n'
+    '  (symbol "WE_SYM" (property "Reference" "U" (at 0 0 0))\n'
+    '    (property "Footprint" "WE_Test:WE_FP_A" (at 0 0 0)))\n'
+    ")\n"
+)
+
+
+def _synthetic_repo_with_wurth(tmp_path):
+    """Custom (atomic fixture) plus one hand-written WurthElektronik library pair; the real submodule is never read."""
+    from customfixtures import write_atomic_custom, write_fake_kicad
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    write_atomic_custom(repo)
+    symbols = repo / _WE_ROOT / "symbols"
+    symbols.mkdir(parents=True, exist_ok=True)
+    (symbols / "WE_Test.kicad_sym").write_text(_WE_SKIP_SYMBOL_TEXT, encoding="utf-8")
+    pretty = repo / _WE_SKIP_FP
+    pretty.mkdir(parents=True, exist_ok=True)
+    (pretty / "WE_FP_A.kicad_mod").write_text(
+        '(footprint "WE_FP_A"\n  (model "C:/models/a.step")\n)\n', encoding="utf-8"
+    )
+    footprints, _models = write_fake_kicad(tmp_path)
+    return repo, footprints
+
+
+def test_generate_after_a_skip_removes_no_entry(make_window, qtbot, tmp_path):
+    repo, fp_dir = _synthetic_repo_with_wurth(tmp_path)
+    full = library_scanner.scan_all(repo, kicad_fp_dir=fp_dir)
+    custom_sym = next(lib for lib in full.symbol_libs if lib.source == "Custom")
+    custom_fp = next(lib for lib in full.footprint_libs if lib.source == "Custom")
+    _write_tables(
+        repo, [custom_sym.rel_path, _WE_SKIP_SYM], [custom_fp.rel_path, _WE_SKIP_FP]
+    )
+
+    def scan():
+        _skip, checking = make_window.hooks
+        return library_scanner.scan_all(
+            repo, kicad_fp_dir=fp_dir, skip=lambda source: source == "WurthElektronik",
+            checking=checking,
+        )
+
+    w = make_window([scan], repo=repo)
+
+    result = w._scan_result
+    assert result.skipped_sources == ["WurthElektronik"]
+    assert {_WE_SKIP_SYM} <= _selected(result.symbol_libs)
+    assert {_WE_SKIP_FP} <= _selected(result.footprint_libs)
+    we_sym = next(lib for lib in result.symbol_libs if lib.rel_path == _WE_SKIP_SYM)
+    assert [(r.library_name, r.footprint_name) for r in we_sym.footprint_refs] == [
+        ("WE_Test", "WE_FP_A")
+    ]
+
+    w._on_generate()
+    settle(qtbot, w)
+
+    sym_table = (repo / "sym-lib-table").read_text(encoding="utf-8")
+    fp_table = (repo / "fp-lib-table").read_text(encoding="utf-8")
+    assert f"${{KICAD_LIB_GITHUB}}/{_WE_SKIP_SYM}" in sym_table
+    assert f"${{KICAD_LIB_GITHUB}}/{_WE_SKIP_FP}" in fp_table
+    assert 'name "WE_Test"' in sym_table and 'name "WE_Test"' in fp_table
+    assert not any("removed" in line for line in _log_text(w).splitlines())
+
+
+def test_skipped_scan_is_saved_and_the_next_start_says_so(make_window, tmp_path, qtbot):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    skip_line = library_scanner.models_skipped_issue(["WurthElektronik"]).text
+    note = ("The 3D model paths of WurthElektronik were skipped in that scan; "
+            "use Rescan for a full scan.")
+
+    # Built before the window exists: the library files must be there when the saved scan is taken
+    skipped = replace(
+        _disk_scan(repo), skipped_sources=["WurthElektronik"],
+        issues=[library_scanner.models_skipped_issue(["WurthElektronik"])],
+    )
+
+    first = make_window([skipped], repo=repo)
+    assert "No warnings in the checks that ran." in _log_text(first)
+    first.close()
+
+    second = make_window([_disk_scan(repo)], repo=repo)
+    assert make_window.calls == [], _log_text(second)
+    text = _log_text(second)
+    assert SAVED_NOTE in text
+    assert note in text
+    assert skip_line in text
+    assert not any(line.strip().endswith("No warnings.") for line in text.splitlines())
+    assert second._scan_result.skipped_sources == ["WurthElektronik"]
+
+    _rescan_and_wait(second, qtbot)
+    assert len(make_window.calls) == 1
+    second.close()
+
+    third = make_window([_disk_scan(repo)], repo=repo)
+    assert make_window.calls == []
+    text = _log_text(third)
+    assert SAVED_NOTE in text
+    assert "were skipped" not in text
+    assert third._scan_result.skipped_sources == []
