@@ -79,6 +79,7 @@ _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
 _SEVERITY_COLOR = {Severity.ERROR: ERROR, Severity.WARNING: AMBER}
 _ISSUE_LIST_MAX_HEIGHT = 160
 _EDIT_SIZE = QSize(1100, 720)  # the size the edit step asks for, before the screen limits it
+_START_SIZE = QSize(640, 440)  # the start step: the 560 px column plus margins, and room for the issue list
 _FRAME_ALLOWANCE = QSize(16, 40)  # title bar and borders, used until the real frame is known
 _NOTHING_FOUND = "No KiCad symbol or footprint was found in this package."
 _CLOSING_REFUSED = "Pick another file."
@@ -550,7 +551,7 @@ class ImportDialog(QDialog):
         self.setWindowTitle("Import Part")
         self.setWindowModality(Qt.WindowModality.WindowModal)
         # No fixed minimum: the layout's own minimum applies, and a fixed 600 px would push a 200% screen's window off it
-        self.resize(_EDIT_SIZE)
+        self.resize(_START_SIZE)
         self._edit_size = QSize(_EDIT_SIZE)  # the edit step's size this window uses; the user's resize updates it
 
         outer = QVBoxLayout(self)
@@ -582,15 +583,35 @@ class ImportDialog(QDialog):
     def _fit_to_screen(self, wanted: QSize):
         fit_window(self, wanted)
 
+    def _sync_page_policies(self, current: QWidget):
+        """Give the current page the Preferred size policy and the other pages Ignored.
+
+        A hidden page with the Ignored policy drops out of the stack's minimum, so the start page is not
+        as wide as the edit page.
+        """
+        for page in (self._start_page, self._edit_page, self._result_view):
+            policy = QSizePolicy.Policy.Preferred if page is current else QSizePolicy.Policy.Ignored
+            page.setSizePolicy(policy, policy)
+
     def _show_page(self, page: QWidget):
-        """Show a page: the only place that switches the stack, so the window size follows the page (G-12-10)."""
+        """Show a page: the only place that switches the stack, so the window size follows the page (G-12-10).
+
+        The start page is small, the edit page returns to the size the user last gave it, and the result page
+        keeps the size it has. Switching to the page already shown changes no size.
+        """
         previous = self._stack.currentWidget()
         changed = page is not previous
         if changed and previous in (self._edit_page, self._result_view):
             self._edit_size = self.size()
+        self._sync_page_policies(page)
         self._stack.setCurrentWidget(page)
+        if page.layout() is not None:
+            page.layout().activate()
+        self.layout().activate()  # the minimum is current before any size is fitted
         if changed and page is self._edit_page:
             self._fit_to_screen(self._edit_size)
+        elif changed and page is self._start_page:
+            self._fit_to_screen(_START_SIZE)
 
     def _build_toolbar(self, outer: QVBoxLayout):
         """The toolbar above the page stack, shared by every page; Help is its only action (G-12-9)."""
