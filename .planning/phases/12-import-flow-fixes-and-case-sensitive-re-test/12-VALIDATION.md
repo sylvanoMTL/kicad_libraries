@@ -68,6 +68,12 @@ created: "2026-11-01"
 | 12-12-T1 | 12-12 | gap 3 | UI-01 | — | N/A (toolbar Help opens the User Guide on Importing Parts; F1 is the only binding, G-12-9) | dialog | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py tests/test_import_dialog.py -q -k "given_topic or opens_importing_page or toolbar_help or f1_opens or ctrl_return"` | ✅ extend | ✅ green |
 | 12-12-T2 | 12-12 | gap 3 | UI-01 | T-12-29, T-12-30 | Help never touches install, build, Finishing or commit state; shown non-modal and closed with the import window (G-12-9) | dialog | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py -q -k "help_ or toolbar_help or f1_opens or cancel_button or close_finishes_after_build or escape_does_nothing_while_finishing or commit_close_button_disabled"` | ✅ extend | ✅ green |
 | 12-12-T3 | 12-12 | gap 3 | UI-01 | T-12-31 | Static Help text only; plain words (G-12-9) | unit + dialog | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py tests/test_import_dialog.py tests/test_plain_names.py tests/test_main_window_import.py -q` | ✅ extend | ✅ green |
+| 12-13-T1 | 12-13 | gap 4 | REV-04 | T-12-32 | Start-page Cancel calls `reject()`: closes without writing, waits in Finishing while a package is read (G-12-10) | dialog | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py tests/test_help_dialog.py -q -k "start_page_cancel or cancel_button or start_page_layout or ctrl_return or help_names_the or install_progress_and_lock"` | ✅ extend | ✅ green |
+| 12-13-T2 | 12-13 | gap 4 | UI-01 | T-12-33, T-12-34 | Window and both buttons inside the free screen area at 100% and 200%; real `screen_area` checked against the widget's screen (G-12-10) | dialog | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py tests/test_generated_text.py tests/test_official_footprint.py -q -k "fit_size or fits_the_screen or screen_area or fields_long_text_geometry or library_long_name_geometry or strip_caps_three_lines or conflicts_overflow_geometry or fit_the_left_pane or start_page or cancel_button"` | ✅ extend; autouse `_desktop_screen_area` fixture added to `tests/conftest.py` | ✅ green |
+| 12-13-T3 | 12-13 | gap 4 | UI-01 | T-12-33 | N/A (start page opens small, grows for the edit page, shrinks back; Help wording, G-12-10) | dialog + plan-level | `env/Scripts/python.exe -m pytest tests/test_import_dialog.py tests/test_help_dialog.py tests/test_main_window_import.py tests/test_plain_names.py tests/test_field_rules.py tests/test_gate_reasons.py tests/test_generated_text.py tests/test_install_gate.py tests/test_official_footprint.py tests/test_single_footprint.py tests/test_suggest_atomic.py -q` | ✅ extend | ✅ green |
+| 12-14-T1 | 12-14 | gap 4 (w2) | UI-01 | T-12-35 | Numbered three-level menu from the pages' h3 headings; anchors limited to `^[a-z0-9]+(-[a-z0-9]+)*$`; click scrolls to the heading (G-12-11) | unit + dialog | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py -q` | ✅ extend | ✅ green |
+| 12-14-T2 | 12-14 | gap 4 (w2) | UI-01 | T-12-37 | Menu follows the shown page; section keys open from every entry point; User Guide bounded by the free screen area at 100% and 200% (G-12-11) | dialog | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py tests/test_import_dialog.py -q -k "help or toolbar or f1_opens or menu or given_topic"` | ✅ extend | ✅ green |
+| 12-14-T3 | 12-14 | gap 4 (w2) | UI-01 | T-12-36 | Static Help text only; numbered headings keep theme tokens, size and colour (G-12-11) | unit + dialog | `env/Scripts/python.exe -m pytest tests/test_help_dialog.py tests/test_import_dialog.py tests/test_plain_names.py tests/test_main_window_import.py -q` | ✅ extend | ✅ green |
 
 *Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
 
@@ -84,6 +90,7 @@ created: "2026-11-01"
 - [x] `tests/README.md` expected-skips row for "could not make a case-sensitive folder" — 12-01-T2
 - [x] `tests/test_backup_dialog.py` — blank backup folder tests — 12-04-T2
 - [x] UI-01 token and heading-size tests in `tests/test_help_dialog.py` — 12-02-T1
+- [x] autouse `_desktop_screen_area` fixture in `tests/conftest.py` (Full HD 100% desktop for the `screen_area` seam; patches nothing unless the import dialog module is loaded) — 12-13-T2
 
 ---
 
@@ -96,6 +103,8 @@ created: "2026-11-01"
 | Window stays responsive while kicad-cli works | REV-04 | Real kicad-cli timing | Open a package with a slow build, press Change...; window moves/repaints, strip shows, action runs by itself |
 | Gap re-check: plain names, Cancel, required hints, Choose another package (UAT 5–8) | REV-04, REV-05 | Wording and layout in the running window | Re-run UAT tests 5–8 from 12-UAT.md in the GUI |
 | Toolbar Help looks right in the import window (G-12-9) | UI-01 | Visual fit of the toolbar in the real window | Open an import, check the toolbar sits above every page and Help (or F1) opens the User Guide on Importing Parts while the import window stays usable (UAT test 9) |
+| Import window fits a real Windows screen at 100% and 200% display scale (G-12-10, 12-13 D2) | UI-01, REV-04 | Tests model 200% in logical pixels on the offscreen platform; the real display scale and taskbar need a look | At 100% and then 200% (Settings > Display > Scale), open an import: the start page is small with Cancel at the bottom right; after a package loads the whole window, title bar and Install Part / Cancel are on screen above the taskbar; Choose another package... shrinks it back (12-13-PLAN.md Task 3 human-check) |
+| Numbered User Guide menu and screen fit on a real display (G-12-11, 12-14 D5) | UI-01 | Visual check of numbering, section scroll and fit at real display scale | At 100% and 200%, press F1 in the import window: the guide is fully on screen with Close visible; the menu shows numbered groups, pages and Importing Parts sections; clicking 4.4.7 Conflicts scrolls to that heading; also open the guide from the main window (12-14-PLAN.md Task 3 human-check) |
 
 ---
 
@@ -108,7 +117,7 @@ created: "2026-11-01"
 - [x] Feedback latency < 60s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** validated 2026-11-01 (all 18 tasks green in the full suite at 9412c80: 9267 passed, 4 expected skips; manual-only rows stay with the owner UAT). Re-validated 2026-11-02 after gap plans 12-09..12-11: all 25 tasks green in the full suite at 60df383 (9281 passed, 4 expected skips). Re-validated 2026-11-03 after gap plan 12-12: all 28 tasks green in the full suite at 859170c (9290 passed, 4 expected skips)
+**Approval:** validated 2026-11-01 (all 18 tasks green in the full suite at 9412c80: 9267 passed, 4 expected skips; manual-only rows stay with the owner UAT). Re-validated 2026-11-02 after gap plans 12-09..12-11: all 25 tasks green in the full suite at 60df383 (9281 passed, 4 expected skips). Re-validated 2026-11-03 after gap plan 12-12: all 28 tasks green in the full suite at 859170c (9290 passed, 4 expected skips). Re-validated 2026-11-04 after gap plans 12-13 and 12-14: all 34 tasks mapped; the 6 new tasks' 26 named tests all exist and the 11-file plan-level set (superset of every 12-13/12-14 verify command) ran green at ede1d97 (508 passed, 0 skipped, 257.9 s); full-suite phase gate run separately
 
 ## Validation Audit 2026-11-01
 
