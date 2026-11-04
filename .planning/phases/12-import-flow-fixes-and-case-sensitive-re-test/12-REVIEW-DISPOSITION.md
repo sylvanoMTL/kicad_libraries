@@ -3,6 +3,38 @@ phase: 12
 review: 12-REVIEW.md
 titles: json
 findings:
+  - id: WR-06
+    severity: warning
+    disposition: open
+    title: "Help or F1 does not bring back a minimized User Guide"
+  - id: WR-07
+    severity: warning
+    disposition: open
+    title: "Source name goes unescaped into the Skip button text and tooltip"
+  - id: WR-08
+    severity: warning
+    disposition: open
+    title: "Test named for a late Skip click never exercises the late-click path"
+  - id: IN-07
+    severity: info
+    disposition: open
+    title: "Loose footprint files in a skipped source can only be cleared by a full Rescan, and this path is untested"
+  - id: IN-08
+    severity: info
+    disposition: open
+    title: "One ScanProgressDialog is created per scan and never released"
+  - id: IN-09
+    severity: info
+    disposition: open
+    title: "The import window's own-guide fallback now outlives the window it was opened from"
+  - id: IN-10
+    severity: info
+    disposition: open
+    title: "\"Stays open beside the other windows\" is only true for the dialogs that were made window-modal"
+  - id: IN-11
+    severity: info
+    disposition: open
+    title: "Test coupling and brittle negative assertions"
   - id: WR-01
     severity: warning
     disposition: open
@@ -47,20 +79,28 @@ findings:
     severity: info
     disposition: open
     title: "The Qt teardown hook can hide a hung worker for 60 s per widget"
-open: 11
-total: 11
-recorded: 2026-11-04T11:11:32.641Z
+open: 19
+total: 19
+recorded: 2026-11-04T18:35:59.062Z
 ---
 
 # Phase 12: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-01 | warning | open | - |
-| IN-01 | info | open | - |
-| IN-02 | info | open | - |
-| IN-03 | info | open | - |
-| IN-04 | info | open | - |
+| WR-06 | warning | open | - |
+| WR-07 | warning | open | - |
+| WR-08 | warning | open | - |
+| IN-07 | info | open | - |
+| IN-08 | info | open | - |
+| IN-09 | info | open | - |
+| IN-10 | info | open | - |
+| IN-11 | info | open | - |
+| WR-01 | warning | open | - (not in the current review) |
+| IN-01 | info | open | - (not in the current review) |
+| IN-02 | info | open | - (not in the current review) |
+| IN-03 | info | open | - (not in the current review) |
+| IN-04 | info | open | - (not in the current review) |
 | WR-02 | warning | open | - (not in the current review) |
 | WR-03 | warning | open | - (not in the current review) |
 | WR-04 | warning | open | - (not in the current review) |
