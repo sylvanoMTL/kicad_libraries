@@ -27,6 +27,9 @@ created: "2026-11-01"
 | user leave/close requests -> running workers | Change..., open, Cancel, Close, X and Escape arrive while kicad-cli, git or file reads may run | UI events |
 | worker threads -> GUI thread | build, one-off, open and process-list results arrive as queued signals | worker results |
 | dialog lifetime -> QThread lifetime | the dialog owns its workers; destroying it under a running thread crashes the process | object lifetime |
+| user -> import dialog (start-page Cancel) | a Cancel click ends the import session; no new input is parsed (12-13) | UI event |
+| OS screen geometry -> import dialog / User Guide | the free area of the screen decides the window size and position; trusted platform data (12-13, 12-14) | screen rectangle |
+| static help text -> menu and rendered page | menu labels and anchors are derived from the guide's own static text; no user, vendor or path value enters it (12-14) | heading text, anchor names |
 
 Plans 12-02 and 12-08 add no new boundary (static stylesheets, Help text and a planning document).
 
@@ -67,6 +70,13 @@ Plans 12-02 and 12-08 add no new boundary (static stylesheets, Help text and a p
 | T-12-29 | Tampering | `ImportDialog._on_help` during an install or commit | medium | mitigate | `_on_help` returns while closing and otherwise only creates or shows HelpDialog with `show()`; no `done`, `reject`, install or git call, no import state read (import_dialog.py L547-561); `test_help_works_while_installing`, `test_help_works_while_committing` | closed |
 | T-12-30 | Denial of service | Help opened while a close waits in Finishing | low | mitigate | Guide shown with `show()`, never `exec()`, so no nested event loop; `_shutdown` takes and closes `_help_dialog`; `test_help_works_while_finishing_and_closes_with_the_dialog` | closed |
 | T-12-31 | Information disclosure | HelpDialog pages | low | accept | Static text from constants; 12-12 adds only static sentences; see Accepted Risks Log | closed |
+| T-12-32 | Tampering | `ImportDialog._start_cancel_btn` while a package is read | medium | mitigate | Button wired to `reject()` (import_dialog.py L774); `done()` enters Finishing while `_busy_for("close")` lists any running worker, and `_discard_package` runs only in `_shutdown` from `_finish_close`; `test_start_page_cancel_while_reading_waits_then_closes` | closed |
+| T-12-33 | Denial of service | import window placed partly off screen (Install Part / Cancel unreachable) | medium | mitigate | `fit_window` (import_dialog.py L174) bounds the size by `screen_area` less the frame allowance via `_fit_size` and moves a visible frame inside with `_place_inside`; `_fit_to_screen` calls it on first show; `test_window_fits_the_screen` (100%, 200%, owner screen), `test_start_page_opens_small`, `test_fit_size_and_place_inside` | closed |
+| T-12-34 | Repudiation | conftest default screen area hiding the real screen code | low | mitigate | `real_screen_area` captured at module import, before the autouse patch; `test_screen_area_reads_the_widget_screen` compares it with `dialog.screen().availableGeometry()` | closed |
+| T-12-35 | Tampering | `render_page` anchors built from heading text | low | mitigate | `section_anchor` (help_dialog.py L515) keeps only a-z, 0-9 and hyphens, ends trimmed; menu rows are plain `QTreeWidgetItem([entry.text])`; `test_every_page_heading_is_in_the_menu_under_its_page` asserts `re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", anchor)` | closed |
+| T-12-36 | Information disclosure | HelpDialog pages (numbers and anchors) | low | accept | Static text from constants; 12-14 adds only numbers and anchors; see Accepted Risks Log | closed |
+| T-12-37 | Denial of service | User Guide window partly off screen at 200% (Close hidden) | low | mitigate | `HelpDialog.showEvent` calls the shared `fit_window(self, self.size())` (help_dialog.py L602-605); `test_help_window_fits_the_screen` (Help and F1, 100% and 200%), `test_help_dialog_fits_the_screen` | closed |
+| T-12-SC | Tampering | npm/pip/cargo installs (12-13, 12-14) | low | accept | Neither plan installs or upgrades a package; see Accepted Risks Log | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
 *Severity: critical > high > medium > low — only open threats at or above workflow.security_block_on count toward threats_open*
@@ -82,6 +92,8 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 |---------|------------|-----------|-------------|------|
 | AR-12-01 | T-12-04 | The Help stylesheet and pages are fixed strings built from theme constants; no user or vendor text reaches the Help rich text, so there is nothing to spoof. | plan 12-02 threat model (owner-approved plan) | 2026-11-01 |
 | AR-12-02 | T-12-31 | The Help pages are static text built from constants; plan 12-12 adds only static sentences naming the toolbar Help and F1, and no vendor, user or path value is formatted into them. | plan 12-12 threat model (owner-approved plan) | 2026-11-03 |
+| AR-12-03 | T-12-36 | The Help pages stay static text built from constants; plan 12-14 adds only rendered menu numbers and anchors derived from that static text, and no vendor, user or path value is formatted into them. | plan 12-14 threat model (owner-approved plan) | 2026-11-04 |
+| AR-12-04 | T-12-SC | Plans 12-13 and 12-14 install and upgrade no package, so there is no new supply-chain surface. | plans 12-13 / 12-14 threat models (owner-approved plans) | 2026-11-04 |
 
 *Accepted risks do not resurface in future audit runs.*
 
@@ -102,7 +114,7 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 - [x] `threats_open: 0` confirmed
 - [x] `status: verified` set in frontmatter
 
-**Approval:** verified 2026-11-01; re-verified 2026-11-02 after gap plans 12-09..12-11 (28 threats, all closed); re-verified 2026-11-03 after gap plan 12-12 (31 threats, all closed)
+**Approval:** verified 2026-11-01; re-verified 2026-11-02 after gap plans 12-09..12-11 (28 threats, all closed); re-verified 2026-11-03 after gap plan 12-12 (31 threats, all closed); re-verified 2026-11-04 after gap plans 12-13 and 12-14 (38 threats, all closed)
 
 ## Security Audit 2026-11-02
 
@@ -118,4 +130,12 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 |---|---|
 | Threats found | 31 |
 | Closed | 31 |
+| Open | 0 |
+
+## Security Audit 2026-11-04
+
+| Metric | Count |
+|---|---|
+| Threats found | 38 |
+| Closed | 38 |
 | Open | 0 |
