@@ -475,7 +475,7 @@ def _heading_is_in_view(browser: QTextBrowser, text: str) -> bool:
     for block, shown in _headings(browser, 3):
         if shown == text:
             top = browser.document().documentLayout().blockBoundingRect(block).top() - browser.verticalScrollBar().value()
-            return 0 <= top < browser.viewport().height()
+            return -1 < top < browser.viewport().height()  # the scroll value is whole pixels, the heading top is not
     return False
 
 
