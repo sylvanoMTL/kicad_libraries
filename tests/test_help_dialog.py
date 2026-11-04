@@ -783,3 +783,44 @@ def test_saved_place_survives_a_restart(qtbot):
     dialog.show()
     qtbot.waitExposed(dialog)
     qtbot.waitUntil(lambda: _heading_is_in_view(dialog._browser, "5.2 Per-source scoping"), timeout=5000)
+
+
+def test_an_explicit_topic_wins_and_is_not_remembered(qtbot):
+    settings.save_help_topic("filter")
+    dialog = HelpDialog(topic="importing")
+    qtbot.addWidget(dialog)
+    assert _current_key(dialog) == "importing"
+    assert settings.load_help_topic() == "filter"
+
+    # a program-driven move on an open guide is not the owner's either
+    assert dialog.show_topic("shortcuts") is True
+    assert _current_key(dialog) == "shortcuts"
+    assert settings.load_help_topic() == "filter"
+
+    later = HelpDialog()
+    qtbot.addWidget(later)
+    assert _current_key(later) == "filter"
+    assert settings.load_help_topic() == "filter"
+
+    # the owner's own click is remembered
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    _click_row(dialog, _find_item(dialog, "generating"))
+    qtbot.waitUntil(lambda: _current_key(dialog) == "generating", timeout=5000)
+    assert settings.load_help_topic() == "generating"
+
+
+@pytest.mark.parametrize("saved, opens", [
+    ("importing#no-such-heading", "importing"),
+    ("no_such_page", "overview"),
+    ("_how_to_use", "library_tree"),  # a group opens its first page
+    ("", "overview"),  # empty reads as nothing saved
+])
+def test_stale_saved_places_fall_back(qtbot, saved, opens):
+    settings.get_settings().setValue("help/last_topic", saved)
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    assert _current_key(dialog) == opens
+    # the fallback itself is not an owner move: the odd value stays as it was
+    assert settings.get_settings().value("help/last_topic", "") == saved
+    assert dialog._browser.toPlainText().strip() != ""
