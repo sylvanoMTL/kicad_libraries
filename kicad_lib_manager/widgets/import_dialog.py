@@ -79,7 +79,7 @@ _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
 _SEVERITY_COLOR = {Severity.ERROR: ERROR, Severity.WARNING: AMBER}
 _ISSUE_LIST_MAX_HEIGHT = 160
 _EDIT_SIZE = QSize(1100, 720)  # the size the edit step asks for, before the screen limits it
-_START_SIZE = QSize(640, 440)  # the start step: the 560 px column plus margins, and room for the issue list
+_START_WIDTH = 640  # the start step's width: the 560 px column plus margins; its height follows the content
 _FRAME_ALLOWANCE = QSize(16, 40)  # title bar and borders, used until the real frame is known
 _NOTHING_FOUND = "No KiCad symbol or footprint was found in this package."
 _CLOSING_REFUSED = "Pick another file."
@@ -551,7 +551,6 @@ class ImportDialog(QDialog):
         self.setWindowTitle("Import Part")
         self.setWindowModality(Qt.WindowModality.WindowModal)
         # No fixed minimum: the layout's own minimum applies, and a fixed 600 px would push a 200% screen's window off it
-        self.resize(_START_SIZE)
         self._edit_size = QSize(_EDIT_SIZE)  # the edit step's size this window uses; the user's resize updates it
 
         outer = QVBoxLayout(self)
@@ -565,6 +564,7 @@ class ImportDialog(QDialog):
         self._build_edit_page()
         self._build_result_page()
         self._show_page(self._start_page)
+        self.resize(self._start_size())
 
         # Enter inside a line edit must never install: no button is a default or auto-default (D-10).
         # Ctrl+Return is the keyboard way to Install, and only when Install is enabled (T-05-29).
@@ -582,6 +582,16 @@ class ImportDialog(QDialog):
 
     def _fit_to_screen(self, wanted: QSize):
         fit_window(self, wanted)
+
+    def _start_size(self) -> QSize:
+        """The start step's size: 640 wide and as tall as the content needs at that width, never below the minimum."""
+        layout = self.layout()
+        layout.activate()
+        if layout.hasHeightForWidth():
+            height = layout.totalHeightForWidth(_START_WIDTH)
+        else:
+            height = layout.totalSizeHint().height()
+        return QSize(_START_WIDTH, max(height, self.minimumSizeHint().height()))
 
     def _sync_page_policies(self, current: QWidget):
         """Give the current page the Preferred size policy and the other pages Ignored.
@@ -611,7 +621,7 @@ class ImportDialog(QDialog):
         if changed and page is self._edit_page:
             self._fit_to_screen(self._edit_size)
         elif changed and page is self._start_page:
-            self._fit_to_screen(_START_SIZE)
+            self._fit_to_screen(self._start_size())
 
     def _build_toolbar(self, outer: QVBoxLayout):
         """The toolbar above the page stack, shared by every page; Help is its only action (G-12-9)."""
@@ -734,12 +744,17 @@ class ImportDialog(QDialog):
         self._browse_btn.clicked.connect(self._on_browse)
         self._browse_folder_btn = QPushButton("Browse folder...")
         self._browse_folder_btn.clicked.connect(self._on_browse_folder)
-        buttons = QHBoxLayout()
-        buttons.setSpacing(8)
-        buttons.addWidget(self._browse_btn)
-        buttons.addWidget(self._browse_folder_btn)
-        buttons.addStretch()
-        lay.addLayout(buttons)
+        # Cancel sits at the end of the Browse row, as on the edit step it stays at the right; reject() keeps every close rule (D-06)
+        self._start_buttons = QHBoxLayout()
+        self._start_buttons.setSpacing(8)
+        self._start_buttons.addWidget(self._browse_btn)
+        self._start_buttons.addWidget(self._browse_folder_btn)
+        self._start_buttons.addStretch(1)
+        self._start_cancel_btn = QPushButton("Cancel")
+        self._start_cancel_btn.setToolTip("Close without importing. Nothing is written.")
+        self._start_cancel_btn.clicked.connect(self.reject)
+        self._start_buttons.addWidget(self._start_cancel_btn)
+        lay.addLayout(self._start_buttons)
 
         # Shown only after a refused or empty package: the error state of the Start page (D-05)
         self._issue_box = QWidget()
@@ -764,16 +779,6 @@ class ImportDialog(QDialog):
         issue_lay.addWidget(self._issue_closing)
         self._issue_box.hide()
         lay.addWidget(self._issue_box)
-
-        # Cancel at the bottom right, the same corner as the edit page's Cancel; reject() keeps every close rule (D-06)
-        self._start_bottom = QHBoxLayout()
-        self._start_bottom.setSpacing(8)
-        self._start_bottom.addStretch(1)
-        self._start_cancel_btn = QPushButton("Cancel")
-        self._start_cancel_btn.setToolTip("Close without importing. Nothing is written.")
-        self._start_cancel_btn.clicked.connect(self.reject)
-        self._start_bottom.addWidget(self._start_cancel_btn)
-        outer.addLayout(self._start_bottom)
 
         self._set_reading(False)
         self._start_page = page
@@ -1335,7 +1340,8 @@ class ImportDialog(QDialog):
         super().showEvent(event)
         if not self._offer_requested:
             self._offer_requested = True
-            self._fit_to_screen(self.size())  # inside the free area of the screen the moment it opens
+            # inside the free area of the screen the moment it opens
+            self._fit_to_screen(self._start_size() if self._stack.currentWidget() is self._start_page else self.size())
             self._browse_btn.setFocus()
             # After the dialog is shown: a OneDrive-redirected Downloads folder can be slow to list
             QTimer.singleShot(0, self._start_offer_lookup)
