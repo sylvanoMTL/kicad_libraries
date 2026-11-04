@@ -93,11 +93,11 @@ def make_window(qtbot, monkeypatch, tmp_path):
 
     # Patched at fixture level so no test can block on a real modal dialog;
     # tests set make.answer to choose the reply and read make.questions for the calls
-    def fake_question(*args):
-        make.questions.append(args)
+    def fake_question(window, *args):
+        make.questions.append((window, *args))
         return make.answer
 
-    monkeypatch.setattr(main_window.QMessageBox, "question", fake_question)
+    monkeypatch.setattr(main_window.MainWindow, "_question", fake_question)
     make.answer = QMessageBox.StandardButton.Yes
     make.questions = []
 
