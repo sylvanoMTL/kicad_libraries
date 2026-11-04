@@ -5,6 +5,8 @@ import re
 import types
 from pathlib import Path
 
+import pytest
+
 from PySide6.QtCore import QRect, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTextBrowser, QTreeWidgetItem
@@ -371,10 +373,11 @@ def test_help_css_uses_theme_tokens_only():
     assert re.findall(r"#[0-9A-Fa-f]{3,8}\b", source) == []
 
 
-def test_help_headings_keep_their_sizes(qtbot):
+@pytest.mark.parametrize("rendered", [False, True], ids=["raw_page", "rendered_page"])
+def test_help_headings_keep_their_sizes(qtbot, rendered):
     browser = QTextBrowser()
     qtbot.addWidget(browser)
-    browser.setHtml(HELP_PAGES["importing"])
+    browser.setHtml(help_dialog.render_page("importing") if rendered else HELP_PAGES["importing"])
 
     def first_size(level: int) -> float:
         block = browser.document().firstBlock()
@@ -657,3 +660,29 @@ def test_numbers_are_rendered_not_typed():
     assert '<h3><a name="conflicts"></a>4.4.7 Conflicts</h3>' in rendered
     assert "<h3>Conflicts</h3>" in HELP_PAGES["importing"]
     assert help_dialog.render_page("importing") == rendered
+
+
+def _heading_looks(browser: QTextBrowser, level: int) -> list[set[tuple]]:
+    """For each heading block of this level, the (point size, foreground) of every fragment in it."""
+    looks = []
+    for block, _text in _headings(browser, level):
+        looks.append({
+            (fmt.fontPointSize(), fmt.foreground().style(), fmt.foreground().color().name().upper())
+            for fmt in (fragment.fragment().charFormat() for fragment in block)
+        })
+    return looks
+
+
+@pytest.mark.parametrize("key", ["importing", "filter"])
+def test_rendered_headings_keep_their_look(qtbot, key):
+    raw, rendered = QTextBrowser(), QTextBrowser()
+    for browser in (raw, rendered):
+        qtbot.addWidget(browser)
+    raw.setHtml(HELP_PAGES[key])
+    rendered.setHtml(help_dialog.render_page(key))
+    for level in (2, 3):
+        assert _heading_looks(raw, level), f"no level {level} heading on the {key} page"
+        assert _heading_looks(rendered, level) == _heading_looks(raw, level)
+    # an anchor that took the link style would show the accent colour in a section heading
+    for look in _heading_looks(rendered, 3):
+        assert all(colour != ACCENT.upper() for _size, _style, colour in look)
