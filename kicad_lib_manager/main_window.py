@@ -1042,6 +1042,7 @@ class MainWindow(QMainWindow):
             core=IMPORT_CORE,
             backup_root=IMPORT_BACKUP_ROOT,
             atomic_backup_root=ATOMIC_BACKUP_ROOT,
+            show_guide=self.show_guide,
             parent=self,
         )
         dialog.installed.connect(self._on_import_installed)
