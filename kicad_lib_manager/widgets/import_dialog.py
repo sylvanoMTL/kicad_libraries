@@ -21,7 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSize, QStandardPaths, QThread, QTimer, Signal
+from PySide6.QtCore import Qt, QPoint, QRect, QSize, QStandardPaths, QThread, QTimer, Signal
 from PySide6.QtGui import (
     QAction, QCloseEvent, QColor, QCursor, QFont, QGuiApplication, QKeyEvent, QKeySequence, QPalette, QResizeEvent,
     QShortcut, QShowEvent,
@@ -78,6 +78,8 @@ from .theme import (
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
 _SEVERITY_COLOR = {Severity.ERROR: ERROR, Severity.WARNING: AMBER}
 _ISSUE_LIST_MAX_HEIGHT = 160
+_EDIT_SIZE = QSize(1100, 720)  # the size the edit step asks for, before the screen limits it
+_FRAME_ALLOWANCE = QSize(16, 40)  # title bar and borders, used until the real frame is known
 _NOTHING_FOUND = "No KiCad symbol or footprint was found in this package."
 _CLOSING_REFUSED = "Pick another file."
 _CLOSING_EMPTY = "Check that you downloaded the KiCad format, then pick another file."
@@ -135,6 +137,57 @@ _VENDOR_LABELS = {"UltraLibrarian": "Ultra Librarian", "Loose": "Loose files", "
 def vendor_label(vendor: str) -> str:
     """The display name of an adapter's vendor; an unmapped name is shown as it is."""
     return _VENDOR_LABELS.get(vendor, vendor)
+
+
+def screen_area(widget: QWidget) -> QRect:
+    """The free area of the screen the widget is on, taskbar left out, in logical pixels.
+
+    A module-level function so the tests can model a 100% and a 200% display scale.
+    """
+    screen = widget.screen() or QGuiApplication.primaryScreen()
+    return screen.availableGeometry()
+
+
+def _fit_size(wanted: QSize, minimum: QSize, frame: QSize, area: QSize) -> QSize:
+    """The wanted size cut to the area less the frame, but never below the layout's minimum."""
+    return QSize(
+        max(minimum.width(), min(wanted.width(), area.width() - frame.width())),
+        max(minimum.height(), min(wanted.height(), area.height() - frame.height())),
+    )
+
+
+def _place_inside(frame: QRect, area: QRect) -> QPoint:
+    """The top-left that keeps the frame inside the area; a frame as large as the area aligns to its top-left."""
+
+    def axis(start: int, length: int, area_start: int, area_length: int) -> int:
+        if length >= area_length:
+            return area_start
+        return max(area_start, min(start, area_start + area_length - length))
+
+    return QPoint(
+        axis(frame.x(), frame.width(), area.x(), area.width()),
+        axis(frame.y(), frame.height(), area.y(), area.height()),
+    )
+
+
+def fit_window(window: QWidget, wanted: QSize) -> None:
+    """Size and place a top-level window inside the free area of its screen.
+
+    Shared with the User Guide window. A hidden window is only sized, never moved, so Qt still centres it
+    over its parent on first show.
+    """
+    area = screen_area(window)
+    layout = window.layout()
+    if layout is not None:
+        layout.activate()
+    frame = (window.frameGeometry().size() - window.size()).expandedTo(_FRAME_ALLOWANCE)
+    size = _fit_size(wanted, window.minimumSizeHint(), frame, area.size())
+    centre = window.frameGeometry().center()
+    window.resize(size)
+    if window.isVisible():
+        outer = QRect(QPoint(0, 0), size + frame)
+        outer.moveCenter(centre)
+        window.move(_place_inside(outer, area))
 
 _START_BODY = (
     "Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. "
@@ -496,8 +549,9 @@ class ImportDialog(QDialog):
 
         self.setWindowTitle("Import Part")
         self.setWindowModality(Qt.WindowModality.WindowModal)
-        self.resize(1100, 720)
-        self.setMinimumSize(900, 600)
+        # No fixed minimum: the layout's own minimum applies, and a fixed 600 px would push a 200% screen's window off it
+        self.resize(_EDIT_SIZE)
+        self._edit_size = QSize(_EDIT_SIZE)  # the edit step's size this window uses; the user's resize updates it
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(16, 16, 16, 16)
@@ -509,7 +563,7 @@ class ImportDialog(QDialog):
         self._build_start_page()
         self._build_edit_page()
         self._build_result_page()
-        self._stack.setCurrentWidget(self._start_page)
+        self._show_page(self._start_page)
 
         # Enter inside a line edit must never install: no button is a default or auto-default (D-10).
         # Ctrl+Return is the keyboard way to Install, and only when Install is enabled (T-05-29).
@@ -524,6 +578,19 @@ class ImportDialog(QDialog):
             QTimer.singleShot(0, lambda: self.open_path(Path(package_path)))
 
     # -- pages ------------------------------------------------------------------
+
+    def _fit_to_screen(self, wanted: QSize):
+        fit_window(self, wanted)
+
+    def _show_page(self, page: QWidget):
+        """Show a page: the only place that switches the stack, so the window size follows the page (G-12-10)."""
+        previous = self._stack.currentWidget()
+        changed = page is not previous
+        if changed and previous in (self._edit_page, self._result_view):
+            self._edit_size = self.size()
+        self._stack.setCurrentWidget(page)
+        if changed and page is self._edit_page:
+            self._fit_to_screen(self._edit_size)
 
     def _build_toolbar(self, outer: QVBoxLayout):
         """The toolbar above the page stack, shared by every page; Help is its only action (G-12-9)."""
@@ -1247,6 +1314,7 @@ class ImportDialog(QDialog):
         super().showEvent(event)
         if not self._offer_requested:
             self._offer_requested = True
+            self._fit_to_screen(self.size())  # inside the free area of the screen the moment it opens
             self._browse_btn.setFocus()
             # After the dialog is shown: a OneDrive-redirected Downloads folder can be slow to list
             QTimer.singleShot(0, self._start_offer_lookup)
@@ -1343,7 +1411,7 @@ class ImportDialog(QDialog):
         self._hide_issue_box()
         self._reading_label.setText("Reading package...")
         self._set_reading(True)
-        self._stack.setCurrentWidget(self._start_page)
+        self._show_page(self._start_page)
         core, repo_root, layout, fp_dir = self._core, self._repo_root, self._repo_layout, self._kicad_fp_dir
 
         def task(progress):
@@ -1443,7 +1511,7 @@ class ImportDialog(QDialog):
         self._populate_items()
         self._sync_official_availability()
         self._preview_stack.setCurrentWidget(self._building_page)
-        self._stack.setCurrentWidget(self._edit_page)
+        self._show_page(self._edit_page)
         self._request_rebuild()
 
     def _hide_issue_box(self):
@@ -1470,7 +1538,7 @@ class ImportDialog(QDialog):
         self._issue_list.setMinimumHeight(min(_ISSUE_LIST_MAX_HEIGHT, wanted))
         self._issue_box.show()
         self._set_reading(False)
-        self._stack.setCurrentWidget(self._start_page)
+        self._show_page(self._start_page)
         self._browse_btn.setFocus()
 
     def _allowed(self) -> frozenset[str] | None:
@@ -3015,7 +3083,7 @@ class ImportDialog(QDialog):
     def _show_result(self, plan: InstallPlan, result: InstallResult):
         view = self._result_view
         view.show_result(result, plan, self._repo_root)
-        self._stack.setCurrentWidget(view)
+        self._show_page(view)
         # Close is the default button on this page only (Enter closes it; the Edit page has none)
         view.close_button.setAutoDefault(True)
         view.close_button.setDefault(True)
@@ -3384,7 +3452,7 @@ class ImportDialog(QDialog):
         self._vendor_label.clear()
         self._hide_issue_box()
         self._set_reading(False)
-        self._stack.setCurrentWidget(self._start_page)
+        self._show_page(self._start_page)
         self._browse_btn.setFocus()
 
     # -- lifetime (WR-04) ---------------------------------------------------------

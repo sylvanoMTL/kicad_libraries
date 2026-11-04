@@ -1,5 +1,6 @@
 import os
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -35,6 +36,21 @@ def pytest_runtest_teardown(item, nextitem):
             for thread in threads:
                 thread.wait(60000)
     return (yield)
+
+
+@pytest.fixture(autouse=True)
+def _desktop_screen_area(monkeypatch):
+    """Size the import window for a Full HD 100% desktop (1920x1032), not the 800x800 offscreen screen.
+
+    The edit page then keeps its 1100x720 size in every test. A test may patch screen_area again to model
+    another screen. Nothing is imported here: a test module that never loads the import window stays Qt-free.
+    """
+    module = sys.modules.get("kicad_lib_manager.widgets.import_dialog")
+    if module is None:
+        return
+    from PySide6.QtCore import QRect
+
+    monkeypatch.setattr(module, "screen_area", lambda widget: QRect(0, 0, 1920, 1032))
 
 
 @pytest.fixture

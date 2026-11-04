@@ -6075,7 +6075,7 @@ from PySide6.QtCore import QRect  # noqa: E402
 from PySide6.QtWidgets import QSplitter  # noqa: E402
 
 # The real function, captured before any test patches the module's screen_area
-real_screen_area = getattr(import_dialog_module, "screen_area", None)
+real_screen_area = import_dialog_module.screen_area
 
 # Free areas in logical pixels, taskbar left out
 DESKTOP_100 = QRect(0, 0, 1920, 1032)  # Full HD at 100%, 48 px taskbar
