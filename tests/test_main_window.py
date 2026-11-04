@@ -1476,7 +1476,7 @@ def _wurth_scan_result(skipped):
 
 
 def _skip_line():
-    return library_scanner.models_skipped_issue(["WurthElektronik"]).message
+    return library_scanner.models_skipped_issue(["WurthElektronik"]).text
 
 
 def test_loading_dialog_skips_the_source_being_checked(make_window, qtbot):
