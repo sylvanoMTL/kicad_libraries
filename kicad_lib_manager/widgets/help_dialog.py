@@ -219,6 +219,8 @@ HELP_PAGES["importing"] = _wrap(
     "one <b>folder</b> onto the main window; the dialog then opens with that package "
     "loaded. The newest zip in your Downloads folder is offered, but it is never "
     "opened by itself.</p>"
+    "<p><b>Cancel</b> at the bottom right closes the import window without importing anything, "
+    "and nothing is written. On the editing step it sits to the right of <b>Install Part</b>.</p>"
     "<p>Once a package is open, the button <b>" + CHANGE_PACKAGE_TEXT + "</b> at the top right "
     "closes it and goes back to this start step so you can pick another package. "
     "Your edits to the open package are dropped and nothing has been written.</p>"

@@ -677,6 +677,16 @@ class ImportDialog(QDialog):
         self._issue_box.hide()
         lay.addWidget(self._issue_box)
 
+        # Cancel at the bottom right, the same corner as the edit page's Cancel; reject() keeps every close rule (D-06)
+        self._start_bottom = QHBoxLayout()
+        self._start_bottom.setSpacing(8)
+        self._start_bottom.addStretch(1)
+        self._start_cancel_btn = QPushButton("Cancel")
+        self._start_cancel_btn.setToolTip("Close without importing. Nothing is written.")
+        self._start_cancel_btn.clicked.connect(self.reject)
+        self._start_bottom.addWidget(self._start_cancel_btn)
+        outer.addLayout(self._start_bottom)
+
         self._set_reading(False)
         self._start_page = page
         self._stack.addWidget(page)
