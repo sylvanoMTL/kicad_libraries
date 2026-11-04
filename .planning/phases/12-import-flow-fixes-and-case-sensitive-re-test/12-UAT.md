@@ -174,6 +174,7 @@ severity: major
 - G-12-21: skip unit is the source (e.g. "Skip WurthElektronik"), skipping only that source's 3D model path check. A skipped scan IS saved, with the skipped sources recorded; the next start reuses it and the log says the 3D paths of that source were skipped then and Rescan does the full check (never silent, O-04).
 - G-12-21 (included): narrow the saved-scan code signature so only code that affects scan results makes the saved scan stale.
 - G-12-22: the main window stays locked while the import window is open (Phase 5 design kept); only the User Guide becomes a shared free-floating window usable beside every window.
+- G-12-22 (approved exclusion, asked after plan check): system file pickers (Browse zip..., Browse folder..., Add 3D model..., Set KiCad Footprint Path, the backup folder, the destination Browse..., the Check Atomic Parts model picker) may stay as they are and block the User Guide while open. Owner chose "No, pickers may block" over converting them to Qt window-modal pickers.
 
 ## Summary
 
