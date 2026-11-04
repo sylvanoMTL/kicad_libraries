@@ -254,7 +254,7 @@ Plans:
   4. The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes.
   5. On a case-sensitive folder, when a case twin was written under another spelling, rollback restores the original spelling and removes the twin on both the rollback and the overwrite branches, as the deferred Phase 4 UAT Test 3 (backlog 999.2) expected.
 
-**Plans**: 12/12 plans executed (1 gap-closure plan pending: 12-12)
+**Plans**: 12/14 plans executed (2 gap-closure plans pending: 12-13, 12-14)
 
 Plans:
 **Wave 1**
@@ -282,6 +282,10 @@ Plans:
 
 **Gap closure (UAT G-12-9)**
 - [x] 12-12-PLAN.md — Wave 1: toolbar at the top of the import window with Help (F1) on every page, opening the User Guide on Importing Parts while the import window stays open; HelpDialog topic key; Help text; gap-closure suite gate (G-12-9)
+
+**Gap closure (UAT G-12-10, G-12-11)**
+- [ ] 12-13-PLAN.md — Wave 1: Cancel on the start page; the import window fits the screen's free area at 100% and 200%, opens small on the start page, grows for the edit page and shrinks back; Help text (G-12-10)
+- [ ] 12-14-PLAN.md — Wave 2 (after 12-13): numbered User Guide menu with each page's sections derived from its headings, click scrolls to the heading, same numbers in the page headings; gap-closure suite gate (G-12-11)
 
 **UI hint**: yes
 
