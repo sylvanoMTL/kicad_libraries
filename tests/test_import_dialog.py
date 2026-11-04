@@ -6141,3 +6141,52 @@ def test_window_fits_the_screen_on_first_show(qtbot, make_start_dialog, monkeypa
 def test_screen_area_reads_the_widget_screen(qtbot, make_start_dialog):
     dialog = make_start_dialog()
     assert real_screen_area(dialog) == dialog.screen().availableGeometry()
+
+
+@pytest.mark.parametrize("area", [DESKTOP_100, DESKTOP_200], ids=["full_hd_100", "full_hd_200"])
+def test_start_page_opens_small(qtbot, make_start_dialog, monkeypatch, area):
+    use_screen(monkeypatch, area)
+    dialog = make_start_dialog()
+    assert dialog.size() == QSize(640, 440)
+    assert dialog.minimumSizeHint().width() < 640  # the edit page's minimum no longer counts
+    assert area.contains(dialog.frameGeometry())
+    assert dialog._start_cancel_btn.isVisible()
+    assert inside_window(dialog, dialog._start_cancel_btn)
+
+
+def test_window_grows_for_the_edit_page_and_shrinks_back(qtbot, make_dialog, monkeypatch):
+    dialog = make_dialog(show=True)
+    wait_plan(qtbot, dialog)
+    assert dialog.size() == QSize(1100, 720)
+    assert dialog.minimumSizeHint().width() >= 780
+    sizes = dialog._edit_page.findChild(QSplitter).sizes()
+    assert abs(sizes[0] / sum(sizes) - 0.40) <= 0.03
+    assert dialog._cancel_btn.isVisible() and dialog._cancel_btn.isEnabled()
+
+    resize_and_wait(qtbot, dialog, 1200, 760)
+    dialog._change_btn.click()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._start_page, timeout=30000)
+    assert dialog.size() == QSize(640, 440)
+    assert dialog._start_cancel_btn.isVisible()
+
+    dialog.open_path(UL_ZIP)
+    wait_plan(qtbot, dialog)
+    assert dialog.size() == QSize(1200, 760)  # the size the user gave this window
+
+    use_screen(monkeypatch, DESKTOP_200)
+    dialog._change_btn.click()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._start_page, timeout=30000)
+    dialog.open_path(UL_ZIP)
+    wait_plan(qtbot, dialog)
+    assert dialog.size() == QSize(944, 452)  # the remembered size is still bounded by the screen
+    assert DESKTOP_200.contains(dialog.frameGeometry())
+
+
+def test_result_page_keeps_the_size_and_has_close(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    before = dialog.size()
+    install_ul(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._result_view
+    assert dialog.size() == before
+    assert dialog._result_view.close_button.isVisible()
+    assert dialog._result_view.close_button.isEnabled()

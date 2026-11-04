@@ -145,6 +145,12 @@ def test_help_names_the_start_page_cancel():
         assert claim in section, claim
 
 
+def test_help_says_the_window_fits_the_screen():
+    section = _section("Start")
+    for claim in ("opens small", "grows", "fit your screen"):
+        assert claim in section, claim
+
+
 def test_help_names_choose_another_package():
     label = import_dialog.CHANGE_PACKAGE_TEXT
     assert label == "Choose another package..."
