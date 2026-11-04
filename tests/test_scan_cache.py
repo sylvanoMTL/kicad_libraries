@@ -410,6 +410,61 @@ def test_code_signature_is_stable_and_hex():
     assert len(first) == 64
 
 
+PACKAGE = Path(scan_cache.__file__).parent
+
+
+def test_code_signature_covers_the_scan_modules_only():
+    files = set(scan_cache._scan_code_files(PACKAGE))
+
+    assert files >= {
+        "library_scanner.py", "scan_cache.py", "models.py", "atomic_check.py", "changes.py",
+        "kicad_files.py", "sexpr.py", "fsutil.py", "manufacturers.py", "gitops.py",
+        "importer/__init__.py", "importer/fieldrules.py", "importer/package.py",
+    }
+    assert not files & {"main_window.py", "settings.py", "table_generator.py", "importer/planner.py"}
+    assert not any(name.startswith("widgets/") for name in files)
+    assert not any(name.startswith("..") or name == "kicad_lib_manager.py" for name in files)
+    assert sorted(files) == scan_cache._scan_code_files(PACKAGE)
+
+
+@pytest.fixture
+def package_copy(tmp_path):
+    copy = tmp_path / "copy" / "kicad_lib_manager"
+    shutil.copytree(PACKAGE, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    return copy
+
+
+def _append(path: Path, text: str = "\n# edited\n") -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(text)
+
+
+def test_code_signature_follows_scan_code_edits(package_copy):
+    base = scan_cache._code_signature_of(package_copy)
+    assert len(base) == 64 and all(c in "0123456789abcdef" for c in base)
+    assert base == scan_cache._code_signature_of(package_copy)
+
+    for outside in ("widgets/help_dialog.py", "main_window.py", "settings.py"):
+        _append(package_copy / outside)
+        assert scan_cache._code_signature_of(package_copy) == base, outside
+
+    for inside in ("atomic_check.py", "importer/fieldrules.py", "models.py"):
+        before = scan_cache._code_signature_of(package_copy)
+        _append(package_copy / inside)
+        assert scan_cache._code_signature_of(package_copy) != before, inside
+
+    before = scan_cache._code_signature_of(package_copy)
+    (package_copy / "newmod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _append(package_copy / "library_scanner.py", "\nfrom . import newmod  # noqa\n")
+    assert "newmod.py" in scan_cache._scan_code_files(package_copy)
+    assert scan_cache._code_signature_of(package_copy) != before
+
+
+def test_code_signature_of_an_unparsable_closure_module_is_empty(package_copy):
+    _append(package_copy / "atomic_check.py", "\ndef broken(:\n")
+    assert scan_cache._code_signature_of(package_copy) == ""
+
+
 # ── skipped sources in the saved scan (G-12-21) ──────────────────────
 
 WE_TEST = "WurthElektronik/KiCad-Library/footprints/WE_Test.pretty"

@@ -217,3 +217,20 @@ def test_skip_line_texts():
     assert library_scanner.models_skipped_issue([WURTH], ["B", "A"]).text.startswith(
         "3D model paths of WurthElektronik were not checked, except A, B (rescanned since):"
     )
+
+
+# ── One progress scale ───────────────────────────────────────────────
+
+def test_progress_rises_from_0_to_100(two_sources):
+    root, fp = two_sources
+    reports: list[tuple[str, int, int]] = []
+
+    scan_all(root, progress=lambda text, current, total: reports.append((text, current, total)), kicad_fp_dir=fp)
+
+    assert {total for _, _, total in reports} == {100}
+    values = [current for _, current, _ in reports]
+    assert values == sorted(values)
+    assert values[0] == 0 and values[-1] == 100
+    checking = [current for text, current, _ in reports if text.startswith("Checking 3D paths:")]
+    assert checking and all(10 <= value <= 92 for value in checking)
+    assert [current for text, current, _ in reports if text == "Checking atomic parts..."] == [92]
