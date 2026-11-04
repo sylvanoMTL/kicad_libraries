@@ -87,6 +87,12 @@ result: issue
 reported: "The help should have numbered items, and titles should also be in the menu on the left." (screenshot: Importing Parts page with the Conflicts heading underlined; the left menu lists pages only)
 severity: major
 
+## Deferred Follow-Ups
+
+- test: none (raised during the UAT session, startup scan, not a phase 12 item)
+  idea: "One note, can we add a \"skip this library\" when scaning for the libraries, that would help to be much faster. For instanc it would skip the full Wurth Elektronic lib. (screenshot: Loading Libraries dialog, 'Checking 3D paths: T_Wurth_WE-OLTI-EE16_7_5_750315526' at 97%, the empty area right of the bar circled for a Skip button)"
+  deferred_at: 2026-11-04
+
 ## Summary
 
 total: 11
