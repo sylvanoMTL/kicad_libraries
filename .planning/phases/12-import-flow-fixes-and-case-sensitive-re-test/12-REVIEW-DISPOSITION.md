@@ -3,30 +3,30 @@ phase: 12
 review: 12-REVIEW.md
 titles: json
 findings:
+  - id: WR-01
+    severity: warning
+    disposition: open
+    title: "Start page adds a third \"Cancel\" button, and two opposite ones can be visible together (widens IN-01)"
+  - id: IN-01
+    severity: info
+    disposition: open
+    title: "Re-clicking the current section re-scrolls with the mouse only"
+  - id: IN-02
+    severity: info
+    disposition: open
+    title: "`_edit_size` comment says a user resize updates it; only leaving the page does"
+  - id: IN-03
+    severity: info
+    disposition: open
+    title: "Duplicate `<h3>` labels within one page are only caught by a test"
+  - id: IN-04
+    severity: info
+    disposition: open
+    title: "The screen-area fixture silently does nothing if the module is not yet imported"
   - id: WR-02
     severity: warning
     disposition: open
     title: "The three required-field hints duplicate the atomic-strip sentences instead of deriving from them"
-  - id: IN-01
-    severity: info
-    disposition: open
-    title: "Two buttons labelled \"Cancel\" and the help text uses the word for both"
-  - id: IN-02
-    severity: info
-    disposition: open
-    title: "Cancel (and Install Part) are missing from the hand-built tab order"
-  - id: IN-03
-    severity: info
-    disposition: open
-    title: "`test_install_progress_and_lock` assertion was weakened"
-  - id: IN-04
-    severity: info
-    disposition: open
-    title: "The toolbar Help button cannot be reached with Tab; F1 is the only keyboard path"
-  - id: WR-01
-    severity: warning
-    disposition: open
-    title: "Plain-name rule (G-12-5) still leaks `kicad_common.json` to the user through interpolated paths"
   - id: WR-03
     severity: warning
     disposition: open
@@ -49,19 +49,19 @@ findings:
     title: "The Qt teardown hook can hide a hung worker for 60 s per widget"
 open: 11
 total: 11
-recorded: 2026-11-03T20:26:25.776Z
+recorded: 2026-11-04T11:11:32.641Z
 ---
 
 # Phase 12: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| WR-02 | warning | open | - |
+| WR-01 | warning | open | - |
 | IN-01 | info | open | - |
 | IN-02 | info | open | - |
 | IN-03 | info | open | - |
 | IN-04 | info | open | - |
-| WR-01 | warning | open | - (not in the current review) |
+| WR-02 | warning | open | - (not in the current review) |
 | WR-03 | warning | open | - (not in the current review) |
 | WR-04 | warning | open | - (not in the current review) |
 | WR-05 | warning | open | - (not in the current review) |
