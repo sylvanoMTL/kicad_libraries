@@ -254,7 +254,7 @@ Plans:
   4. The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes.
   5. On a case-sensitive folder, when a case twin was written under another spelling, rollback restores the original spelling and removes the twin on both the rollback and the overwrite branches, as the deferred Phase 4 UAT Test 3 (backlog 999.2) expected.
 
-**Plans**: 14/14 plans executed (2 gap-closure plans pending: 12-13, 12-14)
+**Plans**: 14/19 plans executed (5 gap-closure plans pending: 12-15 to 12-19)
 
 Plans:
 **Wave 1**
@@ -286,6 +286,13 @@ Plans:
 **Gap closure (UAT G-12-10, G-12-11)**
 - [x] 12-13-PLAN.md — Wave 1: Cancel on the start page; the import window fits the screen's free area at 100% and 200%, opens small on the start page, grows for the edit page and shrinks back; Help text (G-12-10)
 - [x] 12-14-PLAN.md — Wave 2 (after 12-13): numbered User Guide menu with each page's sections derived from its headings, click scrolls to the heading, same numbers in the page headings; the User Guide window fits the screen at 100% and 200% (G-12-11)
+
+**Gap closure (UAT G-12-12, G-12-21, G-12-22, G-12-23)**
+- [ ] 12-15-PLAN.md — Wave 1: compact import start page; Cancel on the Browse row, height from the content at width 640, one slot for the Downloads line and the reading box, refit for the issue list; Help (G-12-12)
+- [ ] 12-16-PLAN.md — Wave 1: Qt-free skip of one source's 3D model path check in scan_all, skipped sources in the result and the saved scan (format 2) with an honest reuse note, code signature narrowed to the scan's modules, one rising progress scale (G-12-21)
+- [ ] 12-17-PLAN.md — Wave 2 (after 12-15, 12-16): Loading Libraries window with "Skip <source>", lock-guarded worker request, skip-aware log, Generate after a skip removes nothing, Help and CLAUDE.md (G-12-21)
+- [ ] 12-18-PLAN.md — Wave 3 (after 12-15, 12-17): one shared parentless non-modal User Guide for the main window and the import window, guide outlives the import window and closes with the main window, main-window dialogs window-modal; Help (G-12-22)
+- [ ] 12-19-PLAN.md — Wave 4 (after 12-18): the guide remembers the owner's last page or section across close and restart; explicit topics (import window's Importing Parts) win and are not remembered (G-12-23)
 
 **UI hint**: yes
 
