@@ -28,7 +28,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QAbstractItemView, QButtonGroup, QComboBox, QCompleter, QDialog, QFileDialog, QFormLayout, QFrame,
-    QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar,
+    QGridLayout, QHBoxLayout, QLabel, QLineEdit, QListView, QListWidget, QListWidgetItem, QPlainTextEdit, QProgressBar,
     QPushButton, QRadioButton, QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QStyle, QToolBar, QToolButton,
     QVBoxLayout, QWidget,
 )
@@ -78,6 +78,7 @@ from .theme import (
 _SEVERITY_GLYPH = {Severity.ERROR: "✖", Severity.WARNING: "⚠"}
 _SEVERITY_COLOR = {Severity.ERROR: ERROR, Severity.WARNING: AMBER}
 _ISSUE_LIST_MAX_HEIGHT = 160
+_ISSUE_LIST_MIN_HEIGHT = 112  # what many rows may be squeezed to, so the start window still fits a Full HD 200% screen
 _EDIT_SIZE = QSize(1100, 720)  # the size the edit step asks for, before the screen limits it
 _START_WIDTH = 640  # the start step's width: the 560 px column plus margins; its height follows the content
 _FRAME_ALLOWANCE = QSize(16, 40)  # title bar and borders, used until the real frame is known
@@ -585,8 +586,14 @@ class ImportDialog(QDialog):
 
     def _start_size(self) -> QSize:
         """The start step's size: 640 wide and as tall as the content needs at that width, never below the minimum."""
+        # Showing or hiding a block leaves the cached sizes of the nested layouts stale until the event loop
+        # runs; reset them from the inside out so the height below is the content as it is now
         layout = self.layout()
-        layout.activate()
+        chain = (self._start_column.layout(), self._start_page.layout(), self._stack.layout(), layout)
+        for item in chain:
+            item.invalidate()
+        for item in chain:
+            item.activate()
         if layout.hasHeightForWidth():
             height = layout.totalHeightForWidth(_START_WIDTH)
         else:
@@ -726,7 +733,6 @@ class ImportDialog(QDialog):
         self._offer_open_btn = QPushButton("Open")
         self._offer_open_btn.clicked.connect(self._on_offer_open)
         offer_lay.addWidget(self._offer_open_btn)
-        lay.addWidget(self._offer_row)
 
         self._reading_box = QWidget()
         reading_lay = QVBoxLayout(self._reading_box)
@@ -738,7 +744,18 @@ class ImportDialog(QDialog):
         self._reading_bar.setRange(0, 0)
         reading_lay.addWidget(self._reading_label)
         reading_lay.addWidget(self._reading_bar)
-        lay.addWidget(self._reading_box)
+
+        # One slot as tall as the taller of the two, so the start window keeps its height when the Downloads
+        # line arrives or a package is read
+        self._offer_slot = QWidget()
+        slot_lay = QGridLayout(self._offer_slot)
+        slot_lay.setContentsMargins(0, 0, 0, 0)
+        for member in (self._offer_row, self._reading_box):
+            policy = member.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)
+            member.setSizePolicy(policy)
+            slot_lay.addWidget(member, 0, 0)
+        lay.addWidget(self._offer_slot)
 
         self._browse_btn = QPushButton("Browse zip...")
         self._browse_btn.clicked.connect(self._on_browse)
@@ -1544,6 +1561,8 @@ class ImportDialog(QDialog):
     def _hide_issue_box(self):
         self._issue_box.hide()
         self._issue_list.clear()
+        if self._stack.currentWidget() is self._start_page:
+            self._fit_to_screen(self._start_size())  # a cleared list leaves no empty band
 
     def _show_start_issues(self, issues: list[Issue], refused: bool):
         """Fill the Start page's error state: ERROR and WARNING rows, then the closing line.
@@ -1559,13 +1578,14 @@ class ImportDialog(QDialog):
         if not shown:
             self._issue_list.addItem(QListWidgetItem(_NOTHING_FOUND))
         self._issue_closing.setText(_CLOSING_REFUSED if refused else _CLOSING_EMPTY)
-        # Few rows need less than the 160 px cap; many rows scroll inside it
+        # Few rows need less than the 160 px cap; many rows scroll inside it and may be squeezed to the lower bound
         row = max(self._issue_list.sizeHintForRow(0), self._issue_list.fontMetrics().height() + 8)
         wanted = row * self._issue_list.count() + 2 * self._issue_list.frameWidth() + 4
-        self._issue_list.setMinimumHeight(min(_ISSUE_LIST_MAX_HEIGHT, wanted))
+        self._issue_list.setMinimumHeight(min(_ISSUE_LIST_MIN_HEIGHT, wanted))
         self._issue_box.show()
         self._set_reading(False)
         self._show_page(self._start_page)
+        self._fit_to_screen(self._start_size())  # the window follows the list, inside the screen
         self._browse_btn.setFocus()
 
     def _allowed(self) -> frozenset[str] | None:
