@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: partial
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
 source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
-updated: 2026-11-03T09:30:00Z
+updated: 2026-11-04T09:49:47.716Z
 ---
 
 ## Current Test
@@ -73,11 +73,19 @@ result: issue
 reported: "a) ok b) ok c) ok d) where is the help? e) pass" then "Help user guide is not accessible from the import part window"; then "There is no access to help also when on the import part to open package"
 severity: major
 
+### 10. Help in the import window (re-check of 9(d), plan 12-12)
+setup: start the app with `.\env\Scripts\python.exe kicad_lib_manager.py`; press Ctrl+I.
+steps: (a) look at the top of the import window before opening a package; open `downloaded_examples\ul_CSD85301Q2.zip`, pick an Atomic_ target library, look again; (b) click Help; (c) click and type in the import window, then in the guide; (d) close the guide, press F1; (e) press Cancel in the import window.
+expected: (a) a toolbar row at the very top of the import window shows the help icon with "Help" beside it, on the start page and the edit page; (b) clicking Help opens the User Guide on "Importing Parts" in a second window and the import window stays open; (c) you can click and type in both windows; (d) pressing F1 does the same (no second guide window); (e) Cancel closes the import window and the guide closes with it, nothing written to `Custom/`. The row looks right: icon and text not clipped, no stray gap or line.
+result: issue
+reported: "the inport part window is too big and has no Cancel button."
+severity: major
+
 ## Summary
 
-total: 9
+total: 10
 passed: 2
-issues: 5
+issues: 6
 pending: 0
 skipped: 1
 blocked: 1
@@ -165,7 +173,9 @@ blocked: 1
 
 - gap_id: G-12-9
   truth: "From every page of the import window (the open-package start page and the edit/preview page), the User Guide opens without closing the import window: a Help button and F1 open it on the Importing Parts page."
-  status: failed
+  status: resolved
+  resolved_by: 12-12-PLAN.md
+  resolved_at: 2026-11-04
   reason: "User reported: Help user guide is not accessible from the import part window; also not from the open-package page"
   severity: major
   test: 9
@@ -183,3 +193,12 @@ blocked: 1
     - "F1 inside the import window opens the same page (QShortcut on the dialog)"
     - "Help page Importing Parts and Keyboard Shortcuts mention the Help button / F1 inside the import window"
     - "Tests in tests/test_import_dialog.py and tests/test_help_dialog.py: Help button exists on start and edit pages, F1 opens HelpDialog on 'Importing Parts', import dialog stays open; HelpDialog(topic=...) selects the topic"
+
+- gap_id: G-12-10
+  truth: "The import window fits on the screen and shows a Cancel button (beside Install Part on the edit page, and a way to cancel on the start page) without resizing or scrolling."
+  status: failed
+  reason: "User reported: the inport part window is too big and has no Cancel button."
+  severity: major
+  test: 10
+  artifacts: []
+  missing: []
