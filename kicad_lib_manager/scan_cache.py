@@ -3,9 +3,11 @@
 Qt-free and stdlib only. The saved scan is plain JSON (never pickle) in a folder beside the app's
 settings, written atomically, and untrusted when read back: any wrong type, missing key or odd value
 gives a plain note and a full scan. Freshness is a cheap stat walk (mtime and size, no file is
-parsed) plus the Custom git HEAD, the KiCad footprint folder and a hash of the app's own code.
+parsed) plus the Custom git HEAD, the KiCad footprint folder and a hash of the code the scan depends
+on (the modules reachable from the scanner, so a widget or settings edit leaves the saved scan fresh).
 """
 
+import ast
 import functools
 import hashlib
 import json
@@ -192,23 +194,74 @@ def library_entries(repo_root: Path, kind: str, rel_path: str) -> dict:
     return {"files": files, "folders": sorted({rel_path, *folders}), "complete": complete}
 
 
-@functools.lru_cache(maxsize=None)
-def _code_signature() -> str:
-    """Hash of the app's own .py files, so saved verdicts never outlive a rule change; "" when unreadable."""
-    package = Path(__file__).parent
+def _module_files(package: Path, parts: tuple[str, ...]) -> list[str]:
+    """The package files that a relative module path names: parts.py or parts/__init__.py, if they exist."""
+    found = []
+    for rel in ("/".join(parts) + ".py", "/".join((*parts, "__init__.py"))):
+        if parts and (package / rel).is_file():
+            found.append(rel)
+    return found
+
+
+def _scan_code_files(package: Path) -> list[str]:
+    """The package files the scan's results depend on, as sorted posix paths relative to the package.
+
+    Found by following package-internal relative imports, anywhere in a module, from library_scanner.py
+    and scan_cache.py. Anything outside the package is ignored; every __init__.py on an import path counts.
+    """
+    found: set[str] = set()
+    todo = ["library_scanner.py", "scan_cache.py"]
+    while todo:
+        rel = todo.pop()
+        if rel in found:
+            continue
+        found.add(rel)
+        here = tuple(rel.split("/")[:-1])
+        tree = ast.parse((package / rel).read_bytes())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.level < 1:
+                continue
+            climb = node.level - 1
+            if climb > len(here):
+                continue
+            base = here[:len(here) - climb]
+            wanted: list[tuple[str, ...]] = []
+            # Every package folder on the way counts through its __init__.py
+            dotted = tuple(node.module.split(".")) if node.module else ()
+            for i in range(len(base) + len(dotted) + 1):
+                folder = (*base, *dotted)[:i]
+                if (package / "/".join((*folder, "__init__.py"))).is_file():
+                    wanted.append((*folder, "__init__"))
+            if dotted:
+                wanted.append((*base, *dotted))
+            # Names imported from a module path may be modules of it, and `from . import a` names modules only
+            for alias in node.names:
+                wanted.append((*base, *dotted, alias.name))
+            for parts in wanted:
+                todo.extend(f for f in _module_files(package, parts) if f not in found)
+    return sorted(found)
+
+
+def _code_signature_of(package: Path) -> str:
+    """Hash of the package files the scan depends on; "" when one cannot be read or parsed."""
     digest = hashlib.sha256()
     try:
-        names = sorted(
-            p.relative_to(package).as_posix()
-            for p in package.rglob("*.py")
-            if "__pycache__" not in p.parts
-        )
-        for name in names:
+        for name in _scan_code_files(package):
             digest.update(name.encode("utf-8") + b"\0")
             digest.update((package / name).read_bytes() + b"\0")
-    except OSError:
+    except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
         return ""
     return digest.hexdigest()
+
+
+@functools.lru_cache(maxsize=None)
+def _code_signature() -> str:
+    """Hash of the code the scan depends on, so saved verdicts never outlive a rule change; "" when unreadable.
+
+    Only modules reachable from the scanner and this module count: a widget, the main window or the
+    settings code changing leaves the saved scan fresh.
+    """
+    return _code_signature_of(Path(__file__).parent)
 
 
 # ── Encoding ─────────────────────────────────────────────────────────
