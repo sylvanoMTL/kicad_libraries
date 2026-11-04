@@ -6,13 +6,17 @@ import types
 from pathlib import Path
 
 import pytest
+import shiboken6
 
-from PySide6.QtCore import QRect, Qt
+from PySide6.QtCore import QRect, QSettings, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTextBrowser, QTreeWidgetItem
+from PySide6.QtWidgets import (
+    QAbstractButton, QDialogButtonBox, QLabel, QPushButton, QTextBrowser, QTreeWidgetItem, QWidget,
+)
 
 from zipfixtures import footprint_library_for
 
+from kicad_lib_manager import settings
 from kicad_lib_manager.importer.commit_gate import AtomicFailure, GateResult
 from kicad_lib_manager.importer.commit_plan import CommitFile, CommitPlan
 from kicad_lib_manager.importer.commit_step import CommitProbe
@@ -30,6 +34,18 @@ from kicad_lib_manager.widgets.theme import (
 
 # The Atomic_ install target the stub results below name
 LIBRARY = "Atomic_Analog"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_settings(tmp_path):
+    """The guide now saves the owner's place; no test here may write the real settings.ini (T-12-50)."""
+    QSettings.setPath(
+        QSettings.Format.IniFormat,
+        QSettings.Scope.UserScope,
+        str(tmp_path / "qsettings"),
+    )
+    file_name = Path(settings.get_settings().fileName()).resolve()
+    assert tmp_path.resolve() in file_name.parents
 
 
 def _find_item(dialog: HelpDialog, key: str) -> QTreeWidgetItem:
@@ -419,7 +435,7 @@ def test_help_dialog_opens_on_a_given_topic(qtbot):
     assert dialog._toc.currentItem().data(0, Qt.ItemDataRole.UserRole) == "importing"
     assert "Importing Parts" in dialog._browser.toPlainText()
 
-    # no topic: the first topic, as before
+    # no topic and nothing saved: Overview, the first topic
     default = HelpDialog()
     qtbot.addWidget(default)
     assert default._toc.currentItem() is default._toc.topLevelItem(0)
@@ -700,3 +716,111 @@ def test_help_repo_scan_explains_skip_and_the_saved_scan():
     ):
         assert text in page, text
     assert "<h3" not in HELP_PAGES["repo_scan"]
+
+
+# -- The guide remembers the owner's place (plan 12-19, G-12-23) ------------------------------------------------
+
+
+def _expanded_page_keys(dialog: HelpDialog) -> set[str]:
+    """The keys of the page items that show their sections."""
+    return {
+        item.data(0, Qt.ItemDataRole.UserRole)
+        for item in _page_items(dialog)
+        if item.childCount() > 0 and item.isExpanded()
+    }
+
+
+def test_help_topic_settings_round_trip():
+    assert settings.load_help_topic() is None
+    settings.save_help_topic("importing#conflicts")
+    assert settings.load_help_topic() == "importing#conflicts"
+    # the stored value is untrusted: anything but a non-empty text reads as nothing saved
+    for odd in ("", 7, ["a"]):
+        settings.get_settings().setValue("help/last_topic", odd)
+        assert settings.load_help_topic() is None, odd
+
+
+@pytest.mark.parametrize("how", ["close", "escape", "parent deleted"])
+def test_owner_choice_is_remembered_after_close_escape_and_parent_deleted(qtbot, how):
+    parent = QWidget() if how == "parent deleted" else None
+    dialog = HelpDialog(parent)
+    if parent is None:
+        qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+
+    _click_row(dialog, _find_item(dialog, "importing#conflicts"))
+    qtbot.waitUntil(lambda: _current_key(dialog) == "importing#conflicts", timeout=5000)
+
+    if how == "close":
+        dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Close).click()
+        assert not dialog.isVisible()
+    elif how == "escape":
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+        assert not dialog.isVisible()
+    else:
+        shiboken6.delete(parent)
+        assert not shiboken6.isValid(dialog)
+
+    reopened = HelpDialog()
+    qtbot.addWidget(reopened)
+    reopened.show()
+    qtbot.waitExposed(reopened)
+    assert _current_key(reopened) == "importing#conflicts"
+    assert reopened._toc.currentItem().isSelected()
+    # the node's page is open, every other page with sections is folded
+    assert _expanded_page_keys(reopened) == {"importing"}
+    qtbot.waitUntil(lambda: _heading_is_in_view(reopened._browser, "4.4.7 Conflicts"), timeout=5000)
+
+
+def test_saved_place_survives_a_restart(qtbot):
+    settings.save_help_topic("filter#per-source-scoping")
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    assert _current_key(dialog) == "filter#per-source-scoping"
+    assert _expanded_page_keys(dialog) == {"filter"}
+    assert "5 Footprint Filter" in dialog._browser.toPlainText()
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    qtbot.waitUntil(lambda: _heading_is_in_view(dialog._browser, "5.2 Per-source scoping"), timeout=5000)
+
+
+def test_an_explicit_topic_wins_and_is_not_remembered(qtbot):
+    settings.save_help_topic("filter")
+    dialog = HelpDialog(topic="importing")
+    qtbot.addWidget(dialog)
+    assert _current_key(dialog) == "importing"
+    assert settings.load_help_topic() == "filter"
+
+    # a program-driven move on an open guide is not the owner's either
+    assert dialog.show_topic("shortcuts") is True
+    assert _current_key(dialog) == "shortcuts"
+    assert settings.load_help_topic() == "filter"
+
+    later = HelpDialog()
+    qtbot.addWidget(later)
+    assert _current_key(later) == "filter"
+    assert settings.load_help_topic() == "filter"
+
+    # the owner's own click is remembered
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    _click_row(dialog, _find_item(dialog, "generating"))
+    qtbot.waitUntil(lambda: _current_key(dialog) == "generating", timeout=5000)
+    assert settings.load_help_topic() == "generating"
+
+
+@pytest.mark.parametrize("saved, opens", [
+    ("importing#no-such-heading", "importing"),
+    ("no_such_page", "overview"),
+    ("_how_to_use", "library_tree"),  # a group opens its first page
+    ("", "overview"),  # empty reads as nothing saved
+])
+def test_stale_saved_places_fall_back(qtbot, saved, opens):
+    settings.get_settings().setValue("help/last_topic", saved)
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    assert _current_key(dialog) == opens
+    # the fallback itself is not an owner move: the odd value stays as it was
+    assert settings.get_settings().value("help/last_topic", "") == saved
+    assert dialog._browser.toPlainText().strip() != ""

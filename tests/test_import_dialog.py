@@ -5894,6 +5894,33 @@ def test_toolbar_help_opens_importing_page(qtbot, make_dialog):
     assert dialog.isVisible()
 
 
+def test_import_help_keeps_opening_importing_parts_with_a_saved_place(qtbot, make_dialog):
+    settings.save_help_topic("filter")
+    dialog = make_dialog(open_now=False, show=True)
+    dialog._help_action.trigger()
+    guide = dialog._help_dialog
+    assert isinstance(guide, HelpDialog) and guide.isVisible()
+    assert help_key(guide) == "importing"
+    assert settings.load_help_topic() == "filter"  # showing Importing Parts is not the owner's move
+
+    # the owner moves the guide by a menu click; F1 in the import window brings it back to Importing Parts
+    item = help_shortcuts_item(guide)
+    guide._toc.scrollToItem(item)
+    QTest.mouseClick(
+        guide._toc.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+        guide._toc.visualItemRect(item).center(),
+    )
+    qtbot.waitUntil(lambda: help_key(guide) == "shortcuts", timeout=5000)
+    assert settings.load_help_topic() == "shortcuts"
+
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    qtbot.keyClick(dialog, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: help_key(guide) == "importing", timeout=5000)
+    assert dialog._help_dialog is guide
+    assert settings.load_help_topic() == "shortcuts"
+
+
 def test_f1_opens_help_from_the_start_page(qtbot, make_dialog):
     dialog = make_dialog(open_now=False, show=True)
     dialog.activateWindow()

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QTimer
 
+from ..settings import load_help_topic, save_help_topic
 from .import_dialog import (
     ADD_MODEL_TEXT, CHANGE_PACKAGE_TEXT, FINISHING_TEXT, HELP_ACTION_TEXT, OFFICIAL_FOOTPRINT_TEXT,
     REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT, fit_window,
@@ -578,6 +579,7 @@ class HelpDialog(QDialog):
         self.setWindowTitle("User Guide — KiCad External Lib Manager")
         self.resize(860, 620)
         self._page_key: str | None = None  # the page the browser shows
+        self._quiet = 0  # above 0 while the code, not the owner, moves the selection; such moves are not saved
         self._entries = {entry.key: entry for entry in help_outline()}
 
         layout = QVBoxLayout(self)
@@ -606,27 +608,51 @@ class HelpDialog(QDialog):
         buttons.rejected.connect(self.close)
         layout.addWidget(buttons)
 
-        # Open on the asked topic, or the first one when there is none or the key is unknown
-        if topic is None or not self.show_topic(topic):
-            self._toc.setCurrentItem(self._toc.topLevelItem(0))
+        # Open on the asked topic, else where the owner left off; the first topic when neither is known
+        if topic is None:
+            self.show_remembered()
+        else:
+            self._quiet += 1
+            try:
+                if not self.show_topic(topic):
+                    self._toc.setCurrentItem(self._toc.topLevelItem(0))
+            finally:
+                self._quiet -= 1
 
     def showEvent(self, event):
         super().showEvent(event)
         # Bounded by the screen's free area and moved fully inside it, however the guide is opened
         fit_window(self, self.size())
 
+    def show_remembered(self) -> None:
+        """Show the place the owner last chose, quietly: the saved key, else its page, else the first menu item."""
+        saved = load_help_topic()
+        self._quiet += 1
+        try:
+            if saved is None or not (self.show_topic(saved) or self.show_topic(saved.partition("#")[0])):
+                self._toc.setCurrentItem(self._toc.topLevelItem(0))
+        finally:
+            self._quiet -= 1
+
     def show_topic(self, key: str) -> bool:
-        """Select the topic with this key and show its page; False (nothing changes) when there is none."""
-        stack = [self._toc.topLevelItem(i) for i in range(self._toc.topLevelItemCount())]
-        while stack:
-            item = stack.pop(0)
-            if item.data(0, Qt.ItemDataRole.UserRole) == key:
-                self._toc.setCurrentItem(item)
-                self._sync_expansion()
-                self._toc.scrollToItem(item)
-                return True
-            stack.extend(item.child(i) for i in range(item.childCount()))
-        return False
+        """Select the topic with this key and show its page; False (nothing changes) when there is none.
+
+        A topic shown this way is not remembered; only the owner's own moves in the menu are.
+        """
+        self._quiet += 1
+        try:
+            stack = [self._toc.topLevelItem(i) for i in range(self._toc.topLevelItemCount())]
+            while stack:
+                item = stack.pop(0)
+                if item.data(0, Qt.ItemDataRole.UserRole) == key:
+                    self._toc.setCurrentItem(item)
+                    self._sync_expansion()
+                    self._toc.scrollToItem(item)
+                    return True
+                stack.extend(item.child(i) for i in range(item.childCount()))
+            return False
+        finally:
+            self._quiet -= 1
 
     def _build_toc(self):
         bold_font = self._toc.font()
@@ -662,6 +688,9 @@ class HelpDialog(QDialog):
             self._page_key = entry.page
         if entry.anchor is not None:
             self._browser.scrollToAnchor(entry.anchor)
+        # Saved on every owner move, not on close: Escape and a deleted parent fire no close event
+        if not self._quiet:
+            save_help_topic(entry.key)
         # Folding rows under a pressed mouse button clears the selection, so a click waits for the event loop
         QTimer.singleShot(0, self, self._sync_expansion)
 
