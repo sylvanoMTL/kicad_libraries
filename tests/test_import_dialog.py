@@ -6173,6 +6173,60 @@ def test_start_page_is_as_tall_as_its_content(qtbot, make_start_dialog, monkeypa
     assert inside_window(dialog, cancel)
 
 
+def test_start_page_keeps_its_height_when_the_offer_arrives(qtbot, make_start_dialog, downloads, gates):
+    _zip_at(downloads, "part.zip", 30)
+
+    def gated_downloads():
+        gate = threading.Event()
+        gates.append(gate)
+        assert gate.wait(30)
+        return downloads
+
+    dialog = make_start_dialog(downloads_dir=gated_downloads)
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog._offer_row.isVisible()
+    size = dialog.size()
+    slot = dialog._offer_slot.sizeHint().height()
+
+    gates[0].set()
+    wait_offer(qtbot, dialog)
+    assert dialog.size() == size
+    assert dialog._offer_slot.sizeHint().height() == slot
+    assert dialog.size() == dialog._start_size()
+
+    dialog._set_reading(True)
+    assert dialog._reading_box.isVisible() and not dialog._offer_row.isVisible()
+    assert dialog._offer_slot.sizeHint().height() == slot
+    dialog._set_reading(False)
+    assert dialog._offer_row.isVisible() and not dialog._reading_box.isVisible()
+    assert dialog._offer_slot.sizeHint().height() == slot
+    assert dialog.size() == size
+
+
+def test_start_issues_refit_the_window(qtbot, make_start_dialog, monkeypatch):
+    use_screen(monkeypatch, DESKTOP_200)
+    issues = [Issue(Severity.WARNING, f"intake.test_{n}", f"Skipped unreadable file number {n}") for n in range(20)]
+    dialog = make_start_dialog(**nothing_found_core(issues))
+    compact = dialog.size()
+    assert compact == dialog._start_size()
+
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert dialog._issue_list.count() == 20
+    assert dialog.height() > compact.height()
+    # the start size computed with the issue box shown, cut to the screen but never below the layout minimum
+    frame = dialog.frameGeometry().size() - dialog.size()
+    wanted = import_dialog_module._fit_size(
+        dialog._start_size(), dialog.minimumSizeHint(), frame.expandedTo(QSize(16, 40)), DESKTOP_200.size()
+    )
+    assert dialog.size() == wanted
+    assert DESKTOP_200.contains(dialog.frameGeometry())
+
+    dialog._hide_issue_box()
+    assert dialog.size() == compact
+    assert dialog.size() == dialog._start_size()
+
+
 @pytest.mark.parametrize("area", [DESKTOP_100, DESKTOP_200], ids=["full_hd_100", "full_hd_200"])
 def test_start_page_opens_small(qtbot, make_start_dialog, monkeypatch, area):
     use_screen(monkeypatch, area)
