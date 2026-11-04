@@ -81,11 +81,17 @@ result: issue
 reported: "the inport part window is too big and has no Cancel button."
 severity: major
 
+### 11. User Guide headings numbered and listed in the left menu (found during test 10)
+expected: every heading in the User Guide carries a number that matches its place in the left menu (e.g. 4.4 Importing Parts, 4.4.8 Conflicts), and the sections inside a page (Start, Items, ..., Conflicts, Install and result, Commit) appear in the left menu under their page; clicking one scrolls the page to that heading.
+result: issue
+reported: "The help should have numbered items, and titles should also be in the menu on the left." (screenshot: Importing Parts page with the Conflicts heading underlined; the left menu lists pages only)
+severity: major
+
 ## Summary
 
-total: 10
+total: 11
 passed: 2
-issues: 6
+issues: 7
 pending: 0
 skipped: 1
 blocked: 1
@@ -211,4 +217,23 @@ blocked: 1
     - "Initial size limited to the screen: take the available geometry of the screen the dialog opens on and shrink the 1100x720 default (and the minimum, if needed) so the whole window, bottom row included, is on screen at 100% and 200% scale"
     - "Start page should not open huge: a smaller start size or a size that grows when the edit page is shown, without breaking the edit page's splitter layout"
     - "Help sentence for the start-page Cancel; tests in tests/test_import_dialog.py: Cancel exists on the start page and closes the dialog without writing; window size never exceeds the screen's available geometry"
+  debug_session: ""
+
+- gap_id: G-12-11
+  truth: "User Guide headings are numbered to match the left menu, and each page's sections are listed in the left menu under that page; clicking a section scrolls to its heading."
+  status: failed
+  reason: "User reported: The help should have numbered items, and titles should also be in the menu on the left."
+  severity: major
+  test: 11
+  root_cause: "help_dialog.py TOC_STRUCTURE (L461-482) is a hand-written two-level list (group -> page); the <h3> sections inside each HELP_PAGES entry (e.g. Importing Parts has Start, Items, Target library, Footprint, Fields, Atomic check, Conflicts, Install and result, Commit, Library tables) have no anchors and are not in the tree, and _on_topic_selected (L550-562) only does setHtml per page. Nothing numbers the groups, pages or sections, in the tree or in the <h2>/<h3> text."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "TOC_STRUCTURE two levels only; _build_toc / _on_topic_selected / show_topic know pages, not sections; page HTML <h2>/<h3> unnumbered and without anchors"
+    - path: "tests/test_help_dialog.py"
+      issue: "tests that assert TOC labels, heading text or show_topic keys will need updating"
+  missing:
+    - "Derive section entries from each page's <h3> headings (one source of truth, so tree and page cannot drift) and add them as a third tree level under their page, with an anchor per heading; clicking a section shows the page and scrolls to the anchor (QTextBrowser.scrollToAnchor)"
+    - "Number groups, pages and sections from their tree order (1, 4.4, 4.4.8) and show the same number in the tree label and in the page heading, computed at render time, not typed into the HTML"
+    - "show_topic(key) keeps working for page keys (import window opens on 'importing'); optionally accept a section key"
+    - "Tests: every <h3> of every page appears in the tree under its page with a matching number; clicking a section item scrolls to it; heading numbers match tree numbers; HelpDialog(topic='importing') still opens Importing Parts"
   debug_session: ""
