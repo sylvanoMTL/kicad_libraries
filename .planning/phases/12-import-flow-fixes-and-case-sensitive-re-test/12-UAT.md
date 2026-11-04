@@ -168,6 +168,13 @@ severity: major
 
 [none - the startup-scan skip idea moved to test 21 / G-12-21 on 2026-11-04, owner chose to fix it in Phase 12]
 
+## Owner Decisions (2026-11-04, for the gap-closure plans)
+
+- G-12-23: only the owner's own moves in the guide are remembered. Opening the guide on a given topic (import window Help/F1 -> Importing Parts) does NOT overwrite the remembered place; main-window Help/F1 reopens the page or section the owner last chose.
+- G-12-21: skip unit is the source (e.g. "Skip WurthElektronik"), skipping only that source's 3D model path check. A skipped scan IS saved, with the skipped sources recorded; the next start reuses it and the log says the 3D paths of that source were skipped then and Rescan does the full check (never silent, O-04).
+- G-12-21 (included): narrow the saved-scan code signature so only code that affects scan results makes the saved scan stale.
+- G-12-22: the main window stays locked while the import window is open (Phase 5 design kept); only the User Guide becomes a shared free-floating window usable beside every window.
+
 ## Summary
 
 total: 23
