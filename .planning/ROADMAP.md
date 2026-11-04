@@ -285,7 +285,7 @@ Plans:
 
 **Gap closure (UAT G-12-10, G-12-11)**
 - [ ] 12-13-PLAN.md — Wave 1: Cancel on the start page; the import window fits the screen's free area at 100% and 200%, opens small on the start page, grows for the edit page and shrinks back; Help text (G-12-10)
-- [ ] 12-14-PLAN.md — Wave 2 (after 12-13): numbered User Guide menu with each page's sections derived from its headings, click scrolls to the heading, same numbers in the page headings; gap-closure suite gate (G-12-11)
+- [ ] 12-14-PLAN.md — Wave 2 (after 12-13): numbered User Guide menu with each page's sections derived from its headings, click scrolls to the heading, same numbers in the page headings; the User Guide window fits the screen at 100% and 200% (G-12-11)
 
 **UI hint**: yes
 
