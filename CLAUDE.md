@@ -59,6 +59,7 @@ Symbol and footprint folder names must match (e.g., `Connector_USB_GCT.kicad_sym
 - **Warnings**: orange text for symbols with missing footprint references. Cross-references check both the repo and KiCad's default libraries.
 - **Right-click**: Expand All / Collapse All context menu on both trees. Right-clicking a library row also offers **Rescan this library**, which re-reads just that library (and, for a footprint library, the Atomic_ symbol libraries that link to it) and keeps the check boxes.
 - **Saved scan**: stored in `%APPDATA%/KiCadExtLibManager/scan_cache/` (one file per repository folder, beside `settings.ini`, never inside the repo). Safe to delete; the next start then runs the full scan.
+- **User Guide**: `F1` or Help > User Guide opens it in its own window, which stays open beside the other windows. It reopens on the page or section you last chose (saved beside `settings.ini`, also after a restart). The import window's Help and `F1` open it on Importing Parts without changing that saved place.
 
 ### Menu Shortcuts
 - `Ctrl+G` — Generate Tables
