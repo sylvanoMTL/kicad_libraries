@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: partial
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
 source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
-updated: 2026-11-04T09:49:47.716Z
+updated: 2026-11-04T13:55:25.061Z
 ---
 
 ## Current Test
@@ -87,17 +87,92 @@ result: issue
 reported: "The help should have numbered items, and titles should also be in the menu on the left." (screenshot: Importing Parts page with the Conflicts heading underlined; the left menu lists pages only)
 severity: major
 
+### 12. Import window fits the screen, Cancel on every page (re-check of 10, plan 12-13)
+setup: at 100% and again at 200% Windows display scale (sign out/in if asked). From the repo root run `git -C Custom status --short` and note the output; start the app with `.\env\Scripts\python.exe kicad_lib_manager.py`; press Ctrl+I.
+steps: (a) look at the import window; (b) open `downloaded_examples\ul_CSD85301Q2.zip`, pick an Atomic_ library; (c) press "Choose another package..."; (d) press Cancel; (e) run `git -C Custom status --short` again.
+expected: (a) small window, fully on screen, Cancel at its bottom right; (b) the window grows, stays above the taskbar, Install Part and Cancel show at its bottom right; (c) the window is small again; (d) the window closes; (e) same output as noted, nothing written to `Custom/`.
+result: issue
+reported: "You can still reduce the size and have the browse and cancel in the same llayout grid. (screenshots at 100%: start page about 634x467 with a large empty band between Browse zip... / Browse folder... and Cancel at the bottom right; owner's sketch moves Cancel up onto the Browse row and shrinks the window to about 634x340)"
+severity: cosmetic
+note: "At 100%: (b)-(d) behaved as expected (owner: done); (e) git -C Custom status --short unchanged (same two untracked files as before). 200% run still to do."
+
+### 13. User Guide numbered menu with page sections, fits the screen (re-check of 11, plan 12-14)
+setup: at 100% and again at 200% Windows display scale (sign out/in if asked). Start the app with `.\env\Scripts\python.exe kicad_lib_manager.py`.
+steps: (1) press F1; (2) click "4.4 Importing Parts"; (3) click its Conflicts section; (4) close the guide, press Ctrl+I, click Help in the import window, close the guide, press F1 there.
+expected: (1) the guide is fully on screen above the taskbar with Close visible; the left menu reads "1 Overview", "2 Getting Started" ..., and the page heading reads "1 Overview"; (2) its sections appear under it, "4.4.1 Start" to "4.4.10 Library tables", and the page headings carry the same numbers; (3) the page scrolls to the "4.4.7 Conflicts" heading, text sharp and not cut off; (4) both times the guide opens on "4.4 Importing Parts", fully on screen with Close visible.
+result: pass
+note: "Checked at 100% in the Phase 12 build (owner: well done on the renumbering). 200% look still open; folded into the re-check after the gap fixes."
+
+### 14. Start page Cancel closes without writing, waits while a package is read (12-13 D1)
+expected: Start page has a Cancel at its bottom right that closes the window, writes nothing, and waits in Finishing while a package is read
+result: pass
+source: automated
+coverage_id: D1
+
+### 15. Start page small, grows for the edit page, shrinks back (12-13 D3)
+expected: Start page opens small, the window grows for the edit page, shrinks back, and the result page keeps its size and has Close
+result: pass
+source: automated
+coverage_id: D3
+
+### 16. Help names the start-page Cancel and the window size (12-13 D4)
+expected: Help Importing Parts, Start section, names the start page Cancel and the window size in plain words
+result: pass
+source: automated
+coverage_id: D4
+
+### 17. Menu numbers and page sections derived from the page text (12-14 D1)
+expected: The User Guide menu numbers every entry from its place (1, 4.4, 4.4.7) and lists each page's h3 sections under that page, derived from the page text
+result: pass
+source: automated
+coverage_id: D1
+
+### 18. Heading numbers match the menu; section click scrolls (12-14 D2)
+expected: Page and section headings show the same number as the menu; clicking a section scrolls to its heading, and clicking the selected section again scrolls back
+result: pass
+source: automated
+coverage_id: D2
+
+### 19. Menu follows the shown page; topic keys still open (12-14 D3)
+expected: The menu opens the shown page's sections and folds the others; page, section and group keys still open from the main window, the import window Help and F1
+result: pass
+source: automated
+coverage_id: D3
+
+### 20. Numbered headings keep the theme look (12-14 D4)
+expected: Numbered headings keep their size and colour; theme tokens only, no colour literal, no px font size
+result: pass
+source: automated
+coverage_id: D4
+
+### 21. Skip a library while loading at startup (raised during UAT, owner chose: fix in Phase 12)
+expected: While the app loads the libraries at startup, the loading dialog offers a way to skip the library being scanned (e.g. the whole Wurth Elektronik library) so startup is faster, without breaking the scan result.
+result: issue
+reported: "You have not implemented the cancel (skip) button on loading the libraries when opeing the app" (first raised as: \"can we add a skip this library when scaning for the libraries ... it would skip the full Wurth Elektronic lib\"; screenshot: Loading Libraries dialog at 97%, 'Checking 3D paths: T_Wurth_WE-OLTI-EE16_7_5_750315526', empty area right of the bar circled for a Skip button)
+severity: major
+
+### 22. Main window usable while the User Guide is open (raised during test 13)
+expected: The User Guide (from the main window Help menu or F1, or from the import window Help or F1) can stay open beside any other window of the app (main window, import window, other dialogs) and be browsed while those windows are used; neither blocks the other.
+result: issue
+reported: "is there away to be able to use the main window while the user guide is opened? same for the help" (restated after test 13: "1) a way to have the user guide and help open at the same time as any window. with possibility to browse it.")
+severity: major
+note: "Same message reported no numbered sections and File > Import Part missing; that window was a second app instance started 13:44 from the main checkout C:/Git_Repo_Clones/Kicad_Libraries (main @ 5fdce28, 2026-10-18), which predates the importer and plan 12-14. Not counted as issues; test 13 to be redone in the Phase 12 build."
+
+### 23. User Guide remembers the last section browsed (raised after test 13)
+expected: When the User Guide is closed and opened again (also after restarting the app), it shows the page and section last browsed, with that node selected and expanded in the left menu; a caller that asks for a given topic (import window Help/F1 opens Importing Parts) still gets that topic.
+result: issue
+reported: "2) Use persistence so that if we close/open, it retains the paragraph that was browsed and display it, and expand the section on the left panel. (I tink selecting and expanding the node would do the job)"
+severity: major
+
 ## Deferred Follow-Ups
 
-- test: none (raised during the UAT session, startup scan, not a phase 12 item)
-  idea: "One note, can we add a \"skip this library\" when scaning for the libraries, that would help to be much faster. For instanc it would skip the full Wurth Elektronic lib. (screenshot: Loading Libraries dialog, 'Checking 3D paths: T_Wurth_WE-OLTI-EE16_7_5_750315526' at 97%, the empty area right of the bar circled for a Skip button)"
-  deferred_at: 2026-11-04
+[none - the startup-scan skip idea moved to test 21 / G-12-21 on 2026-11-04, owner chose to fix it in Phase 12]
 
 ## Summary
 
-total: 11
-passed: 2
-issues: 7
+total: 23
+passed: 10
+issues: 11
 pending: 0
 skipped: 1
 blocked: 1
@@ -208,7 +283,9 @@ blocked: 1
 
 - gap_id: G-12-10
   truth: "The import window fits on the screen and shows a Cancel button (beside Install Part on the edit page, and a way to cancel on the start page) without resizing or scrolling."
-  status: failed
+  status: resolved
+  resolved_by: 12-13-PLAN.md
+  resolved_at: 2026-11-04
   reason: "User reported: the inport part window is too big and has no Cancel button. Screenshot of the start page (Choose a part package): window opens near full screen (~1100x750), content is a narrow centred column with large empty margins; only Open, Browse zip..., Browse folder... and the toolbar Help; no Cancel anywhere on the page."
   severity: major
   test: 10
@@ -227,7 +304,9 @@ blocked: 1
 
 - gap_id: G-12-11
   truth: "User Guide headings are numbered to match the left menu, and each page's sections are listed in the left menu under that page; clicking a section scrolls to its heading."
-  status: failed
+  status: resolved
+  resolved_by: 12-14-PLAN.md
+  resolved_at: 2026-11-04
   reason: "User reported: The help should have numbered items, and titles should also be in the menu on the left."
   severity: major
   test: 11
@@ -243,3 +322,39 @@ blocked: 1
     - "show_topic(key) keeps working for page keys (import window opens on 'importing'); optionally accept a section key"
     - "Tests: every <h3> of every page appears in the tree under its page with a matching number; clicking a section item scrolls to it; heading numbers match tree numbers; HelpDialog(topic='importing') still opens Importing Parts"
   debug_session: ""
+
+- gap_id: G-12-21
+  truth: "While the app loads the libraries at startup, the loading dialog offers a way to skip the library being scanned (e.g. the whole Wurth Elektronik library) so startup is faster, without breaking the scan result."
+  status: failed
+  reason: "User reported: You have not implemented the cancel (skip) button on loading the libraries when opeing the app"
+  severity: major
+  test: 21
+  artifacts: []  # Filled by diagnosis
+  missing: []    # Filled by diagnosis
+
+- gap_id: G-12-12
+  truth: "The import start page is compact: Browse zip..., Browse folder... and Cancel share one row (same layout grid), with no large empty band, so the window opens smaller."
+  status: failed
+  reason: "User reported: You can still reduce the size and have the browse and cancel in the same llayout grid. (screenshots at 100%: start page about 634x467 with a large empty band between Browse zip... / Browse folder... and Cancel at the bottom right; owner's sketch moves Cancel up onto the Browse row and shrinks the window to about 634x340)"
+  severity: cosmetic
+  test: 12
+  artifacts: []  # Filled by diagnosis
+  missing: []    # Filled by diagnosis
+
+- gap_id: G-12-22
+  truth: "The User Guide (from the main window Help menu or F1, or from the import window Help or F1) can stay open beside any other window of the app (main window, import window, other dialogs) and be browsed while those windows are used; neither blocks the other."
+  status: failed
+  reason: "User reported: is there away to be able to use the main window while the user guide is opened? same for the help"
+  severity: major
+  test: 22
+  artifacts: []  # Filled by diagnosis
+  missing: []    # Filled by diagnosis
+
+- gap_id: G-12-23
+  truth: "When the User Guide is closed and opened again (also after restarting the app), it shows the page and section last browsed, with that node selected and expanded in the left menu; a caller that asks for a given topic (import window Help/F1 opens Importing Parts) still gets that topic."
+  status: failed
+  reason: "User reported: 2) Use persistence so that if we close/open, it retains the paragraph that was browsed and display it, and expand the section on the left panel. (I tink selecting and expanding the node would do the job)"
+  severity: major
+  test: 23
+  artifacts: []  # Filled by diagnosis
+  missing: []    # Filled by diagnosis
