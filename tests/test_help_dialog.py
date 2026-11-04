@@ -6,6 +6,7 @@ import types
 from pathlib import Path
 
 from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QAbstractButton, QLabel, QPushButton, QTextBrowser, QTreeWidgetItem
 
 from zipfixtures import footprint_library_for
@@ -443,3 +444,146 @@ def test_help_names_the_toolbar_help():
     for key in ("importing", "shortcuts"):
         assert "HELP_ACTION_TEXT" not in _page_text(key)
         assert "HELP_ACTION_TEXT" not in HELP_PAGES[key]
+
+
+# -- Numbered menu with the pages' sections (plan 12-14, G-12-11) ---------------------------------------------
+
+MENU_NUMBERS = {
+    "overview": "1", "_getting_started": "2", "requirements": "2.1", "how_to_run": "2.2",
+    "_on_launch": "3", "kicad_detection": "3.1", "repo_scan": "3.2",
+    "_how_to_use": "4", "library_tree": "4.1", "selecting": "4.2", "generating": "4.3", "importing": "4.4",
+    "restoring": "4.5", "filter": "5", "shortcuts": "6", "roadmap": "7",
+}
+IMPORTING_SECTIONS = [
+    "Start", "Items", "Target library", "Footprint", "Fields", "Atomic check", "Conflicts",
+    "Install and result", "Commit", "Library tables",
+]
+
+
+def _headings(browser: QTextBrowser, level: int) -> list[tuple]:
+    """(block, text) of every heading block of this level on the shown page, in page order."""
+    found = []
+    block = browser.document().firstBlock()
+    while block.isValid():
+        if block.blockFormat().headingLevel() == level:
+            found.append((block, block.text()))
+        block = block.next()
+    return found
+
+
+def _heading_is_in_view(browser: QTextBrowser, text: str) -> bool:
+    for block, shown in _headings(browser, 3):
+        if shown == text:
+            top = browser.document().documentLayout().blockBoundingRect(block).top() - browser.verticalScrollBar().value()
+            return 0 <= top < browser.viewport().height()
+    return False
+
+
+def _page_items(dialog: HelpDialog) -> list[QTreeWidgetItem]:
+    """Every menu item that shows a whole page, in menu order."""
+    items, stack = [], [dialog._toc.topLevelItem(i) for i in range(dialog._toc.topLevelItemCount())]
+    while stack:
+        item = stack.pop(0)
+        if item.data(0, Qt.ItemDataRole.UserRole) in HELP_PAGES:
+            items.append(item)
+        for i in range(item.childCount()):
+            if "#" not in item.child(i).data(0, Qt.ItemDataRole.UserRole):
+                stack.append(item.child(i))
+    return items
+
+
+def _click_row(dialog: HelpDialog, item: QTreeWidgetItem) -> None:
+    toc = dialog._toc
+    toc.scrollToItem(item)
+    QTest.mouseClick(toc.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, toc.visualItemRect(item).center())
+
+
+def _current_key(dialog: HelpDialog) -> str:
+    return dialog._toc.currentItem().data(0, Qt.ItemDataRole.UserRole)
+
+
+def test_section_anchor_keeps_only_letters_digits_and_single_hyphens():
+    assert help_dialog.section_anchor("Install and result") == "install-and-result"
+    assert help_dialog.section_anchor("  Per-source scoping! ") == "per-source-scoping"
+    assert help_dialog.section_anchor("Atomic  check") == "atomic-check"
+    assert help_dialog.page_sections("filter") == [("how-it-works", "How it works"), ("per-source-scoping", "Per-source scoping")]
+
+
+def test_help_outline_numbers_follow_the_menu_order():
+    outline = help_dialog.help_outline()
+    numbers = {entry.key: entry.number for entry in outline}
+    assert {key: numbers[key] for key in MENU_NUMBERS} == MENU_NUMBERS
+    importing = [entry for entry in outline if entry.parent == "importing"]
+    assert [entry.text for entry in importing] == [f"4.4.{i} {name}" for i, name in enumerate(IMPORTING_SECTIONS, 1)]
+    assert numbers["importing#conflicts"] == "4.4.7"
+    assert [entry.text for entry in outline if entry.parent == "filter"] == ["5.1 How it works", "5.2 Per-source scoping"]
+    assert sum(1 for entry in outline if entry.anchor is not None) == 20
+    first = outline[0]
+    assert (first.key, first.text, first.parent, first.page, first.anchor) == ("overview", "1 Overview", None, "overview", None)
+    group = next(entry for entry in outline if entry.key == "_how_to_use")
+    assert group.text == "4 How to Use" and group.page is None
+
+
+def test_every_page_heading_is_in_the_menu_under_its_page(qtbot):
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    outline_keys = [entry.key for entry in help_dialog.help_outline()]
+    for key, raw in HELP_PAGES.items():
+        assert outline_keys.count(key) == 1, key
+        item = _find_item(dialog, key)
+        number = item.text(0).split(" ", 1)[0]
+        labels = re.findall(r"<h3>(.*?)</h3>", raw, re.S)
+        assert raw.count("<h3") == len(labels), f"{key} has an h3 that is not a bare <h3> tag"
+        assert [item.child(i).text(0) for i in range(item.childCount())] == [
+            f"{number}.{n} {html_module.unescape(label)}" for n, label in enumerate(labels, 1)
+        ]
+        anchors = []
+        for i in range(item.childCount()):
+            page_key, _, anchor = item.child(i).data(0, Qt.ItemDataRole.UserRole).partition("#")
+            assert page_key == key
+            assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", anchor), anchor
+            anchors.append(anchor)
+        assert len(set(anchors)) == len(anchors), key
+
+
+def test_page_headings_carry_the_menu_numbers(qtbot):
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    for item in _page_items(dialog):
+        dialog._toc.setCurrentItem(item)
+        assert _headings(dialog._browser, 2)[0][1] == item.text(0)
+        assert [text for _block, text in _headings(dialog._browser, 3)] == [item.child(i).text(0) for i in range(item.childCount())]
+
+
+def test_clicking_a_section_scrolls_to_its_heading(qtbot):
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    browser = dialog._browser
+    for page in _page_items(dialog):
+        for i in range(page.childCount()):
+            section = page.child(i)
+            dialog._toc.setCurrentItem(section)
+            assert _headings(browser, 2)[0][1] == page.text(0)
+            qtbot.waitUntil(lambda: _heading_is_in_view(browser, section.text(0)), timeout=5000)
+    dialog.show_topic("importing#conflicts")
+    qtbot.waitUntil(lambda: browser.verticalScrollBar().value() > 0, timeout=5000)
+    assert _heading_is_in_view(browser, "4.4.7 Conflicts")
+
+    _click_row(dialog, _find_item(dialog, "importing#commit"))
+    qtbot.waitUntil(lambda: _current_key(dialog) == "importing#commit", timeout=5000)
+    qtbot.waitUntil(lambda: _heading_is_in_view(browser, "4.4.9 Commit"), timeout=5000)
+
+
+def test_numbers_are_rendered_not_typed():
+    for key, page in HELP_PAGES.items():
+        assert re.search(r"<h[23]>\s*\d", page) is None, key
+    for _key, label, children in TOC_STRUCTURE:
+        assert not label[:1].isdigit()
+        assert not any(child_label[:1].isdigit() for _child_key, child_label in children)
+    rendered = help_dialog.render_page("importing")
+    assert "<h2>4.4 Importing Parts</h2>" in rendered
+    assert '<h3><a name="conflicts"></a>4.4.7 Conflicts</h3>' in rendered
+    assert "<h3>Conflicts</h3>" in HELP_PAGES["importing"]
+    assert help_dialog.render_page("importing") == rendered
