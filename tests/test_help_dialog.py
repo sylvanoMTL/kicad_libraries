@@ -607,6 +607,18 @@ def test_menu_expands_the_shown_page_only(qtbot):
     assert all(_find_item(dialog, key).isExpanded() for key in groups)
 
 
+def test_clicking_a_page_below_the_open_one_selects_it(qtbot):
+    # The click folds the open page's sections, which moves the rows under the mouse; the new page stays selected
+    dialog = HelpDialog(topic="importing")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    _click_row(dialog, _find_item(dialog, "shortcuts"))
+    qtbot.waitUntil(lambda: not _find_item(dialog, "importing").isExpanded(), timeout=5000)
+    assert _current_key(dialog) == "shortcuts"
+    assert "Keyboard Shortcuts" in dialog._browser.toPlainText()
+
+
 def test_clicking_the_selected_section_again_scrolls_back(qtbot):
     dialog = HelpDialog()
     qtbot.addWidget(dialog)

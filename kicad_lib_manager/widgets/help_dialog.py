@@ -6,11 +6,11 @@ from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QSplitter, QTextBrowser,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from .import_dialog import (
     ADD_MODEL_TEXT, CHANGE_PACKAGE_TEXT, FINISHING_TEXT, HELP_ACTION_TEXT, OFFICIAL_FOOTPRINT_TEXT,
-    REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT,
+    REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT, fit_window,
 )
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
@@ -580,6 +580,7 @@ class HelpDialog(QDialog):
         self._toc.setMaximumWidth(300)
         self._build_toc()
         self._toc.currentItemChanged.connect(self._on_topic_selected)
+        self._toc.itemClicked.connect(self._on_item_clicked)
         splitter.addWidget(self._toc)
 
         # Right: content browser
@@ -598,6 +599,11 @@ class HelpDialog(QDialog):
         if topic is None or not self.show_topic(topic):
             self._toc.setCurrentItem(self._toc.topLevelItem(0))
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Bounded by the screen's free area and moved fully inside it, however the guide is opened
+        fit_window(self, self.size())
+
     def show_topic(self, key: str) -> bool:
         """Select the topic with this key and show its page; False (nothing changes) when there is none."""
         stack = [self._toc.topLevelItem(i) for i in range(self._toc.topLevelItemCount())]
@@ -605,6 +611,7 @@ class HelpDialog(QDialog):
             item = stack.pop(0)
             if item.data(0, Qt.ItemDataRole.UserRole) == key:
                 self._toc.setCurrentItem(item)
+                self._sync_expansion()
                 self._toc.scrollToItem(item)
                 return True
             stack.extend(item.child(i) for i in range(item.childCount()))
@@ -614,8 +621,8 @@ class HelpDialog(QDialog):
         bold_font = self._toc.font()
         bold_font.setBold(True)
 
-        items: dict[str, QTreeWidgetItem] = {}
-        for entry in help_outline():
+        items = self._items = {}
+        for entry in self._entries.values():
             item = QTreeWidgetItem([entry.text])
             item.setData(0, Qt.ItemDataRole.UserRole, entry.key)
             items[entry.key] = item
@@ -624,7 +631,7 @@ class HelpDialog(QDialog):
                 self._toc.addTopLevelItem(item)
             else:
                 items[entry.parent].addChild(item)
-        for entry in help_outline():
+        for entry in self._entries.values():
             if entry.page is None:
                 items[entry.key].setExpanded(True)
 
@@ -643,4 +650,21 @@ class HelpDialog(QDialog):
             self._browser.setHtml(render_page(entry.page))
             self._page_key = entry.page
         if entry.anchor is not None:
+            self._browser.scrollToAnchor(entry.anchor)
+        # Folding rows under a pressed mouse button clears the selection, so a click waits for the event loop
+        QTimer.singleShot(0, self, self._sync_expansion)
+
+    def _sync_expansion(self):
+        """Open the sections of the page shown and fold the other pages' sections, so the menu stays short.
+
+        Groups keep their state.
+        """
+        for entry in self._entries.values():
+            if entry.page == entry.key and self._items[entry.key].childCount() > 0:
+                self._items[entry.key].setExpanded(entry.key == self._page_key)
+
+    def _on_item_clicked(self, item: QTreeWidgetItem, _column: int):
+        # A click on the current item emits no currentItemChanged, so scroll back to the section here
+        entry = self._entries.get(item.data(0, Qt.ItemDataRole.UserRole))
+        if entry is not None and entry.anchor is not None and item is self._toc.currentItem():
             self._browser.scrollToAnchor(entry.anchor)
