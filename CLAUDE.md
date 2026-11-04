@@ -52,6 +52,7 @@ Symbol and footprint folder names must match (e.g., `Connector_USB_GCT.kicad_sym
 
 ### GUI Behavior
 - **Startup**: auto-detects KiCad installation for default footprint cross-referencing. If not found, prompts the user to select the footprints folder. The last scan is shown instantly when no library file changed since it was saved; otherwise the full scan runs and the log says why. Rescan always runs the full scan.
+- **Loading Libraries**: the window shown while a full scan runs has a **Skip** button during the 3D model path check; it names the source being checked (for example **Skip WurthElektronik**) and skips only that source's 3D model path check, so its libraries are still listed and Generate Tables keeps them. The skip is logged and saved with the scan, the next start says so, and Rescan does the full check.
 - **Two columns**: Symbols (left) and Footprints (right), grouped by source (Custom, WurthElektronik).
 - **Footprint selection is driven by symbols**: checking/unchecking a symbol auto-selects/deselects its linked footprints. Sync is scoped per source — changing Custom symbols only affects Custom footprints.
 - **Select All / Deselect All**: applies to all symbols, then recalculates footprints via the filter.

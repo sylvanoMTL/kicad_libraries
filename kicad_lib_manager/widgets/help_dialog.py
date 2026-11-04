@@ -122,6 +122,16 @@ HELP_PAGES["repo_scan"] = _wrap(
     "</ol>"
     "<p>Results appear in the library tree. Warnings are logged in the bottom panel "
     "and flagged with an orange icon in the tree.</p>"
+    "<p>Every scan is saved. At start the tool shows the last saved scan when no "
+    "library file changed since it was saved, and the log says so. <b>Rescan</b> "
+    "always runs the whole scan.</p>"
+    "<p>While the libraries load, the <b>Loading Libraries</b> window shows a "
+    "<b>Skip</b> button during the 3D model path check. It names the library source "
+    "being checked, for example <b>Skip WurthElektronik</b>. Skip stops checking the "
+    "3D model paths of that source only: its libraries are still listed and its "
+    "symbols' footprint links are still read, so Generate Tables keeps them. The log "
+    "says which source was skipped. The scan is saved with that note, and the next "
+    "start says so until a Rescan checks everything again.</p>"
 )
 
 HELP_PAGES["library_tree"] = _wrap(
