@@ -470,10 +470,13 @@ def test_help_dialog_opens_on_a_given_topic(qtbot):
 
 def test_help_names_the_toolbar_help():
     start = _section("Start")
-    for text in ("toolbar", import_dialog.HELP_ACTION_TEXT, "F1", "every step", "stays open"):
+    for text in (
+        "toolbar", import_dialog.HELP_ACTION_TEXT, "F1", "every step", "stays open",
+        "its own window", "beside the main window", "when the import window closes",
+    ):
         assert text in start, text
     shortcuts = _page_text("shortcuts")
-    for text in ("F1", "User Guide", "import window", "Importing Parts", "toolbar"):
+    for text in ("F1", "User Guide", "import window", "Importing Parts", "toolbar", "its own window"):
         assert text in shortcuts, text
     for key in ("importing", "shortcuts"):
         assert "HELP_ACTION_TEXT" not in _page_text(key)

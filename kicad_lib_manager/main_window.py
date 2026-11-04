@@ -1133,10 +1133,22 @@ class MainWindow(QMainWindow):
         for issue in issues:
             self._log.log_issue(issue)
 
+    def _question(self, title, text, buttons, default) -> QMessageBox.StandardButton:
+        """A Yes/No question that blocks only the main window, so the User Guide stays usable."""
+        box = QMessageBox(QMessageBox.Icon.Question, title, text, buttons, self)
+        box.setDefaultButton(default)
+        box.setWindowModality(Qt.WindowModality.WindowModal)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is None:
+            return default
+        return box.standardButton(clicked)
+
     # Intentional exception to the convention that QMessageBox is only used for About:
     # the owner requires an explicit confirmation before KiCad's global settings change
     # (PROJECT.md Safety constraint: no write without a preview first). With KiCad open the
-    # same confirmation is a three-button variant (Retry, Change anyway, Not now).
+    # same confirmation is a three-button variant (Retry, Change anyway, Not now). Both are
+    # window-modal, so only the main window waits and the User Guide stays usable (G-12-22).
     def _confirm_path_var_changes(self, changes, names=()):
         if names:
             return self._ask_kicad_open(changes, names)
@@ -1148,8 +1160,7 @@ class MainWindow(QMainWindow):
             + "\n".join(lines)
             + "\n\nKiCad loads its libraries from these paths after a restart. Change them?"
         )
-        answer = QMessageBox.question(
-            self,
+        answer = self._question(
             "Change KiCad path variables?",
             text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
@@ -1163,6 +1174,7 @@ class MainWindow(QMainWindow):
             f"{var}: {old if old else '(not set)'} -> {new}" for var, old, new in changes
         ]
         box = QMessageBox(self)
+        box.setWindowModality(Qt.WindowModality.WindowModal)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("KiCad is open")
         box.setText(
@@ -1286,6 +1298,7 @@ class MainWindow(QMainWindow):
     def _on_restore_backup(self):
         dest = self._dest_path()
         dialog = BackupDialog(str(dest) if dest is not None else "", parent=self)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
         if dialog.exec() and dialog.selected_backup_num is not None:
             self._log_issues(restore_backup_pair(
                 dialog.selected_folder, dialog.selected_backup_num
@@ -1365,6 +1378,7 @@ class MainWindow(QMainWindow):
 
     def _on_about(self):
         about = QMessageBox(self)
+        about.setWindowModality(Qt.WindowModality.WindowModal)
         about.setWindowTitle(f"About {APP_TITLE}")
         about.setTextFormat(Qt.TextFormat.RichText)
         about.setText(

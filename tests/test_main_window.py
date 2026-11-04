@@ -93,11 +93,11 @@ def make_window(qtbot, monkeypatch, tmp_path):
 
     # Patched at fixture level so no test can block on a real modal dialog;
     # tests set make.answer to choose the reply and read make.questions for the calls
-    def fake_question(*args):
-        make.questions.append(args)
+    def fake_question(window, *args):
+        make.questions.append((window, *args))
         return make.answer
 
-    monkeypatch.setattr(main_window.QMessageBox, "question", fake_question)
+    monkeypatch.setattr(main_window.MainWindow, "_question", fake_question)
     make.answer = QMessageBox.StandardButton.Yes
     make.questions = []
 
@@ -547,6 +547,8 @@ def test_kicad_open_box_texts_and_buttons(make_window):
         "Not now": ConfirmAnswer.DECLINE,
     }
     assert box.escapeButton().text() == "Not now"
+    # Window-modal: it blocks the main window only, so the User Guide stays usable (G-12-22)
+    assert box.windowModality() == Qt.WindowModality.WindowModal
 
 
 def test_path_var_question_names_the_settings_file(make_window):
@@ -1856,3 +1858,103 @@ def test_main_window_help_after_restart_opens_the_saved_place(qtbot, make_window
     assert w._guide.isVisible()
     assert guide_key(w._guide) == "restoring"
     assert settings.load_help_topic() == "restoring"
+
+
+# -- the main window's own dialogs leave the guide usable (plan 12-20, G-12-22) ----------------------
+
+from PySide6.QtCore import QTimer  # noqa: E402
+
+# Captured at import, before any fixture replaces it: the real window-modal Yes/No question
+REAL_QUESTION = main_window.MainWindow.__dict__.get("_question")
+
+_YES_NO = QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+_PATH_CHANGES = [("KICAD_LIB_GITHUB", None, "C:/repo")]
+
+
+def _run_dialog_beside_the_guide(qtbot, w, guide, open_dialog):
+    """Open a main-window dialog, click a guide row while it is open, then close it.
+
+    Returns what the probe saw and what the opening call returned.
+    """
+    seen = {}
+
+    def probe():
+        box = QApplication.activeModalWidget()
+        try:
+            seen["box"] = box
+            if box is not None:
+                seen["modality"] = box.windowModality()
+                seen["parent"] = box.parent()
+                click_guide_row(guide, "shortcuts")
+                qtbot.waitUntil(lambda: guide_key(guide) == "shortcuts", timeout=2000)
+        except Exception as error:  # reported after the dialog is closed, so a failure cannot hang
+            seen["error"] = error
+        finally:
+            if box is not None:
+                box.reject()
+
+    # Safety net: a dialog that never reports must not hang the run
+    QTimer.singleShot(10000, lambda: QApplication.activeModalWidget() and QApplication.activeModalWidget().reject())
+    QTimer.singleShot(50, probe)
+    seen["result"] = open_dialog()
+    return seen
+
+
+@pytest.mark.parametrize("case", ["path question", "kicad open", "restore backup", "about"])
+def test_main_window_dialogs_are_window_modal_and_leave_the_guide_usable(qtbot, make_window, case):
+    w = make_window([ScanResult()])
+    w.show()
+    qtbot.waitExposed(w)
+    w.show_guide("generating")
+    guide = w._guide
+    qtbot.waitExposed(guide)
+    assert guide_key(guide) == "generating"
+
+    if case == "path question":
+        assert REAL_QUESTION is not None, "MainWindow._question is missing"
+
+    def kicad_open():
+        box, answers = w._kicad_open_box(_PATH_CHANGES, ["kicad"])
+        box.exec()
+        return answers.get(box.clickedButton(), ConfirmAnswer.DECLINE)
+
+    openers = {
+        "path question": lambda: REAL_QUESTION(
+            w, "Change KiCad path variables?", "Text", _YES_NO, QMessageBox.StandardButton.No
+        ),
+        "kicad open": kicad_open,
+        "restore backup": w._on_restore_backup,
+        "about": w._on_about,
+    }
+
+    seen = _run_dialog_beside_the_guide(qtbot, w, guide, openers[case])
+
+    assert seen.get("box") is not None, "no dialog was open"
+    assert seen["modality"] == Qt.WindowModality.WindowModal
+    assert seen["parent"] is w
+    assert "error" not in seen, seen.get("error")
+    assert guide_key(guide) == "shortcuts"
+    if case == "path question":
+        assert seen["result"] == QMessageBox.StandardButton.No  # closed unanswered: the default
+    if case == "kicad open":
+        assert seen["result"] == ConfirmAnswer.DECLINE  # Escape is Not now
+
+
+def test_guide_takes_clicks_while_the_libraries_load(qtbot, make_window):
+    gate = threading.Event()
+    w = make_window([ScanResult(), _gated(ScanResult(), gate)])
+    w.show()
+    qtbot.waitExposed(w)
+    w.show_guide("generating")
+    guide = w._guide
+    qtbot.waitExposed(guide)
+    try:
+        w._on_rescan()
+        qtbot.waitUntil(lambda: w._progress is not None and w._progress.isVisible(), timeout=5000)
+        assert w._progress.windowTitle() == "Loading Libraries"
+
+        click_guide_row(guide, "shortcuts")
+        qtbot.waitUntil(lambda: guide_key(guide) == "shortcuts", timeout=5000)
+    finally:
+        gate.set()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
