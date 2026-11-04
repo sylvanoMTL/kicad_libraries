@@ -1,5 +1,5 @@
 ---
-status: partial
+status: diagnosed
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
 source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
@@ -197,8 +197,18 @@ blocked: 1
 - gap_id: G-12-10
   truth: "The import window fits on the screen and shows a Cancel button (beside Install Part on the edit page, and a way to cancel on the start page) without resizing or scrolling."
   status: failed
-  reason: "User reported: the inport part window is too big and has no Cancel button."
+  reason: "User reported: the inport part window is too big and has no Cancel button. Screenshot of the start page (Choose a part package): window opens near full screen (~1100x750), content is a narrow centred column with large empty margins; only Open, Browse zip..., Browse folder... and the toolbar Help; no Cancel anywhere on the page."
   severity: major
   test: 10
-  artifacts: []
-  missing: []
+  root_cause: "Two causes. (1) G-12-6 (plan 12-09) added Cancel only to the edit page's bottom row (import_dialog.py L846-849); the start page (_build_start_page L587-654) has Open, Browse zip... and Browse folder... and no way to leave except the title-bar X or Escape; the result page was not checked either. (2) ImportDialog.__init__ always calls self.resize(1100, 720) and setMinimumSize(900, 600) (L499-500) for every page, never limited to the screen's available area. The start page is a 560-wide column, so the window is mostly empty, and on a scaled or small display the fixed 720 px height reaches or passes the taskbar, which can also push the edit page's bottom row (Install Part, Cancel) out of view."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "L499-500 fixed resize(1100, 720) / setMinimumSize(900, 600), not clamped to screen availableGeometry; start page L587-654 has no Cancel"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "Importing Parts page mentions Cancel beside Install Part only"
+  missing:
+    - "A Cancel button on the start page (and on any other page without a way out) that calls self.reject(), the same close path as the X and Escape, so Finishing and the install/commit refusals are reused"
+    - "Initial size limited to the screen: take the available geometry of the screen the dialog opens on and shrink the 1100x720 default (and the minimum, if needed) so the whole window, bottom row included, is on screen at 100% and 200% scale"
+    - "Start page should not open huge: a smaller start size or a size that grows when the edit page is shown, without breaking the edit page's splitter layout"
+    - "Help sentence for the start-page Cancel; tests in tests/test_import_dialog.py: Cancel exists on the start page and closes the dialog without writing; window size never exceeds the screen's available geometry"
+  debug_session: ""
