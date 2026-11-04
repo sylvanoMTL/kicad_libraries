@@ -1,12 +1,16 @@
+import html
+import re
+from dataclasses import dataclass
+
 from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QSplitter, QTextBrowser,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from .import_dialog import (
     ADD_MODEL_TEXT, CHANGE_PACKAGE_TEXT, FINISHING_TEXT, HELP_ACTION_TEXT, OFFICIAL_FOOTPRINT_TEXT,
-    REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT,
+    REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT, fit_window,
 )
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
@@ -486,11 +490,84 @@ TOC_STRUCTURE: list[tuple[str, str, list[tuple[str, str]]]] = [
 ]
 
 
+# ── Menu outline ──────────────────────────────────────────────────────
+
+_H2_RE = re.compile(r"<h2>")
+_H3_RE = re.compile(r"<h3>(.*?)</h3>", re.DOTALL)
+
+
+@dataclass(frozen=True)
+class HelpEntry:
+    """One row of the User Guide menu: a group, a page, or a section of a page."""
+
+    key: str
+    number: str
+    label: str
+    parent: str | None  # the parent entry's key, None at top level
+    page: str | None  # the HELP_PAGES key this entry shows, None for a group
+    anchor: str | None = None  # set for sections only
+
+    @property
+    def text(self) -> str:
+        return f"{self.number} {self.label}"
+
+
+def section_anchor(label: str) -> str:
+    """The anchor name of a heading: lower case, every run of other characters one hyphen, ends trimmed."""
+    return re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+
+
+def page_sections(key: str) -> list[tuple[str, str]]:
+    """The (anchor, label) pairs of a page's <h3> headings, in page order. The page text is the only source."""
+    sections = []
+    for inner in _H3_RE.findall(HELP_PAGES[key]):
+        label = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", "", inner))).strip()
+        sections.append((section_anchor(label), label))
+    return sections
+
+
+def help_outline() -> list[HelpEntry]:
+    """Every menu row in menu order, numbered from its place: 1, 4.4, 4.4.7."""
+    outline: list[HelpEntry] = []
+
+    def add(key: str, number: str, label: str, parent: str | None, is_page: bool) -> None:
+        outline.append(HelpEntry(key, number, label, parent, key if is_page else None))
+        if is_page:
+            for n, (anchor, section) in enumerate(page_sections(key), 1):
+                outline.append(HelpEntry(f"{key}#{anchor}", f"{number}.{n}", section, key, key, anchor))
+
+    for i, (key, label, children) in enumerate(TOC_STRUCTURE, 1):
+        add(key, str(i), label, None, key in HELP_PAGES)
+        for j, (child_key, child_label) in enumerate(children, 1):
+            add(child_key, f"{i}.{j}", child_label, key, child_key in HELP_PAGES)
+    return outline
+
+
+def render_page(key: str) -> str:
+    """A page's HTML with its menu number before the title and each section heading, and an anchor per section.
+
+    The anchor is an empty named anchor before the heading text, never a wrapper around it: a wrapper would
+    take the stylesheet's link colour. HELP_PAGES itself stays unnumbered.
+    """
+    numbers = {entry.key: entry.number for entry in help_outline()}
+    page = HELP_PAGES[key]
+    page = _H2_RE.sub(f"<h2>{numbers[key]} ", page, count=1)
+    sections = iter(enumerate(page_sections(key), 1))
+
+    def number_section(match: re.Match) -> str:
+        n, (anchor, _label) = next(sections)
+        return f'<h3><a name="{anchor}"></a>{numbers[key]}.{n} {match.group(1)}</h3>'
+
+    return _H3_RE.sub(number_section, page)
+
+
 class HelpDialog(QDialog):
     def __init__(self, parent=None, *, topic: str | None = None):
         super().__init__(parent)
         self.setWindowTitle("User Guide — KiCad External Lib Manager")
         self.resize(860, 620)
+        self._page_key: str | None = None  # the page the browser shows
+        self._entries = {entry.key: entry for entry in help_outline()}
 
         layout = QVBoxLayout(self)
 
@@ -503,6 +580,7 @@ class HelpDialog(QDialog):
         self._toc.setMaximumWidth(300)
         self._build_toc()
         self._toc.currentItemChanged.connect(self._on_topic_selected)
+        self._toc.itemClicked.connect(self._on_item_clicked)
         splitter.addWidget(self._toc)
 
         # Right: content browser
@@ -521,6 +599,11 @@ class HelpDialog(QDialog):
         if topic is None or not self.show_topic(topic):
             self._toc.setCurrentItem(self._toc.topLevelItem(0))
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Bounded by the screen's free area and moved fully inside it, however the guide is opened
+        fit_window(self, self.size())
+
     def show_topic(self, key: str) -> bool:
         """Select the topic with this key and show its page; False (nothing changes) when there is none."""
         stack = [self._toc.topLevelItem(i) for i in range(self._toc.topLevelItemCount())]
@@ -528,6 +611,7 @@ class HelpDialog(QDialog):
             item = stack.pop(0)
             if item.data(0, Qt.ItemDataRole.UserRole) == key:
                 self._toc.setCurrentItem(item)
+                self._sync_expansion()
                 self._toc.scrollToItem(item)
                 return True
             stack.extend(item.child(i) for i in range(item.childCount()))
@@ -537,30 +621,50 @@ class HelpDialog(QDialog):
         bold_font = self._toc.font()
         bold_font.setBold(True)
 
-        for key, label, children in TOC_STRUCTURE:
-            item = QTreeWidgetItem([label])
-            item.setData(0, Qt.ItemDataRole.UserRole, key)
-            if children:
+        items = self._items = {}
+        for entry in self._entries.values():
+            item = QTreeWidgetItem([entry.text])
+            item.setData(0, Qt.ItemDataRole.UserRole, entry.key)
+            items[entry.key] = item
+            if entry.parent is None:
                 item.setFont(0, bold_font)
-                for child_key, child_label in children:
-                    child = QTreeWidgetItem([child_label])
-                    child.setData(0, Qt.ItemDataRole.UserRole, child_key)
-                    item.addChild(child)
-                item.setExpanded(True)
+                self._toc.addTopLevelItem(item)
             else:
-                item.setFont(0, bold_font)
-            self._toc.addTopLevelItem(item)
+                items[entry.parent].addChild(item)
+        for entry in self._entries.values():
+            if entry.page is None:
+                items[entry.key].setExpanded(True)
 
     def _on_topic_selected(self, current: QTreeWidgetItem | None, _previous):
         if current is None:
             return
-        key = current.data(0, Qt.ItemDataRole.UserRole)
-        if key in HELP_PAGES:
-            self._browser.setHtml(HELP_PAGES[key])
-        elif current.childCount() > 0:
-            # Group header without own page — show first child
-            first_child = current.child(0)
-            child_key = first_child.data(0, Qt.ItemDataRole.UserRole)
-            if child_key in HELP_PAGES:
-                self._browser.setHtml(HELP_PAGES[child_key])
-                self._toc.setCurrentItem(first_child)
+        entry = self._entries.get(current.data(0, Qt.ItemDataRole.UserRole))
+        if entry is None:
+            return
+        if entry.page is None:
+            # Group header without own page: show its first child
+            if current.childCount() > 0:
+                self._toc.setCurrentItem(current.child(0))
+            return
+        if entry.anchor is None or entry.page != self._page_key:
+            self._browser.setHtml(render_page(entry.page))
+            self._page_key = entry.page
+        if entry.anchor is not None:
+            self._browser.scrollToAnchor(entry.anchor)
+        # Folding rows under a pressed mouse button clears the selection, so a click waits for the event loop
+        QTimer.singleShot(0, self, self._sync_expansion)
+
+    def _sync_expansion(self):
+        """Open the sections of the page shown and fold the other pages' sections, so the menu stays short.
+
+        Groups keep their state.
+        """
+        for entry in self._entries.values():
+            if entry.page == entry.key and self._items[entry.key].childCount() > 0:
+                self._items[entry.key].setExpanded(entry.key == self._page_key)
+
+    def _on_item_clicked(self, item: QTreeWidgetItem, _column: int):
+        # A click on the current item emits no currentItemChanged, so scroll back to the section here
+        entry = self._entries.get(item.data(0, Qt.ItemDataRole.UserRole))
+        if entry is not None and entry.anchor is not None and item is self._toc.currentItem():
+            self._browser.scrollToAnchor(entry.anchor)
