@@ -6026,3 +6026,46 @@ def test_import_window_takes_input_while_help_is_open(qtbot, make_install_dialog
     qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
     assert not help_window.isVisible()
     assert dialog._help_dialog is None
+
+
+# -- Start page Cancel and the window fitting its screen (plan 12-13, G-12-10) ------------------
+
+
+def test_start_page_cancel_closes_without_writing(qtbot, make_start_dialog, start_layout):
+    dialog = make_start_dialog()
+    cancel = dialog._start_cancel_btn
+    assert cancel.text() == "Cancel"
+    assert cancel.toolTip() == "Close without importing. Nothing is written."
+    assert cancel.isVisible()
+    assert not cancel.isDefault() and not cancel.autoDefault()
+    row = dialog._start_bottom
+    assert row.indexOf(cancel) == row.count() - 1
+    assert row.itemAt(0).spacerItem() is not None  # a stretch first, so Cancel sits at the right
+
+    before = custom_snapshot(start_layout)
+    cancel.click()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert dialog.result is None
+    assert custom_snapshot(start_layout) == before
+
+
+def test_start_page_cancel_while_reading_waits_then_closes(qtbot, make_start_dialog, gates):
+    def open_gated(path, repo_root, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        assert gate.wait(30)
+        return fake_package(path)
+
+    dialog = make_start_dialog(open_package=open_gated, detect_candidate=lambda package: (None, []))
+    dialog.open_path(Path("held.zip"))
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog._browse_btn.isEnabled()
+    assert dialog._start_cancel_btn.isEnabled()
+
+    dialog._start_cancel_btn.click()  # returns at once: the open is still held, exactly as the window's X does
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert QGuiApplication.overrideCursor() is None
