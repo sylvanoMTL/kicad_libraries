@@ -1,5 +1,5 @@
 ---
-status: partial
+status: diagnosed
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
 source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
@@ -329,8 +329,32 @@ blocked: 1
   reason: "User reported: You have not implemented the cancel (skip) button on loading the libraries when opeing the app"
   severity: major
   test: 21
-  artifacts: []  # Filled by diagnosis
-  missing: []    # Filled by diagnosis
+  root_cause: "Never built at any layer. main_window._start_scan (L480-488) builds 'Loading Libraries' as a QProgressDialog and calls setCancelButton(None); canceled is unconnected. ScanWorker.run (L87-137) has no stop/skip state and saves every scan to scan_cache unconditionally (L122-134). scan_all (library_scanner.py L603-634) and its per-file loops take only a progress callback. About 63 of ~70 s is the per-file 3D model path check over 5645 Wurth footprints (_check_model_files L553-593); listing libraries takes 0.25 s and reading symbol footprint links 6 s. The saved scan is also discarded whenever any package .py changes (scan_cache._code_signature L194-210), so during development nearly every start runs the full scan."
+  artifacts:
+    - path: "kicad_lib_manager/main_window.py"
+      issue: "L480-488 dialog has no button (setCancelButton(None)); L73-137 ScanWorker has no skip request and saves every scan as complete; L512-515 _on_scan_progress does not know the source; L586-625 _on_scan_finished claims 'No warnings.' unqualified"
+    - path: "kicad_lib_manager/library_scanner.py"
+      issue: "scan_all L603-634 has no skip hook and does not report the current source; _check_model_files L553-593 per-file loop is where a per-source skip belongs"
+    - path: "kicad_lib_manager/models.py"
+      issue: "ScanResult has no marker for skipped sources"
+    - path: "kicad_lib_manager/scan_cache.py"
+      issue: "save L401-437, encode/decode L372-388, load_fresh L477-536 carry no skipped sources; _code_signature L194-210 hashes the whole package"
+    - path: "kicad_lib_manager/table_generator.py"
+      issue: "_merge_table L165-178 removes managed entries missing from the scan as stale, so a skip must never drop libraries"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "HELP_PAGES['repo_scan'] L110-125 does not mention the saved scan or Skip"
+    - path: "tests/test_main_window.py"
+      issue: "L49 fake_scan(root, progress=None, kicad_fp_dir=None) breaks with a new keyword; same in tests/test_main_window_import.py L62+"
+  missing:
+    - "A Skip button on the Loading Libraries dialog (startup and Rescan) that names the source being checked (e.g. 'Skip WurthElektronik') and is active only while that source can be skipped"
+    - "A thread-safe skip request on ScanWorker (lock or threading.Event) passed to scan_all as an optional plain-callable skip hook (library_scanner and scan_cache stay Qt-free, tests/test_layering.py)"
+    - "scan_all reports the current source and checks the hook per file in _check_model_files; a skipped source's 3D model path check stops while its libraries are still listed and its symbol footprint links still read (never dropped or emptied, so Generate Tables removes nothing and pre-select / footprint auto-select keep working)"
+    - "ScanResult records skipped sources; one plain log line says what was skipped and that Rescan checks it again; 'No warnings.' is not claimed after a skip"
+    - "Saved scan stays honest per the owner's choice: either a skipped scan is not saved, or it is saved with the skipped sources and the reuse note says so (never reused silently as complete, O-04)"
+    - "Optional: progress weighted across phases so the bar does not restart at 0; narrow _code_signature to modules that affect scan output"
+    - "Help 'Repository Scan' page and CLAUDE.md GUI Behavior explain Skip in plain words"
+    - "Tests: Skip button exists and sets the request; a skipped source keeps all libraries and footprint links and only its 3D path lines are absent; Generate Tables after a skip removes no Wurth entry; saved-scan behaviour after a skip; update fake_scan signatures in tests/test_main_window.py and tests/test_main_window_import.py"
+  debug_session: ""
 
 - gap_id: G-12-12
   truth: "The import start page is compact: Browse zip..., Browse folder... and Cancel share one row (same layout grid), with no large empty band, so the window opens smaller."
@@ -338,8 +362,24 @@ blocked: 1
   reason: "User reported: You can still reduce the size and have the browse and cancel in the same llayout grid. (screenshots at 100%: start page about 634x467 with a large empty band between Browse zip... / Browse folder... and Cancel at the bottom right; owner's sketch moves Cancel up onto the Browse row and shrinks the window to about 634x340)"
   severity: cosmetic
   test: 12
-  artifacts: []  # Filled by diagnosis
-  missing: []    # Filled by diagnosis
+  root_cause: "The start page has a fixed 640x440 size (import_dialog.py:82 _START_SIZE, applied at :554 and _show_page :614) that is taller than its content (layout wants about 476x316), and outer.addStretch(1) (:690) between the centred column and the separate _start_bottom Cancel row (:768-776) absorbs the extra height, leaving a ~144 px band between the Browse row and Cancel. _fit_size only clamps to the screen, never to the content. The 440 'room for the issue list' rationale does not hold: the window grows by itself through its layout minimum when issues show."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: ":82 _START_SIZE = QSize(640, 440) used at :554 and :614; :690 outer.addStretch(1); :737-742 Browse row is a local layout; :768-776 separate _start_bottom Cancel row; :1338 showEvent refit and :1357-1379 _on_offer_found show the Downloads offer row after the window is shown"
+    - path: "tests/test_import_dialog.py"
+      issue: ":6042-6044 asserts Cancel last in _start_bottom; :6151 test_start_page_opens_small and :6170 test_window_grows_for_the_edit_page_and_shrinks_back pin 640x440"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: ":226-227 Start section says Cancel is at the bottom right"
+    - path: "tests/test_help_dialog.py"
+      issue: ":145-148 test_help_names_the_start_page_cancel requires 'bottom right'"
+  missing:
+    - "Move _start_cancel_btn into the Browse zip... / Browse folder... row after its stretch (Cancel at the row's right end); remove the separate _start_bottom row; keep the row as an attribute (e.g. self._start_buttons) for tests"
+    - "Replace the fixed 640x440 start size with width 640 and a height taken from the layout at that width (heightForWidth / sizeHint) in __init__, showEvent and _show_page(start); fix the 'room for the issue list' comment"
+    - "Reserve the Downloads offer row's space before the lookup finishes (setRetainSizeWhenHidden or one shared slot with the reading box) so the window does not open ~44 px short and squeeze when the offer appears"
+    - "Tests: Browse row holds Browse zip..., Browse folder... and Cancel (Cancel last after a spacer); start size is width 640 and the computed compact height; no empty band (Cancel top == Browse zip... top; height <= layout height at 640) at 100% and 200%"
+    - "Help Importing Parts > Start says in plain words Cancel sits next to Browse zip... and Browse folder...; on the editing step it stays at the bottom right, right of Install Part; update test_help_names_the_start_page_cancel"
+    - "Optional: refit the window after _show_start_issues so the many-issues state stays inside a 200% Full HD screen"
+  debug_session: ""
 
 - gap_id: G-12-22
   truth: "The User Guide (from the main window Help menu or F1, or from the import window Help or F1) can stay open beside any other window of the app (main window, import window, other dialogs) and be browsed while those windows are used; neither blocks the other."
@@ -347,8 +387,30 @@ blocked: 1
   reason: "User reported: is there away to be able to use the main window while the user guide is opened? same for the help"
   severity: major
   test: 22
-  artifacts: []  # Filled by diagnosis
-  missing: []    # Filled by diagnosis
+  root_cause: "Three causes. (1) MainWindow._on_help (main_window.py:1307-1308) runs HelpDialog(parent=self).exec(); exec() makes the guide ApplicationModal, blocking every other window, and builds a new guide per F1. (2) The import window's guide (import_dialog.py:633-649, parent=self) escapes the import dialog's WindowModal only because it descends from it; any window-modal child of the import dialog (ContentViewDialog content_view.py:43 opened at import_dialog.py:2516, AtomicCheckDialog opened at :3279) blocks it, and _shutdown closes it with the import window (:3508-3510). (3) A guide parented to the main window is blocked by the import dialog and the scan progress dialog (transientParent is the main window even with Qt.Window/Qt.Tool); only a parentless guide escapes window-modal dialogs, and ApplicationModal exec() dialogs (path-variable QMessageBox.question :1122, KiCad-open box :1158, BackupDialog.exec :1260, About :1321) block even a parentless guide. A parentless visible guide keeps the app running after the main window closes."
+  artifacts:
+    - path: "kicad_lib_manager/main_window.py"
+      issue: "L1307-1308 _on_help uses exec() and a new instance per call; L1009-1025 _open_import must hand the import dialog a way to show the shared guide; L1323-1351 closeEvent must close the guide once the close is accepted; L1122, L1136-1158, L1260, L1311-1321 are ApplicationModal"
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "L446 _help_dialog and L633-649 _on_help keep a private guide parented to self; L3508-3510 _shutdown closes the guide; comment at L643 states the old reasoning"
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "HelpDialog works parentless but first show is no longer centred over the main window; Help text L233-235 and the F1 row L446-447 should say the guide is its own window"
+    - path: "kicad_lib_manager/widgets/backup_dialog.py"
+      issue: "opened with exec() (ApplicationModal) at main_window.py:1260"
+    - path: "tests/test_import_dialog.py"
+      issue: "L5847-5859 assert guide parent is the import dialog / one child guide; L5906, L5930, L5958, L5993, L6031-6032 assert the guide closes with the import window; L6203 reads dialog._help_dialog"
+    - path: "tests/test_main_window.py"
+      issue: "no test covers _on_help or guide modality; L96 and tests/test_main_window_import.py L116 monkeypatch QMessageBox.question"
+  missing:
+    - "MainWindow._on_help: no exec(); one shared HelpDialog created with parent=None, kept on the main window, shown with show()/raise_()/activateWindow() and reused on every Help menu click or F1"
+    - "ImportDialog Help action and F1 show the shared guide on Importing Parts (show_topic('importing')) through an injected callable or signal wired in _open_import (widgets never import main_window); parentless fallback guide when no hook is given; never parent the guide to the import dialog"
+    - "ImportDialog._shutdown no longer closes the guide (drop the 12-12 'guide closes with the import window' rule)"
+    - "MainWindow.closeEvent closes the guide once the close is accepted (after the install/commit/finishing/path-check ignore branches)"
+    - "First show of the shared guide placed on the main window's screen; fit_window still applies"
+    - "Main-window dialogs that are ApplicationModal today made WindowModal so they never block the guide: About, KiCad-open box, path-variable question (replace static QMessageBox.question), BackupDialog"
+    - "Help text: Importing Parts > Start and the Keyboard Shortcuts F1 row say in plain words the User Guide is its own window that stays open beside the main window and the import window"
+    - "Tests (window-system clicks via QTest.mouseClick(QWindow, ...)): main window F1/Help opens a non-modal guide and main window buttons still take clicks; a second F1 reuses the same guide; the guide takes clicks while the import window, its content view, Check Atomic Parts dialog, or the scan progress dialog is open; the guide stays open after the import window closes; import Help/F1 still opens Importing Parts; closing the main window closes the guide; update the import-dialog help tests and QMessageBox.question monkeypatches listed above"
+  debug_session: ""
 
 - gap_id: G-12-23
   truth: "When the User Guide is closed and opened again (also after restarting the app), it shows the page and section last browsed, with that node selected and expanded in the left menu; a caller that asks for a given topic (import window Help/F1 opens Importing Parts) still gets that topic."
@@ -357,5 +419,25 @@ blocked: 1
   owner_note: "Note that it is good on importing part; by default we are already on import part, that behavious can be kept (import window Help/F1 keeps opening on Importing Parts; the remembered section applies when no topic is asked for)"
   severity: major
   test: 23
-  artifacts: []  # Filled by diagnosis
-  missing: []    # Filled by diagnosis
+  root_cause: "The guide has no saved place. HelpDialog.__init__ (help_dialog.py:598-600) opens on the first menu item whenever no topic is given and never reads a saved key; nothing saves the current key (settings.py has no help/* key; _on_topic_selected L638-655 writes nothing; no closeEvent/done/hideEvent hook); and MainWindow._on_help (main_window.py:1307-1308) builds a new guide per F1, so the place is lost on close. Saving on close is not enough: Esc/reject() skip closeEvent and deleting the parent fires no event, so the key must be saved each time a page or section is shown. Restore already works through show_topic(key)."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "__init__ L598-600 never reads a saved key and selects topLevelItem(0); _on_topic_selected L638-655 saves nothing"
+    - path: "kicad_lib_manager/settings.py"
+      issue: "no load_help_topic/save_help_topic helpers or 'help/last_topic' key"
+    - path: "kicad_lib_manager/main_window.py"
+      issue: "L1307-1308 new guide per F1 (see G-12-22)"
+    - path: "kicad_lib_manager/widgets/import_dialog.py"
+      issue: "L635-649 passes topic='importing'; keep as is (owner_note)"
+    - path: "tests/test_help_dialog.py"
+      issue: "no _isolated_settings fixture, so saving would write the real settings.ini; L419-424 test_help_dialog_opens_on_a_given_topic asserts a fresh HelpDialog() opens on Overview right after an Importing Parts one"
+  missing:
+    - "settings.py: load_help_topic() -> str | None and save_help_topic(key) under 'help/last_topic' in a new '# ── User Guide ──' section; a non-string or empty value reads as None"
+    - "help_dialog.py __init__: when topic is None, read the saved key BEFORE any menu selection, then show_topic(saved) -> show_topic(saved page part) -> first item; an explicit topic never reads the saved key"
+    - "help_dialog.py _on_topic_selected: save entry.key for every page and section shown per the owner's choice on explicit-topic opens (after the group early return; not in closeEvent)"
+    - "Restore selects the node, expands its page, folds the others and scrolls the section heading into view once shown; exact pixel scroll is out of scope (owner: selecting and expanding the node does the job)"
+    - "main_window._on_help passes no topic; with the shared guide of G-12-22, F1 only shows and raises it and never calls show_topic"
+    - "import_dialog Help/F1 keeps opening 'importing' (owner_note)"
+    - "tests/test_help_dialog.py: autouse _isolated_settings(tmp_path) fixture (pattern of tests/test_import_dialog.py:38-46); change test_help_dialog_opens_on_a_given_topic L419-424 to 'no topic and nothing saved: Overview'"
+    - "Tests: browse to importing#conflicts, close via Close, Esc and deleting the parent; a new HelpDialog() opens there with Importing Parts expanded and 4.4.7 Conflicts in view; a key saved only through save_help_topic (app restart) is restored; an explicit topic wins over a saved key and import Help/F1 still opens 'importing'; stale keys fall back (unknown section -> its page, unknown page -> Overview, group -> first child, empty -> Overview)"
+  debug_session: ""
