@@ -634,12 +634,13 @@ def test_cli_loads_the_generated_text(atomic_custom, ul_package, tmp_path, real_
 
 
 def test_text_rows_fit_the_left_pane_and_are_named(qtbot, make_dialog):
-    from PySide6.QtCore import QPoint
+    from PySide6.QtCore import QPoint, QSize
 
     dialog = make_dialog()
     dialog.show()
-    dialog.resize(900, 600)
     wait_current(qtbot, dialog)
+    dialog.resize(900, 600)  # after the edit page shows: it opens at its own size
+    qtbot.waitUntil(lambda: dialog.size() == QSize(900, 600), timeout=5000)
     scroll = dialog._left_scroll
     left = scroll.widget()
     assert not scroll.horizontalScrollBar().isVisible()

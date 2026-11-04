@@ -18,7 +18,7 @@ from customfixtures import (
     write_fake_kicad,
 )
 from installfixtures import ATOMIC_PROPS, vendor_footprint, vendor_symbol_lib
-from PySide6.QtCore import QPoint, QSettings, Qt
+from PySide6.QtCore import QPoint, QSettings, QSize, Qt
 from PySide6.QtWidgets import QLabel, QWidget
 from stockfixtures import write_stock_sample
 from zipfixtures import STEP_BYTES, make_zip
@@ -307,8 +307,9 @@ def test_a_new_package_goes_back_to_the_vendor_footprint(qtbot, make_dialog, sto
 
 def test_the_destination_choice_and_picker_fit_the_left_pane(qtbot, make_dialog, stock_tools):
     dialog = make_dialog(stock_tools, show=True)
-    dialog.resize(900, 600)
     wait_current(qtbot, dialog)
+    dialog.resize(900, 600)  # after the edit page shows: it opens at its own size
+    qtbot.waitUntil(lambda: dialog.size() == QSize(900, 600), timeout=5000)
     choose_official(qtbot, dialog)
     pick_official(qtbot, dialog, TEXAS)
     qtbot.wait(50)

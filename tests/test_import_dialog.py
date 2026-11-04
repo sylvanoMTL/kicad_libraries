@@ -1427,8 +1427,8 @@ def test_fields_long_text_geometry(qtbot, make_item_dialog, tmp_path):
         models=(long_name + ".step", "b.step"),
     )
     dialog = make_item_dialog(package, show=True, suggest_library=_good_suggestion)
-    dialog.resize(900, 600)
     wait_current(qtbot, dialog)
+    resize_and_wait(qtbot, dialog, 900, 600)
     type_text(qtbot, dialog._field_edits["description"], "D" * 120)
     qtbot.wait(50)
     scroll = dialog._left_scroll
@@ -1745,8 +1745,8 @@ def test_library_long_name_geometry(qtbot, make_item_dialog):
         UL_ZIP, show=True, suggest_library=_good_suggestion,
         detect_tools=lambda kicad_fp_dir: ToolContext(allowed_stems=allowed_stems([long_stem])),
     )
-    dialog.resize(900, 600)
     wait_current(qtbot, dialog)
+    resize_and_wait(qtbot, dialog, 900, 600)
     type_text(qtbot, dialog._library_combo.lineEdit(), long_name)
     qtbot.wait(50)
     scroll = dialog._left_scroll
@@ -1934,8 +1934,8 @@ def test_strip_caps_three_lines_with_tooltip(qtbot, make_item_dialog):
     """UI E11/overflow and long-text: at most 3 lines, the tooltip lists every reason."""
     issues = [Issue(Severity.ERROR, f"install.test_{n}", f"Reason number {n} " + "with a rather long explanation " * 4) for n in range(10)]
     dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(*issues))
-    dialog.resize(900, 600)
     wait_current(qtbot, dialog)
+    resize_and_wait(qtbot, dialog, 900, 600)
     strip = dialog._strip
     limit = 3 * strip.fontMetrics().lineSpacing() + 2 * SP_SM
     assert strip.maximumHeight() <= limit + 2
@@ -2457,8 +2457,8 @@ def test_conflicts_overflow_geometry(qtbot, make_item_dialog, item_layout, tmp_p
     (item_layout.footprints_dir / f"{FP_LIB}.pretty" / "F1.kicad_mod").write_bytes(fp_bytes("F1", model="other.step"))
     (item_layout.models_dir / "S1.step").write_bytes(STEP_BYTES + b"\n")
     dialog = make_item_dialog(package, show=True, suggest_library=_good_suggestion)
-    dialog.resize(900, 600)
     wait_current(qtbot, dialog)
+    resize_and_wait(qtbot, dialog, 900, 600)
     assert len(dialog._conflict_rows) == 2
     rows = [dialog._conflicts_layout.itemAt(i).widget() for i in range(2)]
     rows[0]._rename_btn.click()
@@ -6026,3 +6026,167 @@ def test_import_window_takes_input_while_help_is_open(qtbot, make_install_dialog
     qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
     assert not help_window.isVisible()
     assert dialog._help_dialog is None
+
+
+# -- Start page Cancel and the window fitting its screen (plan 12-13, G-12-10) ------------------
+
+
+def test_start_page_cancel_closes_without_writing(qtbot, make_start_dialog, start_layout):
+    dialog = make_start_dialog()
+    cancel = dialog._start_cancel_btn
+    assert cancel.text() == "Cancel"
+    assert cancel.toolTip() == "Close without importing. Nothing is written."
+    assert cancel.isVisible()
+    assert not cancel.isDefault() and not cancel.autoDefault()
+    row = dialog._start_bottom
+    assert row.indexOf(cancel) == row.count() - 1
+    assert row.itemAt(0).spacerItem() is not None  # a stretch first, so Cancel sits at the right
+
+    before = custom_snapshot(start_layout)
+    cancel.click()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert dialog.result is None
+    assert custom_snapshot(start_layout) == before
+
+
+def test_start_page_cancel_while_reading_waits_then_closes(qtbot, make_start_dialog, gates):
+    def open_gated(path, repo_root, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        assert gate.wait(30)
+        return fake_package(path)
+
+    dialog = make_start_dialog(open_package=open_gated, detect_candidate=lambda package: (None, []))
+    dialog.open_path(Path("held.zip"))
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog._browse_btn.isEnabled()
+    assert dialog._start_cancel_btn.isEnabled()
+
+    dialog._start_cancel_btn.click()  # returns at once: the open is still held, exactly as the window's X does
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert QGuiApplication.overrideCursor() is None
+
+
+from PySide6.QtCore import QRect  # noqa: E402
+from PySide6.QtWidgets import QSplitter  # noqa: E402
+
+# The real function, captured before any test patches the module's screen_area
+real_screen_area = import_dialog_module.screen_area
+
+# Free areas in logical pixels, taskbar left out
+DESKTOP_100 = QRect(0, 0, 1920, 1032)  # Full HD at 100%, 48 px taskbar
+DESKTOP_200 = QRect(0, 0, 960, 492)  # Full HD at 200%
+OWNER_SCREEN = QRect(0, 0, 1280, 672)  # a 2560x1440 screen at 200%
+AREAS = [
+    pytest.param(DESKTOP_100, id="full_hd_100"),
+    pytest.param(DESKTOP_200, id="full_hd_200"),
+    pytest.param(OWNER_SCREEN, id="owner_screen"),
+]
+
+
+def use_screen(monkeypatch, area: QRect) -> None:
+    monkeypatch.setattr(import_dialog_module, "screen_area", lambda widget: area)
+
+
+def inside_window(dialog: ImportDialog, widget: QWidget) -> bool:
+    """Whether the widget lies fully inside the dialog's client area."""
+    return dialog.rect().contains(QRect(widget.mapTo(dialog, QPoint(0, 0)), widget.size()))
+
+
+def resize_and_wait(qtbot, dialog: ImportDialog, width: int, height: int) -> None:
+    dialog.resize(width, height)
+    qtbot.waitUntil(lambda: dialog.size() == QSize(width, height), timeout=5000)
+
+
+def test_fit_size_and_place_inside():
+    fit, place = import_dialog_module._fit_size, import_dialog_module._place_inside
+    wanted, minimum, frame = QSize(1100, 720), QSize(854, 268), QSize(16, 40)
+    assert fit(wanted, minimum, frame, DESKTOP_100.size()) == QSize(1100, 720)
+    assert fit(wanted, minimum, frame, DESKTOP_200.size()) == QSize(944, 452)
+    assert fit(wanted, minimum, frame, OWNER_SCREEN.size()) == QSize(1100, 632)
+    assert fit(wanted, minimum, frame, QSize(800, 400)) == QSize(854, 360)  # the minimum wins in width
+    assert place(QRect(1500, 900, 1116, 760), DESKTOP_100) == QPoint(804, 272)
+    assert place(QRect(-50, -20, 600, 400), DESKTOP_100) == QPoint(0, 0)
+    assert place(QRect(100, 100, 1000, 600), DESKTOP_200) == QPoint(0, 0)  # larger than the area: top-left edge
+    assert place(QRect(100, 100, 656, 480), QRect(1920, 0, 1920, 1032)) == QPoint(1920, 100)  # second monitor
+
+
+@pytest.mark.parametrize("area", AREAS)
+def test_window_fits_the_screen(qtbot, make_install_dialog, monkeypatch, area):
+    use_screen(monkeypatch, area)
+    dialog = make_install_dialog()
+    assert area.contains(dialog.frameGeometry())
+    for button in (dialog._install_btn, dialog._cancel_btn):
+        assert button.isVisible()
+        assert inside_window(dialog, button)
+    sizes = dialog._edit_page.findChild(QSplitter).sizes()
+    assert sizes[0] >= 380 and sizes[1] >= 400
+    if area == DESKTOP_100:
+        assert dialog.size() == QSize(1100, 720)
+        assert abs(sizes[0] / sum(sizes) - 0.40) <= 0.03
+    if area == DESKTOP_200:
+        assert dialog.width() <= 944 and dialog.height() <= 452
+
+
+def test_window_fits_the_screen_on_first_show(qtbot, make_start_dialog, monkeypatch):
+    use_screen(monkeypatch, DESKTOP_200)
+    dialog = make_start_dialog()
+    assert DESKTOP_200.contains(dialog.frameGeometry())
+
+
+def test_screen_area_reads_the_widget_screen(qtbot, make_start_dialog):
+    dialog = make_start_dialog()
+    assert real_screen_area(dialog) == dialog.screen().availableGeometry()
+
+
+@pytest.mark.parametrize("area", [DESKTOP_100, DESKTOP_200], ids=["full_hd_100", "full_hd_200"])
+def test_start_page_opens_small(qtbot, make_start_dialog, monkeypatch, area):
+    use_screen(monkeypatch, area)
+    dialog = make_start_dialog()
+    assert dialog.size() == QSize(640, 440)
+    assert dialog.minimumSizeHint().width() < 640  # the edit page's minimum no longer counts
+    assert area.contains(dialog.frameGeometry())
+    assert dialog._start_cancel_btn.isVisible()
+    assert inside_window(dialog, dialog._start_cancel_btn)
+
+
+def test_window_grows_for_the_edit_page_and_shrinks_back(qtbot, make_dialog, monkeypatch):
+    dialog = make_dialog(show=True)
+    wait_plan(qtbot, dialog)
+    assert dialog.size() == QSize(1100, 720)
+    assert dialog.minimumSizeHint().width() >= 780
+    sizes = dialog._edit_page.findChild(QSplitter).sizes()
+    assert abs(sizes[0] / sum(sizes) - 0.40) <= 0.03
+    assert dialog._cancel_btn.isVisible() and dialog._cancel_btn.isEnabled()
+
+    resize_and_wait(qtbot, dialog, 1200, 760)
+    dialog._change_btn.click()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._start_page, timeout=30000)
+    assert dialog.size() == QSize(640, 440)
+    assert dialog._start_cancel_btn.isVisible()
+
+    dialog.open_path(UL_ZIP)
+    wait_plan(qtbot, dialog)
+    assert dialog.size() == QSize(1200, 760)  # the size the user gave this window
+
+    use_screen(monkeypatch, DESKTOP_200)
+    dialog._change_btn.click()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._start_page, timeout=30000)
+    dialog.open_path(UL_ZIP)
+    wait_plan(qtbot, dialog)
+    assert dialog.size() == QSize(944, 452)  # the remembered size is still bounded by the screen
+    assert DESKTOP_200.contains(dialog.frameGeometry())
+
+
+def test_result_page_keeps_the_size_and_has_close(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    before = dialog.size()
+    install_ul(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._result_view
+    assert dialog.size() == before
+    assert dialog._result_view.close_button.isVisible()
+    assert dialog._result_view.close_button.isEnabled()
