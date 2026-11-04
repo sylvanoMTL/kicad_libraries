@@ -689,3 +689,14 @@ def test_rendered_headings_keep_their_look(qtbot, key):
     # an anchor that took the link style would show the accent colour in a section heading
     for look in _heading_looks(rendered, 3):
         assert all(colour != ACCENT.upper() for _size, _style, colour in look)
+
+
+def test_help_repo_scan_explains_skip_and_the_saved_scan():
+    page = _page_text("repo_scan")
+
+    for text in (
+        "saved scan", "no library file changed", "Rescan", "Loading Libraries", "Skip",
+        "3D model paths", "still listed", "Generate Tables",
+    ):
+        assert text in page, text
+    assert "<h3" not in HELP_PAGES["repo_scan"]
