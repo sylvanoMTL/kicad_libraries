@@ -1653,3 +1653,149 @@ def test_skipped_scan_is_saved_and_the_next_start_says_so(make_window, tmp_path,
     assert SAVED_NOTE in text
     assert "were skipped" not in text
     assert third._scan_result.skipped_sources == []
+
+
+# -- the shared, parentless User Guide (plan 12-18, G-12-22) -----------------------------------------
+
+import types  # noqa: E402
+
+from PySide6.QtCore import QRect  # noqa: E402
+from PySide6.QtGui import QCloseEvent  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
+
+from kicad_lib_manager.widgets.help_dialog import HelpDialog  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _close_guides():
+    """The guide is a parentless top-level window: close and release every one a test left behind."""
+    yield
+    for widget in QApplication.topLevelWidgets():
+        if isinstance(widget, HelpDialog):
+            widget.close()
+            widget.deleteLater()
+
+
+def guide_windows() -> list[HelpDialog]:
+    return [widget for widget in QApplication.topLevelWidgets() if isinstance(widget, HelpDialog)]
+
+
+def guide_key(guide: HelpDialog) -> str:
+    return guide._toc.currentItem().data(0, Qt.ItemDataRole.UserRole)
+
+
+def click_guide_row(guide: HelpDialog, key: str) -> None:
+    """Click the guide's menu row with this key through the window system, which drops a click aimed at a blocked window."""
+    stack = [guide._toc.topLevelItem(i) for i in range(guide._toc.topLevelItemCount())]
+    while stack:
+        item = stack.pop(0)
+        if item.data(0, Qt.ItemDataRole.UserRole) == key:
+            break
+        stack.extend(item.child(i) for i in range(item.childCount()))
+    else:
+        raise AssertionError(f"no User Guide topic {key!r}")
+    toc = guide._toc
+    toc.scrollToItem(item)
+    point = toc.viewport().mapTo(guide, toc.visualItemRect(item).center())
+    QTest.mouseClick(guide.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+
+
+def click_in_window(window, button) -> None:
+    """Click a button of a window through the window system."""
+    point = button.mapTo(window, button.rect().center())
+    QTest.mouseClick(window.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+
+
+def help_menu_action(w):
+    (action,) = [a for a in w.findChildren(type(w.menuBar().actions()[0])) if a.text() == "&User Guide"]
+    return action
+
+
+def test_main_window_help_opens_one_shared_non_modal_guide(qtbot, make_window):
+    w = make_window([ScanResult()])
+    w.show()
+    before = len(guide_windows())
+    help_menu_action(w).trigger()
+    guide = w._guide
+    assert isinstance(guide, HelpDialog) and guide.isVisible()
+    assert guide.parent() is None
+    assert guide.windowModality() == Qt.WindowModality.NonModal
+    assert not guide.isModal()
+    assert guide.windowHandle().transientParent() is None
+    assert QApplication.activeModalWidget() is not guide
+    assert len(guide_windows()) == before + 1
+
+    w.activateWindow()
+    qtbot.waitUntil(w.isActiveWindow, timeout=5000)
+    qtbot.keyClick(w, Qt.Key.Key_F1)
+    assert w._guide is guide and guide.isVisible()
+
+    guide.close()
+    assert not guide.isVisible()
+    help_menu_action(w).trigger()
+    assert w._guide is guide and guide.isVisible()
+    assert len(guide_windows()) == before + 1
+
+
+def test_main_window_and_guide_both_take_clicks(qtbot, make_window):
+    w = make_window([ScanResult()])
+    w.show()
+    qtbot.waitExposed(w)
+    help_menu_action(w).trigger()
+    guide = w._guide
+    qtbot.waitExposed(guide)
+
+    clicks = []
+    w._select_all_btn.clicked.connect(lambda: clicks.append(True))
+    click_in_window(w, w._select_all_btn)
+    assert clicks == [True]
+
+    click_guide_row(guide, "shortcuts")
+    qtbot.waitUntil(lambda: guide_key(guide) == "shortcuts", timeout=5000)
+    assert "Keyboard Shortcuts" in guide._browser.toPlainText()
+
+
+def test_closing_the_main_window_closes_the_guide(qtbot, make_window):
+    w = make_window([ScanResult()])
+    w.show()
+    help_menu_action(w).trigger()
+    guide = w._guide
+    assert guide.isVisible()
+    w.close()
+    assert not guide.isVisible()
+
+
+def test_a_refused_close_keeps_the_guide(qtbot, make_window):
+    w = make_window([ScanResult()])
+    w.show()
+    help_menu_action(w).trigger()
+    guide = w._guide
+    w._import_dialog = types.SimpleNamespace(
+        is_installing=lambda: True, is_finishing=lambda: False, reject=lambda: pytest.fail("rejected")
+    )
+    try:
+        event = QCloseEvent()
+        w.closeEvent(event)
+        assert not event.isAccepted()
+        assert guide.isVisible()
+        assert not w.close()
+        assert guide.isVisible()
+    finally:
+        w._import_dialog = None
+    w.close()
+    assert not guide.isVisible()
+
+
+def test_guide_first_shows_over_the_main_window(qtbot, make_window):
+    w = make_window([ScanResult()])
+    w.show()
+    w.resize(1100, 750)
+    w.move(300, 200)
+    qtbot.waitExposed(w)
+    help_menu_action(w).trigger()
+    guide = w._guide
+    qtbot.waitExposed(guide)
+    here, there = w.frameGeometry().center(), guide.frameGeometry().center()
+    assert abs(here.x() - there.x()) <= 2 and abs(here.y() - there.y()) <= 2, (here, there)
+    assert QRect(0, 0, 1920, 1032).contains(guide.frameGeometry())

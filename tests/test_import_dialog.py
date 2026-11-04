@@ -5827,6 +5827,40 @@ def help_key(help_window: HelpDialog) -> str:
     return help_window._toc.currentItem().data(0, Qt.ItemDataRole.UserRole)
 
 
+@pytest.fixture(autouse=True)
+def _close_guides():
+    """The guide is parentless now, so it outlives its import window: close and release every one after each test."""
+    yield
+    for widget in QApplication.topLevelWidgets():
+        if isinstance(widget, HelpDialog):
+            widget.close()
+            widget.deleteLater()
+
+
+def test_import_window_with_a_guide_hook_creates_no_guide(qtbot, atomic_custom, tmp_path):
+    calls: list[str] = []
+    dialog = ImportDialog(
+        atomic_custom.repo_root,
+        atomic_custom,
+        core=core_with(),
+        backup_root=tmp_path / "backups",
+        show_guide=calls.append,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._help_action.trigger()
+    assert calls == ["importing"]
+
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    qtbot.keyClick(dialog, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: len(calls) == 2, timeout=5000)
+    assert calls == ["importing", "importing"]
+    assert dialog._help_dialog is None
+    assert not [w for w in QApplication.topLevelWidgets() if isinstance(w, HelpDialog)]
+    assert dialog.isVisible()
+
+
 def test_toolbar_help_opens_importing_page(qtbot, make_dialog):
     dialog = make_dialog(open_now=False, show=True)
     toolbar = dialog._toolbar
@@ -5846,17 +5880,17 @@ def test_toolbar_help_opens_importing_page(qtbot, make_dialog):
     action.trigger()
     first = dialog._help_dialog
     assert isinstance(first, HelpDialog) and first.isVisible()
-    assert first.parent() is dialog
+    assert first.parent() is None
     assert help_key(first) == "importing"
     assert "Importing Parts" in first._browser.toPlainText()
     assert dialog.isVisible() and dialog._stack.currentWidget() is dialog._start_page
-    assert len(dialog.findChildren(HelpDialog)) == 1
+    assert first not in dialog.findChildren(HelpDialog)
 
     first.close()
     assert not first.isVisible()
     action.trigger()
     assert dialog._help_dialog is first and first.isVisible()
-    assert len(dialog.findChildren(HelpDialog)) == 1
+    assert first not in dialog.findChildren(HelpDialog)
     assert dialog.isVisible()
 
 
@@ -5898,12 +5932,12 @@ def test_help_reachable_on_edit_and_result_pages(qtbot, make_install_dialog):
     assert dialog._help_dialog is help_window and help_window.isVisible()
     assert help_key(help_window) == "importing"
     assert dialog.isVisible() and dialog._stack.currentWidget() is dialog._result_page
-    assert len(dialog.findChildren(HelpDialog)) == 1
+    assert help_window not in dialog.findChildren(HelpDialog)
 
     qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
     dialog._result_view.close_button.click()
     assert not dialog.isVisible()
-    assert not help_window.isVisible()
+    assert help_window.isVisible()  # the guide outlives this window
 
 
 def test_help_works_while_installing(qtbot, make_install_dialog, gates):
@@ -5927,7 +5961,7 @@ def test_help_works_while_installing(qtbot, make_install_dialog, gates):
     qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
     QTest.keyClick(dialog, Qt.Key.Key_Escape)
     qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
-    assert not help_window.isVisible()
+    assert help_window.isVisible()
 
 
 def test_help_works_while_committing(qtbot, make_install_dialog, gates):
@@ -5955,10 +5989,10 @@ def test_help_works_while_committing(qtbot, make_install_dialog, gates):
     qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
     dialog.close()
     assert not dialog.isVisible()
-    assert not help_window.isVisible()
+    assert help_window.isVisible()
 
 
-def test_help_works_while_finishing_and_closes_with_the_dialog(qtbot, make_dialog, gates):
+def test_help_works_while_finishing_and_outlives_the_dialog(qtbot, make_dialog, gates):
     count = {"n": 0}
 
     def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
@@ -5990,7 +6024,7 @@ def test_help_works_while_finishing_and_closes_with_the_dialog(qtbot, make_dialo
 
     gates[0].set()
     qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
-    assert not help_window.isVisible()
+    assert help_window.isVisible()
     assert QGuiApplication.overrideCursor() is None
 
 
@@ -6025,8 +6059,8 @@ def test_import_window_takes_input_while_help_is_open(qtbot, make_install_dialog
     point = cancel.mapTo(dialog, cancel.rect().center())
     QTest.mouseClick(dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
     qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
-    assert not help_window.isVisible()
-    assert dialog._help_dialog is None
+    assert help_window.isVisible()
+    assert dialog._help_dialog is help_window
 
 
 # -- Start page Cancel and the window fitting its screen (plan 12-13, G-12-10) ------------------

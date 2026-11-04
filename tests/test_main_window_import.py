@@ -1391,3 +1391,94 @@ def test_status_rows_new_symbol_library_with_a_listed_footprint_library(qtbot, m
         f"Added {NEW_LIB} to sym-lib-table; fp-lib-table already lists {SHARED_FP}; not changed", Severity.INFO,
     )
     assert "generate_hint" not in dialog.rows
+
+
+# -- the shared User Guide beside the import window (plan 12-18, G-12-22) ---------------------------
+
+from PySide6.QtWidgets import QApplication  # noqa: E402
+from test_main_window import (  # noqa: E402,F401
+    _close_guides,
+    click_guide_row,
+    click_in_window,
+    guide_key,
+    guide_windows,
+)
+
+from kicad_lib_manager.importer.content import ContentText  # noqa: E402
+from kicad_lib_manager.widgets.atomic_check_dialog import AtomicCheckDialog  # noqa: E402
+from kicad_lib_manager.widgets.content_view import ContentViewDialog  # noqa: E402
+
+
+def open_import_window(qtbot, w, tmp_path):
+    w.show()
+    qtbot.waitExposed(w)
+    w._open_import(tmp_path / "missing.zip")
+    dialog = w._import_dialog
+    qtbot.waitUntil(dialog.isVisible, timeout=5000)
+    return dialog
+
+
+def test_import_help_uses_the_shared_guide(qtbot, make_window, tmp_path):
+    w = make_window([scan_with()])
+    dialog = open_import_window(qtbot, w, tmp_path)
+    assert w._guide is None
+    dialog._help_action.trigger()
+    guide = w._guide
+    assert guide is not None and guide.isVisible()
+    assert guide_key(guide) == "importing"
+    assert dialog._help_dialog is None
+    assert guide not in dialog.findChildren(type(guide))
+
+    guide.show_topic("shortcuts")
+    dialog._help_action.trigger()
+    assert w._guide is guide and guide_key(guide) == "importing"
+    assert len(guide_windows()) == 1
+    dialog.reject()
+
+
+def test_guide_takes_clicks_beside_the_import_window_and_its_dialogs(qtbot, make_window, tmp_path):
+    w = make_window([scan_with()])
+    dialog = open_import_window(qtbot, w, tmp_path)
+    dialog._help_action.trigger()
+    guide = w._guide
+    qtbot.waitExposed(guide)
+
+    # The main window stays locked while the import window is open; the guide does not
+    clicks = []
+    w._select_all_btn.clicked.connect(lambda: clicks.append(True))
+    click_in_window(w, w._select_all_btn)
+    assert clicks == []
+    click_guide_row(guide, "shortcuts")
+    qtbot.waitUntil(lambda: guide_key(guide) == "shortcuts", timeout=5000)
+
+    view = ContentViewDialog(ContentText(title="View", header="", body="text", kind="error"), parent=dialog)
+    view.open()
+    qtbot.waitExposed(view)
+    assert view.windowModality() == Qt.WindowModality.WindowModal
+    click_guide_row(guide, "importing")
+    qtbot.waitUntil(lambda: guide_key(guide) == "importing", timeout=5000)
+    view.close()
+
+    atomic = AtomicCheckDialog(ScanResult(), tmp_path, parent=dialog)
+    atomic.open()
+    qtbot.waitExposed(atomic)
+    click_guide_row(guide, "shortcuts")
+    qtbot.waitUntil(lambda: guide_key(guide) == "shortcuts", timeout=5000)
+    assert QApplication.activeModalWidget() is not guide
+    atomic.close()
+    dialog.reject()
+
+
+def test_guide_stays_open_after_the_import_window_closes(qtbot, make_window, tmp_path):
+    w = make_window([scan_with()])
+    dialog = open_import_window(qtbot, w, tmp_path)
+    dialog._help_action.trigger()
+    guide = w._guide
+    qtbot.waitExposed(guide)
+
+    dialog._start_cancel_btn.click()
+    qtbot.waitUntil(lambda: w._import_dialog is None, timeout=30000)
+    assert w._import_dialog is None
+    assert guide.isVisible() and w._guide is guide
+    click_guide_row(guide, "shortcuts")
+    qtbot.waitUntil(lambda: guide_key(guide) == "shortcuts", timeout=5000)

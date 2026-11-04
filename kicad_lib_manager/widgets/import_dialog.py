@@ -191,6 +191,19 @@ def fit_window(window: QWidget, wanted: QSize) -> None:
         outer.moveCenter(centre)
         window.move(_place_inside(outer, area))
 
+
+def centre_window(window: QWidget, over: QWidget) -> None:
+    """Move a top-level window so its frame is centred on another window's frame.
+
+    Once the window is visible (its frame is real) it is also kept inside the free area of its screen.
+    """
+    frame = window.frameGeometry()
+    frame.moveCenter(over.frameGeometry().center())
+    if window.isVisible():
+        frame.moveTopLeft(_place_inside(frame, screen_area(window)))
+    window.move(frame.topLeft())
+
+
 _START_BODY = (
     "Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. "
     "Nothing is written until you click Install Part."
@@ -433,6 +446,7 @@ class ImportDialog(QDialog):
         core: ImportCore | None = None,
         backup_root: Path | None = None,
         atomic_backup_root: Path | None = None,
+        show_guide: Callable[[str], None] | None = None,
         parent=None,
     ):
         super().__init__(parent)
@@ -444,7 +458,10 @@ class ImportDialog(QDialog):
         # Where the Check Atomic Parts dialog keeps the backups of the fixes it applies; None = its own default
         self._atomic_backup_root = atomic_backup_root
         self._atomic_dialog: AtomicCheckDialog | None = None
-        self._help_dialog: QDialog | None = None  # the User Guide window this import window opened
+        # Shows the main window's shared User Guide on a topic key; None when this window runs on its own
+        self._show_guide = show_guide
+        # The guide this window opened when no shared guide was given; parentless, so it outlives this window
+        self._help_dialog: QDialog | None = None
 
         # Public: the successful InstallResult. Shadows QDialog.result() on this instance (by design).
         self.result: InstallResult | None = None
@@ -653,12 +670,15 @@ class ImportDialog(QDialog):
         """Show the User Guide on Importing Parts, non-modal, and reuse the one window (G-12-9)."""
         if self._closing:
             return
+        if self._show_guide is not None:
+            self._show_guide(_HELP_TOPIC)
+            return
         # help_dialog imports this module's texts, so a module-level import would be circular
         from .help_dialog import HelpDialog
 
         if self._help_dialog is None:
-            # A child of this window-modal dialog is not blocked by it; a window parented to the main window would be
-            self._help_dialog = HelpDialog(topic=_HELP_TOPIC, parent=self)
+            # Parentless, so no window-modal dialog (this one, a content view, a check dialog) blocks it
+            self._help_dialog = HelpDialog(topic=_HELP_TOPIC)
         else:
             self._help_dialog.show_topic(_HELP_TOPIC)
         self._help_dialog.show()
@@ -3531,9 +3551,6 @@ class ImportDialog(QDialog):
         self._oneoff_jobs.clear()
         for view in list(self._content_views):
             view.close()
-        guide, self._help_dialog = self._help_dialog, None
-        if guide is not None:
-            guide.close()  # the User Guide this window opened never outlives it
         for worker in list(self._workers):
             value = worker.value
             if isinstance(value, (OpenOutcome, ModelOutcome)):
