@@ -122,3 +122,7 @@ class ScanResult:
     symbol_libs: list[SymbolLibrary] = field(default_factory=list)
     footprint_libs: list[FootprintLibrary] = field(default_factory=list)
     issues: list[Issue] = field(default_factory=list)
+    # Sources whose 3D model path check was skipped while the libraries loaded
+    skipped_sources: list[str] = field(default_factory=list)
+    # Footprint libraries (and loose footprint files) of those sources whose 3D model paths are still unchecked
+    models_unchecked: list[str] = field(default_factory=list)

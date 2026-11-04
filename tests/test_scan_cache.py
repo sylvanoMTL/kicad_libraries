@@ -18,7 +18,13 @@ from gitfixtures import commit_file, make_superproject, requires_git
 from installfixtures import vendor_footprint
 
 from kicad_lib_manager import scan_cache
-from kicad_lib_manager.library_scanner import _collect_files, find_footprint_libs, find_symbol_libs, scan_all
+from kicad_lib_manager.library_scanner import (
+    _collect_files,
+    find_footprint_libs,
+    find_symbol_libs,
+    rescan_library,
+    scan_all,
+)
 from kicad_lib_manager.models import Severity
 
 NO_CHANGE = "Showing the saved scan from"
@@ -402,6 +408,159 @@ def test_code_signature_is_stable_and_hex():
     first = scan_cache._code_signature()
     assert first == scan_cache._code_signature()
     assert len(first) == 64
+
+
+PACKAGE = Path(scan_cache.__file__).parent
+
+
+def test_code_signature_covers_the_scan_modules_only():
+    files = set(scan_cache._scan_code_files(PACKAGE))
+
+    assert files >= {
+        "library_scanner.py", "scan_cache.py", "models.py", "atomic_check.py", "changes.py",
+        "kicad_files.py", "sexpr.py", "fsutil.py", "manufacturers.py", "gitops.py",
+        "importer/__init__.py", "importer/fieldrules.py", "importer/package.py",
+    }
+    assert not files & {"main_window.py", "settings.py", "table_generator.py", "importer/planner.py"}
+    assert not any(name.startswith("widgets/") for name in files)
+    assert not any(name.startswith("..") or name == "kicad_lib_manager.py" for name in files)
+    assert sorted(files) == scan_cache._scan_code_files(PACKAGE)
+
+
+@pytest.fixture
+def package_copy(tmp_path):
+    copy = tmp_path / "copy" / "kicad_lib_manager"
+    shutil.copytree(PACKAGE, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    return copy
+
+
+def _append(path: Path, text: str = "\n# edited\n") -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(text)
+
+
+def test_code_signature_follows_scan_code_edits(package_copy):
+    base = scan_cache._code_signature_of(package_copy)
+    assert len(base) == 64 and all(c in "0123456789abcdef" for c in base)
+    assert base == scan_cache._code_signature_of(package_copy)
+
+    for outside in ("widgets/help_dialog.py", "main_window.py", "settings.py"):
+        _append(package_copy / outside)
+        assert scan_cache._code_signature_of(package_copy) == base, outside
+
+    for inside in ("atomic_check.py", "importer/fieldrules.py", "models.py"):
+        before = scan_cache._code_signature_of(package_copy)
+        _append(package_copy / inside)
+        assert scan_cache._code_signature_of(package_copy) != before, inside
+
+    before = scan_cache._code_signature_of(package_copy)
+    (package_copy / "newmod.py").write_text("VALUE = 1\n", encoding="utf-8")
+    _append(package_copy / "library_scanner.py", "\nfrom . import newmod  # noqa\n")
+    assert "newmod.py" in scan_cache._scan_code_files(package_copy)
+    assert scan_cache._code_signature_of(package_copy) != before
+
+
+def test_code_signature_of_an_unparsable_closure_module_is_empty(package_copy):
+    _append(package_copy / "atomic_check.py", "\ndef broken(:\n")
+    assert scan_cache._code_signature_of(package_copy) == ""
+
+
+# ── skipped sources in the saved scan (G-12-21) ──────────────────────
+
+WE_TEST = "WurthElektronik/KiCad-Library/footprints/WE_Test.pretty"
+WE_OTHER = "WurthElektronik/KiCad-Library/footprints/WE_Other.pretty"
+SKIPPED_NOTE = "The 3D model paths of WurthElektronik were skipped in that scan; use Rescan for a full scan."
+SKIPPED_NOTE_EXCEPT = (
+    "The 3D model paths of WurthElektronik were skipped in that scan, except WE_Test (rescanned since); "
+    "use Rescan for a full scan."
+)
+
+
+def _write_wurth(repo):
+    """Two WurthElektronik footprint libraries, each with one footprint holding an absolute model path."""
+    for folder, name in ((WE_TEST, "WE_FP_A"), (WE_OTHER, "WE_FP_C")):
+        path = repo / folder
+        path.mkdir(parents=True, exist_ok=True)
+        (path / f"{name}.kicad_mod").write_bytes(f'(footprint "{name}"\n  (model "C:/m/{name}.step")\n)\n'.encode())
+
+
+def _skip_wurth(source):
+    return source == "WurthElektronik"
+
+
+def test_skipped_scan_round_trips(repo, kicad):
+    _write_wurth(repo)
+    result = scan_all(repo, kicad_fp_dir=kicad, skip=lambda s: True)
+    assert result.skipped_sources and result.models_unchecked
+    assert any(i.code == "scan.models_skipped" for i in result.issues)
+
+    back = scan_cache.decode_result(json.loads(json.dumps(scan_cache.encode_result(result))))
+
+    assert back == result
+    assert back.skipped_sources == result.skipped_sources
+    assert back.models_unchecked == result.models_unchecked
+
+
+@pytest.mark.parametrize("edit", [
+    lambda d: d.pop("skipped_sources"),
+    lambda d: d.pop("models_unchecked"),
+    lambda d: d.update(skipped_sources="WurthElektronik"),
+    lambda d: d.update(models_unchecked={"a": 1}),
+    lambda d: d.update(skipped_sources=["WurthElektronik", 5]),
+    lambda d: d.update(models_unchecked=[None]),
+])
+def test_decode_rejects_odd_skip_records(repo, kicad, edit):
+    data = json.loads(json.dumps(scan_cache.encode_result(scan_all(repo, kicad_fp_dir=kicad))))
+    edit(data)
+    with pytest.raises((ValueError, TypeError, KeyError)):
+        scan_cache.decode_result(data)
+
+
+def test_reuse_note_names_the_skipped_sources(repo, kicad, cache_file):
+    _write_wurth(repo)
+    fp = scan_cache.fingerprint(repo, kicad)
+    result = scan_all(repo, kicad_fp_dir=kicad, skip=_skip_wurth)
+    assert result.skipped_sources == ["WurthElektronik"]
+    assert scan_cache.save(cache_file, repo, kicad, fp, result) is None
+
+    check = scan_cache.load_fresh(cache_file, repo, kicad)
+
+    assert check.result == result
+    assert check.result.skipped_sources == ["WurthElektronik"]
+    assert check.result.models_unchecked == [WE_OTHER, WE_TEST]
+    assert check.note.code == "cache.reused"
+    assert "no library file changed since then." in check.note.text
+    assert SKIPPED_NOTE in check.note.text
+
+
+def test_reuse_note_names_a_library_rescanned_since(repo, kicad, cache_file):
+    _write_wurth(repo)
+    fp = scan_cache.fingerprint(repo, kicad)
+    skipped = scan_all(repo, kicad_fp_dir=kicad, skip=_skip_wurth)
+    result = rescan_library(repo, skipped, "footprint", WE_TEST, kicad).result
+    assert result.models_unchecked == [WE_OTHER]
+    assert scan_cache.save(cache_file, repo, kicad, fp, result) is None
+
+    check = scan_cache.load_fresh(cache_file, repo, kicad)
+
+    assert check.result == result
+    assert SKIPPED_NOTE_EXCEPT in check.note.text
+
+
+def test_unskipped_scan_keeps_todays_note(repo, kicad, cache_file):
+    _saved(repo, kicad, cache_file)
+    check = scan_cache.load_fresh(cache_file, repo, kicad)
+    assert check.note.code == "cache.reused"
+    assert check.note.text.endswith("no library file changed since then. Use Rescan for a full scan.")
+    assert "were skipped" not in check.note.text
+
+
+def test_format_1_saved_scan_is_a_different_version(repo, kicad, cache_file):
+    _saved(repo, kicad, cache_file)
+    _rewrite(cache_file, lambda p: p.update(format=1))
+    check = scan_cache.load_fresh(cache_file, repo, kicad)
+    assert check.result is None
+    assert check.note.code == "cache.other_version"
 
 
 # ── update_library ───────────────────────────────────────────────────
