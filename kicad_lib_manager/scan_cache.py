@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import fsutil
-from .library_scanner import SKIP_DIRS, find_kicad_footprint_dir
+from .library_scanner import SKIP_DIRS, find_kicad_footprint_dir, models_rechecked
 from .models import (
     STATUS_CHANGED,
     STATUS_NEW,
@@ -32,7 +32,8 @@ from .models import (
     Violation,
 )
 
-FORMAT = 1
+# Format 2 adds the skipped sources and the footprint libraries left unchecked
+FORMAT = 2
 MAX_CACHE_BYTES = 64 * 1024 * 1024
 KIND_SYMBOL = "symbol"
 KIND_FOOTPRINT = "footprint"
@@ -375,6 +376,8 @@ def encode_result(result: ScanResult) -> dict:
         "symbol_libs": [_enc_symbol_lib(lib) for lib in result.symbol_libs],
         "footprint_libs": [_enc_footprint_lib(lib) for lib in result.footprint_libs],
         "issues": [_enc_issue(i) for i in result.issues],
+        "skipped_sources": list(result.skipped_sources),
+        "models_unchecked": list(result.models_unchecked),
     }
 
 
@@ -385,6 +388,8 @@ def decode_result(data) -> ScanResult:
         symbol_libs=[_dec_symbol_lib(lib) for lib in _list(data["symbol_libs"])],
         footprint_libs=[_dec_footprint_lib(lib) for lib in _list(data["footprint_libs"])],
         issues=[_dec_issue(i) for i in _list(data["issues"])],
+        skipped_sources=[_text(s) for s in _list(data["skipped_sources"])],
+        models_unchecked=[_text(p) for p in _list(data["models_unchecked"])],
     )
 
 
@@ -529,10 +534,16 @@ def load_fresh(cache_file: Path, repo_root: Path, kicad_fp_dir: Path | None) -> 
     ):
         return CacheCheck(None, unreadable, current)
     when = datetime.fromisoformat(payload["saved_at"]).strftime("%Y-%m-%d %H:%M")
+    head = f"Showing the saved scan from {when}: no library file changed since then. "
+    if not result.skipped_sources:
+        return CacheCheck(result, _info("cache.reused", head + "Use Rescan for a full scan."), current)
+    # A scan that skipped a source is never shown as if it were complete (O-04)
+    names = " and ".join(sorted(result.skipped_sources))
+    rechecked = models_rechecked(result)
+    except_part = f", except {', '.join(rechecked)} (rescanned since);" if rechecked else ";"
     return CacheCheck(result, _info(
         "cache.reused",
-        f"Showing the saved scan from {when}: no library file changed since then. "
-        "Use Rescan for a full scan.",
+        f"{head}The 3D model paths of {names} were skipped in that scan{except_part} use Rescan for a full scan.",
     ), current)
 
 
