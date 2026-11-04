@@ -31,7 +31,7 @@ from .widgets.scan_progress import ScanProgressDialog
 from .widgets.atomic_check_dialog import AtomicCheckDialog
 from .widgets.backup_dialog import BackupDialog
 from .widgets.help_dialog import HelpDialog
-from .widgets.import_dialog import ImportCore, ImportDialog, TaskWorker
+from .widgets.import_dialog import ImportCore, ImportDialog, TaskWorker, centre_window
 from .widgets.theme import PRIMARY_BUTTON_QSS
 
 APP_TITLE = "KiCad External Lib Manager"
@@ -224,6 +224,8 @@ class MainWindow(QMainWindow):
         self._kicad_fp_dir: Path | None = None
         self._progress: ScanProgressDialog | None = None
         self._import_dialog: ImportDialog | None = None
+        # The one User Guide window: parentless, so no window-modal dialog of this app blocks it (G-12-22)
+        self._guide: HelpDialog | None = None
         self._atomic_dialog: AtomicCheckDialog | None = None
         self._pending_post_install: _PostInstall | None = None
         # The KiCad-open check runs on a worker before the path-variable confirm (REV-05):
@@ -1330,8 +1332,28 @@ class MainWindow(QMainWindow):
     def _on_deselect_all(self):
         self._tree.deselect_all()
 
+    def _guide_window(self) -> HelpDialog:
+        """The one User Guide window, built on first use and centred over this window before its first show."""
+        if self._guide is None:
+            self._guide = HelpDialog()  # no parent: a parent would let a window-modal dialog block it
+            centre_window(self._guide, self)
+        return self._guide
+
+    def show_guide(self, topic: str | None = None):
+        """Show the shared User Guide, on this topic when one is given; the same window every time."""
+        first = self._guide is None
+        guide = self._guide_window()
+        if topic is not None:
+            guide.show_topic(topic)
+        guide.show()
+        if first:
+            # The frame is only known once shown, so centre again (inside the free area)
+            centre_window(self._guide, self)
+        guide.raise_()
+        guide.activateWindow()
+
     def _on_help(self):
-        HelpDialog(parent=self).exec()
+        self.show_guide()
 
     def _on_about(self):
         about = QMessageBox(self)
@@ -1373,5 +1395,8 @@ class MainWindow(QMainWindow):
         # Never destroy a running QThread
         if self._worker is not None:
             self._worker.wait()
+        # A visible parentless window would keep the app running after this one closes
+        if self._guide is not None:
+            self._guide.close()
         save_window_geometry(self.saveGeometry())
         super().closeEvent(event)

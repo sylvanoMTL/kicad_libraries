@@ -191,6 +191,18 @@ def fit_window(window: QWidget, wanted: QSize) -> None:
         outer.moveCenter(centre)
         window.move(_place_inside(outer, area))
 
+
+def centre_window(window: QWidget, over: QWidget) -> None:
+    """Move a top-level window so its frame is centred on another window's frame.
+
+    Once the window is visible (its frame is real) it is also kept inside the free area of its screen.
+    """
+    frame = window.frameGeometry()
+    frame.moveCenter(over.frameGeometry().center())
+    if window.isVisible():
+        frame.moveTopLeft(_place_inside(frame, screen_area(window)))
+    window.move(frame.topLeft())
+
 _START_BODY = (
     "Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. "
     "Nothing is written until you click Install Part."
