@@ -254,7 +254,7 @@ Plans:
   4. The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes.
   5. On a case-sensitive folder, when a case twin was written under another spelling, rollback restores the original spelling and removes the twin on both the rollback and the overwrite branches, as the deferred Phase 4 UAT Test 3 (backlog 999.2) expected.
 
-**Plans**: 19/20 plans executed (6 gap-closure plans pending: 12-15 to 12-20)
+**Plans**: 20/20 plans executed (6 gap-closure plans pending: 12-15 to 12-20)
 
 Plans:
 **Wave 1**
@@ -293,7 +293,7 @@ Plans:
 - [x] 12-17-PLAN.md — Wave 2 (after 12-15, 12-16): Loading Libraries window with "Skip <source>", lock-guarded worker request, skip-aware log, Generate after a skip removes nothing, Help and CLAUDE.md (G-12-21)
 - [x] 12-18-PLAN.md — Wave 3 (after 12-15, 12-17): one shared parentless non-modal User Guide for the main window and the import window, guide outlives the import window and closes with the main window (G-12-22)
 - [x] 12-19-PLAN.md — Wave 4 (after 12-18): the guide remembers the owner's last page or section across close and restart; explicit topics (import window's Importing Parts) win and are not remembered (G-12-23)
-- [ ] 12-20-PLAN.md — Wave 5 (after 12-18, 12-19): main-window dialogs window-modal so the guide stays usable beside them and the Loading Libraries window; system file pickers left as they are (owner-approved exclusion); Help; full-suite phase gate (G-12-22)
+- [x] 12-20-PLAN.md — Wave 5 (after 12-18, 12-19): main-window dialogs window-modal so the guide stays usable beside them and the Loading Libraries window; system file pickers left as they are (owner-approved exclusion); Help; full-suite phase gate (G-12-22)
 
 **UI hint**: yes
 
@@ -323,7 +323,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 9. Atomic Rule Check and Scan Detection | v2.0 | 9/9 | Complete    | 2026-10-26 |
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
-| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 19/20 | In Progress | - |
+| 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 20/20 | In Progress | - |
 | 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
 
 ## Backlog
