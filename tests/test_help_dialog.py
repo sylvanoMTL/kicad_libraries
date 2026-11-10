@@ -9,6 +9,7 @@ import pytest
 import shiboken6
 
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSettings, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QAbstractButton, QDialogButtonBox, QLabel, QPushButton, QTextBrowser, QTreeWidgetItem, QWidget,
@@ -1052,3 +1053,64 @@ def test_keyboard_move_after_a_lost_release_still_folds(qtbot, monkeypatch, how)
             QTest.mouseRelease(
                 dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point
             )
+
+
+# -- The selected menu row stands out; the guide says where it reopens (plan 12-21, G-12-27) --------------------
+
+
+def _row_colour(image, ratio: float, rect: QRect) -> QColor:
+    """The colour of the image near the right edge of a row's cell, at the row's middle."""
+    return QColor(image.pixel(int((rect.right() - 2) * ratio), int(rect.center().y() * ratio)))
+
+
+def test_menu_selected_row_stands_out(qtbot):
+    dialog = _shown_dialog(qtbot, "importing#conflicts")
+    toc = dialog._toc
+    assert isinstance(toc.itemDelegate(), help_dialog._MenuSelectionDelegate)
+    image = toc.viewport().grab().toImage()
+    ratio = image.devicePixelRatio()
+    accent = QColor(ACCENT)
+
+    selected = _row_colour(image, ratio, toc.visualItemRect(_find_item(dialog, "importing#conflicts")))
+    # not an exact match: Fusion lays its translucent focus frame over the current row
+    assert abs(selected.red() - accent.red()) <= 20, selected.name()
+    assert abs(selected.green() - accent.green()) <= 20, selected.name()
+    assert abs(selected.blue() - accent.blue()) <= 20, selected.name()
+
+    other = _row_colour(image, ratio, toc.visualItemRect(_find_item(dialog, "importing#commit")))
+    assert max(
+        abs(other.red() - accent.red()), abs(other.green() - accent.green()), abs(other.blue() - accent.blue())
+    ) > 20, other.name()
+
+
+def test_menu_keeps_its_arrows_and_indentation(qtbot):
+    dialog = _shown_dialog(qtbot, "importing#conflicts")
+    toc = dialog._toc
+    # no stylesheet reaches the menu, so Qt's stylesheet engine never draws its arrows or indentation
+    assert toc.styleSheet() == ""
+    assert dialog.styleSheet() == ""
+    assert toc.indentation() > 0
+    page_left = toc.visualItemRect(_find_item(dialog, "importing")).left()
+    section_left = toc.visualItemRect(_find_item(dialog, "importing#conflicts")).left()
+    assert section_left - page_left == toc.indentation()
+
+    gen = _find_item(dialog, "generating")
+    assert gen.childCount() > 0 and not gen.isExpanded()
+    toc.scrollToItem(gen)
+    qtbot.wait(10)
+    rect = toc.visualItemRect(gen)
+    image = toc.viewport().grab().toImage()
+    ratio = image.devicePixelRatio()
+    dark = [
+        (x, y)
+        for x in range(0, int((rect.left() - 1) * ratio))
+        for y in range(int(rect.top() * ratio), int((rect.bottom() + 1) * ratio))
+        if QColor(image.pixel(x, y)).lightness() < 160
+    ]
+    assert dark, "the folded page's expand arrow is not painted"
+
+
+def test_help_says_the_guide_reopens_where_you_left_it():
+    page = _page_text("shortcuts")
+    for text in ("page or section you last chose", "scrolled to that heading", "only brought to the front"):
+        assert text in page, text
