@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: partial
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
-source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md]
+source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md, 12-15-SUMMARY.md, 12-16-SUMMARY.md, 12-17-SUMMARY.md, 12-18-SUMMARY.md, 12-19-SUMMARY.md, 12-20-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
-updated: 2026-11-04T13:55:25.061Z
+updated: 2026-11-10T17:35:59.397Z
 ---
 
 ## Current Test
@@ -164,6 +164,36 @@ result: issue
 reported: "2) Use persistence so that if we close/open, it retains the paragraph that was browsed and display it, and expand the section on the left panel. (I tink selecting and expanding the node would do the job)"
 severity: major
 
+### 24. Start page compact, Cancel on the Browse row (re-check of 12, plan 12-15)
+setup: from the repo root run `git -C Custom status --short` and note the output. Windows display scale 100% (later 200%; Settings > System > Display > Scale, sign out/in if asked). Start `.\env\Scripts\python.exe kicad_lib_manager.py`.
+steps: (1) press Ctrl+I; (2) open `downloaded_examples\ul_CSD85301Q2.zip`, pick an Atomic_ library; (3) press "Choose another package..."; (4) press Cancel; (5) run `git -C Custom status --short` again. Repeat 1-5 at 200%.
+expected: (1) compact window: Cancel at the right end of the Browse zip... / Browse folder... row, no empty band under that row; the window does not jump when the "Newest in Downloads:" line appears; (2) the window grows, stays above the taskbar, Install Part and Cancel at its bottom right; (3) compact again; (4) the window closes; (5) same output as noted. At 200% text and buttons sharp, not cut off.
+result: pass
+note: "Passed at 100% (2026-11-10); git -C Custom status --short unchanged. 200% run deferred to one combined 200% pass at the end of the session."
+
+### 25. Skip a source while the libraries load (re-check of 21, plans 12-16, 12-17)
+setup: 100% scale. Close the app and delete the folder `%APPDATA%\KiCadExtLibManager\scan_cache` so the next start runs the full scan. Start `.\env\Scripts\python.exe kicad_lib_manager.py`.
+steps: (1) watch the Loading Libraries window, press Escape once; (2) click "Skip WurthElektronik" while it shows; (3) close the app, start it again; (4) press Rescan and let it finish without skipping, close, start again. Repeat 1-2 at 200% (delete the scan_cache folder first).
+expected: (1) the bar rises once, never restarts at 0; the button is greyed "Skip" at first, then reads "Skip Custom", then "Skip WurthElektronik" during those 3D model path checks; Escape and the title-bar X do nothing; (2) the window closes soon; the log says "3D model paths of WurthElektronik were not checked: skipped while the libraries loaded. Rescan checks them." and does not say "No warnings."; both trees still list every WurthElektronik library; (3) the log says "Showing the saved scan from ..." and that the 3D model paths of WurthElektronik were skipped in that scan; (4) the note no longer mentions a skip. At 200% the button text is sharp, not cut off.
+result: pass
+note: "Passed at 100% (2026-11-10): Skip WurthElektronik at startup worked, log said the 3D model paths were not checked and 'No warnings in the checks that ran.' (the intended wording after a skip), both trees kept the WurthElektronik libraries; next start showed the saved scan with the skip note; Rescan bar rose once, button went Skip -> Skip Custom -> Skip WurthElektronik, Escape and X did nothing, log ended 'No warnings.'; next start note had no skip. 200% run deferred."
+
+### 26. User Guide usable beside every window (re-check of 22, plans 12-18, 12-20)
+setup: 100% scale. From the repo root run `git -C Custom status --short` and note it. Start `.\env\Scripts\python.exe kicad_lib_manager.py`.
+steps: (1) press F1; click Select All and a library check box in the main window, click pages in the guide; press F1 again; (2) open Help > About, scroll and change page in the guide, close About; (3) press Ctrl+I, try clicking the main window, click pages in the guide; click Help in the import window; open `downloaded_examples\ul_CSD85301Q2.zip`, pick an Atomic_ library, double-click a file row of the preview; click pages in the guide; (4) press Cancel in the import window; (5) press Rescan and change page in the guide while Loading Libraries shows; (6) close the main window; (7) run `git -C Custom status --short`. Repeat 1 and 3 at 200%.
+expected: (1) the guide opens over the main window, fully on screen; both windows respond; the second F1 brings the same guide to the front (no second guide); (2) the guide scrolls and changes page while About is open; (3) the main window does not respond, the guide does; import Help shows the same guide on Importing Parts; the guide still responds with the content view open; (4) the guide stays open, the main window responds again; (5) the guide changes page; (6) the guide closes with it and the app ends; (7) same output as noted. At 200% the guide stays on screen with Close visible. (File pickers such as Browse zip... may block the guide while open: owner-approved.)
+result: pass
+note: "Passed at 100% (2026-11-10), step by step: F1 beside the main window (one guide), About, import window + Help + content view, Cancel, Rescan (guide changes page on click), closing the main window ends the app; Custom unchanged. A first 'No' on the Rescan step was a misreading of the step wording (re-run passed). 200% run deferred."
+
+### 27. User Guide reopens where you left it (re-check of 23, plan 12-19)
+setup: 100% scale. Start `.\env\Scripts\python.exe kicad_lib_manager.py`.
+steps: (1) press F1, click "4.4 Importing Parts", then its Conflicts section; close the guide with Close; (2) press F1; (3) click "4.3 Generating Tables", press Escape; press Ctrl+I, click Help in the import window; press Cancel in the import window, close the guide, press F1 in the main window; (4) close the app, start it again, press F1. Repeat step 2 at 200%.
+expected: (2) the guide opens on 4.4.7 Conflicts, Importing Parts open in the left menu and the other pages folded, the Conflicts heading in view; (3) the import window's Help shows Importing Parts; the main window's F1 then opens on Generating Tables, not Importing Parts; (4) the guide opens on Generating Tables. At 200% the selected row and the heading are visible and not cut off.
+result: issue
+reported: "No by default it is selecting 4.4 Importing Parts"
+severity: major
+note: "Step 1: after F1 > 4.4 Importing Parts > 4.4.7 Conflicts, Close, F1 again, the guide selected the page 4.4 Importing Parts, not the section 4.4.7 Conflicts. settings.ini [help] last_topic=importing#conflicts, so the save works; the restore of the reused hidden guide (MainWindow.show_guide -> HelpDialog.show_remembered -> show_topic) lands on the page."
+
 ## Deferred Follow-Ups
 
 [none - the startup-scan skip idea moved to test 21 / G-12-21 on 2026-11-04, owner chose to fix it in Phase 12]
@@ -178,9 +208,9 @@ severity: major
 
 ## Summary
 
-total: 23
-passed: 10
-issues: 11
+total: 27
+passed: 13
+issues: 12
 pending: 0
 skipped: 1
 blocked: 1
@@ -333,7 +363,9 @@ blocked: 1
 
 - gap_id: G-12-21
   truth: "While the app loads the libraries at startup, the loading dialog offers a way to skip the library being scanned (e.g. the whole Wurth Elektronik library) so startup is faster, without breaking the scan result."
-  status: failed
+  status: resolved
+  resolved_by: 12-17-PLAN.md
+  resolved_at: 2026-11-05
   reason: "User reported: You have not implemented the cancel (skip) button on loading the libraries when opeing the app"
   severity: major
   test: 21
@@ -366,7 +398,9 @@ blocked: 1
 
 - gap_id: G-12-12
   truth: "The import start page is compact: Browse zip..., Browse folder... and Cancel share one row (same layout grid), with no large empty band, so the window opens smaller."
-  status: failed
+  status: resolved
+  resolved_by: 12-15-PLAN.md
+  resolved_at: 2026-11-05
   reason: "User reported: You can still reduce the size and have the browse and cancel in the same llayout grid. (screenshots at 100%: start page about 634x467 with a large empty band between Browse zip... / Browse folder... and Cancel at the bottom right; owner's sketch moves Cancel up onto the Browse row and shrinks the window to about 634x340)"
   severity: cosmetic
   test: 12
@@ -391,7 +425,9 @@ blocked: 1
 
 - gap_id: G-12-22
   truth: "The User Guide (from the main window Help menu or F1, or from the import window Help or F1) can stay open beside any other window of the app (main window, import window, other dialogs) and be browsed while those windows are used; neither blocks the other."
-  status: failed
+  status: resolved
+  resolved_by: 12-20-PLAN.md
+  resolved_at: 2026-11-05
   reason: "User reported: is there away to be able to use the main window while the user guide is opened? same for the help"
   severity: major
   test: 22
@@ -422,7 +458,9 @@ blocked: 1
 
 - gap_id: G-12-23
   truth: "When the User Guide is closed and opened again (also after restarting the app), it shows the page and section last browsed, with that node selected and expanded in the left menu; a caller that asks for a given topic (import window Help/F1 opens Importing Parts) still gets that topic."
-  status: failed
+  status: resolved
+  resolved_by: 12-19-PLAN.md
+  resolved_at: 2026-11-05
   reason: "User reported: 2) Use persistence so that if we close/open, it retains the paragraph that was browsed and display it, and expand the section on the left panel. (I tink selecting and expanding the node would do the job)"
   owner_note: "Note that it is good on importing part; by default we are already on import part, that behavious can be kept (import window Help/F1 keeps opening on Importing Parts; the remembered section applies when no topic is asked for)"
   severity: major
@@ -449,3 +487,12 @@ blocked: 1
     - "tests/test_help_dialog.py: autouse _isolated_settings(tmp_path) fixture (pattern of tests/test_import_dialog.py:38-46); change test_help_dialog_opens_on_a_given_topic L419-424 to 'no topic and nothing saved: Overview'"
     - "Tests: browse to importing#conflicts, close via Close, Esc and deleting the parent; a new HelpDialog() opens there with Importing Parts expanded and 4.4.7 Conflicts in view; a key saved only through save_help_topic (app restart) is restored; an explicit topic wins over a saved key and import Help/F1 still opens 'importing'; stale keys fall back (unknown section -> its page, unknown page -> Overview, group -> first child, empty -> Overview)"
   debug_session: ""
+
+- gap_id: G-12-27
+  truth: "When the User Guide is closed and opened again, it shows the section last chosen (e.g. 4.4.7 Conflicts) with that section selected in the left menu, its page opened out and its heading in view."
+  status: failed
+  reason: "User reported: No by default it is selecting 4.4 Importing Parts"
+  severity: major
+  test: 27
+  artifacts: []
+  missing: []
