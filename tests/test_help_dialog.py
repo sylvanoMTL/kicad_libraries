@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 import shiboken6
 
-from PySide6.QtCore import QRect, QSettings, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSettings, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QAbstractButton, QDialogButtonBox, QLabel, QPushButton, QTextBrowser, QTreeWidgetItem, QWidget,
@@ -931,3 +931,123 @@ def test_fresh_guide_shows_the_saved_heading_after_fit_window_narrows(qtbot, mon
     assert _current_key(dialog) == "importing#conflicts"
     assert _selected_keys(dialog) == ["importing#conflicts"]
     qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+
+# -- A held left click selects the pressed row (plan 12-21, G-12-27 D3) ----------------------------------------
+
+
+def _row_point(dialog: HelpDialog, key: str) -> QPoint:
+    """The centre of a menu row in window coordinates, after scrolling the row into view."""
+    toc = dialog._toc
+    item = _find_item(dialog, key)
+    toc.scrollToItem(item)
+    return toc.viewport().mapTo(dialog, toc.visualItemRect(item).center())
+
+
+def _shown_dialog(qtbot, topic: str) -> HelpDialog:
+    dialog = HelpDialog(topic=topic)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    return dialog
+
+
+@pytest.mark.parametrize("open_page, pressed", [
+    ("generating", "importing"),
+    ("library_tree", "importing"),
+    ("kicad_detection", "importing"),
+    ("importing", "restoring"),
+])
+def test_held_press_on_a_page_row_selects_that_row(qtbot, open_page, pressed):
+    dialog = _shown_dialog(qtbot, open_page)
+    item = _find_item(dialog, pressed)
+    point = _row_point(dialog, pressed)
+    window = dialog.windowHandle()
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    qtbot.wait(150)  # several event-loop turns with the button down, as in a real press
+    assert _find_item(dialog, open_page).isExpanded()  # nothing folded under the held button
+
+    # a hand tremble: Qt drag-selects the row under the cursor
+    QTest.mouseMove(window, point + QPoint(1, 0))
+    qtbot.wait(20)
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point + QPoint(1, 0))
+
+    assert _current_key(dialog) == pressed
+    assert settings.load_help_topic() == pressed
+    qtbot.waitUntil(
+        lambda: _expanded_page_keys(dialog) == ({pressed} if item.childCount() else set()), timeout=5000
+    )
+
+
+def test_only_a_left_press_holds_the_menu(qtbot):
+    dialog = _shown_dialog(qtbot, "generating")
+    point = _row_point(dialog, "importing")
+    window = dialog.windowHandle()
+
+    QTest.mousePress(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, point)
+    assert dialog._menu_held is False
+    QTest.mouseRelease(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, point)
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    assert dialog._menu_held is True
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    assert dialog._menu_held is False
+
+
+class _SwallowRelease(QObject):
+    """Takes a mouse release away from every filter and widget installed before it."""
+
+    def eventFilter(self, watched, event):
+        return event.type() == QEvent.Type.MouseButtonRelease
+
+
+def _lose_the_release(dialog: HelpDialog, point: QPoint) -> None:
+    """Send a left release that neither the dialog's filter nor the menu receives."""
+    swallow = _SwallowRelease(dialog)
+    viewport = dialog._toc.viewport()
+    viewport.installEventFilter(swallow)
+    try:
+        QTest.mouseRelease(dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    finally:
+        viewport.removeEventFilter(swallow)
+
+
+@pytest.mark.parametrize("how", ["release swallowed", "guide closed while held", "button still reported down"])
+def test_keyboard_move_after_a_lost_release_still_folds(qtbot, monkeypatch, how):
+    dialog = _shown_dialog(qtbot, "generating")
+    point = _row_point(dialog, "importing")
+    QTest.mousePress(dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    qtbot.wait(50)  # the fold now waits for the release
+
+    try:
+        if how == "release swallowed":
+            _lose_the_release(dialog, point)
+        elif how == "guide closed while held":
+            dialog.close()
+            assert not dialog.isVisible()
+            dialog.show()
+            qtbot.waitExposed(dialog)
+            assert _expanded_page_keys(dialog) == {"importing"}  # the waiting fold ran on the hide
+        else:
+            _lose_the_release(dialog, point)
+            # Qt keeps reporting the left button down after a release that was lost with no hide
+            monkeypatch.setattr(
+                help_dialog, "QGuiApplication",
+                types.SimpleNamespace(mouseButtons=lambda: Qt.MouseButton.LeftButton), raising=False,
+            )
+
+        before = _expanded_page_keys(dialog)
+        dialog._toc.setFocus()
+        QTest.keyClick(dialog._toc, Qt.Key.Key_End)  # the last row, "roadmap": a page without sections
+        new_key = _current_key(dialog)
+        assert new_key != "importing"
+        page = new_key.partition("#")[0]
+        expected = {page} if _find_item(dialog, page).childCount() else set()
+        assert expected != before  # so the case can tell a fold from no fold
+        qtbot.waitUntil(lambda: _expanded_page_keys(dialog) == expected, timeout=1000)
+    finally:
+        if how == "guide closed while held":
+            QTest.mouseRelease(
+                dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point
+            )
