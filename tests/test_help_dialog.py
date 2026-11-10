@@ -827,3 +827,107 @@ def test_stale_saved_places_fall_back(qtbot, saved, opens):
     # the fallback itself is not an owner move: the odd value stays as it was
     assert settings.get_settings().value("help/last_topic", "") == saved
     assert dialog._browser.toPlainText().strip() != ""
+
+
+# -- The guide brings the chosen heading back (plan 12-21, G-12-27) --------------------------------------------
+
+
+def _heading_near_top(browser: QTextBrowser, text: str) -> bool:
+    """True when the level-3 heading is scrolled to, near the top of the view, not merely on screen."""
+    for block, shown in _headings(browser, 3):
+        if shown == text:
+            top = browser.document().documentLayout().blockBoundingRect(block).top() - browser.verticalScrollBar().value()
+            return -1 < top < browser.viewport().height() / 4
+    return False
+
+
+def _selected_keys(dialog: HelpDialog) -> list[str]:
+    return [item.data(0, Qt.ItemDataRole.UserRole) for item in dialog._toc.selectedItems()]
+
+
+def test_asked_topic_lasts_until_the_owner_moves(qtbot):
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert dialog.shows_asked_topic() is False
+
+    assert dialog.show_topic("importing") is True
+    assert dialog.shows_asked_topic() is True
+    dialog.show_remembered()
+    assert dialog.shows_asked_topic() is False
+
+    assert dialog.show_topic("importing") is True
+    _click_row(dialog, _find_item(dialog, "generating"))
+    qtbot.waitUntil(lambda: _current_key(dialog) == "generating", timeout=5000)
+    assert dialog.shows_asked_topic() is False
+    assert settings.load_help_topic() == "generating"
+
+    dialog.show_remembered()
+    assert dialog.show_topic("no_such_page") is False
+    assert dialog.shows_asked_topic() is False
+
+
+@pytest.mark.parametrize("how", ["close", "escape"])
+def test_reopened_guide_brings_the_section_heading_back(qtbot, how):
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    _click_row(dialog, _find_item(dialog, "importing#conflicts"))
+    qtbot.waitUntil(lambda: _current_key(dialog) == "importing#conflicts", timeout=5000)
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+    dialog._browser.verticalScrollBar().setValue(0)
+    assert not _heading_is_in_view(dialog._browser, "4.4.7 Conflicts")
+
+    if how == "close":
+        dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Close).click()
+    else:
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert not dialog.isVisible()
+
+    # what MainWindow.show_guide does with a hidden guide
+    dialog.show_remembered()
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert _current_key(dialog) == "importing#conflicts"
+    assert _selected_keys(dialog) == ["importing#conflicts"]  # a pin: the page row is not the selected one
+    assert _expanded_page_keys(dialog) == {"importing"}
+    assert settings.load_help_topic() == "importing#conflicts"
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+
+def test_show_topic_on_the_shown_topic_brings_its_heading_back(qtbot):
+    dialog = HelpDialog(topic="importing#conflicts")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+    dialog._browser.verticalScrollBar().setValue(0)
+    assert dialog.show_topic("importing#conflicts") is True
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+    assert dialog.show_topic("importing") is True
+    bar = dialog._browser.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    assert bar.value() > 0
+    assert dialog.show_topic("importing") is True
+    qtbot.waitUntil(lambda: bar.value() == 0, timeout=5000)
+
+    assert settings.load_help_topic() is None  # programmatic moves save nothing
+
+
+def test_fresh_guide_shows_the_saved_heading_after_fit_window_narrows(qtbot, monkeypatch):
+    # 860 px plus the frame no longer fits, so fit_window narrows the guide after the page was laid out
+    monkeypatch.setattr(import_dialog, "screen_area", lambda widget: QRect(0, 0, 800, 800))
+    settings.save_help_topic("importing#conflicts")
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert dialog.width() < 860
+    assert _current_key(dialog) == "importing#conflicts"
+    assert _selected_keys(dialog) == ["importing#conflicts"]
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
