@@ -949,6 +949,7 @@ def _shown_dialog(qtbot, topic: str) -> HelpDialog:
     qtbot.addWidget(dialog)
     dialog.show()
     qtbot.waitExposed(dialog)
+    qtbot.wait(50)  # lets the fold queued by opening the topic run, so no stale one fires during a later press
     return dialog
 
 

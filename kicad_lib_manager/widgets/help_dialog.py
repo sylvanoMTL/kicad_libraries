@@ -6,7 +6,8 @@ from PySide6.QtWidgets import (
     QDialog, QDialogButtonBox, QSplitter, QTextBrowser,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QGuiApplication
 
 from ..settings import load_help_topic, save_help_topic
 from .import_dialog import (
@@ -595,6 +596,12 @@ class HelpDialog(QDialog):
         self._toc.setHeaderHidden(True)
         self._toc.setMinimumWidth(200)
         self._toc.setMaximumWidth(300)
+        # A left press on the menu holds it: pages fold and open only after the release (see _on_topic_selected)
+        self._menu_held = False
+        self._fold_after_release = False
+        self._menu_viewport = self._toc.viewport()  # kept so the event filter compares the same Python wrapper
+        self._menu_viewport.installEventFilter(self)  # mouse events go to the viewport
+        self._toc.installEventFilter(self)  # key events go to the menu itself
         self._build_toc()
         self._toc.currentItemChanged.connect(self._on_topic_selected)
         self._toc.itemClicked.connect(self._on_item_clicked)
@@ -633,6 +640,37 @@ class HelpDialog(QDialog):
         if not event.spontaneous():
             self._show_current_heading()
             QTimer.singleShot(0, self, self._show_current_heading)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        # A release lost while the guide closes must not leave the menu waiting. Qt still reports a button that
+        # was down when the window hid, so the live button check in _on_topic_selected does not cover this path.
+        self._menu_held = False
+        if self._fold_after_release:
+            self._fold_after_release = False
+            self._sync_expansion()
+
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if watched is self._menu_viewport:
+            if kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
+                # Only the left button drag-selects, so only it holds the menu
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._menu_held = True
+            elif kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                self._menu_held = False
+                if self._fold_after_release:
+                    self._fold_after_release = False
+                    # After the view has handled the release, so it still sees the rows where they were pressed
+                    QTimer.singleShot(0, self, self._sync_expansion)
+        elif watched is self._toc and kind == QEvent.Type.KeyPress:
+            # A key press means the owner is using the keyboard, so a press whose release never arrived (a popup
+            # or modal opened during it) must not keep the menu waiting
+            self._menu_held = False
+            if self._fold_after_release:
+                self._fold_after_release = False
+                QTimer.singleShot(0, self, self._sync_expansion)
+        return super().eventFilter(watched, event)
 
     def show_remembered(self) -> None:
         """Show the place the owner last chose, quietly: the saved key, else its page, else the first menu item."""
@@ -724,8 +762,15 @@ class HelpDialog(QDialog):
         if not self._quiet:
             save_help_topic(entry.key)
             self._on_asked_topic = False
-        # Folding rows under a pressed mouse button clears the selection, so a click waits for the event loop
-        QTimer.singleShot(0, self, self._sync_expansion)
+        # Folding or opening pages moves the rows. With the left button still down, Qt's drag-select picks the row
+        # now under the cursor and the wrong place is saved, so the menu waits for the release. A hold whose
+        # release was lost ends here when Qt reports the button up, so keyboard moves and instant clicks fold at once.
+        if self._menu_held and QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            self._fold_after_release = True
+        else:
+            self._menu_held = False
+            self._fold_after_release = False
+            QTimer.singleShot(0, self, self._sync_expansion)
 
     def _sync_expansion(self):
         """Open the sections of the page shown and fold the other pages' sections, so the menu stays short.
