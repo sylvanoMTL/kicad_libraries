@@ -3,11 +3,11 @@ import re
 from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QSplitter, QTextBrowser,
+    QDialog, QDialogButtonBox, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTextBrowser,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
 from PySide6.QtCore import QEvent, Qt, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QColor, QGuiApplication, QPalette
 
 from ..settings import load_help_topic, save_help_topic
 from .import_dialog import (
@@ -16,7 +16,7 @@ from .import_dialog import (
 )
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
-    SP_MD, SP_SM, SP_XS, SURFACE, SURFACE_HEADER,
+    SP_MD, SP_SM, SP_XS, SURFACE, SURFACE_BASE, SURFACE_HEADER,
 )
 
 # Every colour, size and gap comes from theme.py (UI-01); the body takes the application font and palette
@@ -39,6 +39,25 @@ CSS = "\n".join([
     f".hint {{ background: {AMBER_TINT}; border-left: 3px solid {AMBER}; padding: {SP_SM}px {SP_MD}px; "
     f"margin: {SP_SM}px 0px; }}",
 ])
+
+
+# In the Windows 11 style a selected row (a faint fill and a thin bar at the far left) looks like a row under the
+# mouse. The row painter only paints inside the row's cell, so the expand arrows and the indentation stay with the
+# tree and the style. The menu has no stylesheet, because Qt's stylesheet engine can redraw those.
+class _MenuSelectionDelegate(QStyledItemDelegate):
+    """Draws the selected menu row in the accent colour with white text, so it cannot be mistaken for a row under the mouse."""
+
+    def paint(self, painter, option, index):
+        if not option.state & QStyle.StateFlag.State_Selected:
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        painter.fillRect(opt.rect, QColor(ACCENT))
+        opt.state &= ~QStyle.StateFlag.State_Selected
+        opt.state &= ~QStyle.StateFlag.State_MouseOver
+        opt.palette.setColor(QPalette.ColorRole.Text, QColor(SURFACE_BASE))
+        opt.widget.style().drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
 
 
 def _wrap(body: str) -> str:
@@ -460,7 +479,8 @@ HELP_PAGES["shortcuts"] = _wrap(
     "<tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>"
     "<tr><td><code>F1</code></td><td>Open the User Guide in its own window, which stays open beside the other windows. "
     "In the import window it opens on Importing Parts, the same as <b>" + HELP_ACTION_TEXT
-    + "</b> on that window's toolbar.</td></tr>"
+    + "</b> on that window's toolbar. From the main window it goes back to the page or section you last chose, "
+    "scrolled to that heading; if the guide is already open there, it is only brought to the front.</td></tr>"
     "</table>"
 )
 
@@ -596,6 +616,8 @@ class HelpDialog(QDialog):
         self._toc.setHeaderHidden(True)
         self._toc.setMinimumWidth(200)
         self._toc.setMaximumWidth(300)
+        self._menu_delegate = _MenuSelectionDelegate(self._toc)  # kept on the dialog so the Python object stays alive
+        self._toc.setItemDelegate(self._menu_delegate)
         # A left press on the menu holds it: pages fold and open only after the release (see _on_topic_selected)
         self._menu_held = False
         self._fold_after_release = False
