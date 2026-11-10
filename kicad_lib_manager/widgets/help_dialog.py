@@ -583,6 +583,7 @@ class HelpDialog(QDialog):
         self.resize(860, 620)
         self._page_key: str | None = None  # the page the browser shows
         self._quiet = 0  # above 0 while the code, not the owner, moves the selection; such moves are not saved
+        self._on_asked_topic = False  # True while a caller's topic is shown and the owner has not chosen since
         self._entries = {entry.key: entry for entry in help_outline()}
 
         layout = QVBoxLayout(self)
@@ -626,6 +627,12 @@ class HelpDialog(QDialog):
         super().showEvent(event)
         # Bounded by the screen's free area and moved fully inside it, however the guide is opened
         fit_window(self, self.size())
+        # The browser applies a pending anchor in its own show, before this showEvent, and fit_window can then
+        # narrow the guide and reflow the page under that scroll; a reused guide also keeps its old scroll.
+        # A spontaneous show (restored from the taskbar) is skipped, so a page being read does not jump.
+        if not event.spontaneous():
+            self._show_current_heading()
+            QTimer.singleShot(0, self, self._show_current_heading)
 
     def show_remembered(self) -> None:
         """Show the place the owner last chose, quietly: the saved key, else its page, else the first menu item."""
@@ -636,6 +643,24 @@ class HelpDialog(QDialog):
                 self._toc.setCurrentItem(self._toc.topLevelItem(0))
         finally:
             self._quiet -= 1
+        self._on_asked_topic = False
+
+    def shows_asked_topic(self) -> bool:
+        """True while the guide shows a topic a caller asked for and the owner has not chosen a place since."""
+        return self._on_asked_topic
+
+    def _show_current_heading(self) -> None:
+        """Bring the current menu entry's heading into view: a section to its anchor, a page to its title."""
+        current = self._toc.currentItem()
+        if current is None:
+            return
+        entry = self._entries.get(current.data(0, Qt.ItemDataRole.UserRole))
+        if entry is None or entry.page is None:
+            return
+        if entry.anchor is not None:
+            self._browser.scrollToAnchor(entry.anchor)
+        else:
+            self._browser.verticalScrollBar().setValue(0)
 
     def show_topic(self, key: str) -> bool:
         """Select the topic with this key and show its page; False (nothing changes) when there is none.
@@ -651,6 +676,10 @@ class HelpDialog(QDialog):
                     self._toc.setCurrentItem(item)
                     self._sync_expansion()
                     self._toc.scrollToItem(item)
+                    # The item may already be current, so no currentItemChanged runs _on_topic_selected; this is
+                    # the path of show_remembered on a reused guide
+                    self._show_current_heading()
+                    self._on_asked_topic = True
                     return True
                 stack.extend(item.child(i) for i in range(item.childCount()))
             return False
@@ -694,6 +723,7 @@ class HelpDialog(QDialog):
         # Saved on every owner move, not on close: Escape and a deleted parent fire no close event
         if not self._quiet:
             save_help_topic(entry.key)
+            self._on_asked_topic = False
         # Folding rows under a pressed mouse button clears the selection, so a click waits for the event loop
         QTimer.singleShot(0, self, self._sync_expansion)
 

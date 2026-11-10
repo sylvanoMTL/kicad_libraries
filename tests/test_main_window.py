@@ -1842,8 +1842,11 @@ def test_main_window_help_on_a_visible_guide_only_raises(qtbot, make_window):
     qtbot.waitUntil(lambda: guide_key(guide) == "importing#conflicts", timeout=5000)
     qtbot.waitUntil(lambda: _heading_near_top(guide._browser, "4.4.7 Conflicts"), timeout=5000)
     bar = guide._browser.verticalScrollBar()
-    bar.setValue(bar.maximum())  # reading further down
+    # reading further down; half way, because the browser re-estimates its page height as it lays the page out
+    # and a value at the maximum is clamped when that maximum shrinks
+    bar.setValue(bar.maximum() // 2)
     held = bar.value()
+    assert held > 0
 
     w.activateWindow()
     qtbot.waitUntil(w.isActiveWindow, timeout=5000)
