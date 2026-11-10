@@ -1,9 +1,9 @@
 ---
-status: partial
+status: diagnosed
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
 source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md, 12-15-SUMMARY.md, 12-16-SUMMARY.md, 12-17-SUMMARY.md, 12-18-SUMMARY.md, 12-19-SUMMARY.md, 12-20-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
-updated: 2026-11-10T17:35:59.397Z
+updated: 2026-11-10T18:01:19.000Z
 ---
 
 ## Current Test
@@ -494,5 +494,18 @@ blocked: 1
   reason: "User reported: No by default it is selecting 4.4 Importing Parts"
   severity: major
   test: 27
-  artifacts: []
-  missing: []
+  root_cause: "Inconclusive for the exact report (owner saw the page row 4.4 selected and the page top), not reproduced on the real Windows desktop in 7 full-app runs; settings.ini kept last_topic=importing#conflicts throughout. Two confirmed defects on the real platform: D1 - reopening never brings the section heading back into view: show_topic on the already-current item emits no currentItemChanged, so _on_topic_selected (the only scrollToAnchor) never runs on a reused guide; if the page was scrolled before Close it reopens at the page top ('4.4 Importing Parts'). Also the anchor scroll before show lands short whenever fit_window narrows the guide in showEvent. D3 - a menu click can select and save the wrong row: QTimer.singleShot(0, _sync_expansion) folds and opens pages while the mouse button is still held (a real press spans several event-loop turns), so the rows move under the cursor and the release selects the row now under it (e.g. with Generating Tables open, a click on 4.4 lands on 4.4.1 Start). Also: in the windows11 style the selected row (faint grey fill plus a 3 px bar at the far left) looks like a hovered row. Remaining possibility for the exact report: a quiet move to the page row (import window Help/F1 -> show_topic('importing')) combined with D1."
+  artifacts:
+    - path: "kicad_lib_manager/widgets/help_dialog.py"
+      issue: "show_topic L640-658 / show_remembered L630-638 never re-scroll to the anchor when the item is already current; _on_topic_selected L678-698 schedules _sync_expansion with QTimer.singleShot(0) while the mouse button is still down; showEvent fit_window can narrow the window after the anchor scroll"
+    - path: "kicad_lib_manager/main_window.py"
+      issue: "show_guide L1356-1374 reshows a hidden guide through show_remembered, inheriting D1"
+    - path: "tests/test_help_dialog.py"
+      issue: "persistence tests use QTest.mouseClick (instant press/release), so they never hold the button across event-loop turns and miss D3; no test scrolls the page away before Close"
+  missing:
+    - "After every show of the guide (new or reused) and once fit_window has finished, scroll the browser to the current section's anchor, including when show_remembered selects the already-current item"
+    - "Fold and open menu pages only after the mouse release (or ignore drag-selection under a held button), so a click selects and saves the row that was pressed"
+    - "Optional: make the selected menu row clearly different from a hovered row in the windows11 style"
+    - "Tests: choose a section, scroll the page to the top, Close, reopen -> heading in view; a press held across event-loop turns on a page row selects that row, not a shifted one; fresh guide after fit_window narrows the width still shows the heading"
+    - "Re-check (UAT): if the page row still shows after the fix, run the tracer C:/Users/sylvain/AppData/Local/Temp/claude/258e6a257498df82/1c63b19d-e7f0-4611-9982-ec8610123914/scratchpad/probe/guide_trace.py in place of kicad_lib_manager.py and return guide_trace.log"
+  debug_session: ".planning/debug/guide-reopens-on-page-not-section.md"
