@@ -179,3 +179,18 @@ None - no external service configuration required.
 ---
 *Phase: 13-atomic-migration-and-kicad-setup*
 *Completed: 2026-11-11*
+
+## Self-Check: PASSED
+
+- FOUND: kicad_lib_manager/kicad_setup.py
+- FOUND: tests/test_kicad_setup.py
+- FOUND: tests/test_checkout_check.py
+- FOUND: tests/test_layering.py (modified)
+- FOUND commit: 2b1ac1a (Task 1)
+- FOUND commit: a1119b2 (Task 2 RED)
+- FOUND commit: 63b3df3 (Task 2 GREEN)
+- FOUND commit: 9ac7311 (Task 2 REFACTOR)
+- FOUND commit: ae1f169 (Task 3 RED)
+- FOUND commit: 0897767 (Task 3 GREEN)
+- Plan-level `<verification>` command (107 tests) re-run: PASSED
+- All `<acceptance_criteria>` greps for all three tasks: PASSED
