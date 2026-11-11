@@ -8,6 +8,7 @@ controls, the Files tab, Run itself and the commit step; this plan only enables 
 """
 
 import dataclasses
+import hashlib
 import html
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,11 +16,13 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QStackedWidget, QTabWidget,
-    QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea,
+    QSplitter, QStackedWidget, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from ..importer.content import ContentText, MAX_READ, binary_text, cap_lines, decode_text, diff_text, sha256_file
+from ..importer.footprint_index import build_index
 from ..importer.form import FIELD_LABELS, TEXT_LABELS, library_badge
 from ..importer.layout import RepoLayout
 from ..importer.migration.draft import (
@@ -34,6 +37,7 @@ from ..importer.migration.gate import GateOutcome, StripLine, check_plan as _gat
 from ..importer.migration.inventory import Inventory, read_inventory
 from ..importer.migration.plan import (
     MigrationChoices,
+    MigrationOp,
     MigrationPlan,
     PartChoice,
     PartKey,
@@ -42,14 +46,18 @@ from ..importer.migration.plan import (
 )
 from ..importer.migration.planner import build_migration_plan, prepare_context
 from ..importer.migration.precheck import check_custom
-from ..importer.plan import FieldChange
+from ..importer.plan import FieldChange, Resolution
 from ..importer.planner import detect_tools
+from ..importer.preview import PreviewRow, PreviewSection
 from ..importer.stems import name_verdict
 from ..importer.suggest import existing_libraries, suggestion_text
 from ..kicad_process import kicad_running
-from ..models import Issue
+from ..models import Issue, Severity
 from ..settings import migration_draft_file
-from .import_dialog import TaskWorker, fit_window
+from .conflict_row import ConflictRow
+from .content_view import ContentViewDialog
+from .import_dialog import ADD_MODEL_TEXT, OFFICIAL_FOOTPRINT_TEXT, TaskWorker, fit_window, official_candidates
+from .preview_tree import PreviewTree
 from .theme import AMBER, AMBER_TINT, FIELD_FRAME_QSS, MUTED, PRIMARY_BUTTON_QSS
 
 WINDOW_TITLE = "Migrate to Atomic Libraries"
@@ -60,6 +68,22 @@ CHANGED_MARK = "changed since the draft"
 PASS_MARK = "✓"
 _REBUILD_DELAY_MS = 300
 _DRAFT_DELAY_MS = 800
+
+MOVE_FOOTPRINT_TEXT = "Move into Atomic_Footprints"
+DERIVE_TEXT = "Make it a derived symbol of {parent}"
+FILES_TAB_TEXT = "Files"
+LEFTOVERS_TEXT = "Leftover files (ticked ones are deleted)"
+PART_TAB_TEXT = "Part"
+# Duplicated from import_dialog._OFFICIAL_HINT (private there): the two windows show the same hint
+# text but never import a leading-underscore name across modules.
+_OFFICIAL_HINT = "KiCad's own footprints are never changed"
+_MODEL_EXTS = (".step", ".stp", ".wrl")
+_DELETED_HEADER = "Deleted by the migration."
+_FOLDER_REMOVED = "Folder removed."
+_WRITE_SECTION = "Write"
+_MOVE_SECTION = "Move or rename"
+_DELETE_SECTION = "Delete"
+_RMDIR_SECTION = "Remove folder"
 
 _HELP_TEXT = "Help"
 _CLOSE_TEXT = "Close"
@@ -96,6 +120,83 @@ def _check_plan(plan: MigrationPlan, inventory: Inventory, kicad_fp_dir: Path | 
     return _gate_check_plan(plan, inventory, ctx)
 
 
+def _pick_model_file(parent) -> str:
+    """The default pick_model_file: a plain file dialog filtered to the model extensions (D-09, D-15).
+
+    Tests replace this field with a fake so no test ever opens a real system dialog.
+    """
+    path, _selected_filter = QFileDialog.getOpenFileName(
+        parent, "Add 3D model", str(Path.home()), "3D models (*.step *.stp *.wrl)"
+    )
+    return path
+
+
+def _is_model_rel(rel: str) -> bool:
+    return rel.lower().endswith(_MODEL_EXTS)
+
+
+def _read_capped(path: Path) -> bytes:
+    """Read at most content.MAX_READ + 1 bytes, raising OSError past the cap (never a partial file, T-13-36)."""
+    with open(path, "rb") as handle:
+        data = handle.read(MAX_READ + 1)
+    if len(data) > MAX_READ:
+        raise OSError(f"the file is larger than {MAX_READ} bytes")
+    return data
+
+
+def op_content(op: MigrationOp, repo_root: Path) -> ContentText:
+    """Qt-free text for one planned MigrationOp (D-15, T-13-36): a diff, new text, a binary summary, or the
+    deleted/removed text.
+
+    A model (.step/.stp/.wrl) is only ever sized and hashed, never decoded; every disk read is capped by
+    content.MAX_READ. Always run on a worker thread - hashing a large STEP file is slow.
+    """
+    rel = op.rel
+    path = repo_root / rel
+    if op.kind == "rmdir":
+        return ContentText(title=f"{rel} - removed", header=rel, body=_FOLDER_REMOVED, kind="text")
+    if op.kind == "delete":
+        if _is_model_rel(rel):
+            try:
+                size, sha = sha256_file(path)
+                body = f"{_DELETED_HEADER}\n\n{binary_text(Path(rel).name, size, sha)}"
+            except OSError:
+                body = _DELETED_HEADER
+            return ContentText(title=f"{rel} - deleted", header=rel, body=body, kind="binary")
+        try:
+            data = _read_capped(path)
+        except OSError:
+            data = b""
+        body = f"{_DELETED_HEADER}\n\n{decode_text(data)}"
+        return ContentText(title=f"{rel} - deleted", header=rel, body=body, kind="text")
+    # write (new or modified)
+    data = op.data or b""
+    if _is_model_rel(rel):
+        sha = hashlib.sha256(data).hexdigest()
+        existing = None
+        if op.base_sha256 is not None:
+            try:
+                existing = sha256_file(path)
+            except OSError:
+                existing = None
+        suffix = " - new" if op.base_sha256 is None else " - changes"
+        body = binary_text(Path(rel).name, len(data), sha, existing)
+        return ContentText(title=f"{rel}{suffix}", header=rel, body=body, kind="binary")
+    if op.base_sha256 is None:
+        body = "\n".join(cap_lines(decode_text(data).splitlines()))
+        return ContentText(title=f"{rel} - new file", header=rel, body=body, kind="text")
+    try:
+        old = _read_capped(path)
+    except OSError as e:
+        return ContentText(
+            title=f"{rel} - changes", header=rel, body=f"Could not read {rel}: {e.strerror or e}.", kind="error",
+        )
+    if old == data:
+        return ContentText(title=f"{rel} - unchanged", header=rel, body="This file is unchanged.", kind="unchanged")
+    body = diff_text(old, data, f"{rel} (current)", f"{rel} (planned)")
+    return ContentText(title=f"{rel} - changes", header=rel, body=body, kind="diff")
+
+
 @dataclass(frozen=True)
 class MigrationCore:
     """The migration functions the dialog calls; tests replace single fields with fakes."""
@@ -113,6 +214,10 @@ class MigrationCore:
     changed_parts: object = changed_parts
     draft_file: object = migration_draft_file
     kicad_running: object = kicad_running
+    footprint_index: object = build_index
+    official_candidates: object = official_candidates
+    op_content: object = op_content
+    pick_model_file: object = _pick_model_file
 
 
 @dataclass(frozen=True)
@@ -162,6 +267,7 @@ class MigrationDialog(QDialog):
         self._current_key: PartKey | None = None
         self._targets: dict[str, QWidget] = {}
         self._workers: list[TaskWorker] = []
+        self._content_views: list[ContentViewDialog] = []
         self._closing = False
         self._pending_result: int | None = None
 
@@ -272,7 +378,9 @@ class MigrationDialog(QDialog):
 
         self._tabs = QTabWidget()
         self._part_tab = self._build_part_tab()
-        self._tabs.addTab(self._part_tab, "Part")
+        self._tabs.addTab(self._part_tab, PART_TAB_TEXT)
+        self._files_tab = self._build_files_tab()
+        self._tabs.addTab(self._files_tab, FILES_TAB_TEXT)
         splitter.addWidget(self._tabs)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
@@ -360,6 +468,11 @@ class MigrationDialog(QDialog):
         self._field_changes_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         form.addRow("Field changes", self._field_changes_list)
 
+        self._build_footprint_section(form)
+        self._build_model_row(form)
+        self._build_conflict_rows_host(form)
+        self._build_derive_box(form)
+
         self._text_edits: dict[str, QPlainTextEdit] = {}
         self._text_regenerate: dict[str, QPushButton] = {}
         for name, label in TEXT_LABELS.items():
@@ -380,6 +493,271 @@ class MigrationDialog(QDialog):
         scroll.setWidget(inner)
         outer.addWidget(scroll)
         return page
+
+    def _build_footprint_section(self, form: QFormLayout):
+        """Move into Atomic_Footprints or switch to an official KiCad footprint (D-08, D-07)."""
+        self._fp_move_radio = QRadioButton(MOVE_FOOTPRINT_TEXT)
+        self._fp_official_radio = QRadioButton(OFFICIAL_FOOTPRINT_TEXT)
+        self._fp_move_radio.setChecked(True)
+        self._fp_target_group = QButtonGroup(self)
+        self._fp_target_group.addButton(self._fp_move_radio)
+        self._fp_target_group.addButton(self._fp_official_radio)
+        radios = QWidget()
+        radios_lay = QVBoxLayout(radios)
+        radios_lay.setContentsMargins(0, 0, 0, 0)
+        radios_lay.addWidget(self._fp_move_radio)
+        radios_lay.addWidget(self._fp_official_radio)
+        form.addRow("Footprint", radios)
+        self._fp_official_radio.toggled.connect(self._on_fp_target_toggled)
+
+        self._fp_name_edit = QLineEdit()
+        self._fp_name_edit.textEdited.connect(lambda text: self._on_field_edited("footprint_name", text))
+        form.addRow("Name", self._framed(self._fp_name_edit, "footprint"))
+
+        box = QWidget()
+        box_lay = QVBoxLayout(box)
+        box_lay.setContentsMargins(0, 0, 0, 0)
+        self._official_combo = QComboBox()
+        self._official_combo.setEditable(True)
+        self._official_combo.lineEdit().textEdited.connect(self._on_official_text_edited)
+        self._official_combo.textActivated.connect(self._on_official_activated)
+        box_lay.addWidget(self._official_combo)
+        self._pad_warning_label = QLabel()
+        self._pad_warning_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._pad_warning_label.setWordWrap(True)
+        self._pad_warning_label.setStyleSheet(f"color: {AMBER};")
+        self._pad_warning_label.hide()
+        box_lay.addWidget(self._pad_warning_label)
+        self._official_hint_label = QLabel(_OFFICIAL_HINT)
+        self._official_hint_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._official_hint_label.setWordWrap(True)
+        self._official_hint_label.setStyleSheet(f"color: {MUTED};")
+        box_lay.addWidget(self._official_hint_label)
+        box.hide()
+        self._official_box = box
+        form.addRow("", box)
+
+    # -- the official-footprint picker (D-08, D-16) ----------------------------
+
+    def _vendor_footprint_path(self, part: PartPlan) -> Path | None:
+        """The part's current Custom footprint file, for the pad-fit ranking; None when it cannot be found."""
+        library, _sep, name = part.footprint_old.partition(":")
+        if not library or not name:
+            return None
+        path = self._layout.footprints_dir / f"{library}.pretty" / f"{name}.kicad_mod"
+        return path if path.exists() else None
+
+    def _start_official_list(self):
+        part = self._part_by_key(self._current_key)
+        if part is None:
+            return
+        folder = self._kicad_fp_dir
+        core = self._core
+        code = part.footprint_old.rpartition(":")[-1]
+        vendor_path = self._vendor_footprint_path(part)
+
+        def task(progress):
+            return core.official_candidates(
+                core.footprint_index, folder, package_code=code, vendor_path=vendor_path,
+                stock=getattr(self._ctx, "stock", None), part=part.mpn, progress=progress,
+            )
+
+        worker = self._spawn(task)
+        worker.result.connect(self._on_official_list_ready)
+        worker.start()
+
+    def _on_official_list_ready(self, links: list[str]):
+        combo = self._official_combo
+        typed = combo.currentText()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItems(links)
+            combo.setCurrentIndex(-1)
+            combo.setEditText(typed)
+        finally:
+            combo.blockSignals(False)
+
+    def _on_fp_target_toggled(self, checked: bool):
+        if self._current_key is None:
+            return
+        self._official_box.setVisible(checked)
+        if checked:
+            self._update_choice(self._current_key, footprint_target="official")
+            self._start_official_list()
+        else:
+            self._update_choice(self._current_key, footprint_target="shared", official_footprint=None)
+
+    def _on_official_activated(self, text: str):
+        if self._current_key is None:
+            return
+        self._update_choice(self._current_key, official_footprint=text)
+
+    def _on_official_text_edited(self, text: str):
+        if self._current_key is None:
+            return
+        self._update_choice(self._current_key, official_footprint=text)
+
+    # -- the 3D model row (D-09, D-15, D-23) -----------------------------------
+
+    def _build_model_row(self, form: QFormLayout):
+        """One editable name for a single model, read-only names for several, or Add 3D model... (D-23)."""
+        self._model_stack = QStackedWidget()
+
+        self._model_name_edit = QLineEdit()
+        self._model_name_edit.textEdited.connect(lambda text: self._on_field_edited("model_name", text))
+        self._model_stack.addWidget(self._framed(self._model_name_edit, "model_name"))
+
+        self._model_list = QListWidget()
+        self._model_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self._model_stack.addWidget(self._model_list)
+
+        add_row = QWidget()
+        add_lay = QHBoxLayout(add_row)
+        add_lay.setContentsMargins(0, 0, 0, 0)
+        self._add_model_btn = QPushButton(ADD_MODEL_TEXT)
+        self._add_model_btn.clicked.connect(self._on_pick_model)
+        add_lay.addWidget(self._framed(self._add_model_btn, "model"))
+        self._remove_model_btn = QPushButton("Remove")
+        self._remove_model_btn.clicked.connect(self._on_remove_model)
+        add_lay.addWidget(self._remove_model_btn)
+        self._model_stack.addWidget(add_row)
+
+        form.addRow("3D model", self._model_stack)
+
+    def _on_pick_model(self):
+        if self._current_key is None:
+            return
+        path = self._core.pick_model_file(self)
+        if not path:
+            return
+        self._update_choice(self._current_key, model_source=path)
+
+    def _on_remove_model(self):
+        if self._current_key is None:
+            return
+        self._update_choice(self._current_key, model_source=None)
+
+    def _display_model(self, part: PartPlan, choice: PartChoice):
+        models = part.model_files
+        if len(models) == 1:
+            self._model_stack.setCurrentIndex(0)
+            self._model_name_edit.blockSignals(True)
+            default_name = models[0]
+            self._model_name_edit.setText(choice.model_name if choice.model_name is not None else default_name)
+            self._model_name_edit.blockSignals(False)
+            self._targets["model"] = self._model_name_edit
+        elif len(models) >= 2:
+            self._model_stack.setCurrentIndex(1)
+            self._model_list.clear()
+            for name in models:
+                self._model_list.addItem(name)
+            self._targets["model"] = self._model_list
+        else:
+            self._model_stack.setCurrentIndex(2)
+            self._remove_model_btn.setVisible(bool(choice.model_source))
+            self._targets["model"] = self._add_model_btn
+
+    # -- the Atomic_Footprints clash rows for the selected part (D-07) ---------
+
+    def _build_conflict_rows_host(self, form: QFormLayout):
+        self._conflict_rows_host = QWidget()
+        self._conflict_rows_layout = QVBoxLayout(self._conflict_rows_host)
+        self._conflict_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._conflict_rows: dict[str, ConflictRow] = {}
+        self._conflict_rows_host.hide()
+        form.addRow("Clashes", self._conflict_rows_host)
+
+    def _conflicts_for_part(self, part: PartPlan) -> list:
+        if self._plan is None:
+            return []
+        stems = {part.footprint_new.rpartition(":")[-1], part.footprint_old.rpartition(":")[-1]}
+        return [c for c in self._plan.conflicts if c.kind == "footprint" and c.name in stems]
+
+    def _display_conflicts(self, part: PartPlan):
+        wanted = {c.key: c for c in self._conflicts_for_part(part)}
+        for key in [k for k in self._conflict_rows if k not in wanted]:
+            self._remove_conflict_row(key)
+        for key, conflict in wanted.items():
+            row = self._conflict_rows.get(key)
+            if row is None:
+                row = self._add_conflict_row(conflict)
+            else:
+                row.update_conflict(conflict)
+            resolution = self._choices.resolutions.get(key)
+            if row.current_resolution() != resolution:
+                row.set_resolution(resolution)
+        self._conflict_rows_host.setVisible(bool(wanted))
+
+    def _add_conflict_row(self, conflict) -> ConflictRow:
+        key = conflict.key
+        row = ConflictRow(conflict)
+        row.choice_changed.connect(self._on_conflict_choice)
+        row.rename_edited.connect(self._on_conflict_rename)
+        self._conflict_rows[key] = row
+        self._conflict_rows_layout.addWidget(row)
+        self._targets[f"conflict:{key}"] = row.overwrite_button
+        self._targets[f"rename:{key}"] = row.rename_edit
+        return row
+
+    def _remove_conflict_row(self, key: str):
+        row = self._conflict_rows.pop(key)
+        for target in (f"conflict:{key}", f"rename:{key}"):
+            self._targets.pop(target, None)
+        self._conflict_rows_layout.removeWidget(row)
+        row.hide()
+        row.setParent(None)
+        row.deleteLater()
+
+    def _update_resolutions(self, resolutions: dict):
+        self._choices = dataclasses.replace(self._choices, resolutions=resolutions)
+        self._gen += 1
+        self._rebuild_timer.start(_REBUILD_DELAY_MS)
+        self._draft_timer.start(_DRAFT_DELAY_MS)
+
+    def _on_conflict_choice(self, key: str, resolution: "Resolution | None"):
+        resolutions = dict(self._choices.resolutions)
+        if resolution is None:
+            resolutions.pop(key, None)
+        else:
+            resolutions[key] = resolution
+        self._update_resolutions(resolutions)
+
+    def _on_conflict_rename(self, key: str, text: str):
+        resolutions = dict(self._choices.resolutions)
+        resolutions[key] = Resolution("rename", text)
+        self._update_resolutions(resolutions)
+
+    # -- the derive-as-family-member check box (D-06) -------------------------
+
+    def _build_derive_box(self, form: QFormLayout):
+        self._derive_check = QCheckBox()
+        self._derive_check.toggled.connect(self._on_derive_toggled)
+        self._derive_check.hide()
+        form.addRow("", self._framed(self._derive_check, "derive"))
+
+    def _family_row_for(self, part: PartPlan):
+        if self._plan is None:
+            return None
+        return next((row for row in self._plan.families if row.member == part.key), None)
+
+    def _display_derive(self, part: PartPlan, choice: PartChoice):
+        family = self._family_row_for(part)
+        if family is None:
+            self._derive_check.setVisible(False)
+            return
+        parent_part = self._part_by_key(family.parent)
+        parent_name = parent_part.new_name if parent_part is not None else family.parent[1]
+        self._derive_check.setText(DERIVE_TEXT.format(parent=parent_name))
+        self._derive_check.setVisible(True)
+        self._derive_check.blockSignals(True)
+        self._derive_check.setChecked(choice.derive)
+        self._derive_check.blockSignals(False)
+
+    def _on_derive_toggled(self, checked: bool):
+        if self._current_key is None:
+            return
+        self._update_choice(self._current_key, derive=checked)
 
     # -- precheck (MIG-01, D-02) ----------------------------------------------
 
@@ -473,6 +851,8 @@ class MigrationDialog(QDialog):
         self._plan_gen = gen
         self._populate_tree()
         self._render_strip(self._gate.lines)
+        self._files_tree.render(self._files_sections(self._plan))
+        self._populate_leftovers(self._plan.leftovers)
         if self._current_key is None and self._plan.parts:
             self._select_part(self._plan.parts[0].key)
         else:
@@ -676,6 +1056,11 @@ class MigrationDialog(QDialog):
         for change in part.field_changes:
             self._field_changes_list.addItem(_field_change_text(change))
 
+        self._display_footprint(part, choice)
+        self._display_model(part, choice)
+        self._display_conflicts(part)
+        self._display_derive(part, choice)
+
         for name in TEXT_LABELS:
             override = choice.keywords if name == "keywords" else (
                 choice.fp_description if name == "fp_description" else choice.fp_tags
@@ -686,7 +1071,143 @@ class MigrationDialog(QDialog):
             edit.setPlainText(override if override is not None else generated)
             edit.blockSignals(False)
 
+    def _display_footprint(self, part: PartPlan, choice: PartChoice):
+        """Fill the footprint radios, name and official picker for the selected part (D-07, D-08)."""
+        is_official = choice.footprint_target == "official"
+        self._fp_move_radio.blockSignals(True)
+        self._fp_official_radio.blockSignals(True)
+        self._fp_move_radio.setChecked(not is_official)
+        self._fp_official_radio.setChecked(is_official)
+        self._fp_move_radio.blockSignals(False)
+        self._fp_official_radio.blockSignals(False)
+        self._official_box.setVisible(is_official)
+
+        self._fp_name_edit.blockSignals(True)
+        default_fp_name = (part.footprint_new or part.footprint_old).rpartition(":")[-1]
+        self._fp_name_edit.setText(choice.footprint_name if choice.footprint_name is not None else default_fp_name)
+        self._fp_name_edit.blockSignals(False)
+
+        self._official_combo.blockSignals(True)
+        official_text = choice.official_footprint if choice.official_footprint is not None else (
+            part.footprint_new if is_official else ""
+        )
+        self._official_combo.setEditText(official_text)
+        self._official_combo.blockSignals(False)
+
+        pad_warning = next(
+            (
+                issue.text for issue in part.issues
+                if issue.severity is Severity.WARNING and issue.code == "migration.pad_mismatch"
+            ),
+            None,
+        )
+        self._pad_warning_label.setText(pad_warning or "")
+        self._pad_warning_label.setVisible(bool(pad_warning))
+
     # -- showing pages ---------------------------------------------------------
+
+    # -- the Files tab: every operation, its diff, and the leftover check boxes (D-10, D-15, D-21) --
+
+    def _build_files_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        self._files_tree = PreviewTree()
+        self._files_tree.row_activated.connect(self._on_file_row)
+        lay.addWidget(self._files_tree, 2)
+
+        leftovers_label = QLabel(LEFTOVERS_TEXT)
+        leftovers_label.setTextFormat(Qt.TextFormat.PlainText)
+        lay.addWidget(leftovers_label)
+        self._leftovers_list = QListWidget()
+        self._leftovers_list.itemChanged.connect(self._on_leftover_changed)
+        lay.addWidget(self._leftovers_list, 1)
+        return page
+
+    def _files_sections(self, plan: MigrationPlan) -> tuple[PreviewSection, ...]:
+        """One row per planned op: a model/footprint rename (write+delete paired by source_rel) is one
+        "Move or rename" row; mkdir ops are not shown (not in the must_haves truth's own list)."""
+        ops = plan.ops
+        delete_index_by_rel = {op.rel: idx for idx, op in enumerate(ops) if op.kind == "delete"}
+        paired_delete_indexes: set[int] = set()
+        write_rows: list[PreviewRow] = []
+        move_rows: list[PreviewRow] = []
+        delete_rows: list[PreviewRow] = []
+        rmdir_rows: list[PreviewRow] = []
+        for index, op in enumerate(ops):
+            if op.kind == "write":
+                paired_index = delete_index_by_rel.get(op.source_rel) if op.source_rel is not None else None
+                if paired_index is not None:
+                    paired_delete_indexes.add(paired_index)
+                    move_rows.append(PreviewRow(text=f"{op.source_rel} → {op.rel}", kind="file", op_index=index))
+                else:
+                    write_rows.append(PreviewRow(text=op.rel, kind="file", op_index=index))
+            elif op.kind == "delete":
+                if index not in paired_delete_indexes:
+                    delete_rows.append(PreviewRow(text=op.rel, kind="file", op_index=index))
+            elif op.kind == "rmdir":
+                rmdir_rows.append(PreviewRow(text=op.rel, kind="file", op_index=index))
+        delete_rows = [row for row in delete_rows if row.op_index not in paired_delete_indexes]
+        sections = (
+            PreviewSection(_WRITE_SECTION, tuple(write_rows)),
+            PreviewSection(_MOVE_SECTION, tuple(move_rows)),
+            PreviewSection(_DELETE_SECTION, tuple(delete_rows)),
+            PreviewSection(_RMDIR_SECTION, tuple(rmdir_rows)),
+        )
+        return tuple(section for section in sections if section.rows)
+
+    def _on_file_row(self, row: PreviewRow):
+        """A Files-tab row was double-clicked or entered: build its ContentText on a worker (T-13-36)."""
+        if self._plan is None or row.op_index is None or row.op_index >= len(self._plan.ops):
+            return
+        op = self._plan.ops[row.op_index]
+        repo_root = self._repo_root
+        core = self._core
+
+        def task(progress):
+            return core.op_content(op, repo_root)
+
+        worker = self._spawn(task)
+        worker.result.connect(self._on_file_content_ready)
+        worker.start()
+
+    def _on_file_content_ready(self, content: ContentText):
+        view = ContentViewDialog(content, parent=self)
+        self._content_views.append(view)
+        view.finished.connect(lambda _result=0, v=view: self._on_content_view_closed(v))
+        view.open()
+
+    def _on_content_view_closed(self, view: ContentViewDialog):
+        if view in self._content_views:
+            self._content_views.remove(view)
+
+    def _populate_leftovers(self, rows: tuple):
+        self._leftovers_list.blockSignals(True)
+        try:
+            self._leftovers_list.clear()
+            for row in rows:
+                item = QListWidgetItem(row.rel)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked if row.keep else Qt.CheckState.Checked)
+                item.setToolTip(html.escape(row.reason))
+                item.setData(Qt.ItemDataRole.UserRole, row.rel)
+                self._leftovers_list.addItem(item)
+        finally:
+            self._leftovers_list.blockSignals(False)
+
+    def _on_leftover_changed(self, item: QListWidgetItem):
+        rel = item.data(Qt.ItemDataRole.UserRole)
+        if rel is None:
+            return
+        keep = item.checkState() != Qt.CheckState.Checked
+        self._update_leftover(rel, keep)
+
+    def _update_leftover(self, rel: str, keep: bool):
+        leftovers = dict(self._choices.leftovers)
+        leftovers[rel] = keep
+        self._choices = dataclasses.replace(self._choices, leftovers=leftovers)
+        self._gen += 1
+        self._rebuild_timer.start(_REBUILD_DELAY_MS)
+        self._draft_timer.start(_DRAFT_DELAY_MS)
 
     def _show_page(self, page: QWidget):
         self._stack.setCurrentWidget(page)
