@@ -312,7 +312,7 @@ Plans:
   4. One confirmed action sets up KiCad 10's chooser: it pins the `Atomic_` libraries, shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column. Like the path-variable sync, it shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout.
   5. The app shows and saves the old → new library name map with the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB). `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
 
-**Plans**: 6/20 plans executed
+**Plans**: 9/20 plans executed
 
 Plans:
 **Wave 1**
@@ -326,9 +326,9 @@ Plans:
 - [x] 13-07-PLAN.md — File > Set Up KiCad Chooser... with the KiCad-open dialog, Retry and the guide (TBL-02, D-17)
 
 **Wave 3** *(blocked on Wave 2 completion)*
-- [ ] 13-06-PLAN.md — Tracer: one part migrates end to end (plan, end-state gate, transaction, map file) (MIG-02, MIG-03, MIG-05)
-- [ ] 13-08-PLAN.md — Migration draft in app data with changed-since-draft marks (MIG-02, D-14)
-- [ ] 13-19-PLAN.md — Wrong-checkout warnings after Generate Tables and Install Part (D-26)
+- [x] 13-06-PLAN.md — Tracer: one part migrates end to end (plan, end-state gate, transaction, map file) (MIG-02, MIG-03, MIG-05)
+- [x] 13-08-PLAN.md — Migration draft in app data with changed-since-draft marks (MIG-02, D-14)
+- [x] 13-19-PLAN.md — Wrong-checkout warnings after Generate Tables and Install Part (D-26)
 
 **Wave 4** *(blocked on Wave 3 completion)*
 - [ ] 13-09-PLAN.md — Symbols: targets, MPN names, fields, keywords, clashes, Atomic_ parts, one format per library (D-01, D-03, D-05, D-11, D-12, D-22)
@@ -365,7 +365,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 21/21 | Complete    | 2026-11-11 |
-| 13. Atomic Migration and KiCad Setup | v2.0 | 6/20 | In Progress | - |
+| 13. Atomic Migration and KiCad Setup | v2.0 | 9/20 | In Progress | - |
 
 ## Backlog
 
