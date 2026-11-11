@@ -1667,6 +1667,7 @@ from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from kicad_lib_manager.widgets.help_dialog import HelpDialog  # noqa: E402
+from test_help_dialog import _heading_near_top  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -1837,16 +1838,24 @@ def test_main_window_help_on_a_visible_guide_only_raises(qtbot, make_window):
     help_menu_action(w).trigger()
     guide = w._guide
     qtbot.waitExposed(guide)
-    click_guide_row(guide, "generating")
-    qtbot.waitUntil(lambda: guide_key(guide) == "generating", timeout=5000)
-    w.show_guide("importing")
-    assert guide_key(guide) == "importing"
+    click_guide_row(guide, "importing#conflicts")
+    qtbot.waitUntil(lambda: guide_key(guide) == "importing#conflicts", timeout=5000)
+    qtbot.waitUntil(lambda: _heading_near_top(guide._browser, "4.4.7 Conflicts"), timeout=5000)
+    bar = guide._browser.verticalScrollBar()
+    # reading further down; half way, because the browser re-estimates its page height as it lays the page out
+    # and a value at the maximum is clamped when that maximum shrinks
+    bar.setValue(bar.maximum() // 2)
+    held = bar.value()
+    assert held > 0
 
     w.activateWindow()
     qtbot.waitUntil(w.isActiveWindow, timeout=5000)
     help_menu_action(w).trigger()
     assert w._guide is guide and guide.isVisible()
-    assert guide_key(guide) == "importing"  # a page being read is not pulled away
+    assert guide_key(guide) == "importing#conflicts"
+    assert not guide.shows_asked_topic()
+    qtbot.wait(50)  # one more event-loop turn
+    assert bar.value() == held  # a page being read is not pulled away
     qtbot.waitUntil(guide.isActiveWindow, timeout=5000)
 
 
@@ -1858,6 +1867,49 @@ def test_main_window_help_after_restart_opens_the_saved_place(qtbot, make_window
     assert w._guide.isVisible()
     assert guide_key(w._guide) == "restoring"
     assert settings.load_help_topic() == "restoring"
+
+
+# -- plan 12-21, G-12-27: Help brings back the chosen section and its heading ------------------------------
+
+
+@pytest.mark.parametrize("how", ["close", "escape", "import help between", "import help, guide left open"])
+def test_main_window_help_brings_the_section_heading_back(qtbot, make_window, how):
+    w = make_window([ScanResult()])
+    w.show()
+    qtbot.waitExposed(w)
+    help_menu_action(w).trigger()
+    guide = w._guide
+    qtbot.waitExposed(guide)
+
+    click_guide_row(guide, "importing#conflicts")
+    qtbot.waitUntil(lambda: guide_key(guide) == "importing#conflicts", timeout=5000)
+    qtbot.waitUntil(lambda: _heading_near_top(guide._browser, "4.4.7 Conflicts"), timeout=5000)
+    guide._browser.verticalScrollBar().setValue(0)
+
+    if how.startswith("import help"):
+        w.show_guide("importing")  # what the import window's Help does
+        assert guide_key(guide) == "importing"
+
+    if how == "import help, guide left open":
+        assert guide.isVisible()
+        w.activateWindow()  # as after Cancel in the import window
+        qtbot.waitUntil(w.isActiveWindow, timeout=5000)
+    else:
+        if how == "escape":
+            QTest.keyClick(guide, Qt.Key.Key_Escape)
+        else:
+            guide.close()
+        assert not guide.isVisible()
+
+    help_menu_action(w).trigger()
+    assert w._guide is guide and guide.isVisible()
+    assert guide_key(guide) == "importing#conflicts"
+    selected = [i.data(0, Qt.ItemDataRole.UserRole) for i in guide._toc.selectedItems()]
+    assert selected == ["importing#conflicts"]  # the page row 4.4 is not the selected one
+    assert settings.load_help_topic() == "importing#conflicts"
+    qtbot.waitUntil(lambda: _heading_near_top(guide._browser, "4.4.7 Conflicts"), timeout=5000)
+    if how == "import help, guide left open":
+        qtbot.waitUntil(guide.isActiveWindow, timeout=5000)
 
 
 # -- the main window's own dialogs leave the guide usable (plan 12-20, G-12-22) ----------------------

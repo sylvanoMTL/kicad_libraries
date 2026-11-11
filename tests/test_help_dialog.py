@@ -8,7 +8,8 @@ from pathlib import Path
 import pytest
 import shiboken6
 
-from PySide6.QtCore import QRect, QSettings, Qt
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSettings, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import (
     QAbstractButton, QDialogButtonBox, QLabel, QPushButton, QTextBrowser, QTreeWidgetItem, QWidget,
@@ -827,3 +828,289 @@ def test_stale_saved_places_fall_back(qtbot, saved, opens):
     # the fallback itself is not an owner move: the odd value stays as it was
     assert settings.get_settings().value("help/last_topic", "") == saved
     assert dialog._browser.toPlainText().strip() != ""
+
+
+# -- The guide brings the chosen heading back (plan 12-21, G-12-27) --------------------------------------------
+
+
+def _heading_near_top(browser: QTextBrowser, text: str) -> bool:
+    """True when the level-3 heading is scrolled to, near the top of the view, not merely on screen."""
+    for block, shown in _headings(browser, 3):
+        if shown == text:
+            top = browser.document().documentLayout().blockBoundingRect(block).top() - browser.verticalScrollBar().value()
+            return -1 < top < browser.viewport().height() / 4
+    return False
+
+
+def _selected_keys(dialog: HelpDialog) -> list[str]:
+    return [item.data(0, Qt.ItemDataRole.UserRole) for item in dialog._toc.selectedItems()]
+
+
+def test_asked_topic_lasts_until_the_owner_moves(qtbot):
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert dialog.shows_asked_topic() is False
+
+    assert dialog.show_topic("importing") is True
+    assert dialog.shows_asked_topic() is True
+    dialog.show_remembered()
+    assert dialog.shows_asked_topic() is False
+
+    assert dialog.show_topic("importing") is True
+    _click_row(dialog, _find_item(dialog, "generating"))
+    qtbot.waitUntil(lambda: _current_key(dialog) == "generating", timeout=5000)
+    assert dialog.shows_asked_topic() is False
+    assert settings.load_help_topic() == "generating"
+
+    dialog.show_remembered()
+    assert dialog.show_topic("no_such_page") is False
+    assert dialog.shows_asked_topic() is False
+
+
+@pytest.mark.parametrize("how", ["close", "escape"])
+def test_reopened_guide_brings_the_section_heading_back(qtbot, how):
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    _click_row(dialog, _find_item(dialog, "importing#conflicts"))
+    qtbot.waitUntil(lambda: _current_key(dialog) == "importing#conflicts", timeout=5000)
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+    dialog._browser.verticalScrollBar().setValue(0)
+    assert not _heading_is_in_view(dialog._browser, "4.4.7 Conflicts")
+
+    if how == "close":
+        dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Close).click()
+    else:
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert not dialog.isVisible()
+
+    # what MainWindow.show_guide does with a hidden guide
+    dialog.show_remembered()
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert _current_key(dialog) == "importing#conflicts"
+    assert _selected_keys(dialog) == ["importing#conflicts"]  # a pin: the page row is not the selected one
+    assert _expanded_page_keys(dialog) == {"importing"}
+    assert settings.load_help_topic() == "importing#conflicts"
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+
+def test_show_topic_on_the_shown_topic_brings_its_heading_back(qtbot):
+    dialog = HelpDialog(topic="importing#conflicts")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+    dialog._browser.verticalScrollBar().setValue(0)
+    assert dialog.show_topic("importing#conflicts") is True
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+    assert dialog.show_topic("importing") is True
+    bar = dialog._browser.verticalScrollBar()
+    bar.setValue(bar.maximum())
+    assert bar.value() > 0
+    assert dialog.show_topic("importing") is True
+    qtbot.waitUntil(lambda: bar.value() == 0, timeout=5000)
+
+    assert settings.load_help_topic() is None  # programmatic moves save nothing
+
+
+def test_fresh_guide_shows_the_saved_heading_after_fit_window_narrows(qtbot, monkeypatch):
+    # 860 px plus the frame no longer fits, so fit_window narrows the guide after the page was laid out
+    monkeypatch.setattr(import_dialog, "screen_area", lambda widget: QRect(0, 0, 800, 800))
+    settings.save_help_topic("importing#conflicts")
+    dialog = HelpDialog()
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert dialog.width() < 860
+    assert _current_key(dialog) == "importing#conflicts"
+    assert _selected_keys(dialog) == ["importing#conflicts"]
+    qtbot.waitUntil(lambda: _heading_near_top(dialog._browser, "4.4.7 Conflicts"), timeout=5000)
+
+
+# -- A held left click selects the pressed row (plan 12-21, G-12-27 D3) ----------------------------------------
+
+
+def _row_point(dialog: HelpDialog, key: str) -> QPoint:
+    """The centre of a menu row in window coordinates, after scrolling the row into view."""
+    toc = dialog._toc
+    item = _find_item(dialog, key)
+    toc.scrollToItem(item)
+    return toc.viewport().mapTo(dialog, toc.visualItemRect(item).center())
+
+
+def _shown_dialog(qtbot, topic: str) -> HelpDialog:
+    dialog = HelpDialog(topic=topic)
+    qtbot.addWidget(dialog)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    qtbot.wait(50)  # lets the fold queued by opening the topic run, so no stale one fires during a later press
+    return dialog
+
+
+@pytest.mark.parametrize("open_page, pressed", [
+    ("generating", "importing"),
+    ("library_tree", "importing"),
+    ("kicad_detection", "importing"),
+    ("importing", "restoring"),
+])
+def test_held_press_on_a_page_row_selects_that_row(qtbot, open_page, pressed):
+    dialog = _shown_dialog(qtbot, open_page)
+    item = _find_item(dialog, pressed)
+    point = _row_point(dialog, pressed)
+    window = dialog.windowHandle()
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    qtbot.wait(150)  # several event-loop turns with the button down, as in a real press
+    assert _find_item(dialog, open_page).isExpanded()  # nothing folded under the held button
+
+    # a hand tremble: Qt drag-selects the row under the cursor
+    QTest.mouseMove(window, point + QPoint(1, 0))
+    qtbot.wait(20)
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point + QPoint(1, 0))
+
+    assert _current_key(dialog) == pressed
+    assert settings.load_help_topic() == pressed
+    qtbot.waitUntil(
+        lambda: _expanded_page_keys(dialog) == ({pressed} if item.childCount() else set()), timeout=5000
+    )
+
+
+def test_only_a_left_press_holds_the_menu(qtbot):
+    dialog = _shown_dialog(qtbot, "generating")
+    point = _row_point(dialog, "importing")
+    window = dialog.windowHandle()
+
+    QTest.mousePress(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, point)
+    assert dialog._menu_held is False
+    QTest.mouseRelease(window, Qt.MouseButton.RightButton, Qt.KeyboardModifier.NoModifier, point)
+
+    QTest.mousePress(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    assert dialog._menu_held is True
+    QTest.mouseRelease(window, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    assert dialog._menu_held is False
+
+
+class _SwallowRelease(QObject):
+    """Takes a mouse release away from every filter and widget installed before it."""
+
+    def eventFilter(self, watched, event):
+        return event.type() == QEvent.Type.MouseButtonRelease
+
+
+def _lose_the_release(dialog: HelpDialog, point: QPoint) -> None:
+    """Send a left release that neither the dialog's filter nor the menu receives."""
+    swallow = _SwallowRelease(dialog)
+    viewport = dialog._toc.viewport()
+    viewport.installEventFilter(swallow)
+    try:
+        QTest.mouseRelease(dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    finally:
+        viewport.removeEventFilter(swallow)
+
+
+@pytest.mark.parametrize("how", ["release swallowed", "guide closed while held", "button still reported down"])
+def test_keyboard_move_after_a_lost_release_still_folds(qtbot, monkeypatch, how):
+    dialog = _shown_dialog(qtbot, "generating")
+    point = _row_point(dialog, "importing")
+    QTest.mousePress(dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    qtbot.wait(50)  # the fold now waits for the release
+
+    try:
+        if how == "release swallowed":
+            _lose_the_release(dialog, point)
+        elif how == "guide closed while held":
+            dialog.close()
+            assert not dialog.isVisible()
+            dialog.show()
+            qtbot.waitExposed(dialog)
+            assert _expanded_page_keys(dialog) == {"importing"}  # the waiting fold ran on the hide
+        else:
+            _lose_the_release(dialog, point)
+            # Qt keeps reporting the left button down after a release that was lost with no hide
+            monkeypatch.setattr(
+                help_dialog, "QGuiApplication",
+                types.SimpleNamespace(mouseButtons=lambda: Qt.MouseButton.LeftButton), raising=False,
+            )
+
+        before = _expanded_page_keys(dialog)
+        dialog._toc.setFocus()
+        QTest.keyClick(dialog._toc, Qt.Key.Key_End)  # the last row, "roadmap": a page without sections
+        new_key = _current_key(dialog)
+        assert new_key != "importing"
+        page = new_key.partition("#")[0]
+        expected = {page} if _find_item(dialog, page).childCount() else set()
+        assert expected != before  # so the case can tell a fold from no fold
+        qtbot.waitUntil(lambda: _expanded_page_keys(dialog) == expected, timeout=1000)
+    finally:
+        if how == "guide closed while held":
+            QTest.mouseRelease(
+                dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point
+            )
+
+
+# -- The selected menu row stands out; the guide says where it reopens (plan 12-21, G-12-27) --------------------
+
+
+def _row_colour(image, ratio: float, rect: QRect) -> QColor:
+    """The colour of the image near the right edge of a row's cell, at the row's middle."""
+    return QColor(image.pixel(int((rect.right() - 2) * ratio), int(rect.center().y() * ratio)))
+
+
+def test_menu_selected_row_stands_out(qtbot):
+    dialog = _shown_dialog(qtbot, "importing#conflicts")
+    toc = dialog._toc
+    assert isinstance(toc.itemDelegate(), help_dialog._MenuSelectionDelegate)
+    image = toc.viewport().grab().toImage()
+    ratio = image.devicePixelRatio()
+    accent = QColor(ACCENT)
+
+    selected = _row_colour(image, ratio, toc.visualItemRect(_find_item(dialog, "importing#conflicts")))
+    # not an exact match: Fusion lays its translucent focus frame over the current row
+    assert abs(selected.red() - accent.red()) <= 20, selected.name()
+    assert abs(selected.green() - accent.green()) <= 20, selected.name()
+    assert abs(selected.blue() - accent.blue()) <= 20, selected.name()
+
+    other = _row_colour(image, ratio, toc.visualItemRect(_find_item(dialog, "importing#commit")))
+    assert max(
+        abs(other.red() - accent.red()), abs(other.green() - accent.green()), abs(other.blue() - accent.blue())
+    ) > 20, other.name()
+
+
+def test_menu_keeps_its_arrows_and_indentation(qtbot):
+    dialog = _shown_dialog(qtbot, "importing#conflicts")
+    toc = dialog._toc
+    # no stylesheet reaches the menu, so Qt's stylesheet engine never draws its arrows or indentation
+    assert toc.styleSheet() == ""
+    assert dialog.styleSheet() == ""
+    assert toc.indentation() > 0
+    page_left = toc.visualItemRect(_find_item(dialog, "importing")).left()
+    section_left = toc.visualItemRect(_find_item(dialog, "importing#conflicts")).left()
+    assert section_left - page_left == toc.indentation()
+
+    gen = _find_item(dialog, "generating")
+    assert gen.childCount() > 0 and not gen.isExpanded()
+    toc.scrollToItem(gen)
+    qtbot.wait(10)
+    rect = toc.visualItemRect(gen)
+    image = toc.viewport().grab().toImage()
+    ratio = image.devicePixelRatio()
+    dark = [
+        (x, y)
+        for x in range(0, int((rect.left() - 1) * ratio))
+        for y in range(int(rect.top() * ratio), int((rect.bottom() + 1) * ratio))
+        if QColor(image.pixel(x, y)).lightness() < 160
+    ]
+    assert dark, "the folded page's expand arrow is not painted"
+
+
+def test_help_says_the_guide_reopens_where_you_left_it():
+    page = _page_text("shortcuts")
+    for text in ("page or section you last chose", "scrolled to that heading", "only brought to the front"):
+        assert text in page, text

@@ -3,10 +3,11 @@ import re
 from dataclasses import dataclass
 
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QSplitter, QTextBrowser,
+    QDialog, QDialogButtonBox, QSplitter, QStyle, QStyledItemDelegate, QStyleOptionViewItem, QTextBrowser,
     QTreeWidget, QTreeWidgetItem, QVBoxLayout,
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QEvent, Qt, QTimer
+from PySide6.QtGui import QColor, QGuiApplication, QPalette
 
 from ..settings import load_help_topic, save_help_topic
 from .import_dialog import (
@@ -15,7 +16,7 @@ from .import_dialog import (
 )
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
-    SP_MD, SP_SM, SP_XS, SURFACE, SURFACE_HEADER,
+    SP_MD, SP_SM, SP_XS, SURFACE, SURFACE_BASE, SURFACE_HEADER,
 )
 
 # Every colour, size and gap comes from theme.py (UI-01); the body takes the application font and palette
@@ -38,6 +39,25 @@ CSS = "\n".join([
     f".hint {{ background: {AMBER_TINT}; border-left: 3px solid {AMBER}; padding: {SP_SM}px {SP_MD}px; "
     f"margin: {SP_SM}px 0px; }}",
 ])
+
+
+# In the Windows 11 style a selected row (a faint fill and a thin bar at the far left) looks like a row under the
+# mouse. The row painter only paints inside the row's cell, so the expand arrows and the indentation stay with the
+# tree and the style. The menu has no stylesheet, because Qt's stylesheet engine can redraw those.
+class _MenuSelectionDelegate(QStyledItemDelegate):
+    """Draws the selected menu row in the accent colour with white text, so it cannot be mistaken for a row under the mouse."""
+
+    def paint(self, painter, option, index):
+        if not option.state & QStyle.StateFlag.State_Selected:
+            super().paint(painter, option, index)
+            return
+        opt = QStyleOptionViewItem(option)
+        self.initStyleOption(opt, index)
+        painter.fillRect(opt.rect, QColor(ACCENT))
+        opt.state &= ~QStyle.StateFlag.State_Selected
+        opt.state &= ~QStyle.StateFlag.State_MouseOver
+        opt.palette.setColor(QPalette.ColorRole.Text, QColor(SURFACE_BASE))
+        opt.widget.style().drawControl(QStyle.ControlElement.CE_ItemViewItem, opt, painter, opt.widget)
 
 
 def _wrap(body: str) -> str:
@@ -459,7 +479,8 @@ HELP_PAGES["shortcuts"] = _wrap(
     "<tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>"
     "<tr><td><code>F1</code></td><td>Open the User Guide in its own window, which stays open beside the other windows. "
     "In the import window it opens on Importing Parts, the same as <b>" + HELP_ACTION_TEXT
-    + "</b> on that window's toolbar.</td></tr>"
+    + "</b> on that window's toolbar. From the main window it goes back to the page or section you last chose, "
+    "scrolled to that heading; if the guide is already open there, it is only brought to the front.</td></tr>"
     "</table>"
 )
 
@@ -583,6 +604,7 @@ class HelpDialog(QDialog):
         self.resize(860, 620)
         self._page_key: str | None = None  # the page the browser shows
         self._quiet = 0  # above 0 while the code, not the owner, moves the selection; such moves are not saved
+        self._on_asked_topic = False  # True while a caller's topic is shown and the owner has not chosen since
         self._entries = {entry.key: entry for entry in help_outline()}
 
         layout = QVBoxLayout(self)
@@ -594,6 +616,14 @@ class HelpDialog(QDialog):
         self._toc.setHeaderHidden(True)
         self._toc.setMinimumWidth(200)
         self._toc.setMaximumWidth(300)
+        self._menu_delegate = _MenuSelectionDelegate(self._toc)  # kept on the dialog so the Python object stays alive
+        self._toc.setItemDelegate(self._menu_delegate)
+        # A left press on the menu holds it: pages fold and open only after the release (see _on_topic_selected)
+        self._menu_held = False
+        self._fold_after_release = False
+        self._menu_viewport = self._toc.viewport()  # kept so the event filter compares the same Python wrapper
+        self._menu_viewport.installEventFilter(self)  # mouse events go to the viewport
+        self._toc.installEventFilter(self)  # key events go to the menu itself
         self._build_toc()
         self._toc.currentItemChanged.connect(self._on_topic_selected)
         self._toc.itemClicked.connect(self._on_item_clicked)
@@ -626,6 +656,43 @@ class HelpDialog(QDialog):
         super().showEvent(event)
         # Bounded by the screen's free area and moved fully inside it, however the guide is opened
         fit_window(self, self.size())
+        # The browser applies a pending anchor in its own show, before this showEvent, and fit_window can then
+        # narrow the guide and reflow the page under that scroll; a reused guide also keeps its old scroll.
+        # A spontaneous show (restored from the taskbar) is skipped, so a page being read does not jump.
+        if not event.spontaneous():
+            self._show_current_heading()
+            QTimer.singleShot(0, self, self._show_current_heading)
+
+    def hideEvent(self, event):
+        super().hideEvent(event)
+        # A release lost while the guide closes must not leave the menu waiting. Qt still reports a button that
+        # was down when the window hid, so the live button check in _on_topic_selected does not cover this path.
+        self._menu_held = False
+        if self._fold_after_release:
+            self._fold_after_release = False
+            self._sync_expansion()
+
+    def eventFilter(self, watched, event):
+        kind = event.type()
+        if watched is self._menu_viewport:
+            if kind in (QEvent.Type.MouseButtonPress, QEvent.Type.MouseButtonDblClick):
+                # Only the left button drag-selects, so only it holds the menu
+                if event.button() == Qt.MouseButton.LeftButton:
+                    self._menu_held = True
+            elif kind == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton:
+                self._menu_held = False
+                if self._fold_after_release:
+                    self._fold_after_release = False
+                    # After the view has handled the release, so it still sees the rows where they were pressed
+                    QTimer.singleShot(0, self, self._sync_expansion)
+        elif watched is self._toc and kind == QEvent.Type.KeyPress:
+            # A key press means the owner is using the keyboard, so a press whose release never arrived (a popup
+            # or modal opened during it) must not keep the menu waiting
+            self._menu_held = False
+            if self._fold_after_release:
+                self._fold_after_release = False
+                QTimer.singleShot(0, self, self._sync_expansion)
+        return super().eventFilter(watched, event)
 
     def show_remembered(self) -> None:
         """Show the place the owner last chose, quietly: the saved key, else its page, else the first menu item."""
@@ -636,6 +703,24 @@ class HelpDialog(QDialog):
                 self._toc.setCurrentItem(self._toc.topLevelItem(0))
         finally:
             self._quiet -= 1
+        self._on_asked_topic = False
+
+    def shows_asked_topic(self) -> bool:
+        """True while the guide shows a topic a caller asked for and the owner has not chosen a place since."""
+        return self._on_asked_topic
+
+    def _show_current_heading(self) -> None:
+        """Bring the current menu entry's heading into view: a section to its anchor, a page to its title."""
+        current = self._toc.currentItem()
+        if current is None:
+            return
+        entry = self._entries.get(current.data(0, Qt.ItemDataRole.UserRole))
+        if entry is None or entry.page is None:
+            return
+        if entry.anchor is not None:
+            self._browser.scrollToAnchor(entry.anchor)
+        else:
+            self._browser.verticalScrollBar().setValue(0)
 
     def show_topic(self, key: str) -> bool:
         """Select the topic with this key and show its page; False (nothing changes) when there is none.
@@ -651,6 +736,10 @@ class HelpDialog(QDialog):
                     self._toc.setCurrentItem(item)
                     self._sync_expansion()
                     self._toc.scrollToItem(item)
+                    # The item may already be current, so no currentItemChanged runs _on_topic_selected; this is
+                    # the path of show_remembered on a reused guide
+                    self._show_current_heading()
+                    self._on_asked_topic = True
                     return True
                 stack.extend(item.child(i) for i in range(item.childCount()))
             return False
@@ -694,8 +783,16 @@ class HelpDialog(QDialog):
         # Saved on every owner move, not on close: Escape and a deleted parent fire no close event
         if not self._quiet:
             save_help_topic(entry.key)
-        # Folding rows under a pressed mouse button clears the selection, so a click waits for the event loop
-        QTimer.singleShot(0, self, self._sync_expansion)
+            self._on_asked_topic = False
+        # Folding or opening pages moves the rows. With the left button still down, Qt's drag-select picks the row
+        # now under the cursor and the wrong place is saved, so the menu waits for the release. A hold whose
+        # release was lost ends here when Qt reports the button up, so keyboard moves and instant clicks fold at once.
+        if self._menu_held and QGuiApplication.mouseButtons() & Qt.MouseButton.LeftButton:
+            self._fold_after_release = True
+        else:
+            self._menu_held = False
+            self._fold_after_release = False
+            QTimer.singleShot(0, self, self._sync_expansion)
 
     def _sync_expansion(self):
         """Open the sections of the page shown and fold the other pages' sections, so the menu stays short.

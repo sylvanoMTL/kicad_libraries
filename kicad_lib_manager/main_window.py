@@ -1356,15 +1356,16 @@ class MainWindow(QMainWindow):
     def show_guide(self, topic: str | None = None):
         """Show the shared User Guide; the same window every time.
 
-        With a topic it opens there, and the owner's remembered place is left alone. With none, a hidden guide
-        goes back to the page or section the owner last chose (a new one restores itself); a visible guide is only
-        raised, so a page being read is never pulled away.
+        With a topic it opens there, and the owner's remembered place is left alone. With none, the guide goes
+        back to the page or section the owner last chose when it is hidden or still shows a topic a caller asked
+        for (a new one restores itself). A visible guide already on the owner's own place is only raised, so a
+        page the owner is reading is never pulled away.
         """
         first = self._guide is None
         guide = self._guide_window()
         if topic is not None:
             guide.show_topic(topic)
-        elif not first and not guide.isVisible():
+        elif not first and (not guide.isVisible() or guide.shows_asked_topic()):
             guide.show_remembered()
         guide.show()
         if first:
