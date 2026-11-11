@@ -410,31 +410,62 @@ def test_parent_in_other_library_blocks(tmp_path):
 # -- Task 3: keywords, one file format per library, and the missing-tool block (D-11, F-13, A4) --
 
 
-def test_keywords_merge_existing_first(tmp_path):
-    layout = write_v1_custom(tmp_path)
-    key = _key(USB_LIBRARY, "USB4056-03-A_REVA2")
+KEYWORD_LIBRARY = "LibE_Keywords"
 
-    choices = MigrationChoices(parts={key: PartChoice(library="Atomic_Connector", keywords="usb receptacle")})
-    inventory, plan = _plan_for(layout, choices)
-    part = next(p for p in plan.parts if p.key == key)
-    assert part.part_text.keywords == "usb receptacle"
+
+def _write_keyword_part(root: Path) -> RepoLayout:
+    """One v1 part whose ki_keywords is already "usb receptacle"."""
+    custom = root / "Custom"
+    symbols_dir = custom / "Symbols"
+    footprints_dir = custom / "Footprints"
+    models_dir = custom / "3DModels"
+    for folder in (symbols_dir, footprints_dir, models_dir):
+        folder.mkdir(parents=True, exist_ok=True)
+    (symbols_dir / f"{KEYWORD_LIBRARY}.kicad_sym").write_bytes(
+        _tab_lib(
+            20241209,
+            [
+                _tab_symbol(
+                    "USB4199-GF-A",
+                    [
+                        ("Reference", "U", False),
+                        ("Value", "USB4199-GF-A", False),
+                        ("Footprint", f"{KEYWORD_LIBRARY}:FP1", True),
+                        ("Datasheet", "https://example.com/usb4199.pdf", True),
+                        ("Description", "USB Type-C receptacle", True),
+                        ("MPN", "USB4199-GF-A", True),
+                        ("Manufacturer", "Global Connector Technology", True),
+                        ("ki_keywords", "usb receptacle", True),
+                    ],
+                ),
+            ],
+        )
+    )
+    pretty = footprints_dir / f"{KEYWORD_LIBRARY}.pretty"
+    pretty.mkdir(parents=True, exist_ok=True)
+    (pretty / "FP1.kicad_mod").write_bytes(vendor_footprint("FP1", eol="\r\n"))
+    return RepoLayout.for_repo(root)
+
+
+def test_keywords_merge_existing_first(tmp_path):
+    layout = _write_keyword_part(tmp_path)
+    key = _key(KEYWORD_LIBRARY, "USB4199-GF-A")
 
     choices = MigrationChoices(parts={key: PartChoice(library="Atomic_Connector")})
     inventory, plan = _plan_for(layout, choices)
     part = next(p for p in plan.parts if p.key == key)
     written_words = part.part_text.keywords.split()
-    assert written_words[:2] == ["usb", "receptacle"] or written_words[0] == "connector"
-    # the generated text is recorded even when nothing was typed, and starts the vendor's own words
-    assert part.generated_text.keywords == part.part_text.keywords
+    assert written_words[:2] == ["usb", "receptacle"]
+    assert len(written_words) > 2  # generated words not already present follow
+    assert part.generated_text.keywords == part.part_text.keywords  # no override typed
 
-    choices = MigrationChoices(
-        parts={key: PartChoice(library="Atomic_Connector", keywords="exact words")}
-    )
+    choices = MigrationChoices(parts={key: PartChoice(library="Atomic_Connector", keywords="exact words")})
     inventory, plan = _plan_for(layout, choices)
     part = next(p for p in plan.parts if p.key == key)
     assert part.part_text.keywords == "exact words"
     # the generated text (what the generator would have produced) differs from the typed override
     assert part.generated_text.keywords != "exact words"
+    assert part.generated_text.keywords.split()[:2] == ["usb", "receptacle"]
 
 
 def test_existing_target_in_older_format_is_normalised(tmp_path):

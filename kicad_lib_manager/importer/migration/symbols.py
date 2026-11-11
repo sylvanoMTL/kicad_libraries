@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from ... import fsutil
@@ -32,13 +32,30 @@ from ...kicad_files import (
 )
 from ...manufacturers import canonical
 from ...models import Issue, Severity
-from .. import stems
+from .. import kicad_cli, stems
 from ..fieldrules import GENERIC_VOLATILE, MPN_FIELDS, FieldRules
+from ..keywords import generate_keywords
 from ..naming import sanitize_name
 from ..planner import SymbolFields, edit_symbol, existing_source, new_source, unit_text
 from .families import FamiliesOutcome
 from .inventory import Inventory, InventoryPart
-from .plan import MigrationChoices, MigrationOp, PartChoice, PartKey, PartPlan, PartText, Rename
+from .plan import (
+    FieldChange,
+    MigrationChoices,
+    MigrationOp,
+    PartChoice,
+    PartKey,
+    PartPlan,
+    PartText,
+    Rename,
+)
+
+# A4: the plain-language block when the migration cannot normalise every target to one format.
+CLI_MISSING_TEXT = (
+    "The KiCad command-line tool was not found. The migration needs it to bring every moved "
+    "symbol to one file format. Set KiCad's footprint path (Ctrl+K) to a KiCad 10 install, then "
+    "open the migration again."
+)
 
 # importer.migration.footprints is not in this module's ALLOWED entry (tests/test_importer_layering.py),
 # so FootprintsOutcome is referenced by name in the `footprints` parameter below without being imported
@@ -123,6 +140,36 @@ def _loaded_text(data: bytes, name: str) -> LoadedFile | Issue:
     return parse_bytes(data, name)
 
 
+def _normalised_target(path: Path, tools) -> tuple[LoadedFile | None, list[Issue]]:
+    """The existing target library already on the installed KiCad's format (F-13, P-06).
+
+    None (with no issues) when path does not exist: a brand-new target has nothing to normalise,
+    and every incoming unit is normalised on its own through new_source. When it exists, its text
+    is upgraded once through kicad_cli.upgrade_symbol_text; a version that already matches the
+    installed one comes back unchanged (upgrade_symbol_text reports no change).
+    """
+    if not path.exists():
+        return None, []
+    try:
+        data = path.read_bytes()
+    except OSError as e:
+        return None, [Issue(Severity.ERROR, "migration.unreadable", f"Could not read {path.name}: {e.strerror or e}")]
+    loaded = _loaded_text(data, path.name)
+    if isinstance(loaded, Issue):
+        return None, [loaded]
+    result = kicad_cli.upgrade_symbol_text(
+        tools.kicad_cli, loaded.source.text, name=path.name, runner=tools.cli_runner, timeout=tools.cli_timeout
+    )
+    if isinstance(result, Issue):
+        return loaded, [result]
+    if not result.changed:
+        return loaded, []
+    upgraded = _loaded_text(fsutil.encode_source(result.text, loaded.source.bom), path.name)
+    if isinstance(upgraded, Issue):
+        return loaded, [upgraded]
+    return upgraded, []
+
+
 def _extends_depth(part: InventoryPart, parts_by_key: Mapping[PartKey, InventoryPart]) -> int:
     """How many extends hops separate part from its outermost ancestor still inside the same file.
 
@@ -189,6 +236,18 @@ def plan_symbols(
     families: FamiliesOutcome,
 ) -> SymbolsOutcome:
     """Build the library text of every Atomic_ target and the PartPlan row for every part."""
+    # A4: without the KiCad command-line tool, no target can be brought to one file format; the
+    # whole migration blocks rather than silently merging mixed-format libraries (F-13, P-06).
+    if ctx.tools.kicad_cli is None:
+        return SymbolsOutcome(
+            parts=(),
+            ops=(),
+            library_map=(),
+            symbol_renames=(),
+            removed_libraries=(),
+            issues=(Issue(Severity.ERROR, "migration.cli_missing", CLI_MISSING_TEXT),),
+        )
+
     layout = inventory.layout
     issues: list[Issue] = []
     part_plans: list[PartPlan] = []
@@ -254,6 +313,14 @@ def plan_symbols(
         loaded_cache[rel_path] = loaded
         return loaded
 
+    normalised_cache: dict[str, tuple[LoadedFile | None, list[Issue]]] = {}
+
+    def get_normalised(path: Path) -> tuple[LoadedFile | None, list[Issue]]:
+        key = str(path)
+        if key not in normalised_cache:
+            normalised_cache[key] = _normalised_target(path, ctx.tools)
+        return normalised_cache[key]
+
     # D-05: read every target's existing content once, both for the clash check below and to seed
     # the assembly loop further down (kept_names is reused there unchanged).
     existing_by_target: dict[str, tuple[Path, str, frozenset[str]]] = {}
@@ -297,11 +364,22 @@ def plan_symbols(
         base_sha256 = hashlib.sha256(existing_data).hexdigest() if existing_data is not None else None
         assembled: LoadedFile | None = None
         base_version: int | None = None
+        format_note: tuple[int | None, int | None] | None = None
         if existing_data is not None:
-            loaded_target = _loaded_text(existing_data, target_path.name)
-            if isinstance(loaded_target, Issue):
-                issues.append(loaded_target)
+            original = _loaded_text(existing_data, target_path.name)
+            if isinstance(original, Issue):
+                issues.append(original)
                 continue
+            old_version = file_version(original.root)
+            # F-13, P-06: normalise the existing target once to the installed KiCad's format before
+            # anything is spliced into it, so every part ends up sharing one version whatever the
+            # target's own on-disk version was.
+            normalised, norm_issues = get_normalised(target_path)
+            issues.extend(norm_issues)
+            loaded_target = normalised if normalised is not None else original
+            new_version = file_version(loaded_target.root)
+            if new_version != old_version:
+                format_note = (old_version, new_version)
             # D-03: a part already in this exact target library is rewritten in place, not
             # duplicated. Every symbol of this file that is itself migrating in this pass (staying
             # here or being replaced by its own edited block below) is dropped from the preseed; any
@@ -375,7 +453,31 @@ def plan_symbols(
                 datasheet=choice.datasheet,
                 description=choice.description,
             )
-            edits, final_mpn, changes, _keywords = edit_symbol(
+            # D-11: the caller's typed keywords are written exactly; otherwise generate_keywords
+            # supplies the words merge_words appends after the vendor's own (edit_symbol's job).
+            suggestion = ctx.suggestions.get(part.key)
+            related = [
+                stem
+                for stem in (suggestion.related_stems if suggestion is not None else ())
+                if stems.ATOMIC_PREFIX + stem != target
+            ]
+            package_words = footprints.package_words.get(part.key, ())
+            final_manufacturer = fields.manufacturer
+
+            def keyword_source(description: str, mpn_value: str, symbol_name: str) -> list[str]:
+                return generate_keywords(
+                    library=target,
+                    description=description,
+                    category="",
+                    package_words=package_words,
+                    manufacturer=final_manufacturer,
+                    mpn=mpn_value,
+                    symbol_name=symbol_name,
+                    related=related,
+                )
+
+            fields = replace(fields, keywords=choice.keywords, keyword_source=keyword_source)
+            edits, final_mpn, changes, keyword_texts = edit_symbol(
                 work, ref, new_name, fields, source.version, MIGRATION_RULES
             )
             edits = [*edits, *rename_symbol_edits(work.root, part.name, new_name)]
@@ -428,7 +530,18 @@ def plan_symbols(
 
             footprint_new = footprints.links.get(part.key, part.footprint)
             field_changes = tuple(changes) + tuple(footprints.field_changes.get(part.key, ()))
+            if format_note is not None:
+                old_v, new_v = format_note
+                field_changes = (
+                    *field_changes,
+                    FieldChange(new_name, "set", "(file format)", str(old_v), str(new_v), "file format updated"),
+                )
             texts = footprints.texts.get(part.key, (PartText(), PartText()))
+            if keyword_texts is not None:
+                generated_text = replace(texts[0], keywords=keyword_texts[0])
+                part_text = replace(texts[1], keywords=keyword_texts[1])
+            else:
+                generated_text, part_text = texts
             part_plans.append(
                 PartPlan(
                     key=part.key,
@@ -444,8 +557,8 @@ def plan_symbols(
                     footprint_target=footprints.targets.get(part.key, "official"),
                     model_files=footprints.models.get(part.key, ()),
                     field_changes=field_changes,
-                    generated_text=texts[0],
-                    part_text=texts[1],
+                    generated_text=generated_text,
+                    part_text=part_text,
                     issues=(),
                 )
             )
