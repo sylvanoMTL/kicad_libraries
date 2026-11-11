@@ -1198,20 +1198,33 @@ class MainWindow(QMainWindow):
         )
         return answer == QMessageBox.StandardButton.Yes
 
-    def _kicad_open_box(self, changes, names) -> tuple[QMessageBox, dict]:
-        """The dialog for a change while KiCad is open, and the answer each button gives."""
-        lines = [
-            f"{var}: {old if old else '(not set)'} -> {new}" for var, old, new in changes
-        ]
+    def _kicad_open_box(
+        self, changes, names, *, intro: str | None = None, lines: list[str] | None = None,
+        outro: str | None = None,
+    ) -> tuple[QMessageBox, dict]:
+        """The dialog for a change while KiCad is open, and the answer each button gives.
+
+        `intro`/`lines`/`outro` default to today's path-variable text byte for byte, so a
+        caller that still passes only `changes`/`names` sees the identical dialog. A caller
+        that already has formatted lines (the chooser confirm) passes `lines` directly and
+        `changes` is unused.
+        """
+        if lines is None:
+            lines = [
+                f"{var}: {old if old else '(not set)'} -> {new}" for var, old, new in changes
+            ]
+        if intro is None:
+            intro = "These KiCad path variables in KiCad's settings file would change:"
+        if outro is None:
+            outro = "KiCad may undo them when it exits. Close KiCad, then press Retry."
         box = QMessageBox(self)
         box.setWindowModality(Qt.WindowModality.WindowModal)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("KiCad is open")
         box.setText(
-            f"KiCad is open ({', '.join(names)}). These KiCad path variables in "
-            "KiCad's settings file would change:\n\n"
+            f"KiCad is open ({', '.join(names)}). {intro}\n\n"
             + "\n".join(lines)
-            + "\n\nKiCad may undo them when it exits. Close KiCad, then press Retry."
+            + f"\n\n{outro}"
         )
         retry = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
         anyway = box.addButton("Change anyway", QMessageBox.ButtonRole.DestructiveRole)
@@ -1283,32 +1296,13 @@ class MainWindow(QMainWindow):
         return [f"{c.label}: {c.old} -> {c.new}" for c in changes]
 
     def _ask_chooser_kicad_open(self, lines, names) -> ConfirmAnswer:
-        """Chooser-specific KiCad-open dialog (Retry / Change anyway / Not now).
-
-        Self-contained for now; Task 2 gives `_kicad_open_box` keyword-only
-        `intro`/`lines`/`outro` parameters and this method delegates to it instead.
-        """
-        box = QMessageBox(self)
-        box.setWindowModality(Qt.WindowModality.WindowModal)
-        box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("KiCad is open")
-        box.setText(
-            f"KiCad is open ({', '.join(names)}). These settings of KiCad's symbol "
-            "chooser would change:\n\n"
-            + "\n".join(lines)
-            + "\n\nKiCad may undo them when it exits. Close KiCad, then press Retry."
+        """Chooser-specific KiCad-open dialog (Retry / Change anyway / Not now)."""
+        box, answers = self._kicad_open_box(
+            None, names,
+            intro="These settings of KiCad's symbol chooser would change:",
+            lines=lines,
         )
-        retry = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
-        anyway = box.addButton("Change anyway", QMessageBox.ButtonRole.DestructiveRole)
-        not_now = box.addButton("Not now", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(retry)
-        box.setEscapeButton(not_now)
         box.exec()
-        answers = {
-            retry: ConfirmAnswer.RETRY,
-            anyway: ConfirmAnswer.WRITE,
-            not_now: ConfirmAnswer.DECLINE,
-        }
         return answers.get(box.clickedButton(), ConfirmAnswer.DECLINE)
 
     # Sanctioned exception, same as _confirm_path_var_changes above (D-17).

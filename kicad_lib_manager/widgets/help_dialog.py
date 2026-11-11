@@ -242,6 +242,20 @@ HELP_PAGES["generating"] = _wrap(
     "<li>With an empty Destination box nothing is written, and the log says so</li>"
     "</ul>"
     "<p>The log panel at the bottom confirms what was written.</p>"
+    "<h3>KiCad chooser</h3>"
+    "<p><b>File &rarr; Set Up KiCad Chooser...</b> (<code>Ctrl+Shift+K</code>) pins every "
+    "<code>Atomic_</code> library listed in the tables of the Destination folder, and "
+    "<code>Atomic_Footprints</code>, in KiCad's symbol and footprint choosers. A pin you "
+    "added yourself is kept, and a pin of an <code>Atomic_</code> library that no longer "
+    "exists is removed. The symbol chooser's <b>MPN</b> and <b>Manufacturer</b> columns are "
+    "shown right after Description, and the old Manufacturer column some KiCad versions show "
+    "on its own is removed.</p>"
+    "<p>The app shows every old and new value first and asks before changing anything, and "
+    "backs up KiCad's settings the same way as the path variables above. When KiCad is open "
+    "it offers <b>Retry</b> (close KiCad first, then press it), <b>Change anyway</b> or "
+    "<b>Not now</b>, the same choice as the path-variable change. It never runs from a git "
+    "worktree or a checkout other than the one your KiCad settings point at, and changes "
+    "nothing when the chooser is already set up.</p>"
 )
 
 HELP_PAGES["importing"] = _wrap(
@@ -475,6 +489,7 @@ HELP_PAGES["shortcuts"] = _wrap(
     "<tr><td><code>Ctrl+R</code></td><td>Restore Backup</td></tr>"
     "<tr><td><code>Ctrl+Shift+R</code></td><td>Rescan Libraries</td></tr>"
     "<tr><td><code>Ctrl+Shift+A</code></td><td>Check Atomic Parts</td></tr>"
+    "<tr><td><code>Ctrl+Shift+K</code></td><td>Set Up KiCad Chooser</td></tr>"
     "<tr><td><code>Ctrl+K</code></td><td>Set KiCad Footprint Path</td></tr>"
     "<tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>"
     "<tr><td><code>F1</code></td><td>Open the User Guide in its own window, which stays open beside the other windows. "
