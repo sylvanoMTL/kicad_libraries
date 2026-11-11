@@ -350,7 +350,7 @@ def library_badge(name: str, existing: Collection[str], allowed: frozenset[str] 
 def field_defaults(candidate: ImportCandidate, symbol_name: str, final_name: str | None = None) -> FieldDefaults:
     """The field values build_plan writes for the vendor symbol symbol_name when no override is given.
 
-    This mirrors planner._edit_symbol and the manufacturer step of build_plan: Value is the MPN (D-22);
+    This mirrors planner.edit_symbol and the manufacturer step of build_plan: Value is the MPN (D-22);
     Datasheet is the vendor one and
     Description the vendor one with its whitespace collapsed (D-07); Manufacturer is the vendor value in its
     canonical spelling, else the company the datasheet link names (D-23); MPN is meta.mpn, which is the vendor value or
