@@ -103,16 +103,10 @@ def test_derived_block_shape(tmp_path):
     # The parent is written before its derived member.
     assert names.index(parent_plan.new_name) < names.index(member_plan.new_name)
 
-    # symbols.py does not yet call derived_edits (no call site was wired by plan 13-06); apply it
-    # here to prove the shape it would produce once wired (see SUMMARY Issues Encountered).
-    member_ref = kicad_files.find_symbol(loaded.root, member_plan.new_name)
-    edits = derived_edits(loaded, member_ref, parent_plan.new_name)
-    edited_text = apply_edits(loaded.source.text, edits)
-    reparsed = kicad_files.parse_bytes(
-        fsutil.encode_source(edited_text, loaded.source.bom), "Atomic_Power_Management.kicad_sym"
-    )
-
-    new_ref = kicad_files.find_symbol(reparsed.root, member_plan.new_name)
+    # plan_symbols applies derived_edits itself (wired after the wave-4 merge), so the written
+    # library already holds the member as (extends <parent>) plus its own properties.
+    new_ref = member_ref = kicad_files.find_symbol(loaded.root, member_plan.new_name)
+    assert member_ref is not None
     assert kicad_files.extends_name(new_ref.node) == parent_plan.new_name
     assert [c for c in new_ref.node.children if c.head == "symbol"] == []
 
