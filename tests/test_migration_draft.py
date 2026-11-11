@@ -153,6 +153,38 @@ def test_saved_keys_missing_now_are_flagged(tmp_path):
     assert removed_key in changed_parts(loaded, current)
 
 
+def test_unreadable_model_contributes_unreadable_text_not_a_crash(tmp_path):
+    """A model a footprint links but that cannot be read never raises; it contributes the text "unreadable"."""
+    import hashlib
+
+    from kicad_lib_manager.importer.layout import RepoLayout
+    from kicad_lib_manager.importer.migration.inventory import Inventory, InventoryFootprint, InventoryPart
+
+    layout = RepoLayout.for_repo(tmp_path)
+    layout.models_dir.mkdir(parents=True)
+    key = ("Custom/Symbols/Foo.kicad_sym", "FOO1")
+    part = InventoryPart(
+        key=key, library="Foo", rel_path=key[0], name="FOO1", extends=None,
+        fields={}, footprint="Foo:FOO1", version=None, block_sha256="abc", atomic=False,
+    )
+    footprint = InventoryFootprint(
+        library="Foo", name="FOO1", rel_path="Custom/Footprints/Foo.pretty/FOO1.kicad_mod",
+        internal_name="FOO1", models=("missing.step",), sha256="def", linked_by=(key,),
+    )
+    inventory = Inventory(
+        layout=layout, parts=(part,), footprints=(footprint,), models=(), model_linkers={},
+        bak_files=(), symbol_libraries=("Foo",), footprint_libraries=("Foo",), issues=(),
+    )
+
+    prints = fingerprints(inventory)
+
+    expected = hashlib.sha256()
+    expected.update(b"abc")
+    expected.update(b"def")
+    expected.update(b"unreadable")
+    assert prints[key] == expected.hexdigest()
+
+
 # ── Draft file location ──────────────────────────────────────────────
 
 def test_draft_file_is_beside_settings(tmp_path):
@@ -200,6 +232,10 @@ def test_bad_drafts_start_clean(tmp_path, text):
         lambda p: p["parts"][0]["choice"].update(mpn=5),
         lambda p: p["parts"][0]["choice"].update(footprint_target="elsewhere"),
         lambda p: p["resolutions"].append(["k", "delete", None]),
+        lambda p: p["leftovers"].append(["Custom/Footprints/X.pretty/X.kicad_mod", "yes"]),
+        lambda p: p["leftovers"].append(["only-one-field"]),
+        lambda p: p["resolutions"].append(["k", "rename", 5]),
+        lambda p: p["parts"].append({"key": ["rel", "name"], "print": 5}),
     ],
 )
 def test_bad_draft_contents_start_clean(tmp_path, mutate):
