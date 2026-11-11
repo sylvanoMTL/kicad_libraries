@@ -22,7 +22,7 @@ A part importer added to the existing PySide6 KiCad Library Manager (`kicad_lib_
 - Importer on the new scheme: suggests `Atomic_<stem>` by device type (sibling lookup in KiCad's stock libraries, then a category map); footprints go to the shared `Atomic_Footprints`; 1:1 symbol/footprint library pairing dropped; Install blocked until the atomic rule passes
 - Checks on every scan: violations flagged in the tree and log, parts new or changed since the last `Custom` commit highlighted, a check dialog with one-click fixes where safe
 - Table generator writes library descriptions and keeps refusing nickname clashes
-- One previewed migration: tag `Custom` `pre-atomic`, merge 12 symbol libraries into 9 `Atomic_` libraries, move footprints into `Atomic_Footprints`, rewrite Footprint fields, fill every missing datasheet/description/model in the preview (runs only once every part passes), regenerate tables, relink guidance for existing projects
+- One previewed migration: tag `Custom` `pre-atomic`, re-file every part into its previewed `Atomic_` library, move footprints into `Atomic_Footprints`, rewrite Footprint fields, fill every missing datasheet/description/model in the preview (runs only once every part passes), regenerate tables, relink guidance for existing projects
 - Carried forward: re-tests 999.1 (KiCad 10) and 999.2 (case-sensitive folder), open Phase 5/6 review findings, Help dialog and Commit panel UI polish
 - Docs: CLAUDE.md naming section, library requirements, PROJECT.md
 

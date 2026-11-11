@@ -71,10 +71,10 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 - [ ] **MIG-01**: Before migrating, the app tags `Custom` as `pre-atomic`, and refuses to start while `Custom` has uncommitted changes.
 - [ ] **MIG-02**: The migration preview shows, for every existing part, its target `Atomic_` library, its footprint destination, every rename and field change, and every atomic-rule failure with an edit box. The migration cannot run until every part passes.
 - [ ] **MIG-03**: The migration runs as one transaction with rollback, using byte-safe span edits. It:
-  - merges the 12 symbol libraries into 9 `Atomic_` libraries;
+  - moves every part of the v1-named symbol libraries (and any part the preview re-files) into its previewed `Atomic_` library, removing the emptied libraries;
   - moves every footprint into `Atomic_Footprints`, or switches it to an official footprint;
   - rewrites every Footprint field and model path;
-  - deletes the two `.bak` files.
+  - deletes every `.bak` file in `Custom/Symbols`.
 - [ ] **MIG-04**: After migration, the scan reports zero atomic violations, and the library tables are regenerated (old names removed, new ones added). One `Custom` commit plus a parent ref commit is offered through the commit step.
 - [ ] **MIG-05**: The app shows and saves the old → new library name map, plus the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB).
 

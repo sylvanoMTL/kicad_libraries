@@ -31,7 +31,7 @@ Phase 8 makes the suite green first, so every later phase starts from a baseline
 - [x] **Phase 10: Importer on the Atomic Scheme** - Importer suggests `Atomic_<stem>`, installs footprints into `Atomic_Footprints`, generates keywords and footprint tags, and blocks Install until the part is atomic (completed 2026-10-29)
 - [x] **Phase 11: Commit Gate and Commit Panel Fixes** - Commit panel refuses non-atomic parts, reports what git really did, and follows the theme (completed 2026-11-01)
 - [x] **Phase 12: Import Flow Fixes and Case-Sensitive Re-test** - Post-install table step, import threading, `kicad_common.json` write and Help dialog fixed; case-twin rollback re-tested (completed 2026-11-11)
-- [ ] **Phase 13: Atomic Migration and KiCad Setup** - Existing parts migrated into 9 `Atomic_` libraries in one previewed commit, tables regenerated with descriptions, KiCad's chooser set up, docs updated
+- [ ] **Phase 13: Atomic Migration and KiCad Setup** - Existing parts migrated into `Atomic_` libraries in one previewed commit, tables regenerated with descriptions, KiCad's chooser set up, docs updated
 
 ## Phase Details
 
@@ -307,7 +307,7 @@ Plans:
 **Requirements**: MIG-01, MIG-02, MIG-03, MIG-04, MIG-05, TBL-01, TBL-02, DOC-01
 **Success Criteria** (what must be TRUE):
   1. The migration refuses to start while `Custom` has uncommitted changes, and otherwise tags `Custom` as `pre-atomic` before it writes anything. Its preview shows, for every existing part, the target `Atomic_` library, the footprint destination, every rename and field change, and every atomic-rule failure with an edit box. Run stays disabled until every part passes.
-  2. Running it as one transaction, which rolls back on any failure, leaves 9 `Atomic_` symbol libraries in place of the 12 old ones. Every footprint is in `Atomic_Footprints` or switched to an official footprint, every Footprint field and model path is rewritten, and the two `.bak` files are gone. The next scan reports zero atomic violations.
+  2. Running it as one transaction, which rolls back on any failure, leaves no v1-named library: each part sits in the `Atomic_` library its preview showed. Every footprint is in `Atomic_Footprints` or switched to an official footprint, every Footprint field and model path is rewritten, and every `.bak` file in `Custom/Symbols` is gone. The next scan reports zero atomic violations.
   3. The regenerated library tables drop the old names and add the new ones. Every generated table entry, from Generate or from the migration, carries a library description instead of an empty one. One `Custom` commit plus a parent ref commit is offered through the commit step.
   4. One confirmed action sets up KiCad 10's chooser: it pins the `Atomic_` libraries, shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column. Like the path-variable sync, it shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout.
   5. The app shows and saves the old → new library name map with the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB). `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
