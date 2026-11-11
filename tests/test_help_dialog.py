@@ -89,6 +89,7 @@ def test_help_shortcuts_complete():
         ("Ctrl+G", "Generate Tables"), ("Ctrl+R", "Restore Backup"),
         ("Ctrl+K", "Set KiCad Footprint Path"), ("Ctrl+Q", "Exit"), ("F1", "User Guide"),
         ("Ctrl+Shift+A", "Check Atomic Parts"), ("Ctrl+Shift+K", "Set Up KiCad Chooser"),
+        ("Ctrl+Shift+M", "Migrate to Atomic Libraries"),
     ):
         assert shortcut in page, shortcut
         assert action in page, action
@@ -398,6 +399,28 @@ def test_help_import_page_uses_plain_words():
     assert "generic words" not in page
 
 
+# -- Task 3: the "Migrating to Atomic Libraries" page and its shortcut (D-13, D-15, D-16, D-17) --
+
+
+def test_help_migrating_page():
+    raw = HELP_PAGES["migrating"]
+    # The page's body starts with its <h2>, same convention as every other HELP_PAGES entry
+    assert "<body><h2>Migrating to Atomic Libraries</h2>" in raw
+    for heading in ("Before you start", "The preview", "Run and result", "Afterwards"):
+        assert f"<h3>{heading}</h3>" in raw, heading
+
+    page = _page_text("migrating")
+    for text in (
+        "Ctrl+Shift+M", "uncommitted files", "pre-atomic", "failure strip", "Run Migration",
+        "Files", "leftover files", "Generate Tables", "Set Up KiCad Chooser",
+        "MIGRATION-ATOMIC.md", "Edit Symbol Library Links", "Update Symbols from Library",
+        "Update PCB from Schematic",
+    ):
+        assert text in page, text
+    assert "ki_" not in page
+    assert "ki_" not in raw
+
+
 def test_help_css_uses_theme_tokens_only():
     css = help_dialog.CSS
     colours = {v.upper() for k, v in vars(theme).items() if k.isupper() and isinstance(v, str) and v.startswith("#")}
@@ -511,7 +534,7 @@ MENU_NUMBERS = {
     "overview": "1", "_getting_started": "2", "requirements": "2.1", "how_to_run": "2.2",
     "_on_launch": "3", "kicad_detection": "3.1", "repo_scan": "3.2",
     "_how_to_use": "4", "library_tree": "4.1", "selecting": "4.2", "generating": "4.3", "importing": "4.4",
-    "restoring": "4.5", "filter": "5", "shortcuts": "6", "roadmap": "7",
+    "migrating": "4.5", "restoring": "4.6", "filter": "5", "shortcuts": "6", "roadmap": "7",
 }
 IMPORTING_SECTIONS = [
     "Start", "Items", "Target library", "Footprint", "Fields", "Atomic check", "Conflicts",
@@ -576,7 +599,7 @@ def test_help_outline_numbers_follow_the_menu_order():
     assert [entry.text for entry in importing] == [f"4.4.{i} {name}" for i, name in enumerate(IMPORTING_SECTIONS, 1)]
     assert numbers["importing#conflicts"] == "4.4.7"
     assert [entry.text for entry in outline if entry.parent == "filter"] == ["5.1 How it works", "5.2 Per-source scoping"]
-    assert sum(1 for entry in outline if entry.anchor is not None) == 21
+    assert sum(1 for entry in outline if entry.anchor is not None) == 25
     first = outline[0]
     assert (first.key, first.text, first.parent, first.page, first.anchor) == ("overview", "1 Overview", None, "overview", None)
     group = next(entry for entry in outline if entry.key == "_how_to_use")

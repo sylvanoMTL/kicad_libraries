@@ -10,7 +10,9 @@ from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 
 from . import scan_cache
+from .atomic_check import is_atomic
 from .importer.layout import RepoLayout
+from .importer.migration.inventory import migration_reason
 from .kicad_process import kicad_running
 from .kicad_setup import CHECKOUT_MISMATCH, checkout_mismatch, sync_kicad_chooser, wrong_checkout_warning
 from .library_scanner import (
@@ -34,6 +36,7 @@ from .widgets.atomic_check_dialog import AtomicCheckDialog
 from .widgets.backup_dialog import BackupDialog
 from .widgets.help_dialog import HelpDialog
 from .widgets.import_dialog import ImportCore, ImportDialog, TaskWorker, centre_window
+from .widgets.migration_dialog import MigrationCore, MigrationDialog
 from .widgets.theme import AMBER, AMBER_TINT, PRIMARY_BUTTON_QSS, SP_MD, SP_SM
 
 APP_TITLE = "KiCad External Lib Manager"
@@ -46,12 +49,21 @@ ATOMIC_BACKUP_ROOT: Path | None = None
 # None means the real %APPDATA% KiCad config; tests point this at a tmp folder so the
 # D-26 wrong-checkout check never reads the owner's real KiCad settings
 CHECKOUT_CONFIG_BASE: Path | None = None
+# None means the real MigrationCore; tests pass a fake core through the (patched)
+# MigrationDialog class instead, so this seam mirrors IMPORT_CORE but usually stays None
+MIGRATION_CORE: MigrationCore | None = None
 
 # Shown when the Destination box is blank: Path("") would be the working directory (REV-02)
 _NO_DEST_TEXT = "No destination folder set; library tables not changed"
 # Menu text and the Destination-blank warning for the chooser setup action (D-17, D-18)
 SETUP_CHOOSER_TEXT = "Set Up KiCad &Chooser..."
 _NO_DEST_CHOOSER_TEXT = "No destination folder set; KiCad's chooser not set up"
+# Menu text, the enabled tooltip, the disabled-tooltip reason and the help topic key for
+# the migration action (D-13)
+MIGRATE_TEXT = "&Migrate to Atomic Libraries..."
+_MIGRATE_TOOLTIP = "Move every Custom part into Atomic_ libraries, previewed first"
+_NOTHING_TO_MIGRATE = "Nothing to migrate: every library in Custom already uses the Atomic_ names"
+_MIGRATION_TOPIC = "migrating"
 
 
 def _selected_count(result: ScanResult) -> int:
@@ -237,6 +249,15 @@ class MainWindow(QMainWindow):
         # The one User Guide window: parentless, so no window-modal dialog of this app blocks it (G-12-22)
         self._guide: HelpDialog | None = None
         self._atomic_dialog: AtomicCheckDialog | None = None
+        self._migration_dialog: MigrationDialog | None = None
+        # Set by _on_migrated; consumed by _on_scan_finished once the rescan it starts ends
+        # (migration_scan_started distinguishes that rescan from one already running, same
+        # two-flag shape as _PostInstall.scan_started above)
+        self._pending_migration = False
+        self._migration_scan_started = False
+        # The migration Result view's Generate Tables was clicked while a scan ran (or one
+        # was still pending); _on_scan_finished runs it once that scan ends (D-24)
+        self._generate_after_scan = False
         self._pending_post_install: _PostInstall | None = None
         # The KiCad-open check runs on a worker before the path-variable confirm (REV-05):
         # one check at a time, and a close during it waits for it instead of blocking
@@ -251,6 +272,7 @@ class MainWindow(QMainWindow):
         self._chooser_workers: list[TaskWorker] = []
         self._close_after_chooser = False
         self._close_after_dialog = False  # the import dialog is finishing: close this window after it
+        self._close_after_migration = False  # same, for the migration window (D-17)
         self.setAcceptDrops(True)
         self._build_menu()
         self._build_ui()
@@ -307,6 +329,13 @@ class MainWindow(QMainWindow):
         )
         self._act_check_atomic.triggered.connect(lambda: self._open_atomic_check())
         file_menu.addAction(self._act_check_atomic)
+
+        self._act_migrate = QAction(MIGRATE_TEXT, self)
+        self._act_migrate.setShortcut(QKeySequence("Ctrl+Shift+M"))
+        self._act_migrate.setToolTip(_MIGRATE_TOOLTIP)
+        self._act_migrate.setStatusTip(_MIGRATE_TOOLTIP)
+        self._act_migrate.triggered.connect(self._open_migration)
+        file_menu.addAction(self._act_migrate)
 
         self._act_setup_chooser = QAction(SETUP_CHOOSER_TEXT, self)
         self._act_setup_chooser.setShortcut(QKeySequence("Ctrl+Shift+K"))
@@ -527,6 +556,29 @@ class MainWindow(QMainWindow):
         ):
             control.setEnabled(not running)
         self._tree.set_library_rescan_enabled(not running)
+        # Migrate's enabled state also depends on migration_reason(), not just the scan
+        # state, so it is refreshed rather than blanket-enabled (D-13)
+        if running:
+            self._act_migrate.setEnabled(False)
+        else:
+            self._refresh_migrate_action()
+
+    def _refresh_migrate_action(self):
+        """Enable Migrate exactly when Custom still has something to migrate (D-13).
+
+        Called whenever a scan ends (_set_scan_running(False), and again at the very end
+        of _finish_scan in case that start a fresh scan for a reason of its own) so the
+        menu always reflects the Custom folder as it stands after the last scan.
+        """
+        reason = migration_reason(RepoLayout.for_repo(REPO_ROOT))
+        if reason is None:
+            self._act_migrate.setEnabled(False)
+            self._act_migrate.setToolTip(_NOTHING_TO_MIGRATE)
+            self._act_migrate.setStatusTip(_NOTHING_TO_MIGRATE)
+        else:
+            self._act_migrate.setEnabled(True)
+            self._act_migrate.setToolTip(_MIGRATE_TOOLTIP)
+            self._act_migrate.setStatusTip(_MIGRATE_TOOLTIP)
 
     def _start_scan(self, show_progress: bool = True, reuse_cache: bool = False):
         """Start a scan; every scan request must go through here.
@@ -555,6 +607,8 @@ class MainWindow(QMainWindow):
             self._progress = None
         if self._pending_post_install is not None:
             self._pending_post_install.scan_started = True
+        if self._pending_migration:
+            self._migration_scan_started = True
 
         self._log.log(
             "Checking for library changes since the saved scan..." if reuse_cache
@@ -658,6 +712,13 @@ class MainWindow(QMainWindow):
         if pending is not None and not pending.scan_started:
             # An install finished while another scan ran; scan again now, quietly
             self._start_scan(show_progress=False)
+        if self._pending_migration and not self._migration_scan_started:
+            # A migration committed while an unrelated scan ran; scan again now, quietly
+            self._start_scan(show_progress=False)
+        if self._worker is None:
+            # Only when nothing above started a fresh scan; otherwise _set_scan_running(True)
+            # already disabled the action again and this would wrongly re-enable it
+            self._refresh_migrate_action()
 
     def _on_scan_finished(self, result: ScanResult):
         try:
@@ -686,10 +747,20 @@ class MainWindow(QMainWindow):
             pending = self._pending_post_install
             if pending is not None and pending.scan_started:
                 self._apply_post_install_selection(result, pending)
+            migrating = self._pending_migration and self._migration_scan_started
+            if migrating:
+                n = self._select_atomic_libraries(result)
+                self._log.log(f"Selected {n} Atomic_ libraries for Generate Tables", "info")
 
             self._tree.populate(result)
             if pending is not None and pending.scan_started:
                 self._finish_post_install(result)
+            if migrating:
+                self._pending_migration = False
+                self._migration_scan_started = False
+                if self._generate_after_scan:
+                    self._generate_after_scan = False
+                    self._run_migration_generate()
 
             self._log_issues(result.issues)
 
@@ -1029,8 +1100,13 @@ class MainWindow(QMainWindow):
         return text, Severity.INFO
 
     def _import_busy(self) -> bool:
-        """True while a scan runs or the import dialog is open (D-19)."""
-        return self._worker is not None or self._import_dialog is not None
+        """True while a scan runs, the import dialog is open, or the migration window
+        is open (D-19, T-13-40): the drag-and-drop refusal then covers migration too."""
+        return (
+            self._worker is not None
+            or self._import_dialog is not None
+            or self._migration_dialog is not None
+        )
 
     def _refuse_busy_drag(self, event) -> bool:
         """Ignore a drag or drop while busy and say why; True when refused."""
@@ -1086,6 +1162,9 @@ class MainWindow(QMainWindow):
 
     def _open_import(self, path: Path | None = None):
         """Open the Import Part dialog, optionally with a package already chosen."""
+        if self._migration_dialog is not None:
+            self._log.log("Close the migration window before importing.", "info")
+            return
         if self._import_busy():
             return
         dialog = ImportDialog(
@@ -1157,6 +1236,76 @@ class MainWindow(QMainWindow):
         dialog, self._atomic_dialog = self._atomic_dialog, None
         if dialog is not None:
             dialog.deleteLater()
+
+    def _open_migration(self):
+        """Open the migration window, refusing while busy or with nothing to migrate (D-13)."""
+        if self._worker is not None:
+            self._log.log("A scan is already running; request ignored.", "info")
+            return
+        if self._import_dialog is not None:
+            self._log.log("Close the import window before migrating.", "info")
+            return
+        if self._migration_dialog is not None:
+            self._migration_dialog.raise_()
+            self._migration_dialog.activateWindow()
+            return
+        reason = migration_reason(RepoLayout.for_repo(REPO_ROOT))
+        if reason is None:
+            self._log.log(_NOTHING_TO_MIGRATE, "info")
+            return
+        dialog = MigrationDialog(REPO_ROOT, self._kicad_fp_dir, core=MIGRATION_CORE, parent=self)
+        dialog.issues_logged.connect(self._log_issues)
+        dialog.help_requested.connect(lambda: self.show_guide(_MIGRATION_TOPIC))
+        dialog.migrated.connect(self._on_migrated)
+        dialog.generate_requested.connect(self._on_migration_generate)
+        dialog.setup_chooser_requested.connect(self._on_setup_chooser)
+        dialog.atomic_check_requested.connect(lambda rel, name: self._open_atomic_check((rel, name)))
+        dialog.finished.connect(self._on_migration_dialog_finished)
+        self._migration_dialog = dialog
+        dialog.open()
+
+    def _on_migration_dialog_finished(self, _result: int):
+        dialog, self._migration_dialog = self._migration_dialog, None
+        if dialog is not None:
+            dialog.deleteLater()
+        self._refresh_migrate_action()
+        if self._close_after_migration:
+            self._close_after_migration = False
+            QTimer.singleShot(0, self.close)
+
+    def _on_migrated(self, result):
+        """A migration committed: rescan quietly, then select the new Atomic_ libraries (D-24)."""
+        self._pending_migration = True
+        self._migration_scan_started = False
+        if self._worker is None:
+            self._start_scan(show_progress=False)
+        # else: _finish_scan starts a fresh scan once the current one ends (post-install pattern)
+
+    def _select_atomic_libraries(self, result: ScanResult) -> int:
+        """Select every Atomic_ library of Custom so Generate Tables keeps them (D-24, P-01).
+
+        Plural of _apply_post_install_selection: matches by source and nickname (the
+        footprint library Atomic_Footprints is caught by the same is_atomic check), and
+        unchecks a selected same-nickname peer so one library per nickname stays selected.
+        """
+        selected = 0
+        for libs in (result.symbol_libs, result.footprint_libs):
+            by_path = {lib.rel_path: lib for lib in libs}
+            for lib in libs:
+                if lib.source != "Custom" or not is_atomic(lib.nickname) or lib.selected:
+                    continue
+                lib.selected = True
+                selected += 1
+                for peer_path in lib.collision_peers:
+                    peer = by_path.get(peer_path)
+                    if peer is not None and peer.selected:
+                        peer.selected = False
+                        self._log.log(
+                            f"Unchecked {peer.rel_path}: {lib.rel_path} is the Atomic_ "
+                            "library kept selected",
+                            "info",
+                        )
+        return selected
 
     def _on_import_installed(self, result, plan):
         """An install finished: rescan quietly and select the installed library."""
@@ -1441,25 +1590,52 @@ class MainWindow(QMainWindow):
         self._stock_cache = (self._kicad_fp_dir, stock)
         return stock
 
-    def _on_generate(self):
+    def _on_migration_generate(self):
+        """Generate Tables from the migration Result view keeps the new libraries (D-24).
+
+        Deferred (not run here) while a scan runs or a migration rescan is still pending:
+        running it against the old self._scan_result would drop the new Atomic_ libraries
+        right back out (P-01). _on_scan_finished calls _run_migration_generate once the
+        scan that matters has ended.
+        """
+        if self._worker is not None or self._pending_migration:
+            self._generate_after_scan = True
+            self._log.log("Generate Tables runs when the rescan finishes", "info")
+            return
+        self._run_migration_generate()
+
+    def _run_migration_generate(self):
+        """Select the Atomic_ libraries, then run the normal Generate path (D-24)."""
+        if self._scan_result is not None:
+            self._select_atomic_libraries(self._scan_result)
+            self._tree.populate(self._scan_result)
+        issues = self._on_generate()
+        if any(issue.code == "table.stale_managed" for issue in issues):
+            self._log.log(
+                "The old library names were removed from the tables; KiCad projects that "
+                "used them need the relink steps in MIGRATION-ATOMIC.md",
+                "info",
+            )
+
+    def _on_generate(self) -> list[Issue]:
         if not self._scan_result:
             self._log.log("No scan results available. Please wait for scan.", "error")
-            return
+            return []
 
         dest = self._dest_path()
         if dest is None:
             self._log.log(_NO_DEST_TEXT, "warning")
-            return
+            return []
         if not dest.exists():
             self._log.log(f"Destination folder does not exist: {dest}", "error")
-            return
+            return []
 
         sym_selected = [lib for lib in self._scan_result.symbol_libs if lib.selected]
         fp_selected = [lib for lib in self._scan_result.footprint_libs if lib.selected]
 
         if not sym_selected and not fp_selected:
             self._log.log("No libraries selected.", "warning")
-            return
+            return []
 
         self._log.log(
             f"Generating tables ({len(sym_selected)} symbols, "
@@ -1467,10 +1643,11 @@ class MainWindow(QMainWindow):
             "info",
         )
 
-        self._log_issues(write_tables(
+        issues = write_tables(
             dest, self._scan_result.symbol_libs, self._scan_result.footprint_libs,
             stock=self._stock_descriptions(),
-        ))
+        )
+        self._log_issues(issues)
 
         # D-26: warn, never block -- the tables above are already written
         self._check_checkout("generate")
@@ -1486,6 +1663,7 @@ class MainWindow(QMainWindow):
         self._dest_combo.addItems(history)
         self._dest_combo.setCurrentIndex(0)
         self._dest_combo.blockSignals(False)
+        return issues
 
     def _on_rescan(self):
         self._log.log("Rescanning repository...", "info")
@@ -1601,6 +1779,18 @@ class MainWindow(QMainWindow):
             dialog.reject()
             if dialog.is_finishing():
                 self._close_after_dialog = True
+                event.ignore()
+                return
+        # A migration run or commit cannot be interrupted either (MIG-01, MIG-04)
+        migration = self._migration_dialog
+        if migration is not None:
+            if migration.is_running() or migration.is_committing():
+                event.ignore()
+                return
+            # Same closes-at-once-or-defers shape as the import dialog above
+            migration.reject()
+            if migration.is_busy():
+                self._close_after_migration = True
                 event.ignore()
                 return
         # The KiCad-open check runs on a worker: the window never waits for it here. The
