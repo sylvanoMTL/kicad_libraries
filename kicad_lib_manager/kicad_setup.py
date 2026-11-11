@@ -6,6 +6,7 @@ aware, re-read merge. Qt-free.
 
 import copy
 import json
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -224,6 +225,138 @@ def _plan_chooser_changes(
     return changes
 
 
+def same_folder(a: str, b: str) -> bool:
+    """True when a and b resolve to the same folder (D-26): resolved paths, normalised
+    separators, case-insensitive on Windows. resolve() is non-strict, so a missing
+    folder still compares."""
+
+    def _key(value: str) -> str:
+        return os.path.normcase(os.path.normpath(str(Path(value.strip()).resolve())))
+
+    return _key(a) == _key(b)
+
+
+@dataclass(frozen=True)
+class CheckoutMismatch:
+    """The app's repo folder and the folder KiCad's KICAD_LIB_GITHUB names, both as
+    shown to the owner (forward slashes)."""
+
+    app_folder: str
+    kicad_folder: str
+
+
+def wrong_checkout(repo_root: Path, configured: object) -> "CheckoutMismatch | None":
+    """None when configured is not a non-blank string or names the same folder as
+    repo_root, else the CheckoutMismatch (D-26)."""
+    if not isinstance(configured, str) or not configured.strip():
+        return None
+    app_str = str(repo_root)
+    if same_folder(app_str, configured):
+        return None
+    return CheckoutMismatch(
+        app_folder=app_str.replace("\\", "/"),
+        kicad_folder=configured.replace("\\", "/"),
+    )
+
+
+def wrong_checkout_refusal(m: CheckoutMismatch, action: str) -> str:
+    """The plain-language refusal naming both folders (D-26)."""
+    return (
+        f"{action}: this app runs from {m.app_folder}, but KiCad reads its libraries "
+        f"from {m.kicad_folder} (KICAD_LIB_GITHUB). Run the app from {m.kicad_folder}, "
+        f"or fix KICAD_LIB_GITHUB in KiCad Preferences > Configure Paths."
+    )
+
+
+def wrong_checkout_warning(m: CheckoutMismatch) -> str:
+    """The plain-language non-blocking warning naming both folders (D-26)."""
+    return (
+        f"KiCad reads its libraries from {m.kicad_folder}, but this app runs from "
+        f"{m.app_folder}. KiCad will not see the new libraries or parts until they "
+        f"exist in {m.kicad_folder}: push them from here, then pull there."
+    )
+
+
+CHECKOUT_MISMATCH = "checkout.mismatch"
+
+
+def _chooser_refusal(repo_root: Path, repo_str: str, old_vars: dict) -> Issue | None:
+    """A WARNING when the chooser setup must not run here, else None (D-17, D-26)."""
+    if (repo_root / ".git").is_file():
+        return Issue(
+            Severity.WARNING,
+            "chooser.worktree_refused",
+            f"Not setting up KiCad's chooser: this app runs from a git worktree "
+            f"({repo_str}). Run the app from the library checkout.",
+        )
+    mismatch = wrong_checkout(repo_root, old_vars.get("KICAD_LIB_GITHUB"))
+    if mismatch is not None:
+        return Issue(
+            Severity.WARNING,
+            "chooser.other_checkout_refused",
+            wrong_checkout_refusal(mismatch, "Not setting up KiCad's chooser"),
+        )
+    return None
+
+
+def _restore_common(common_path: Path, original_bytes: bytes) -> Issue:
+    """Restore kicad_common.json after the second file could not be backed up or
+    written; INFO chooser.restored, or ERROR chooser.restore_failed naming the file."""
+    failure = fsutil.atomic_write_bytes(common_path, original_bytes)
+    if failure is not None:
+        return Issue(
+            Severity.ERROR,
+            "chooser.restore_failed",
+            "Could not restore KiCad's settings file after the schematic editor "
+            f"settings could not be written: {failure.text}",
+        )
+    return Issue(
+        Severity.INFO,
+        "chooser.restored",
+        "Restored KiCad's settings file after the schematic editor settings could "
+        "not be written",
+    )
+
+
+def _read_eeschema(eeschema_path: Path) -> "tuple[object, dict, dict, list[str] | None, dict[str, int] | None] | Issue":
+    """Read and parse eeschema.json, planning the new columns/widths.
+
+    Returns (source, config, lib_tree, new_columns, new_widths) or the Issue that
+    means nothing can be written (fsutil failure, bad JSON, bad shape).
+    """
+    src = fsutil.read_source(eeschema_path)
+    if isinstance(src, Issue):
+        return src
+    try:
+        config = json.loads(src.text)
+    except json.JSONDecodeError:
+        return Issue(
+            Severity.ERROR,
+            "chooser.bad_json",
+            "Could not read KiCad's schematic editor settings: invalid JSON; "
+            "nothing was written",
+        )
+    bad_shape = not isinstance(config, dict)
+    lib_tree = {} if bad_shape else config.get("lib_tree", {})
+    bad_shape = bad_shape or not isinstance(lib_tree, dict)
+    if not bad_shape:
+        columns_in = lib_tree.get("columns")
+        widths_in = lib_tree.get("column_widths")
+        bad_shape = (
+            not (columns_in is None or isinstance(columns_in, list))
+            or not (widths_in is None or isinstance(widths_in, dict))
+        )
+    if bad_shape:
+        return Issue(
+            Severity.ERROR,
+            "chooser.bad_shape",
+            "KiCad's schematic editor settings have an unexpected structure "
+            "(its chooser columns cannot be read); nothing was written",
+        )
+    new_columns, new_widths = plan_columns(lib_tree)
+    return src, config, lib_tree, new_columns, new_widths
+
+
 def sync_kicad_chooser(
     repo_root: Path,
     dest_tables: Path,
@@ -238,8 +371,10 @@ def sync_kicad_chooser(
 
     Nothing is written unless confirm(changes) answers True or ConfirmAnswer.WRITE.
     changes lists every old -> new line for both files. A missing confirm writes
-    nothing. Refusal and re-read-merge handling land in a later revision of this
-    function; this version implements the confirmed-write path only.
+    nothing. Refuses from a git worktree or a checkout other than the configured
+    KICAD_LIB_GITHUB (D-26), before asking and again after the re-read. After a
+    WRITE both files are re-read and the change recomputed on their current content
+    (up to _PATH_VAR_PASSES times); the new texts are built from that fresh content.
     """
     config_dir = find_kicad_config_dir(config_base)
     if not config_dir:
@@ -291,36 +426,10 @@ def sync_kicad_chooser(
             "Schematic Editor once to add the MPN and Manufacturer columns",
         ))
     else:
-        eeschema_src = fsutil.read_source(eeschema_path)
-        if isinstance(eeschema_src, Issue):
-            return [eeschema_src]
-        try:
-            eeschema_config = json.loads(eeschema_src.text)
-        except json.JSONDecodeError:
-            return issues + [Issue(
-                Severity.ERROR,
-                "chooser.bad_json",
-                "Could not read KiCad's schematic editor settings: invalid JSON; "
-                "nothing was written",
-            )]
-        bad_shape = not isinstance(eeschema_config, dict)
-        lib_tree = {} if bad_shape else eeschema_config.get("lib_tree", {})
-        bad_shape = bad_shape or not isinstance(lib_tree, dict)
-        if not bad_shape:
-            columns_in = lib_tree.get("columns")
-            widths_in = lib_tree.get("column_widths")
-            bad_shape = (
-                not (columns_in is None or isinstance(columns_in, list))
-                or not (widths_in is None or isinstance(widths_in, dict))
-            )
-        if bad_shape:
-            return issues + [Issue(
-                Severity.ERROR,
-                "chooser.bad_shape",
-                "KiCad's schematic editor settings have an unexpected structure "
-                "(its chooser columns cannot be read); nothing was written",
-            )]
-        new_columns, new_widths = plan_columns(lib_tree)
+        read_eeschema = _read_eeschema(eeschema_path)
+        if isinstance(read_eeschema, Issue):
+            return issues + [read_eeschema]
+        eeschema_src, eeschema_config, lib_tree, new_columns, new_widths = read_eeschema
 
     changes = _plan_chooser_changes(
         old_sym_pins, new_sym_pins, old_fp_pins, new_fp_pins,
@@ -333,6 +442,11 @@ def sync_kicad_chooser(
             "KiCad's chooser is already set up; nothing to change",
         )]
 
+    repo_str = str(repo_root).replace("\\", "/")
+    refusal = _chooser_refusal(repo_root, repo_str, old_vars)
+    if refusal is not None:
+        return issues + [refusal]
+
     if confirm is None:
         return issues + [Issue(
             Severity.WARNING,
@@ -340,13 +454,78 @@ def sync_kicad_chooser(
             "Not setting up KiCad's chooser: no confirmation step was provided",
         )]
 
-    answer = _as_answer(confirm(changes))
-    if answer is not ConfirmAnswer.WRITE:
-        return issues + [Issue(
-            Severity.INFO,
-            "chooser.declined",
-            "KiCad's chooser left unchanged (change declined)",
+    names = (running or kicad_running)()
+    for _ in range(_PATH_VAR_PASSES):
+        answer = _as_answer(confirm(changes))
+        if answer is ConfirmAnswer.RETRY:
+            return issues + [Issue(
+                Severity.INFO,
+                "chooser.retry",
+                "Checking again whether KiCad is still open...",
+            )]
+        if answer is not ConfirmAnswer.WRITE:
+            return issues + [Issue(
+                Severity.INFO,
+                "chooser.declined",
+                "KiCad's chooser left unchanged (change declined)",
+            )]
+
+        # KiCad may have saved while the owner read the dialog: the write starts
+        # from the files as they are now, never from the copy read before the
+        # question (D-11)
+        read = _read_config(common_path)
+        if isinstance(read, Issue):
+            return [read]
+        common_src, common_config, old_vars = read
+
+        if not eeschema_missing:
+            read_eeschema = _read_eeschema(eeschema_path)
+            if isinstance(read_eeschema, Issue):
+                return [read_eeschema]
+            eeschema_src, eeschema_config, lib_tree, new_columns, new_widths = read_eeschema
+
+        session = common_config.get("session")
+        session = session if isinstance(session, dict) else {}
+        new_sym_pins, new_fp_pins = plan_pins(session, sym_names, fp_names)
+        old_sym_pins = session.get("pinned_symbol_libs")
+        old_sym_pins = old_sym_pins if isinstance(old_sym_pins, list) else []
+        old_fp_pins = session.get("pinned_fp_libs")
+        old_fp_pins = old_fp_pins if isinstance(old_fp_pins, list) else []
+
+        fresh_changes = _plan_chooser_changes(
+            old_sym_pins, new_sym_pins, old_fp_pins, new_fp_pins,
+            lib_tree, new_columns, new_widths,
+        )
+
+        repo_str = str(repo_root).replace("\\", "/")
+        refusal = _chooser_refusal(repo_root, repo_str, old_vars)
+        if refusal is not None:
+            return issues + [refusal]
+
+        if not fresh_changes:
+            return issues + [Issue(
+                Severity.INFO,
+                "chooser.ok",
+                "KiCad's chooser is already set up; nothing to change",
+            )]
+        if fresh_changes == changes:
+            break
+        changes = fresh_changes
+    else:
+        return [Issue(
+            Severity.WARNING,
+            "chooser.keeps_changing",
+            "KiCad's chooser settings kept changing while you were asked; nothing "
+            "was written. Try Set Up KiCad Chooser again.",
         )]
+
+    if names:
+        issues.append(Issue(
+            Severity.WARNING,
+            "chooser.kicad_running",
+            f"KiCad is open ({', '.join(names)}); it may undo the chooser setup "
+            f"when it exits. If it does, close KiCad and set it up again.",
+        ))
 
     common_changed = any(c.file == "common" for c in changes)
     eeschema_changed = any(c.file == "eeschema" for c in changes)
@@ -383,6 +562,8 @@ def sync_kicad_chooser(
             )]
         new_eeschema_text = fsutil.normalize_eol(new_eeschema_text, eeschema_src.eol)
 
+    original_common_bytes = common_path.read_bytes() if common_changed else None
+
     if common_changed:
         common_backup_dir = (backup_root or fsutil.default_backup_dir()) / "kicad_common" / config_dir.name
         backup = fsutil.backup_file(common_path, common_backup_dir)
@@ -404,6 +585,8 @@ def sync_kicad_chooser(
         eeschema_backup_dir = (backup_root or fsutil.default_backup_dir()) / "eeschema" / config_dir.name
         backup2 = fsutil.backup_file(eeschema_path, eeschema_backup_dir)
         if isinstance(backup2, Issue):
+            if common_changed:
+                issues.append(_restore_common(common_path, original_common_bytes))
             return issues + [backup2]
         issues.append(Issue(
             Severity.INFO, "chooser.backed_up",
@@ -411,6 +594,8 @@ def sync_kicad_chooser(
         ))
         failure2 = fsutil.atomic_write_text(eeschema_path, new_eeschema_text, bom=eeschema_src.bom)
         if failure2 is not None:
+            if common_changed:
+                issues.append(_restore_common(common_path, original_common_bytes))
             return issues + [failure2]
         issues.append(Issue(
             Severity.SUCCESS, "chooser.written",
