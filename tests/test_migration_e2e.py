@@ -10,7 +10,7 @@ from pathlib import Path
 from customfixtures import atomic_lib, atomic_part, digest_tree
 from fakecli import FakeCli
 from installfixtures import V10_VERSION, vendor_footprint
-from migrationfixtures import _tab_lib, _tab_symbol
+from migrationfixtures import _id_lib, _id_symbol, _tab_lib, _tab_symbol
 from zipfixtures import STEP_BYTES
 
 from kicad_lib_manager import atomic_check, fsutil, kicad_files
@@ -275,3 +275,220 @@ def test_plan_never_leaves_custom(tmp_path):
     assert plan.ops
     for op in plan.ops:
         assert op.path.resolve().is_relative_to(custom)
+
+
+# -- Task 2: several parts from mixed-format libraries merge into one Atomic_ library ------------
+
+CONNECTOR_TARGET = "Atomic_Connector"
+
+
+def _write_merge_tree(root: Path) -> RepoLayout:
+    """LibA (20211014, two parts sharing one footprint) and LibB (20241209, one part, own footprint)."""
+    custom = root / "Custom"
+    symbols_dir = custom / "Symbols"
+    footprints_dir = custom / "Footprints"
+    models_dir = custom / "3DModels"
+    for folder in (symbols_dir, footprints_dir, models_dir):
+        folder.mkdir(parents=True, exist_ok=True)
+
+    (symbols_dir / "LibA.kicad_sym").write_bytes(
+        _id_lib(
+            [
+                _id_symbol(
+                    "PARTA1",
+                    [
+                        ("Reference", "U", False),
+                        ("Value", "PARTA1", False),
+                        ("Footprint", "LibA:SHARED-FP", True),
+                        ("Datasheet", "https://example.com/a1.pdf", True),
+                        ("Description", "Connector A1", True),
+                        ("MPN", "PARTA1", True),
+                        ("Manufacturer", "Global Connector Technology", True),
+                    ],
+                ),
+                _id_symbol(
+                    "PARTA2",
+                    [
+                        ("Reference", "U", False),
+                        ("Value", "PARTA2", False),
+                        ("Footprint", "LibA:SHARED-FP", True),
+                        ("Datasheet", "https://example.com/a2.pdf", True),
+                        ("Description", "Connector A2", True),
+                        ("MPN", "PARTA2", True),
+                        ("Manufacturer", "Global Connector Technology", True),
+                    ],
+                ),
+            ],
+        )
+    )
+    (symbols_dir / "LibB.kicad_sym").write_bytes(
+        _tab_lib(
+            20241209,
+            [
+                _tab_symbol(
+                    "PARTB1",
+                    [
+                        ("Reference", "U", False),
+                        ("Value", "PARTB1", False),
+                        ("Footprint", "LibB:FPB", True),
+                        ("Datasheet", "https://example.com/b1.pdf", True),
+                        ("Description", "Connector B1", True),
+                        ("MPN", "PARTB1", True),
+                        ("Manufacturer", "Global Connector Technology", True),
+                    ],
+                ),
+            ],
+        )
+    )
+
+    liba_pretty = footprints_dir / "LibA.pretty"
+    liba_pretty.mkdir(parents=True, exist_ok=True)
+    (liba_pretty / "SHARED-FP.kicad_mod").write_bytes(
+        vendor_footprint("SHARED-FP", model=f"{MODEL_DIR_VAR}/SHARED-FP.step", eol="\r\n")
+    )
+    libb_pretty = footprints_dir / "LibB.pretty"
+    libb_pretty.mkdir(parents=True, exist_ok=True)
+    (libb_pretty / "FPB.kicad_mod").write_bytes(vendor_footprint("FPB", model=f"{MODEL_DIR_VAR}/FPB.step", eol="\r\n"))
+    (models_dir / "SHARED-FP.step").write_bytes(STEP_BYTES)
+    (models_dir / "FPB.step").write_bytes(STEP_BYTES)
+    return RepoLayout.for_repo(root)
+
+
+def _merge_choices() -> MigrationChoices:
+    keys = (
+        ("Custom/Symbols/LibA.kicad_sym", "PARTA1"),
+        ("Custom/Symbols/LibA.kicad_sym", "PARTA2"),
+        ("Custom/Symbols/LibB.kicad_sym", "PARTB1"),
+    )
+    return MigrationChoices(parts={key: PartChoice(library=CONNECTOR_TARGET) for key in keys})
+
+
+def test_two_libraries_merge_into_one_atomic_library(tmp_path):
+    layout = _write_merge_tree(tmp_path)
+    inventory, plan = _plan_for(layout, _merge_choices(), output_version=V10_VERSION)
+
+    write_ops = [op for op in plan.ops if op.kind == "write" and op.rel.endswith(".kicad_sym")]
+    assert [op.rel for op in write_ops] == [f"Custom/Symbols/{CONNECTOR_TARGET}.kicad_sym"]
+
+    footprint_writes = [op.rel for op in plan.ops if op.kind == "write" and op.rel.endswith(".kicad_mod")]
+    assert sorted(footprint_writes) == sorted(
+        [
+            "Custom/Footprints/Atomic_Footprints.pretty/SHARED-FP.kicad_mod",
+            "Custom/Footprints/Atomic_Footprints.pretty/FPB.kicad_mod",
+        ]
+    )
+    # The shared footprint is written exactly once even though two parts link it.
+    assert footprint_writes.count("Custom/Footprints/Atomic_Footprints.pretty/SHARED-FP.kicad_mod") == 1
+
+    rels = {(op.kind, op.rel) for op in plan.ops}
+    assert ("delete", "Custom/Symbols/LibA.kicad_sym") in rels
+    assert ("delete", "Custom/Symbols/LibB.kicad_sym") in rels
+    assert ("rmdir", "Custom/Footprints/LibA.pretty") in rels
+    assert ("rmdir", "Custom/Footprints/LibB.pretty") in rels
+
+    data = write_ops[0].data
+    loaded = kicad_files.parse_bytes(data, "Atomic_Connector.kicad_sym")
+    names = [ref.name for ref in kicad_files.find_symbols(loaded.root)]
+    assert names == ["PARTA1", "PARTA2", "PARTB1"]
+    assert kicad_files.file_version(loaded.root) == V10_VERSION
+
+    gate_ctx = end_state_context(plan, inventory, None)
+    gate = check_plan(plan, inventory, gate_ctx)
+    assert gate.run_enabled, gate.lines
+
+    result = apply_migration(plan)
+    assert result.ok, result.issues
+
+    new_layout = RepoLayout.for_repo(tmp_path)
+    lib_path = new_layout.symbols_dir / f"{CONNECTOR_TARGET}.kicad_sym"
+    loaded_final = kicad_files.load(lib_path)
+    assert kicad_files.file_version(loaded_final.root) == V10_VERSION
+
+    ctx = atomic_check.repo_context(new_layout.repo_root, _fp_libs(new_layout), None)
+    for name in ("PARTA1", "PARTA2", "PARTB1"):
+        entry = atomic_check.check_symbol(
+            loaded_final.root, name, rel_path=f"Custom/Symbols/{CONNECTOR_TARGET}.kicad_sym", fixable=False, ctx=ctx
+        )
+        assert entry.violations == [], (name, entry.violations)
+
+
+def test_map_file_lists_the_changes(tmp_path):
+    layout = _write_merge_tree(tmp_path)
+    _, plan = _plan_for(layout, _merge_choices())
+
+    text = plan.map_text
+    assert "LibA -> Atomic_Connector" in text
+    assert "LibB -> Atomic_Connector" in text
+    assert "LibA:PARTA1 -> Atomic_Connector:PARTA1" in text
+    assert "LibA:PARTA2 -> Atomic_Connector:PARTA2" in text
+    assert "LibB:PARTB1 -> Atomic_Connector:PARTB1" in text
+    assert "LibA:SHARED-FP -> Atomic_Footprints:SHARED-FP" in text
+    assert "LibB:FPB -> Atomic_Footprints:FPB" in text
+
+    link_index = text.index("Edit Symbol Library Links")
+    update_index = text.index("Update Symbols from Library")
+    pcb_index = text.index("Update PCB from Schematic")
+    assert link_index < update_index < pcb_index
+
+    # An existing MIGRATION-ATOMIC.md is kept below this run's section.
+    (layout.custom_dir / "MIGRATION-ATOMIC.md").write_bytes(b"PREVIOUS_MARKER_TEXT\n")
+    _, second_plan = _plan_for(layout, _merge_choices())
+    second_text = second_plan.map_text
+    assert second_text.index("# Atomic_ migration") < second_text.index("PREVIOUS_MARKER_TEXT")
+    assert "Earlier migrations" in second_text
+
+
+def test_split_library_keeps_the_staying_part(tmp_path):
+    custom = tmp_path / "Custom"
+    symbols_dir = custom / "Symbols"
+    footprints_dir = custom / "Footprints"
+    models_dir = custom / "3DModels"
+    for folder in (symbols_dir, footprints_dir, models_dir):
+        folder.mkdir(parents=True, exist_ok=True)
+
+    (symbols_dir / "LibC.kicad_sym").write_bytes(
+        _tab_lib(
+            20241209,
+            [
+                _tab_symbol(
+                    "PARTC1",
+                    [
+                        ("Reference", "U", False),
+                        ("Value", "PARTC1", False),
+                        ("Footprint", "Connector:USB_A", True),
+                        ("Datasheet", "https://example.com/c1.pdf", True),
+                        ("Description", "Part C1", True),
+                        ("MPN", "PARTC1", True),
+                        ("Manufacturer", "Global Connector Technology", True),
+                    ],
+                ),
+                _tab_symbol(
+                    "PARTC2",
+                    [
+                        ("Reference", "U", False),
+                        ("Value", "PARTC2", False),
+                        ("Footprint", "LED:LED_5MM", True),
+                        ("Datasheet", "https://example.com/c2.pdf", True),
+                        ("Description", "Part C2", True),
+                        ("MPN", "PARTC2", True),
+                        ("Manufacturer", "Global Connector Technology", True),
+                    ],
+                ),
+            ],
+        )
+    )
+    layout = RepoLayout.for_repo(tmp_path)
+
+    key1 = ("Custom/Symbols/LibC.kicad_sym", "PARTC1")
+    key2 = ("Custom/Symbols/LibC.kicad_sym", "PARTC2")
+    choices = MigrationChoices(
+        parts={key1: PartChoice(library=CONNECTOR_TARGET), key2: PartChoice(library="Atomic_LED")}
+    )
+    inventory, plan = _plan_for(layout, choices)
+
+    rels = {(op.kind, op.rel) for op in plan.ops}
+    assert ("write", f"Custom/Symbols/{CONNECTOR_TARGET}.kicad_sym") in rels
+    assert ("write", "Custom/Symbols/Atomic_LED.kicad_sym") in rels
+    assert ("delete", "Custom/Symbols/LibC.kicad_sym") in rels
+
+    assert set(plan.library_map) == {("LibC", CONNECTOR_TARGET), ("LibC", "Atomic_LED")}
