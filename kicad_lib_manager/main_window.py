@@ -17,7 +17,8 @@ from .library_scanner import (
     sync_kicad_path_vars,
 )
 from .table_generator import (
-    add_library_entries, write_tables, restore_backup_pair, table_info, TableInfo,
+    add_library_entries, write_tables, restore_backup_pair, stock_descriptions,
+    table_info, TableInfo,
 )
 from .models import Issue, ScanResult, Severity
 from .settings import (
@@ -222,6 +223,8 @@ class MainWindow(QMainWindow):
         # however that scan ended. Only that scan pre-selects from the tables.
         self._startup_pending = True
         self._kicad_fp_dir: Path | None = None
+        # Cache of stock_descriptions(), keyed by the footprints folder it was read for (D-20)
+        self._stock_cache: tuple[Path | None, dict[str, str]] = (None, {})
         self._progress: ScanProgressDialog | None = None
         self._import_dialog: ImportDialog | None = None
         # The one User Guide window: parentless, so no window-modal dialog of this app blocks it (G-12-22)
@@ -1248,6 +1251,22 @@ class MainWindow(QMainWindow):
         if self._close_after_check and self._path_var_check is None:
             self.close()
 
+    def _stock_descriptions(self) -> dict[str, str]:
+        """KiCad's own per-stem descriptions, cached per footprints folder (D-20).
+
+        Never hard-codes a KiCad install path (RESEARCH F-01): the stock table is found
+        relative to the detected/saved footprints folder.
+        """
+        cached_dir, cached = self._stock_cache
+        if cached_dir == self._kicad_fp_dir:
+            return cached
+        stock = (
+            stock_descriptions(self._kicad_fp_dir.parent / "template" / "sym-lib-table")
+            if self._kicad_fp_dir is not None else {}
+        )
+        self._stock_cache = (self._kicad_fp_dir, stock)
+        return stock
+
     def _on_generate(self):
         if not self._scan_result:
             self._log.log("No scan results available. Please wait for scan.", "error")
@@ -1275,7 +1294,8 @@ class MainWindow(QMainWindow):
         )
 
         self._log_issues(write_tables(
-            dest, self._scan_result.symbol_libs, self._scan_result.footprint_libs
+            dest, self._scan_result.symbol_libs, self._scan_result.footprint_libs,
+            stock=self._stock_descriptions(),
         ))
 
         # Offer KiCad path variable changes (never written silently), independent of

@@ -168,7 +168,7 @@ def test_generate_splices_table_and_logs_issues(qtbot, make_window):
     assert (
         b'(lib (name "New")(type "KiCad")'
         b'(uri "${KICAD_LIB_GITHUB}/Custom/Symbols/New.kicad_sym")'
-        b'(options "")(descr ""))'
+        b'(options "")(descr "Custom: New"))'
     ) in data
     assert b"\n" not in data.replace(b"\r\n", b"")
 
@@ -180,6 +180,35 @@ def test_generate_splices_table_and_logs_issues(qtbot, make_window):
     assert "Written sym-lib-table" in log_text
     assert "Written fp-lib-table" in log_text
     assert "#007700" in w._log._text.toHtml()
+
+
+def test_generate_writes_atomic_description(qtbot, make_window):
+    """TBL-01/D-20: Generate reads KiCad's stock description for an Atomic_ stem."""
+    scan = ScanResult(
+        symbol_libs=[SymbolLibrary(
+            "Atomic_Connector", "Custom/Symbols/Atomic_Connector.kicad_sym", "Custom",
+            selected=True,
+        )],
+        footprint_libs=[],
+    )
+    w = make_window([scan])
+    repo = make_window.repo
+
+    template = w._kicad_fp_dir.parent / "template" / "sym-lib-table"
+    template.parent.mkdir(parents=True, exist_ok=True)
+    template.write_text(
+        "(sym_lib_table\n"
+        '  (lib (name "Connector")(type "KiCad")(uri "x")(options "")'
+        '(descr "Connector symbols (Examples: USB)"))\n'
+        ")\n",
+        encoding="utf-8",
+    )
+
+    w._on_generate()
+    settle(qtbot, w)
+
+    data = (repo / "sym-lib-table").read_text(encoding="utf-8")
+    assert '(descr "Atomic parts: Connector symbols (Examples: USB)")' in data
 
 
 def _managed_table(tag, entries):
