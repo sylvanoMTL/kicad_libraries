@@ -405,3 +405,88 @@ def test_parent_in_other_library_blocks(tmp_path):
     gate_ctx = end_state_context(plan, inventory, None)
     outcome = check_plan(plan, inventory, gate_ctx)
     assert not outcome.run_enabled
+
+
+# -- Task 3: keywords, one file format per library, and the missing-tool block (D-11, F-13, A4) --
+
+
+def test_keywords_merge_existing_first(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    key = _key(USB_LIBRARY, "USB4056-03-A_REVA2")
+
+    choices = MigrationChoices(parts={key: PartChoice(library="Atomic_Connector", keywords="usb receptacle")})
+    inventory, plan = _plan_for(layout, choices)
+    part = next(p for p in plan.parts if p.key == key)
+    assert part.part_text.keywords == "usb receptacle"
+
+    choices = MigrationChoices(parts={key: PartChoice(library="Atomic_Connector")})
+    inventory, plan = _plan_for(layout, choices)
+    part = next(p for p in plan.parts if p.key == key)
+    written_words = part.part_text.keywords.split()
+    assert written_words[:2] == ["usb", "receptacle"] or written_words[0] == "connector"
+    # the generated text is recorded even when nothing was typed, and starts the vendor's own words
+    assert part.generated_text.keywords == part.part_text.keywords
+
+    choices = MigrationChoices(
+        parts={key: PartChoice(library="Atomic_Connector", keywords="exact words")}
+    )
+    inventory, plan = _plan_for(layout, choices)
+    part = next(p for p in plan.parts if p.key == key)
+    assert part.part_text.keywords == "exact words"
+    # the generated text (what the generator would have produced) differs from the typed override
+    assert part.generated_text.keywords != "exact words"
+
+
+def test_existing_target_in_older_format_is_normalised(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    key = _key(FFC_LIBRARY, "FFC2A32-06-T")
+    tools = _tools(output_version=20251024)
+    choices = MigrationChoices(parts={key: PartChoice(library=ATOMIC_OSCILLATOR)})
+    inventory, plan = _plan_for(layout, choices, tools=tools)
+
+    target_rel = f"Custom/Symbols/{ATOMIC_OSCILLATOR}.kicad_sym"
+    write_op = next(op for op in plan.ops if op.kind == "write" and op.rel == target_rel)
+    loaded = kicad_files.parse_bytes(write_op.data, f"{ATOMIC_OSCILLATOR}.kicad_sym")
+    assert kicad_files.file_version(loaded.root) == 20251024
+    names = [ref.name for ref in kicad_files.find_symbols(loaded.root)]
+    assert set(names) == {"CM315D32768DZFT", "FFC2A32-06-T"}
+    for name in names:
+        ref = kicad_files.find_symbol(loaded.root, name)
+        assert ref is not None  # both blocks parse
+
+    part = next(p for p in plan.parts if p.key == key)
+    assert any(c.reason == "file format updated" for c in part.field_changes)
+
+
+def test_missing_cli_blocks_run(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    key = _key(FFC_LIBRARY, "FFC2A32-06-T")
+    choices = MigrationChoices(parts={key: PartChoice(library="Atomic_Connector")})
+    inventory = read_inventory(layout)
+    tools = ToolContext(kicad_cli=None, allowed_stems=stems.allowed_stems())
+    ctx = prepare_context(inventory, tools, None, today=TODAY)
+    plan = build_migration_plan(inventory, choices, ctx)
+
+    errors = [i for i in plan.issues if i.severity is Severity.ERROR and i.code == "migration.cli_missing"]
+    assert len(errors) == 1
+    assert "KiCad command-line tool" in errors[0].text
+    assert not any(op.kind == "write" and op.rel.endswith(".kicad_sym") for op in plan.ops)
+
+    gate_ctx = end_state_context(plan, inventory, None)
+    outcome = check_plan(plan, inventory, gate_ctx)
+    assert not outcome.run_enabled
+
+
+def test_all_targets_share_one_format(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    choices = MigrationChoices(parts={key: PartChoice(library=target) for key, target in EXPECTED_TARGETS.items()})
+    inventory, plan = _plan_for(layout, choices, tools=_tools(output_version=V10_VERSION))
+
+    versions = set()
+    for op in plan.ops:
+        if op.kind == "write" and op.rel.endswith(".kicad_sym"):
+            loaded = kicad_files.parse_bytes(op.data, Path(op.rel).name)
+            version = kicad_files.file_version(loaded.root)
+            assert version is not None
+            versions.add(version)
+    assert versions == {V10_VERSION}
