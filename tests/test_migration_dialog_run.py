@@ -5,12 +5,16 @@ MigrationPlan / GateOutcome / MigrationResult values; the live Custom/ is never 
 ever opens a real modal dialog or a real git repository.
 """
 
+import threading
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from PySide6.QtCore import QSettings
+from PySide6.QtGui import QGuiApplication
 
+from kicad_lib_manager.importer.commit_plan import CommitFile, CommitPlan
+from kicad_lib_manager.importer.commit_step import CommitOutcome, CommitProbe
 from kicad_lib_manager.importer.migration.applier import MigrationResult
 from kicad_lib_manager.importer.migration.gate import GateOutcome
 from kicad_lib_manager.importer.migration.inventory import Inventory
@@ -359,3 +363,184 @@ def test_failed_run_shows_reasons_and_rebuilds(qtbot, make_dialog, tmp_path):
     text2 = dialog2._run_failure_body.toPlainText()
     assert incomplete.text in text2
     assert str(backup_dir) in text2
+
+
+# -- Task 2: the Result view, map, Copy/open file, Generate/chooser buttons, the commit panel -----
+
+
+def test_successful_run_shows_result_and_clears_draft(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1")
+    clear_calls = []
+    migrated_results = []
+    plan_holder = {}
+
+    def fake_clear_draft(path):
+        clear_calls.append(path)
+        return None
+
+    def fake_apply(plan, **kw):
+        plan_holder["plan"] = plan
+        return MigrationResult(True, (), (), (), None, plan, {})
+
+    core = core_with(
+        tmp_path,
+        build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a,)),
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+        apply=fake_apply,
+        clear_draft=fake_clear_draft,
+    )
+    dialog = make_dialog(core)
+    dialog.migrated.connect(lambda result: migrated_results.append(result))
+    qtbot.waitUntil(lambda: dialog._run_btn.isEnabled())
+
+    dialog._run_btn.click()
+    qtbot.wait(200)  # let the worker chain (checkout/kicad/apply) finish on this trivial fake plan
+
+    assert dialog._stack.currentWidget() is dialog._result_page
+    assert len(clear_calls) == 1
+    assert len(migrated_results) == 1
+    assert migrated_results[0].ok
+    assert dialog._result_title.text() == "Migration done"
+    assert dialog._result_map_text.isReadOnly()
+    assert dialog._result_map_text.toPlainText() == plan_holder["plan"].map_text
+    assert "Next: press Generate Tables" in dialog._next_steps_label.text()
+
+
+def test_copy_and_open_map(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1")
+    open_calls = []
+
+    def fake_open_file(path):
+        open_calls.append(path)
+
+    core = core_with(
+        tmp_path,
+        build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a,)),
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+        open_file=fake_open_file,
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._run_btn.isEnabled())
+    dialog._run_btn.click()
+    qtbot.wait(200)
+    assert dialog._stack.currentWidget() is dialog._result_page
+
+    dialog._copy_map_btn.click()
+    clipboard = QGuiApplication.clipboard()
+    assert clipboard.text() == dialog._result_map_text.toPlainText()
+
+    dialog._open_map_btn.click()
+    assert len(open_calls) == 1
+    assert open_calls[0] == dialog._layout.custom_dir / "MIGRATION-ATOMIC.md"
+
+
+def test_generate_and_chooser_buttons_emit(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1")
+    core = core_with(
+        tmp_path,
+        build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a,)),
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._run_btn.isEnabled())
+    dialog._run_btn.click()
+    qtbot.wait(200)
+    assert dialog._stack.currentWidget() is dialog._result_page
+
+    generate_calls = []
+    chooser_calls = []
+    dialog.generate_requested.connect(lambda: generate_calls.append(1))
+    dialog.setup_chooser_requested.connect(lambda: chooser_calls.append(1))
+
+    dialog._generate_btn.click()
+    assert generate_calls == [1]
+    dialog._chooser_btn.click()
+    assert chooser_calls == [1]
+
+
+def test_commit_panel_offered_and_probed(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1")
+    commit_plan_calls = []
+    probe_calls = []
+    recheck_calls = []
+    run_commit_calls = []
+    open_check_calls = []
+    commit_gate = threading.Event()
+
+    def fake_commit_plan(result, plan):
+        cplan = CommitPlan(
+            repo_root=tmp_path,
+            custom_dir=tmp_path / "Custom",
+            custom_rel="Custom",
+            files=(
+                CommitFile(
+                    "Symbols/Atomic_Connector.kicad_sym", "Custom/Symbols/Atomic_Connector.kicad_sym",
+                    tmp_path / "Custom/Symbols/Atomic_Connector.kicad_sym", "symbol_lib", "sha", None,
+                ),
+                CommitFile(
+                    "Symbols/Old.kicad_sym", "Custom/Symbols/Old.kicad_sym",
+                    tmp_path / "Custom/Symbols/Old.kicad_sym", "symbol_lib", "", None, deleted=True,
+                ),
+            ),
+            library="Atomic_ libraries", new_library=False, symbol="", footprint=None, model=None,
+            vendor="Atomic_ migration", package=None, date="2026-01-01", overwrite=False, backup_dir=None,
+            issues=(), message="Migrate Custom parts to Atomic_ libraries",
+        )
+        commit_plan_calls.append((result, plan))
+        return cplan
+
+    def fake_probe_commit(cplan, *, kicad_fp_dir=None, cancelled=None, git=None):
+        probe_calls.append(cplan)
+        return CommitProbe(state="ready", branch="feature", head="abc1234", parent_ok=False)
+
+    def fake_recheck_commit(cplan, *, kicad_fp_dir=None, cancelled=None, git=None):
+        recheck_calls.append(cplan)
+        return (cplan, CommitProbe(state="ready", branch="feature", head="abc1234", parent_ok=False))
+
+    def fake_run_commit(cplan, message, bump_parent, *, expected_branch=None, progress=None, kicad_fp_dir=None, git=None):
+        run_commit_calls.append((cplan, message, bump_parent))
+        commit_gate.wait(5)
+        return CommitOutcome(custom_commit="abc1234", custom_branch="feature")
+
+    core = core_with(
+        tmp_path,
+        build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a,)),
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+        commit_plan=fake_commit_plan,
+        probe_commit=fake_probe_commit,
+        recheck_commit=fake_recheck_commit,
+        run_commit=fake_run_commit,
+    )
+    dialog = make_dialog(core)
+    dialog.show()
+    dialog.atomic_check_requested.connect(lambda rel, name: open_check_calls.append((rel, name)))
+    qtbot.waitUntil(lambda: dialog._run_btn.isEnabled())
+    dialog._run_btn.click()
+    qtbot.wait(200)
+    assert dialog._stack.currentWidget() is dialog._result_page
+
+    qtbot.waitUntil(lambda: len(commit_plan_calls) == 1)
+    qtbot.waitUntil(lambda: len(probe_calls) == 1)
+
+    panel = dialog._commit_panel
+    assert panel is not None
+    qtbot.waitUntil(lambda: panel.state() == "ready")
+    assert any("deleted" in panel._files_list.item(i).text() for i in range(panel._files_list.count()))
+
+    panel.open_check_requested.emit("Custom/Symbols/Atomic_Connector.kicad_sym", "P1")
+    assert open_check_calls == [("Custom/Symbols/Atomic_Connector.kicad_sym", "P1")]
+
+    panel.check_again_requested.emit()
+    qtbot.waitUntil(lambda: len(recheck_calls) == 1)
+
+    panel.commit_requested.emit("Migrate parts", True)
+    qtbot.waitUntil(lambda: len(run_commit_calls) == 1)
+    assert run_commit_calls[0][1] == "Migrate parts"
+    assert run_commit_calls[0][2] is True
+    assert dialog.is_committing()
+
+    dialog.close()
+    assert dialog.isVisible()  # closing is blocked while the commit runs
+
+    commit_gate.set()
+    qtbot.waitUntil(lambda: not dialog.is_committing())
