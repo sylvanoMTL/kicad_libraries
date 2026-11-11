@@ -209,3 +209,135 @@ def test_setup_chooser_menu_entry(qtbot, make_window):
     assert not w._act_setup_chooser.isEnabled()
     w._set_scan_running(False)
     assert w._act_setup_chooser.isEnabled()
+
+
+# -- Task 2: KiCad open, Retry, busy guard, close during the check, no destination (D-17) --------
+
+
+def test_chooser_kicad_open_change_anyway_writes(qtbot, make_window):
+    make_window.running = ["eeschema", "kicad"]
+    make_window.kicad_answers = [ConfirmAnswer.WRITE]
+    w = make_window()
+
+    w._act_setup_chooser.trigger()
+    settle(qtbot, w)
+
+    assert len(make_window.kicad_calls) == 1
+    lines, names = make_window.kicad_calls[0]
+    assert names == ["eeschema", "kicad"]
+    assert any("Pinned symbol libraries" in line for line in lines)
+    assert make_window.questions == []
+
+    common = json.loads(
+        (make_window.config_base / "10.0" / "kicad_common.json").read_text(encoding="utf-8")
+    )
+    assert common["session"]["pinned_symbol_libs"] == ["Atomic_Connector"]
+    log_text = w._log._text.toPlainText()
+    assert "KiCad is open (eeschema, kicad)" in log_text
+
+
+def test_chooser_retry_then_closed_asks_yes_no(qtbot, make_window):
+    make_window.running_queue = [["kicad"], []]
+    make_window.kicad_answers = [ConfirmAnswer.RETRY]
+    w = make_window()
+
+    w._act_setup_chooser.trigger()
+    settle(qtbot, w)
+
+    assert len(make_window.kicad_calls) == 1
+    assert len(make_window.questions) == 1
+    assert len(make_window.check_threads) == 2
+    common = json.loads(
+        (make_window.config_base / "10.0" / "kicad_common.json").read_text(encoding="utf-8")
+    )
+    assert common["session"]["pinned_symbol_libs"] == ["Atomic_Connector"]
+
+
+def test_chooser_not_now_writes_nothing(qtbot, make_window):
+    make_window.answer = QMessageBox.StandardButton.No
+    w = make_window()
+    common_before = (make_window.config_base / "10.0" / "kicad_common.json").read_bytes()
+    eeschema_before = (make_window.config_base / "10.0" / "eeschema.json").read_bytes()
+
+    w._act_setup_chooser.trigger()
+    settle(qtbot, w)
+
+    assert (make_window.config_base / "10.0" / "kicad_common.json").read_bytes() == common_before
+    assert (make_window.config_base / "10.0" / "eeschema.json").read_bytes() == eeschema_before
+    assert not make_window.backup_root.exists()
+    assert "KiCad's chooser left unchanged (change declined)" in w._log._text.toPlainText()
+
+
+def test_chooser_box_texts(qtbot, make_window):
+    w = make_window()
+
+    box, answers = w._kicad_open_box(
+        None, ["eeschema", "kicad"],
+        intro="These settings of KiCad's symbol chooser would change:",
+        lines=["Pinned symbol libraries: (none) -> Atomic_Connector"],
+        outro="KiCad may undo them when it exits. Close KiCad, then press Retry.",
+    )
+    text = box.text()
+    assert "KiCad is open (eeschema, kicad). These settings of KiCad's symbol chooser would change:" in text
+    assert "Pinned symbol libraries: (none) -> Atomic_Connector" in text
+    assert "KiCad may undo them when it exits. Close KiCad, then press Retry." in text
+    assert {b.text() for b in box.buttons()} == {"Retry", "Change anyway", "Not now"}
+
+    # Called without the chooser keywords, today's path-variable text is unchanged
+    changes = [("KICAD_LIB_GITHUB", None, "C:/repo")]
+    box2, _answers2 = w._kicad_open_box(changes, ["eeschema", "kicad"])
+    text2 = box2.text()
+    assert "These KiCad path variables in KiCad's settings file would change:" in text2
+    assert "KICAD_LIB_GITHUB: (not set) -> C:/repo" in text2
+
+
+def test_second_click_starts_no_second_check(qtbot, make_window, monkeypatch):
+    w = make_window()
+    gate = threading.Event()
+
+    def gated_running():
+        make_window.check_threads.append(threading.get_ident())
+        gate.wait(5)
+        return []
+
+    monkeypatch.setattr(main_window, "kicad_running", gated_running)
+    try:
+        w._act_setup_chooser.trigger()
+        w._act_setup_chooser.trigger()
+    finally:
+        gate.set()
+    settle(qtbot, w)
+
+    assert len(make_window.check_threads) == 1
+    assert len(make_window.questions) == 1
+
+
+def test_close_waits_for_chooser_check(qtbot, make_window, monkeypatch):
+    w = make_window()
+    w.show()
+    gate = threading.Event()
+
+    def gated_running():
+        gate.wait(5)
+        return []
+
+    monkeypatch.setattr(main_window, "kicad_running", gated_running)
+    try:
+        w._act_setup_chooser.trigger()
+        w.close()
+        # The check is still held: the window stays, nothing was asked
+        assert w.isVisible()
+        assert make_window.questions == []
+    finally:
+        gate.set()
+    qtbot.waitUntil(lambda: not w.isVisible(), timeout=5000)
+
+
+def test_no_destination_writes_nothing(qtbot, make_window):
+    w = make_window(no_dest=True)
+
+    w._act_setup_chooser.trigger()
+
+    assert not w._chooser_busy
+    assert main_window._NO_DEST_CHOOSER_TEXT in w._log._text.toPlainText()
+    assert make_window.check_threads == []
