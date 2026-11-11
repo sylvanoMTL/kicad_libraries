@@ -3,8 +3,9 @@
 One source file is loaded once per library; a part's unit is normalised with the importer's own
 new_source/existing_source and edited with edit_symbol, then spliced into the target library text
 being assembled (several parts and sources can share one target, D-01 "an old library can be
-split"). Name clashes within one target are not yet turned into a blocking line (13-09); the
-fixtures this plan ships with have none.
+split"). A chosen or suggested target that fails stems.name_verdict blocks that one part with
+migration.no_library (D-01); a part already in its own target Atomic_ library is rewritten in
+place, never duplicated (D-03).
 """
 
 from __future__ import annotations
@@ -21,13 +22,16 @@ from ...kicad_files import (
     block_text,
     file_version,
     find_symbol,
+    find_symbols,
     parse_bytes,
     rename_symbol_edits,
     symbol_insert_edit,
     symbol_unit,
+    unit_library_text,
 )
 from ...manufacturers import canonical
 from ...models import Issue, Severity
+from .. import stems
 from ..fieldrules import GENERIC_VOLATILE, MPN_FIELDS, FieldRules
 from ..naming import sanitize_name
 from ..planner import SymbolFields, edit_symbol, existing_source, new_source, unit_text
@@ -113,11 +117,21 @@ def plan_symbols(
     library_map: set[tuple[str, str]] = set()
     symbol_renames: list[Rename] = []
 
+    # D-01: a chosen or suggested target that stems.name_verdict refuses blocks that one part;
+    # it never becomes a real target (no op is planned for it, as if it were still undecided).
+    refused: dict[PartKey, str] = {}
     by_target: dict[str, list[InventoryPart]] = {}
     for part in inventory.parts:
         target = targets.get(part.key, "")
-        if target:
+        if not target:
+            continue
+        # ctx.allowed empty means "use the built-in KiCad 10 snapshot" (ToolContext.allowed_stems'
+        # own documented default); name_verdict only applies that fallback for None, not "".
+        verdict = stems.name_verdict(target, ctx.allowed or None)
+        if verdict.ok:
             by_target.setdefault(target, []).append(part)
+        else:
+            refused[part.key] = verdict.reason
 
     loaded_cache: dict[str, LoadedFile] = {}
 
@@ -150,8 +164,25 @@ def plan_symbols(
             if isinstance(loaded_target, Issue):
                 issues.append(loaded_target)
                 continue
-            assembled = loaded_target
-            base_version = file_version(assembled.root)
+            # D-03: a part already in this exact target library is rewritten in place, not
+            # duplicated. Every symbol of this file that is itself migrating in this pass (staying
+            # here or being replaced by its own edited block below) is dropped from the preseed; any
+            # symbol that is not part of this migration at all (foreign content) survives untouched.
+            migrating_here = {part.name for part in by_target[target] if part.rel_path == target_rel}
+            existing_names = {ref.name for ref in find_symbols(loaded_target.root)}
+            keep_names = existing_names - migrating_here
+            if keep_names:
+                if keep_names != existing_names:
+                    stripped = unit_library_text(loaded_target, keep=keep_names)
+                    reparsed = _loaded_text(fsutil.encode_source(stripped, loaded_target.source.bom), target_path.name)
+                    if isinstance(reparsed, Issue):
+                        issues.append(reparsed)
+                        continue
+                    loaded_target = reparsed
+                assembled = loaded_target
+                base_version = file_version(assembled.root)
+            # else: every existing symbol of this file is migrating in this same pass; nothing
+            # survives to preseed, so this target starts fresh (assembled stays None below).
 
         ordered_parts = sorted(by_target[target], key=lambda p: (p.rel_path, p.name))
         for part in ordered_parts:
@@ -186,12 +217,18 @@ def plan_symbols(
                 continue
             mpn = mpns.get(part.key, part.name)
             new_name = sanitize_name(choice.symbol_name if choice.symbol_name is not None else mpn).sanitized
-            manufacturer_candidate = choice.manufacturer if choice.manufacturer is not None else ""
+            # D-01, D-12: the owner's typed manufacturer always wins (forced); without one, the vendor's
+            # own Manufacturer or SnapEDA MF value is the fallback, spelled canonically either way.
+            manufacturer_value = (
+                choice.manufacturer
+                if choice.manufacturer is not None
+                else (part.fields.get("Manufacturer") or part.fields.get("MF") or "")
+            )
             fields = SymbolFields(
                 footprint=footprints.links.get(part.key, part.footprint),
                 filters=part.fields.get("ki_fp_filters", ""),
-                manufacturer=canonical(manufacturer_candidate),
-                manufacturer_forced=False,
+                manufacturer=canonical(manufacturer_value),
+                manufacturer_forced=choice.manufacturer is not None,
                 mpn=mpn,
                 datasheet=choice.datasheet,
                 description=choice.description,
@@ -262,6 +299,11 @@ def plan_symbols(
             data = fsutil.encode_source(assembled.source.text, assembled.source.bom)
             ops.append(MigrationOp("write", target_path, target_rel, data=data, base_sha256=base_sha256))
 
+    def _really_moves(part: InventoryPart) -> bool:
+        """True only for a part with a usable (valid, non-refused) target."""
+        target = targets.get(part.key, "")
+        return bool(target) and part.key not in refused
+
     removed_libraries: list[str] = []
     for rel_path in sorted({part.rel_path for part in inventory.parts}):
         stem = Path(rel_path).stem
@@ -269,7 +311,7 @@ def plan_symbols(
             # The source is overwritten in place under the same name; it is not "removed" separately.
             continue
         parts_of_lib = [part for part in inventory.parts if part.rel_path == rel_path]
-        if parts_of_lib and all(targets.get(part.key, "") for part in parts_of_lib):
+        if parts_of_lib and all(_really_moves(part) for part in parts_of_lib):
             path = layout.repo_root / rel_path
             ops.append(
                 MigrationOp(
@@ -283,15 +325,19 @@ def plan_symbols(
             removed_libraries.append(rel_path)
 
     for part in inventory.parts:
-        if targets.get(part.key, ""):
+        if _really_moves(part):
             continue
+        target = targets.get(part.key, "")
         choice = choices.parts.get(part.key, PartChoice())
         texts = footprints.texts.get(part.key, (PartText(), PartText()))
+        part_issues: tuple[Issue, ...] = ()
+        if part.key in refused:
+            part_issues = (Issue(Severity.ERROR, "migration.no_library", refused[part.key]),)
         part_plans.append(
             PartPlan(
                 key=part.key,
                 source_library=part.library,
-                target_library="",
+                target_library=target,
                 suggestion=ctx.suggestions.get(part.key),
                 old_name=part.name,
                 new_name=choice.symbol_name or part.name,
@@ -304,7 +350,7 @@ def plan_symbols(
                 field_changes=(),
                 generated_text=texts[0],
                 part_text=texts[1],
-                issues=(),
+                issues=part_issues,
             )
         )
 
