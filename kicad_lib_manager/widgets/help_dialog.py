@@ -14,6 +14,10 @@ from .import_dialog import (
     ADD_MODEL_TEXT, CHANGE_PACKAGE_TEXT, FINISHING_TEXT, HELP_ACTION_TEXT, OFFICIAL_FOOTPRINT_TEXT,
     REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT, fit_window,
 )
+from .migration_dialog import (
+    CHOOSER_TEXT, FILES_TAB_TEXT, GENERATE_TEXT, LEFTOVERS_TEXT, MOVE_FOOTPRINT_TEXT, OPEN_MAP_TEXT,
+    RUN_TEXT,
+)
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
     SP_MD, SP_SM, SP_XS, SURFACE, SURFACE_BASE, SURFACE_HEADER,
@@ -449,6 +453,68 @@ HELP_PAGES["importing"] = _wrap(
     "box no table is written.</p>"
 )
 
+HELP_PAGES["migrating"] = _wrap(
+    "<h2>Migrating to Atomic Libraries</h2>"
+    "<p>Move every part still in an old-style Custom library into the "
+    "<code>Atomic_</code> libraries, in one preview-then-run window.</p>"
+    "<h3>Before you start</h3>"
+    "<p>Open <b>File &rarr; Migrate to Atomic Libraries...</b> (<code>Ctrl+Shift+M</code>). "
+    "It is offered only while <code>Custom/</code> still has a library that is not named "
+    "<code>Atomic_...</code>, or a leftover <code>.bak</code> file; once everything is "
+    "already <code>Atomic_</code>, the menu item is greyed out and says so.</p>"
+    "<p>Custom must hold no uncommitted files when the window opens. If it does, the "
+    "window lists them and asks you to commit or delete them first, then open the "
+    "migration again.</p>"
+    "<p>Close KiCad before you run the migration: a locked file stops it. The migration "
+    "window checks for KiCad again right before it writes anything.</p>"
+    "<p>Before the first write, the app tags the current commit "
+    "<code>pre-atomic</code>, so the state before the migration is always recoverable "
+    "from that tag, even after the migration commits its own changes.</p>"
+    "<h3>The preview</h3>"
+    "<p>Parts are grouped by the <code>Atomic_</code> library they would move into. Each "
+    "group header shows a pass mark when every part in it is ready, or the number of "
+    "problems otherwise. A <b>failure strip</b> above the list names every blocking "
+    "problem across all groups; click a line in the failure strip to jump straight to "
+    "the part and field it is about.</p>"
+    "<p>Selecting a part shows its detail pane: the <b>Library</b> field with the app's "
+    "suggestion, the <b>Symbol name</b> taken from the MPN, and the MPN, Manufacturer, "
+    "Datasheet and Description fields, the same as importing a part. The footprint row "
+    "offers <b>" + MOVE_FOOTPRINT_TEXT + "</b> or, for a part that can use one of KiCad's "
+    "own footprints, " + OFFICIAL_FOOTPRINT_TEXT + ". The 3D model row shows the current "
+    "model or lets you add one with <b>" + ADD_MODEL_TEXT + "</b>, exactly as importing "
+    "does. Parts that are otherwise identical can be turned into a derived symbol of one "
+    "another, so only the one real difference between them is kept. The Keywords and "
+    "footprint description and tags are filled in for you; the small button whose "
+    "tooltip starts with <i>Regenerate</i> writes each one again from the part's "
+    "details.</p>"
+    "<p>The <b>" + FILES_TAB_TEXT + "</b> tab lists every file the migration would "
+    "write, move, rename or delete, and the <b>" + LEFTOVERS_TEXT + "</b> section lists "
+    "the leftover files the migration found but does not need; tick or untick each one "
+    "to decide whether it is deleted too.</p>"
+    "<p>Your edits are saved as you go, so closing the window and reopening it later "
+    "brings the preview back where you left it. If a part changed on disk while the "
+    "window was closed, it is marked so you notice before you run.</p>"
+    "<h3>Run and result</h3>"
+    "<p><b>" + RUN_TEXT + "</b> is enabled only once the failure strip is empty: every "
+    "part in every group must be ready first. The whole move runs as one transaction; if "
+    "any step fails, every file is restored and the window shows every reason, with the "
+    "backup folder named if a restore itself could not be completed.</p>"
+    "<p>A successful run shows the old and new name of every part, with a <b>Copy</b> "
+    "button and a <b>" + OPEN_MAP_TEXT + "</b> link; the same map is saved as "
+    "<code>MIGRATION-ATOMIC.md</code> in <code>Custom/</code>, so it stays available "
+    "after the window closes.</p>"
+    "<h3>Afterwards</h3>"
+    "<p>From the result, click <b>" + GENERATE_TEXT + "</b> first, so the library tables "
+    "list the new <code>Atomic_</code> libraries and drop the old names. Then commit in "
+    "the panel below the result: one commit in <code>Custom</code>, plus the usual commit "
+    "of its ref in the parent repo. Then click <b>" + CHOOSER_TEXT + "</b> to pin the new "
+    "libraries in KiCad's chooser.</p>"
+    "<p>Any KiCad project that already used the old library names needs relinking once: "
+    "open it, then run <b>Tools &rarr; Edit Symbol Library Links...</b>, then "
+    "<b>Update Symbols from Library...</b>, then <b>Update PCB from Schematic...</b>. "
+    "<code>MIGRATION-ATOMIC.md</code> lists the old and new names to match up.</p>"
+)
+
 HELP_PAGES["restoring"] = _wrap(
     "<h2>Restoring Backups</h2>"
     "<p>Open via <b>File &rarr; Restore Backup</b> or <code>Ctrl+R</code>.</p>"
@@ -500,6 +566,7 @@ HELP_PAGES["shortcuts"] = _wrap(
     "<tr><td><code>Ctrl+R</code></td><td>Restore Backup</td></tr>"
     "<tr><td><code>Ctrl+Shift+R</code></td><td>Rescan Libraries</td></tr>"
     "<tr><td><code>Ctrl+Shift+A</code></td><td>Check Atomic Parts</td></tr>"
+    "<tr><td><code>Ctrl+Shift+M</code></td><td>Migrate to Atomic Libraries</td></tr>"
     "<tr><td><code>Ctrl+Shift+K</code></td><td>Set Up KiCad Chooser</td></tr>"
     "<tr><td><code>Ctrl+K</code></td><td>Set KiCad Footprint Path</td></tr>"
     "<tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>"
@@ -544,6 +611,7 @@ TOC_STRUCTURE: list[tuple[str, str, list[tuple[str, str]]]] = [
         ("selecting", "Selecting Libraries"),
         ("generating", "Generating Tables"),
         ("importing", "Importing Parts"),
+        ("migrating", "Migrating to Atomic Libraries"),
         ("restoring", "Restoring Backups"),
     ]),
     ("filter", "Footprint Filter", []),
