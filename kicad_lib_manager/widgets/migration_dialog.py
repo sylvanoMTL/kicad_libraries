@@ -16,9 +16,9 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QButtonGroup, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
-    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSplitter,
-    QStackedWidget, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
+    QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea,
+    QSplitter, QStackedWidget, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
 from ..importer.content import ContentText, MAX_READ, binary_text, cap_lines, decode_text, diff_text, sha256_file
@@ -466,6 +466,9 @@ class MigrationDialog(QDialog):
         form.addRow("Field changes", self._field_changes_list)
 
         self._build_footprint_section(form)
+        self._build_model_row(form)
+        self._build_conflict_rows_host(form)
+        self._build_derive_box(form)
 
         self._text_edits: dict[str, QPlainTextEdit] = {}
         self._text_regenerate: dict[str, QPushButton] = {}
@@ -591,6 +594,167 @@ class MigrationDialog(QDialog):
         if self._current_key is None:
             return
         self._update_choice(self._current_key, official_footprint=text)
+
+    # -- the 3D model row (D-09, D-15, D-23) -----------------------------------
+
+    def _build_model_row(self, form: QFormLayout):
+        """One editable name for a single model, read-only names for several, or Add 3D model... (D-23)."""
+        self._model_stack = QStackedWidget()
+
+        self._model_name_edit = QLineEdit()
+        self._model_name_edit.textEdited.connect(lambda text: self._on_field_edited("model_name", text))
+        self._model_stack.addWidget(self._framed(self._model_name_edit, "model_name"))
+
+        self._model_list = QListWidget()
+        self._model_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        self._model_stack.addWidget(self._model_list)
+
+        add_row = QWidget()
+        add_lay = QHBoxLayout(add_row)
+        add_lay.setContentsMargins(0, 0, 0, 0)
+        self._add_model_btn = QPushButton(ADD_MODEL_TEXT)
+        self._add_model_btn.clicked.connect(self._on_pick_model)
+        add_lay.addWidget(self._framed(self._add_model_btn, "model"))
+        self._remove_model_btn = QPushButton("Remove")
+        self._remove_model_btn.clicked.connect(self._on_remove_model)
+        add_lay.addWidget(self._remove_model_btn)
+        self._model_stack.addWidget(add_row)
+
+        form.addRow("3D model", self._model_stack)
+
+    def _on_pick_model(self):
+        if self._current_key is None:
+            return
+        path = self._core.pick_model_file(self)
+        if not path:
+            return
+        self._update_choice(self._current_key, model_source=path)
+
+    def _on_remove_model(self):
+        if self._current_key is None:
+            return
+        self._update_choice(self._current_key, model_source=None)
+
+    def _display_model(self, part: PartPlan, choice: PartChoice):
+        models = part.model_files
+        if len(models) == 1:
+            self._model_stack.setCurrentIndex(0)
+            self._model_name_edit.blockSignals(True)
+            default_name = models[0]
+            self._model_name_edit.setText(choice.model_name if choice.model_name is not None else default_name)
+            self._model_name_edit.blockSignals(False)
+            self._targets["model"] = self._model_name_edit
+        elif len(models) >= 2:
+            self._model_stack.setCurrentIndex(1)
+            self._model_list.clear()
+            for name in models:
+                self._model_list.addItem(name)
+            self._targets["model"] = self._model_list
+        else:
+            self._model_stack.setCurrentIndex(2)
+            self._remove_model_btn.setVisible(bool(choice.model_source))
+            self._targets["model"] = self._add_model_btn
+
+    # -- the Atomic_Footprints clash rows for the selected part (D-07) ---------
+
+    def _build_conflict_rows_host(self, form: QFormLayout):
+        self._conflict_rows_host = QWidget()
+        self._conflict_rows_layout = QVBoxLayout(self._conflict_rows_host)
+        self._conflict_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self._conflict_rows: dict[str, ConflictRow] = {}
+        self._conflict_rows_host.hide()
+        form.addRow("Clashes", self._conflict_rows_host)
+
+    def _conflicts_for_part(self, part: PartPlan) -> list:
+        if self._plan is None:
+            return []
+        stems = {part.footprint_new.rpartition(":")[-1], part.footprint_old.rpartition(":")[-1]}
+        return [c for c in self._plan.conflicts if c.kind == "footprint" and c.name in stems]
+
+    def _display_conflicts(self, part: PartPlan):
+        wanted = {c.key: c for c in self._conflicts_for_part(part)}
+        for key in [k for k in self._conflict_rows if k not in wanted]:
+            self._remove_conflict_row(key)
+        for key, conflict in wanted.items():
+            row = self._conflict_rows.get(key)
+            if row is None:
+                row = self._add_conflict_row(conflict)
+            else:
+                row.update_conflict(conflict)
+            resolution = self._choices.resolutions.get(key)
+            if row.current_resolution() != resolution:
+                row.set_resolution(resolution)
+        self._conflict_rows_host.setVisible(bool(wanted))
+
+    def _add_conflict_row(self, conflict) -> ConflictRow:
+        key = conflict.key
+        row = ConflictRow(conflict)
+        row.choice_changed.connect(self._on_conflict_choice)
+        row.rename_edited.connect(self._on_conflict_rename)
+        self._conflict_rows[key] = row
+        self._conflict_rows_layout.addWidget(row)
+        self._targets[f"conflict:{key}"] = row.overwrite_button
+        self._targets[f"rename:{key}"] = row.rename_edit
+        return row
+
+    def _remove_conflict_row(self, key: str):
+        row = self._conflict_rows.pop(key)
+        for target in (f"conflict:{key}", f"rename:{key}"):
+            self._targets.pop(target, None)
+        self._conflict_rows_layout.removeWidget(row)
+        row.hide()
+        row.setParent(None)
+        row.deleteLater()
+
+    def _update_resolutions(self, resolutions: dict):
+        self._choices = dataclasses.replace(self._choices, resolutions=resolutions)
+        self._gen += 1
+        self._rebuild_timer.start(_REBUILD_DELAY_MS)
+        self._draft_timer.start(_DRAFT_DELAY_MS)
+
+    def _on_conflict_choice(self, key: str, resolution: "Resolution | None"):
+        resolutions = dict(self._choices.resolutions)
+        if resolution is None:
+            resolutions.pop(key, None)
+        else:
+            resolutions[key] = resolution
+        self._update_resolutions(resolutions)
+
+    def _on_conflict_rename(self, key: str, text: str):
+        resolutions = dict(self._choices.resolutions)
+        resolutions[key] = Resolution("rename", text)
+        self._update_resolutions(resolutions)
+
+    # -- the derive-as-family-member check box (D-06) -------------------------
+
+    def _build_derive_box(self, form: QFormLayout):
+        self._derive_check = QCheckBox()
+        self._derive_check.toggled.connect(self._on_derive_toggled)
+        self._derive_check.hide()
+        form.addRow("", self._framed(self._derive_check, "derive"))
+
+    def _family_row_for(self, part: PartPlan):
+        if self._plan is None:
+            return None
+        return next((row for row in self._plan.families if row.member == part.key), None)
+
+    def _display_derive(self, part: PartPlan, choice: PartChoice):
+        family = self._family_row_for(part)
+        if family is None:
+            self._derive_check.setVisible(False)
+            return
+        parent_part = self._part_by_key(family.parent)
+        parent_name = parent_part.new_name if parent_part is not None else family.parent[1]
+        self._derive_check.setText(DERIVE_TEXT.format(parent=parent_name))
+        self._derive_check.setVisible(True)
+        self._derive_check.blockSignals(True)
+        self._derive_check.setChecked(choice.derive)
+        self._derive_check.blockSignals(False)
+
+    def _on_derive_toggled(self, checked: bool):
+        if self._current_key is None:
+            return
+        self._update_choice(self._current_key, derive=checked)
 
     # -- precheck (MIG-01, D-02) ----------------------------------------------
 
@@ -888,6 +1052,9 @@ class MigrationDialog(QDialog):
             self._field_changes_list.addItem(_field_change_text(change))
 
         self._display_footprint(part, choice)
+        self._display_model(part, choice)
+        self._display_conflicts(part)
+        self._display_derive(part, choice)
 
         for name in TEXT_LABELS:
             override = choice.keywords if name == "keywords" else (
