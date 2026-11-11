@@ -8,6 +8,7 @@ real %APPDATA% KiCad config is never read.
 """
 
 import json
+import types
 from pathlib import Path
 
 import pytest
@@ -15,7 +16,9 @@ from PySide6.QtCore import QSettings, Qt
 from PySide6.QtWidgets import QMessageBox, QToolButton
 
 from kicad_lib_manager import kicad_setup, library_scanner, main_window, settings
-from kicad_lib_manager.models import FootprintLibrary, ScanResult, SymbolLibrary
+from kicad_lib_manager.importer.layout import RepoLayout
+from kicad_lib_manager.importer.plan import InstallResult
+from kicad_lib_manager.models import FootprintLibrary, ScanResult, Severity, SymbolLibrary
 
 
 @pytest.fixture(autouse=True)
@@ -105,6 +108,58 @@ def settle(qtbot, w):
     qtbot.waitUntil(lambda: not w._path_var_busy, timeout=5000)
 
 
+def _stub_plan(repo: Path, library: str = "Atomic_Analog") -> types.SimpleNamespace:
+    """A stand-in install plan, in the shape of stub_plan in tests/test_main_window_import.py."""
+    layout = RepoLayout.for_repo(repo)
+    return types.SimpleNamespace(
+        symbol_name="CSD85301Q2",
+        library=library,
+        new_symbol_lib=False,
+        new_footprint_lib=False,
+        footprint_library="Atomic_Footprints",
+        symbol_lib_path=layout.symbols_dir / f"{library}.kicad_sym",
+        pretty_path=layout.footprints_dir / "Atomic_Footprints.pretty",
+        layout=layout,
+    )
+
+
+def _install_result(library: str = "Atomic_Analog") -> InstallResult:
+    return InstallResult(ok=True, library=library, new_library=False, touched=(), issues=())
+
+
+class _RecordingDialog:
+    """Stands in for the import dialog: records the post-install status rows the main window sets."""
+
+    def __init__(self):
+        self.calls = []
+
+    def set_post_install_status(self, row, text, severity):
+        self.calls.append((row, text, severity))
+
+    def status_text(self, row: str) -> str:
+        for r, text, _severity in reversed(self.calls):
+            if r == row:
+                return text
+        return ""
+
+    @property
+    def rows(self):
+        return {row: (text, severity) for row, text, severity in self.calls}
+
+
+def run_install(qtbot, w, repo, **plan_options):
+    """Report an install to the window with a recording dialog; return the dialog."""
+    dialog = _RecordingDialog()
+    w._import_dialog = dialog
+    try:
+        w._on_import_installed(_install_result(), _stub_plan(repo, **plan_options))
+        qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+        settle(qtbot, w)
+    finally:
+        w._import_dialog = None
+    return dialog
+
+
 # -- Task 1: Generate Tables (D-26) ---------------------------------------------------------
 
 
@@ -178,3 +233,31 @@ def test_banner_dismiss_and_plain_text(qtbot, make_window, tmp_path):
     dismiss = w._checkout_banner.findChild(QToolButton)
     dismiss.click()
     assert not w._checkout_banner.isVisible()
+
+
+# -- Task 2: Install Part (D-26) ------------------------------------------------------------
+
+
+def test_install_warns_in_result_view(qtbot, make_window, tmp_path):
+    other = tmp_path / "other-checkout"
+    w = make_window(scan=ScanResult(), github=str(other))
+    repo = make_window.repo
+
+    dialog = run_install(qtbot, w, repo)
+
+    mismatch = kicad_setup.checkout_mismatch(repo, config_base=make_window.checkout_cfg)
+    expected = kicad_setup.wrong_checkout_warning(mismatch)
+    assert dialog.status_text("checkout_hint") == f"⚠ {expected}"
+    assert dialog.rows["checkout_hint"][1] == Severity.WARNING
+
+    log_text = w._log._text.toPlainText()
+    assert log_text.count(expected) == 1
+
+
+def test_install_without_variable_shows_no_hint(qtbot, make_window, tmp_path):
+    w = make_window(scan=ScanResult(), github=None, config_exists=False)
+    repo = make_window.repo
+
+    dialog = run_install(qtbot, w, repo)
+
+    assert "checkout_hint" not in dialog.rows
