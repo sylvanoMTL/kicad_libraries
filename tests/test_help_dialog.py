@@ -101,6 +101,20 @@ def test_help_generating_page_explains_the_chooser():
         assert word in page, word
 
 
+def test_help_mentions_wrong_checkout():
+    """D-26: both pages say a warning names both folders when KiCad reads its libraries
+    from another folder than this one (KICAD_LIB_GITHUB), and that nothing is blocked."""
+    generating = _page_text("generating")
+    assert "KICAD_LIB_GITHUB" in generating
+    for claim in ("amber notice", "names both folders", "still written", "nothing is blocked", "push"):
+        assert claim.casefold() in generating.casefold(), claim
+
+    importing = _page_text("importing")
+    assert "KICAD_LIB_GITHUB" in importing
+    for claim in ("amber line", "names both", "still written", "nothing is blocked", "push"):
+        assert claim.casefold() in importing.casefold(), claim
+
+
 def test_help_library_tree_explains_the_atomic_marks():
     raw = HELP_PAGES["library_tree"]
     page = _page_text("library_tree")
