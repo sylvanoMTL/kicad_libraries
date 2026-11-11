@@ -318,6 +318,21 @@ def _restore_common(common_path: Path, original_bytes: bytes) -> Issue:
     )
 
 
+def _plan_pins_from_common(
+    common_config: dict, sym_names: Sequence[str], fp_names: Sequence[str]
+) -> tuple[list[str], list[str], list[str], list[str]]:
+    """(old_sym_pins, new_sym_pins, old_fp_pins, new_fp_pins) from a parsed
+    kicad_common.json and the wanted Atomic_ names."""
+    session = common_config.get("session")
+    session = session if isinstance(session, dict) else {}
+    new_sym_pins, new_fp_pins = plan_pins(session, sym_names, fp_names)
+    old_sym_pins = session.get("pinned_symbol_libs")
+    old_sym_pins = old_sym_pins if isinstance(old_sym_pins, list) else []
+    old_fp_pins = session.get("pinned_fp_libs")
+    old_fp_pins = old_fp_pins if isinstance(old_fp_pins, list) else []
+    return old_sym_pins, new_sym_pins, old_fp_pins, new_fp_pins
+
+
 def _read_eeschema(eeschema_path: Path) -> "tuple[object, dict, dict, list[str] | None, dict[str, int] | None] | Issue":
     """Read and parse eeschema.json, planning the new columns/widths.
 
@@ -402,13 +417,9 @@ def sync_kicad_chooser(
     sym_names, fp_names, table_issues = chooser_tables(dest_tables)
     issues.extend(table_issues)
 
-    session = common_config.get("session")
-    session = session if isinstance(session, dict) else {}
-    new_sym_pins, new_fp_pins = plan_pins(session, sym_names, fp_names)
-    old_sym_pins = session.get("pinned_symbol_libs")
-    old_sym_pins = old_sym_pins if isinstance(old_sym_pins, list) else []
-    old_fp_pins = session.get("pinned_fp_libs")
-    old_fp_pins = old_fp_pins if isinstance(old_fp_pins, list) else []
+    old_sym_pins, new_sym_pins, old_fp_pins, new_fp_pins = _plan_pins_from_common(
+        common_config, sym_names, fp_names
+    )
 
     eeschema_path = config_dir / EESCHEMA_FILE
     eeschema_missing = not eeschema_path.exists()
@@ -484,13 +495,9 @@ def sync_kicad_chooser(
                 return [read_eeschema]
             eeschema_src, eeschema_config, lib_tree, new_columns, new_widths = read_eeschema
 
-        session = common_config.get("session")
-        session = session if isinstance(session, dict) else {}
-        new_sym_pins, new_fp_pins = plan_pins(session, sym_names, fp_names)
-        old_sym_pins = session.get("pinned_symbol_libs")
-        old_sym_pins = old_sym_pins if isinstance(old_sym_pins, list) else []
-        old_fp_pins = session.get("pinned_fp_libs")
-        old_fp_pins = old_fp_pins if isinstance(old_fp_pins, list) else []
+        old_sym_pins, new_sym_pins, old_fp_pins, new_fp_pins = _plan_pins_from_common(
+            common_config, sym_names, fp_names
+        )
 
         fresh_changes = _plan_chooser_changes(
             old_sym_pins, new_sym_pins, old_fp_pins, new_fp_pins,
