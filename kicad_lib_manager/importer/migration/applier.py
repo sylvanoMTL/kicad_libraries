@@ -14,6 +14,7 @@ from typing import NamedTuple
 
 from ... import fsutil
 from ...models import Issue, Severity
+from ..plan import ToolContext
 from .plan import MigrationPlan
 
 MIGRATION_BACKUPS = "migrations"
@@ -94,12 +95,22 @@ def apply_migration(
     backup_root: Path | None = None,
     progress: Callable | None = None,
     before_first_write: Callable[[], list[Issue]] | None = None,
+    tools: ToolContext | None = None,
 ) -> MigrationResult:
-    """Write plan.ops in order; any failure restores every file and folder the migration touched."""
+    """Write plan.ops in order; any failure restores every file and folder the migration touched.
+
+    tools is unused until 13-13 Task 2 adds the pre-write KiCad load gate; it is accepted now so
+    callers (and Task 1's real-git test) can pass it without a signature change later.
+    """
+    extra_issues: list[Issue] = []
     if before_first_write is not None:
         pre_issues = before_first_write()
-        if pre_issues:
-            return MigrationResult(False, tuple(pre_issues), (), (), None, plan, {})
+        blocking = [i for i in pre_issues if i.severity is Severity.ERROR]
+        if blocking:
+            return MigrationResult(False, tuple(blocking), (), (), None, plan, {})
+        # Non-ERROR issues (e.g. precheck.ensure_tag's INFO "tagged"/"tag_reused") are informational
+        # and carry through to the final result instead of being discarded or mistaken for a refusal.
+        extra_issues.extend(pre_issues)
 
     backup_dir = _backup_folder(backup_root if backup_root is not None else fsutil.default_backup_dir())
     undo: list[_Undo] = []
@@ -147,4 +158,4 @@ def apply_migration(
         issue = _err("migration.unexpected", f"The migration stopped unexpectedly ({type(error).__name__}: {error})")
         return MigrationResult(False, (issue, *leftovers), (), (), backup_dir, plan, {})
 
-    return MigrationResult(True, (), tuple(written), tuple(deleted), backup_dir, plan, sha)
+    return MigrationResult(True, tuple(extra_issues), tuple(written), tuple(deleted), backup_dir, plan, sha)
