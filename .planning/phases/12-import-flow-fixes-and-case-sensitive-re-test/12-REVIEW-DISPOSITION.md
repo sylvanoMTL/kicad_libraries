@@ -15,6 +15,14 @@ findings:
     severity: warning
     disposition: open
     title: "Test named for a late Skip click never exercises the late-click path"
+  - id: WR-09
+    severity: warning
+    disposition: open
+    title: "Main-window Help scrolls a visible guide back to the heading when the asked topic is the owner's own place, contradicting the documented \"only brought to the front\""
+  - id: WR-10
+    severity: warning
+    disposition: open
+    title: "Clicking the already-current asked row is neither saved nor clears the asked-topic flag, so the next Help pulls the owner to a different place"
   - id: IN-07
     severity: info
     disposition: open
@@ -35,6 +43,14 @@ findings:
     severity: info
     disposition: open
     title: "Test coupling and brittle negative assertions"
+  - id: IN-12
+    severity: info
+    disposition: open
+    title: "Any key press on the menu ends the hold mid-drag, including bare modifier keys"
+  - id: IN-13
+    severity: info
+    disposition: open
+    title: "Selected-row delegate depends on `option.widget` and on the click-through tests rely on sleeps"
   - id: WR-01
     severity: warning
     disposition: open
@@ -79,9 +95,9 @@ findings:
     severity: info
     disposition: open
     title: "The Qt teardown hook can hide a hung worker for 60 s per widget"
-open: 19
-total: 19
-recorded: 2026-11-04T18:35:59.062Z
+open: 23
+total: 23
+recorded: 2026-11-11T00:30:24.246Z
 ---
 
 # Phase 12: Code Review Disposition
@@ -91,11 +107,15 @@ recorded: 2026-11-04T18:35:59.062Z
 | WR-06 | warning | open | - |
 | WR-07 | warning | open | - |
 | WR-08 | warning | open | - |
+| WR-09 | warning | open | - |
+| WR-10 | warning | open | - |
 | IN-07 | info | open | - |
 | IN-08 | info | open | - |
 | IN-09 | info | open | - |
 | IN-10 | info | open | - |
 | IN-11 | info | open | - |
+| IN-12 | info | open | - |
+| IN-13 | info | open | - |
 | WR-01 | warning | open | - (not in the current review) |
 | IN-01 | info | open | - (not in the current review) |
 | IN-02 | info | open | - (not in the current review) |
