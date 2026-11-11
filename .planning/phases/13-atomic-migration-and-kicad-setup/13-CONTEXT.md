@@ -44,6 +44,7 @@ The target count is therefore no longer 9 (see D-04).
 - **D-03:** **Parts already in an `Atomic_` library are listed too.** They are checked like every other part.
   - If the suggestion differs from their current library, the suggestion is pre-selected and the current library stays one pick away. Example: the crystal CM315D32768DZFT moves from `Atomic_Oscillator` to `Atomic_Crystal`, per the LIBRARY-NAMING §4 rule "passive crystals: `Crystal`".
   - An `Atomic_` library emptied by such moves is removed, like an emptied v1 library.
+  - **Amended 2026-11-11 (planning):** the crystal example is withdrawn. `Atomic_Crystal` is not a legal name, because KiCad 10 has no `Crystal` symbol library and `stems.name_verdict` refuses it. CM315D32768DZFT **stays in `Atomic_Oscillator`**. No crystal rule and no naming-rule change are added. See D-22.
 - **D-04:** **There is no fixed library count.** Success means:
   - no v1-named library is left;
   - each part sits in the library the preview showed;
@@ -140,8 +141,21 @@ The target count is therefore no longer 9 (see D-04).
   - A description already present in an existing table entry is kept, not overwritten.
   - This applies to Generate and to the post-install add-only entry alike, since both go through `_format_entry`.
 
+### Planning-time decisions (owner, 2026-11-11, after research)
+- **D-22:** **The crystal CM315D32768DZFT stays in `Atomic_Oscillator`** (D-03 amendment). The `Atomic_Crystal` row in Specifics is withdrawn. The naming rule (LIB-05, official KiCad stems only) is not widened.
+- **D-23:** **A footprint with several model blocks keeps every block and every model file under its own name.** Nothing is deduplicated, renamed or deleted, even when the files are byte-identical. Each `(model ...)` path is only rewritten to `${CUSTOM_3DMODEL_DIR}/<its own file name>`.
+  - The D-09 rename to `<MPN>.<ext>` applies only to a footprint's single model.
+  - Live case: `XCVR_NORA-W106-00B` lists `NORA-W106-00B.step` and `NORA-W106-10B.step`, which are byte-identical. Both NORA symbols link it. Both files follow the MPN naming convention, so both stay.
+  - Several model blocks are neither an atomic-rule failure nor a leftover row. The importer's "extra_models" warning must not block the migration.
+- **D-24:** **Tables are regenerated behind a "Generate Tables" button in the migration Result view, not automatically.** The button calls the existing Generate path with every new `Atomic_` library selected first (research P-01: a plain rescan unchecks them). The path-variable confirm and the table backups therefore behave as today.
+- **D-25:** **The migration window is planned from D-15 directly.** There is no separate UI design contract (UI-SPEC).
+
 ### Claude's Discretion
-- **After Run:** the order is rescan, then table regeneration (old managed entries removed, new ones added) through the existing Generate path with its confirmations, then the Phase 11 commit panel offering one `Custom` commit plus the parent ref. The commit gate (GIT-06) must accept a commit that holds deletions and renames. The planner decides whether the tables regenerate automatically after Run or behind a "Generate Tables" button in the Result view, as long as nothing is written to KiCad's config without its confirm.
+- **Research defaults the owner did not override** (13-RESEARCH.md Open Questions 2, 3, 5):
+  - ICM-42688-P may be mis-suggested as `Atomic_Timer`. Phase 10 suggestion behaviour is not changed; the owner corrects it in the preview. A test proves that a changed library then passes the gate.
+  - The default MPN is blanked whenever two or more parts of the migration would get the same default MPN (research A6; this catches the four LTC2954 symbols). MAX17048G/X keep Value as MPN per D-05.
+  - The chooser pins (D-18) come from the tables in the Destination folder, and the log names the folder read.
+- **After Run:** the order is rescan, then table regeneration through the D-24 button (old managed entries removed, new ones added), then the Phase 11 commit panel offering one `Custom` commit plus the parent ref. The commit gate (GIT-06) must accept a commit that holds deletions and renames. Nothing is written to KiCad's config without its confirm.
 - **`pre-atomic` tag:** it is created after the MIG-01 clean check and before the first write. It is a local, lightweight or annotated tag, never pushed. If the tag already exists and points at HEAD, it is reused. If it points elsewhere, the migration refuses with a plain reason and the manual command. `gitops.ALLOWED_SUBCOMMANDS` has no `tag` (and no `rm`/`mv`) today, so the planner adds what is needed under the existing allow-list rules.
 - **Transaction:** it reuses the importer's applier pattern (`importer/applier.py`: app-data backups, ordered atomic writes, verify, roll back on any `BaseException`, stale-file re-check before each write) or the `atomic_fixes.apply_preview` pattern. Deletes and moves are part of the same rollback.
 - **Rule failures with edit boxes:** these reuse `atomic_fixes.complete_fill` / the Check Atomic Parts fill-ins where they fit.
@@ -239,7 +253,7 @@ The target count is therefore no longer 9 (see D-04).
   | CSD85301Q2 | `Atomic_Transistor_FET` |
   | NORA-W106-00B/10B | `Atomic_RF_Module` |
   | ATXK-H14 | `Atomic_Oscillator` |
-  | CM315D32768DZFT | `Atomic_Crystal` |
+  | CM315D32768DZFT | `Atomic_Oscillator` (stays; D-22) |
   | RS3-1212S/H3 | `Atomic_Converter_DCDC_Isolated` |
   | UHD1110 (Cree) | `Atomic_LED` |
 
