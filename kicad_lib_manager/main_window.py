@@ -891,6 +891,7 @@ class MainWindow(QMainWindow):
                     else None
                 ),
                 repo_root=REPO_ROOT,
+                stock=self._stock_descriptions(),
             )
             self._log_issues(issues)
             text, severity = self._tables_outcome(issues)
@@ -915,6 +916,7 @@ class MainWindow(QMainWindow):
             ),
             repo_root=REPO_ROOT,
             add_missing=False,
+            stock=self._stock_descriptions(),
         )
         not_listed = {issue.text for issue in issues if issue.code == "table.not_listed"}
         missing = [

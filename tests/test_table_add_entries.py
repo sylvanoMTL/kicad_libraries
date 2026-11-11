@@ -29,9 +29,10 @@ FP_LF = (
 
 
 def _entry(rel: str, eol: bytes) -> bytes:
+    descr = tg.library_description(NICK, rel, {})
     line = (
         f'  (lib (name "{NICK}")(type "KiCad")(uri "${{KICAD_LIB_GITHUB}}/{rel}")'
-        f'(options "")(descr ""))'
+        f'(options "")(descr "{descr}"))'
     )
     return line.encode("utf-8") + eol
 
@@ -218,9 +219,10 @@ def test_footprint_only_leaves_the_symbol_table_alone(tmp_path):
 
     issues = tg.add_library_entries(tmp_path, footprint=(SHARED, SHARED_REL), repo_root=tmp_path)
 
+    descr = tg.library_description(SHARED, SHARED_REL, {})
     fp_line = (
         f'  (lib (name "{SHARED}")(type "KiCad")(uri "${{KICAD_LIB_GITHUB}}/{SHARED_REL}")'
-        f'(options "")(descr ""))\n'
+        f'(options "")(descr "{descr}"))\n'
     ).encode()
     assert (tmp_path / "fp-lib-table").read_bytes() == FP_LF[: -len(b")\n")] + fp_line + b")\n"
     assert (tmp_path / "sym-lib-table").read_bytes() == SYM_CRLF

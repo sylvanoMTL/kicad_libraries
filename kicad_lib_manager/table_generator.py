@@ -197,8 +197,12 @@ def _merge_table(tag: str, existing: LoadedFile | None,
             f"{filename}: '{lib.nickname}' is already defined by an external entry "
             f"({clash.uri}); kept it and did not add {_MANAGED_MARKER}{lib.rel_path}",
         ))
+    # D-20: a description already present in an existing managed entry is kept as it is
+    kept = {
+        _tail(entry): entry.descr for entry in managed if entry.descr and entry.descr.strip()
+    }
     block = "".join(
-        f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}', library_description(lib.nickname, lib.rel_path, stock))}{eol}"
+        f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}', kept.get(lib.rel_path) or library_description(lib.nickname, lib.rel_path, stock))}{eol}"
         for lib in generated
     )
 
@@ -361,7 +365,8 @@ def _same_rel(a: str, b: str, *, fold: bool | None = None) -> bool:
 
 def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
                backup_number: int, issues: list[Issue], *, repo_root: Path,
-               add_missing: bool = True, fold: bool | None = None) -> str:
+               add_missing: bool = True, fold: bool | None = None,
+               stock: Mapping[str, str] | None = None) -> str:
     """Add or repoint one managed entry in one table.
 
     Returns "added", "listed", "updated", "skipped" or "missing" (add_missing is false and the
@@ -374,7 +379,9 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
     if not path.exists():
         if not add_missing:
             return "missing"
-        template = _merge_table(tag, None, [lib_cls(nickname, rel_path, "", selected=True)])
+        template = _merge_table(
+            tag, None, [lib_cls(nickname, rel_path, "", selected=True)], stock=stock
+        )
         failure = fsutil.atomic_write_text(path, template.content, bom=False)
         if failure is not None:
             issues.append(failure)
@@ -393,7 +400,7 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
         if not add_missing:
             return "missing"
         new_text = _merge_table(
-            tag, None, [lib_cls(nickname, rel_path, "", selected=True)]
+            tag, None, [lib_cls(nickname, rel_path, "", selected=True)], stock=stock
         ).content
     else:
         table = kicad_files.lib_table(loaded.root)
@@ -438,7 +445,8 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
         elif not add_missing:
             return "missing"
         else:
-            block = f"  {_entry_text(nickname, uri)}{loaded.source.eol}"
+            descr = library_description(nickname, rel_path, stock or {})
+            block = f"  {_entry_text(nickname, uri, descr)}{loaded.source.eol}"
             new_text = apply_edits(
                 text, [_insert_before_close(text, table.node, loaded.source.eol, block)]
             )
@@ -458,7 +466,8 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
 
 def add_library_entries(dest_folder: Path, *, symbol: tuple[str, str] | None = None,
                         footprint: tuple[str, str] | None = None, repo_root: Path,
-                        add_missing: bool = True, fold: bool | None = None) -> list[Issue]:
+                        add_missing: bool = True, fold: bool | None = None,
+                        stock: Mapping[str, str] | None = None) -> list[Issue]:
     """Add managed entries to sym-lib-table and fp-lib-table, each under its own nickname.
 
     symbol and footprint are (nickname, repo-relative posix path) pairs; only the ones given are
@@ -486,7 +495,7 @@ def add_library_entries(dest_folder: Path, *, symbol: tuple[str, str] | None = N
     for tag, (nickname, rel_path) in requested:
         filename = _TABLE_FILES[tag]
         outcome = _add_entry(tag, dest_folder / filename, nickname, rel_path, backup_number, issues,
-                             repo_root=repo_root, add_missing=add_missing, fold=fold)
+                             repo_root=repo_root, add_missing=add_missing, fold=fold, stock=stock)
         outcomes.append((filename, nickname, outcome, rel_path))
 
     if len(outcomes) == 2 and all(outcome == "added" for _, _, outcome, _ in outcomes):
