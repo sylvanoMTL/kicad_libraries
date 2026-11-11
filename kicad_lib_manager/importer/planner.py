@@ -154,8 +154,8 @@ def _parse_vendor(pf: PackageFile) -> LoadedFile | Issue:
 
 
 @dataclass(frozen=True)
-class _Fields:
-    """What one symbol of the incoming unit is given (D-11 to D-15)."""
+class SymbolFields:
+    """What one symbol of the incoming unit is given (D-11 to D-15); used by build_plan and by the Atomic_ migration."""
 
     footprint: str
     filters: str
@@ -177,11 +177,12 @@ class _Fields:
     keyword_source: Callable[[str, str, str], Sequence[str]] | None = None
 
 
-def _edit_symbol(
-    work: LoadedFile, ref: SymbolRef, new_name: str, fields: _Fields, version: int | None, rules: FieldRules
+def edit_symbol(
+    work: LoadedFile, ref: SymbolRef, new_name: str, fields: SymbolFields, version: int | None, rules: FieldRules
 ) -> tuple[list[Edit], str, list[FieldChange], tuple[str, str] | None]:
     """The span edits that turn one vendor symbol into its installed form, the MPN it ends up with, the field changes
-    and, for a symbol given keywords, (the keywords the generators make, the keywords written).
+    and, for a symbol given keywords, (the keywords the generators make, the keywords written). Used by
+    build_plan and by the Atomic_ migration.
 
     Every property receives at most one edit, computed from its final value. New properties are
     hidden copies of an existing hidden one in the style of `version`. Properties the rules call
@@ -338,7 +339,7 @@ def _put_keywords(
     node: Node,
     old_name: str,
     new_name: str,
-    fields: _Fields,
+    fields: SymbolFields,
     source: Callable[[str, str, str], Sequence[str]],
     mpn: str,
     put: Callable[[str, str], None],
@@ -370,8 +371,9 @@ def _put_keywords(
     return generated, written
 
 
-def _unit_text(vendor: LoadedFile, unit: list[SymbolRef]) -> str:
-    """The vendor file cut down to the unit and ordered parent first, whatever order the vendor wrote.
+def unit_text(vendor: LoadedFile, unit: list[SymbolRef]) -> str:
+    """The vendor file cut down to the unit and ordered parent first, whatever order the vendor wrote; used by
+    build_plan and by the Atomic_ migration.
 
     KiCad refuses a library that places a derived symbol before its parent (spike S8), and
     kicad-cli would fail on the unit text for that reason before any later step could fix it.
@@ -430,8 +432,9 @@ class _Rendered(NamedTuple):
 
 
 @dataclass(frozen=True)
-class _SymbolSource:
-    """The file the chosen symbol's block is taken from, and the format version of that text (D-01)."""
+class SymbolSource:
+    """The file the chosen symbol's block is taken from, and the format version of that text (D-01); used by
+    build_plan and by the Atomic_ migration."""
 
     loaded: LoadedFile
     normalised: bool
@@ -462,20 +465,21 @@ def _broken_parent(root: Node, name: str) -> str:
     return current
 
 
-def _existing_source(
+def existing_source(
     vendor: LoadedFile,
     unit_text: str,
     name: str,
     library: str,
     target_version: int | None,
     tools: ToolContext,
-) -> tuple[_SymbolSource | None, list[Issue]]:
-    """Apply the D-01 table for a symbol going into an existing library.
+) -> tuple[SymbolSource | None, list[Issue]]:
+    """Apply the D-01 table for a symbol going into an existing library; used by build_plan and by the Atomic_
+    migration.
 
     Returns the source of the block to splice, or None with an ERROR in the issues.
     """
     incoming = file_version(vendor.root)
-    as_is = _SymbolSource(vendor, False, incoming)
+    as_is = SymbolSource(vendor, False, incoming)
     if incoming is None or target_version is None:
         unread = "the incoming symbol" if incoming is None else library
         return as_is, [Issue(
@@ -506,7 +510,7 @@ def _existing_source(
         loaded = _loaded_text(result.text, False, "the KiCad command-line tool's output", "install.cli_gate_failed")
         if isinstance(loaded, Issue):
             return None, [loaded]
-        return _SymbolSource(loaded, True, target_version), []
+        return SymbolSource(loaded, True, target_version), []
     written = "an unreadable format" if result.version is None else f"format {result.version}"
     return as_is, [Issue(
         Severity.WARNING,
@@ -515,13 +519,14 @@ def _existing_source(
     )]
 
 
-def _new_source(
+def new_source(
     vendor: LoadedFile,
     unit_text: str,
     name: str,
     tools: ToolContext,
-) -> tuple[_SymbolSource | None, list[Issue]]:
-    """The whole new .kicad_sym of a library that does not exist yet, holding only the chosen unit (D-04).
+) -> tuple[SymbolSource | None, list[Issue]]:
+    """The whole new .kicad_sym of a library that does not exist yet, holding only the chosen unit (D-04); used
+    by build_plan and by the Atomic_ migration.
 
     With kicad-cli the header is the installed KiCad's own; without it the vendor file's header is
     kept so the version and the content agree.
@@ -530,7 +535,7 @@ def _new_source(
         loaded = _loaded_text(unit_text, vendor.source.bom, "the incoming symbol", "install.source_unreadable")
         if isinstance(loaded, Issue):
             return None, [loaded]
-        return _SymbolSource(loaded, False, file_version(vendor.root)), [_cli_not_found()]
+        return SymbolSource(loaded, False, file_version(vendor.root)), [_cli_not_found()]
     result = kicad_cli.upgrade_symbol_text(
         tools.kicad_cli, unit_text, name=name, runner=tools.cli_runner, timeout=tools.cli_timeout
     )
@@ -539,7 +544,7 @@ def _new_source(
     loaded = _loaded_text(result.text, False, "the KiCad command-line tool's output", "install.cli_gate_failed")
     if isinstance(loaded, Issue):
         return None, [loaded]
-    return _SymbolSource(loaded, result.changed, result.version), []
+    return SymbolSource(loaded, result.changed, result.version), []
 
 
 def _cli_not_found() -> Issue:
@@ -1022,11 +1027,12 @@ def build_plan(
         fp_refs.append(fp_ref)
 
     # D-01: the vendor text is normalised once, on the unrenamed unit, so later edits never re-run kicad-cli
-    unit_text = _unit_text(vendor_sym, unit)
+    # (named unit_source_text, not unit_text, so this local assignment never shadows the public unit_text function)
+    unit_source_text = unit_text(vendor_sym, unit)
     if target is not None:
-        source, version_issues = _existing_source(vendor_sym, unit_text, sym_item.name, library, file_version(target.root), tools)
+        source, version_issues = existing_source(vendor_sym, unit_source_text, sym_item.name, library, file_version(target.root), tools)
     else:
-        source, version_issues = _new_source(vendor_sym, unit_text, sym_item.name, tools)
+        source, version_issues = new_source(vendor_sym, unit_source_text, sym_item.name, tools)
     issues.extend(version_issues)
     if source is None:
         return refuse()
@@ -1072,7 +1078,7 @@ def build_plan(
                     f"The datasheet link points to {aggregator}, a distributor or library site, "
                     "so it was not used to find the manufacturer",
                 ))
-    base_fields = _Fields(
+    base_fields = SymbolFields(
         footprint="",
         filters="",
         manufacturer=manufacturer,
@@ -1152,7 +1158,7 @@ def build_plan(
         keyword_texts = ("", "")
         for ref in work_unit:
             is_chosen = ref is work_unit[-1]
-            symbol_edits, mpn, symbol_changes, texts = _edit_symbol(
+            symbol_edits, mpn, symbol_changes, texts = edit_symbol(
                 work, ref, names[ref.name], chosen_fields if is_chosen else fields, style, candidate.field_rules
             )
             all_edits.extend(symbol_edits)
