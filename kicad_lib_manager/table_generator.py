@@ -1,5 +1,6 @@
 import os
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -13,11 +14,49 @@ _MANAGED_MARKER = f"${{{ENV_VAR}}}/"
 
 _TABLE_FILES = {"sym_lib_table": "sym-lib-table", "fp_lib_table": "fp-lib-table"}
 
-def _entry_text(name: str, uri: str) -> str:
+# D-20 description rules
+ATOMIC_FOOTPRINTS_DESCRIPTION = "Atomic part footprints (own and vendor)"
+ATOMIC_DESCRIPTION_PREFIX = "Atomic parts: "
+
+
+def _entry_text(name: str, uri: str, descr: str = "") -> str:
     return (
         f'(lib (name {quote(name)})(type {quote("KiCad")})'
-        f'(uri {quote(uri)})(options {quote("")})(descr {quote("")}))'
+        f'(uri {quote(uri)})(options {quote("")})(descr {quote(descr)}))'
     )
+
+
+def stock_descriptions(template_table: Path | None) -> dict[str, str]:
+    """Read KiCad's own per-stem descriptions from its stock lib table (D-20).
+
+    Never raises: None, a missing path, an unreadable file, or a file without a lib
+    table all give {}, so an Atomic_ library falls back to its stem's own words.
+    """
+    if template_table is None:
+        return {}
+    loaded = kicad_files.load(template_table)
+    if isinstance(loaded, Issue):
+        return {}
+    table = kicad_files.lib_table(loaded.root)
+    if table is None:
+        return {}
+    result: dict[str, str] = {}
+    for entry in table.entries:
+        if not entry.name or not entry.descr or not entry.descr.strip():
+            continue
+        result[entry.name] = " ".join(entry.descr.split())
+    return result
+
+
+def library_description(nickname: str, rel_path: str, stock: Mapping[str, str]) -> str:
+    """The D-20 description text for one library entry."""
+    if nickname == "Atomic_Footprints":
+        return ATOMIC_FOOTPRINTS_DESCRIPTION
+    if nickname.startswith("Atomic_"):
+        stem = nickname[len("Atomic_"):]
+        return ATOMIC_DESCRIPTION_PREFIX + stock.get(stem, stem.replace("_", " "))
+    source = rel_path.split("/", 1)[0]
+    return f"{source}: {nickname.replace('_', ' ')}"
 
 
 def _whole_line(text: str, start: int, end: int) -> tuple[int, int] | None:
@@ -78,13 +117,14 @@ def _insert_before_close(text: str, table_node: Node, eol: str, block: str) -> E
 
 
 def _merge_table(tag: str, existing: LoadedFile | None,
-                 libs: list) -> MergeResult | Issue:
+                 libs: list, *, stock: Mapping[str, str] | None = None) -> MergeResult | Issue:
     """Splice the selected libraries into an existing table.
 
     Only entries owned by this tool (URI holds the managed marker) are removed;
     every other byte of the existing file is kept as it is.
     """
     filename = _TABLE_FILES[tag]
+    stock = stock or {}
     selected = [lib for lib in libs if lib.selected]
 
     seen: dict[str, SymbolLibrary | FootprintLibrary] = {}
@@ -102,7 +142,7 @@ def _merge_table(tag: str, existing: LoadedFile | None,
     if existing is None or not existing.source.text.strip(" \t\r\n"):
         lines = [f"({tag}\n"]
         lines += [
-            f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}')}\n"
+            f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}', library_description(lib.nickname, lib.rel_path, stock))}\n"
             for lib in selected
         ]
         lines.append(")\n")
@@ -157,8 +197,12 @@ def _merge_table(tag: str, existing: LoadedFile | None,
             f"{filename}: '{lib.nickname}' is already defined by an external entry "
             f"({clash.uri}); kept it and did not add {_MANAGED_MARKER}{lib.rel_path}",
         ))
+    # D-20: a description already present in an existing managed entry is kept as it is
+    kept = {
+        _tail(entry): entry.descr for entry in managed if entry.descr and entry.descr.strip()
+    }
     block = "".join(
-        f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}')}{eol}"
+        f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}', kept.get(lib.rel_path) or library_description(lib.nickname, lib.rel_path, stock))}{eol}"
         for lib in generated
     )
 
@@ -209,13 +253,15 @@ def _merge_table(tag: str, existing: LoadedFile | None,
 
 
 def generate_sym_lib_table(libs: list[SymbolLibrary],
-                           existing: LoadedFile | None = None) -> MergeResult | Issue:
-    return _merge_table("sym_lib_table", existing, libs)
+                           existing: LoadedFile | None = None,
+                           *, stock: Mapping[str, str] | None = None) -> MergeResult | Issue:
+    return _merge_table("sym_lib_table", existing, libs, stock=stock)
 
 
 def generate_fp_lib_table(libs: list[FootprintLibrary],
-                          existing: LoadedFile | None = None) -> MergeResult | Issue:
-    return _merge_table("fp_lib_table", existing, libs)
+                          existing: LoadedFile | None = None,
+                          *, stock: Mapping[str, str] | None = None) -> MergeResult | Issue:
+    return _merge_table("fp_lib_table", existing, libs, stock=stock)
 
 
 def _next_backup_number(folder: Path) -> int:
@@ -235,7 +281,8 @@ def _next_backup_number(folder: Path) -> int:
 
 def write_tables(dest_folder: Path,
                  sym_libs: list[SymbolLibrary],
-                 fp_libs: list[FootprintLibrary]) -> list[Issue]:
+                 fp_libs: list[FootprintLibrary],
+                 *, stock: Mapping[str, str] | None = None) -> list[Issue]:
     issues: list[Issue] = []
     try:
         dest_folder.mkdir(parents=True, exist_ok=True)
@@ -261,7 +308,7 @@ def write_tables(dest_folder: Path,
             existing = loaded
             bom = loaded.source.bom
 
-        result = _merge_table(tag, existing, libs)
+        result = _merge_table(tag, existing, libs, stock=stock)
         if isinstance(result, Issue):
             issues.append(result)
             continue
@@ -318,7 +365,8 @@ def _same_rel(a: str, b: str, *, fold: bool | None = None) -> bool:
 
 def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
                backup_number: int, issues: list[Issue], *, repo_root: Path,
-               add_missing: bool = True, fold: bool | None = None) -> str:
+               add_missing: bool = True, fold: bool | None = None,
+               stock: Mapping[str, str] | None = None) -> str:
     """Add or repoint one managed entry in one table.
 
     Returns "added", "listed", "updated", "skipped" or "missing" (add_missing is false and the
@@ -331,7 +379,9 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
     if not path.exists():
         if not add_missing:
             return "missing"
-        template = _merge_table(tag, None, [lib_cls(nickname, rel_path, "", selected=True)])
+        template = _merge_table(
+            tag, None, [lib_cls(nickname, rel_path, "", selected=True)], stock=stock
+        )
         failure = fsutil.atomic_write_text(path, template.content, bom=False)
         if failure is not None:
             issues.append(failure)
@@ -350,7 +400,7 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
         if not add_missing:
             return "missing"
         new_text = _merge_table(
-            tag, None, [lib_cls(nickname, rel_path, "", selected=True)]
+            tag, None, [lib_cls(nickname, rel_path, "", selected=True)], stock=stock
         ).content
     else:
         table = kicad_files.lib_table(loaded.root)
@@ -395,7 +445,8 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
         elif not add_missing:
             return "missing"
         else:
-            block = f"  {_entry_text(nickname, uri)}{loaded.source.eol}"
+            descr = library_description(nickname, rel_path, stock or {})
+            block = f"  {_entry_text(nickname, uri, descr)}{loaded.source.eol}"
             new_text = apply_edits(
                 text, [_insert_before_close(text, table.node, loaded.source.eol, block)]
             )
@@ -415,7 +466,8 @@ def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
 
 def add_library_entries(dest_folder: Path, *, symbol: tuple[str, str] | None = None,
                         footprint: tuple[str, str] | None = None, repo_root: Path,
-                        add_missing: bool = True, fold: bool | None = None) -> list[Issue]:
+                        add_missing: bool = True, fold: bool | None = None,
+                        stock: Mapping[str, str] | None = None) -> list[Issue]:
     """Add managed entries to sym-lib-table and fp-lib-table, each under its own nickname.
 
     symbol and footprint are (nickname, repo-relative posix path) pairs; only the ones given are
@@ -443,7 +495,7 @@ def add_library_entries(dest_folder: Path, *, symbol: tuple[str, str] | None = N
     for tag, (nickname, rel_path) in requested:
         filename = _TABLE_FILES[tag]
         outcome = _add_entry(tag, dest_folder / filename, nickname, rel_path, backup_number, issues,
-                             repo_root=repo_root, add_missing=add_missing, fold=fold)
+                             repo_root=repo_root, add_missing=add_missing, fold=fold, stock=stock)
         outcomes.append((filename, nickname, outcome, rel_path))
 
     if len(outcomes) == 2 and all(outcome == "added" for _, _, outcome, _ in outcomes):

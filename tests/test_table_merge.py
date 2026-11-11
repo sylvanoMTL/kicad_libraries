@@ -26,16 +26,20 @@ def _fp(name: str, selected: bool = True) -> FootprintLibrary:
 
 
 def _sym_entry(name: str) -> str:
+    rel = f"Custom/Symbols/{name}.kicad_sym"
+    descr = tg.library_description(name, rel, {})
     return (
         f'(lib (name "{name}")(type "KiCad")'
-        f'(uri "${{KICAD_LIB_GITHUB}}/Custom/Symbols/{name}.kicad_sym")(options "")(descr ""))'
+        f'(uri "${{KICAD_LIB_GITHUB}}/{rel}")(options "")(descr "{descr}"))'
     )
 
 
 def _fp_entry(name: str) -> str:
+    rel = f"Custom/Footprints/{name}.pretty"
+    descr = tg.library_description(name, rel, {})
     return (
         f'(lib (name "{name}")(type "KiCad")'
-        f'(uri "${{KICAD_LIB_GITHUB}}/Custom/Footprints/{name}.pretty")(options "")(descr ""))'
+        f'(uri "${{KICAD_LIB_GITHUB}}/{rel}")(options "")(descr "{descr}"))'
     )
 
 
@@ -73,10 +77,16 @@ def test_flags_fixture_keeps_crlf_and_regenerates_managed_entries():
 def test_reordered_fixture_replaces_two_line_managed_entry_and_keeps_external_bytes():
     loaded = _load("reordered.fp-lib-table")
     result = tg.generate_fp_lib_table([_fp("Reordered")], loaded)
+    # The existing entry's own non-empty description ("fields out of order") is kept (D-20)
+    kept_entry = (
+        '(lib (name "Reordered")(type "KiCad")'
+        '(uri "${KICAD_LIB_GITHUB}/Custom/Footprints/Reordered.pretty")'
+        '(options "")(descr "fields out of order"))'
+    )
     assert result.content == (
         "(fp_lib_table\n"
         "  (version 7)\n"
-        f"  {_fp_entry('Reordered')}\n"
+        f"  {kept_entry}\n"
         '  (lib (name "Minimal")(type "KiCad")(uri "/abs/path/Minimal.pretty"))\n'
         ")\n"
     )

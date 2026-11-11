@@ -18,6 +18,7 @@ from PySide6.QtWidgets import QMessageBox
 from zipfixtures import footprint_library_for
 
 from kicad_lib_manager import library_scanner, main_window, settings
+from kicad_lib_manager import table_generator as tg
 from kicad_lib_manager.library_scanner import ConfirmAnswer
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.plan import InstallResult, ToolContext
@@ -383,9 +384,12 @@ def test_main_window_rescans_after_import_dialog_fixes(qtbot, make_window, tmp_p
 # -- tables after the post-install rescan (plan 05-04, D-16, D-17) ---------------------------
 
 def _managed(nick: str, rel: str) -> str:
+    # D-20: a generated managed entry carries the description Generate/add-only would give it;
+    # the window under test has no stock table, so stock is always {}
+    descr = tg.library_description(nick, rel, {})
     return (
         f'  (lib (name "{nick}")(type "KiCad")(uri "${{KICAD_LIB_GITHUB}}/{rel}")'
-        f'(options "")(descr ""))\n'
+        f'(options "")(descr "{descr}"))\n'
     )
 
 
