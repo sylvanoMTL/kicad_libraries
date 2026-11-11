@@ -21,6 +21,7 @@ from kicad_lib_manager.importer.migration import applier as applier_module
 from kicad_lib_manager.importer.migration.applier import apply_migration
 from kicad_lib_manager.importer.migration.plan import MigrationOp, MigrationPlan
 from kicad_lib_manager.importer.plan import ToolContext
+from kicad_lib_manager.models import Issue, Severity
 
 # The backup-pruning limit this applier module is specified to use (migration/applier.py
 # MIGRATION_BACKUPS_KEPT); kept as a literal here so this test module can import and collect
@@ -276,3 +277,225 @@ def test_verify_after_ops(tmp_path, monkeypatch):
     assert result.ok is False
     assert any(i.code == "migration.verify_failed" for i in result.issues)
     assert not target.exists()  # rolled back: it did not exist before this transaction
+
+
+# -- Task 3: rollback of every op kind, interrupts, locked files, kept folders --------------------
+
+
+@pytest.mark.parametrize("kind", ["mkdir", "write", "delete", "rmdir"])
+def test_failure_at_each_op_kind_rolls_back(tmp_path, monkeypatch, kind):
+    layout = RepoLayout.for_repo(tmp_path)
+    layout.symbols_dir.mkdir(parents=True, exist_ok=True)
+    layout.footprints_dir.mkdir(parents=True, exist_ok=True)
+
+    # A benign op that always succeeds first, so every kind under test has at least one earlier op.
+    warm_up_target = layout.symbols_dir / "WarmUp.kicad_sym"
+    warm_up_op = MigrationOp("write", warm_up_target, "Custom/Symbols/WarmUp.kicad_sym", data=b"warm", base_sha256=None)
+
+    write_target = layout.symbols_dir / "Atomic_X.kicad_sym"
+    write_target.write_bytes(b"existing-content")
+    write_op = MigrationOp(
+        "write", write_target, "Custom/Symbols/Atomic_X.kicad_sym", data=b"new-content", base_sha256=_sha(b"existing-content")
+    )
+
+    delete_target = layout.symbols_dir / "OldLib.kicad_sym"
+    delete_target.write_bytes(b"old-content")
+    delete_op = MigrationOp("delete", delete_target, "Custom/Symbols/OldLib.kicad_sym", base_sha256=_sha(b"old-content"))
+
+    mkdir_target = layout.footprints_dir / "Atomic_Footprints.pretty"
+    mkdir_op = MigrationOp("mkdir", mkdir_target, "Custom/Footprints/Atomic_Footprints.pretty")
+
+    rmdir_target = layout.footprints_dir / "ToRemove.pretty"
+    rmdir_target.mkdir()
+    rmdir_op = MigrationOp("rmdir", rmdir_target, "Custom/Footprints/ToRemove.pretty")
+
+    by_kind = {"mkdir": mkdir_op, "write": write_op, "delete": delete_op, "rmdir": rmdir_op}
+    target_op = by_kind[kind]
+    plan = _plan(layout, (warm_up_op, target_op))
+
+    before_files = digest_tree(layout.custom_dir)
+
+    if kind == "mkdir":
+        real_mkdir = Path.mkdir
+
+        def failing(self, *a, **k):
+            if self == mkdir_target:
+                raise OSError("simulated mkdir failure")
+            return real_mkdir(self, *a, **k)
+
+        monkeypatch.setattr(Path, "mkdir", failing)
+    elif kind == "write":
+        real_write = fsutil.atomic_write_bytes
+
+        def failing(path, data, **k):
+            if path == write_target:
+                return Issue(Severity.ERROR, "fs.write_failed", "simulated write failure")
+            return real_write(path, data, **k)
+
+        monkeypatch.setattr(applier_module.fsutil, "atomic_write_bytes", failing)
+    elif kind == "delete":
+        real_unlink = Path.unlink
+
+        def failing(self, *a, **k):
+            if self == delete_target:
+                raise OSError("simulated delete failure")
+            return real_unlink(self, *a, **k)
+
+        monkeypatch.setattr(Path, "unlink", failing)
+    else:
+        real_rmdir = Path.rmdir
+
+        def failing(self, *a, **k):
+            if self == rmdir_target:
+                raise OSError("simulated rmdir failure")
+            return real_rmdir(self, *a, **k)
+
+        monkeypatch.setattr(Path, "rmdir", failing)
+
+    result = apply_migration(plan, backup_root=tmp_path / "backups")
+
+    assert result.ok is False
+    rolled_back = next(i for i in result.issues if i.code == "migration.rolled_back")
+    assert rolled_back.severity == Severity.INFO
+    after_files = digest_tree(layout.custom_dir)
+    assert before_files == after_files
+
+
+def test_interrupt_rolls_back_and_reraises(tmp_path, monkeypatch):
+    layout = RepoLayout.for_repo(tmp_path)
+    layout.symbols_dir.mkdir(parents=True, exist_ok=True)
+    target_a = layout.symbols_dir / "A.kicad_sym"
+    target_a.write_bytes(b"a-original")
+    target_b = layout.symbols_dir / "B.kicad_sym"
+    target_b.write_bytes(b"b-original")
+    op_a = MigrationOp("write", target_a, "Custom/Symbols/A.kicad_sym", data=b"a-new", base_sha256=_sha(b"a-original"))
+    op_b = MigrationOp("write", target_b, "Custom/Symbols/B.kicad_sym", data=b"b-new", base_sha256=_sha(b"b-original"))
+    plan = _plan(layout, (op_a, op_b))
+
+    before = digest_tree(layout.custom_dir)
+    real_write = fsutil.atomic_write_bytes
+    calls = {"n": 0}
+
+    def interrupting(path, data, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise KeyboardInterrupt()
+        return real_write(path, data, **kwargs)
+
+    monkeypatch.setattr(applier_module.fsutil, "atomic_write_bytes", interrupting)
+
+    with pytest.raises(KeyboardInterrupt):
+        apply_migration(plan, backup_root=tmp_path / "backups")
+
+    after = digest_tree(layout.custom_dir)
+    assert before == after
+
+
+def test_locked_file_delete_retries_then_rolls_back(tmp_path, monkeypatch):
+    layout = RepoLayout.for_repo(tmp_path)
+    layout.symbols_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(applier_module.time, "sleep", lambda s: None)
+
+    # Two PermissionErrors then success: the delete completes.
+    retry_target = layout.symbols_dir / "RetryMe.kicad_sym"
+    retry_target.write_bytes(b"retry-content")
+    retry_op = MigrationOp("delete", retry_target, "Custom/Symbols/RetryMe.kicad_sym", base_sha256=_sha(b"retry-content"))
+    retry_plan = _plan(layout, (retry_op,))
+
+    real_unlink = Path.unlink
+    retry_calls = {"n": 0}
+
+    def flaky(self, *a, **k):
+        if self == retry_target:
+            retry_calls["n"] += 1
+            if retry_calls["n"] <= 2:
+                raise PermissionError(13, "in use")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", flaky)
+
+    retry_result = apply_migration(retry_plan, backup_root=tmp_path / "backups")
+
+    assert retry_result.ok, retry_result.issues
+    assert not retry_target.exists()
+    assert retry_calls["n"] == 3
+
+    # Always locked: past the retry window, the transaction rolls back with an ERROR naming the file.
+    stuck_target = layout.symbols_dir / "StuckLock.kicad_sym"
+    stuck_target.write_bytes(b"stuck-content")
+    stuck_op = MigrationOp("delete", stuck_target, "Custom/Symbols/StuckLock.kicad_sym", base_sha256=_sha(b"stuck-content"))
+    stuck_plan = _plan(layout, (stuck_op,))
+
+    def always_locked(self, *a, **k):
+        if self == stuck_target:
+            raise PermissionError(13, "in use")
+        return real_unlink(self, *a, **k)
+
+    monkeypatch.setattr(Path, "unlink", always_locked)
+
+    stuck_result = apply_migration(stuck_plan, backup_root=tmp_path / "backups")
+
+    assert stuck_result.ok is False
+    locked_issue = next(i for i in stuck_result.issues if i.code == "migration.locked")
+    assert "StuckLock.kicad_sym" in locked_issue.text
+    assert stuck_target.exists()
+
+
+def test_folder_with_unlisted_file_is_kept(tmp_path):
+    layout = RepoLayout.for_repo(tmp_path)
+    layout.footprints_dir.mkdir(parents=True, exist_ok=True)
+    pretty = layout.footprints_dir / "OldLib.pretty"
+    pretty.mkdir()
+    (pretty / "notes.txt").write_bytes(b"keep me")
+    rmdir_op = MigrationOp("rmdir", pretty, "Custom/Footprints/OldLib.pretty")
+    plan = _plan(layout, (rmdir_op,))
+
+    result = apply_migration(plan, backup_root=tmp_path / "backups")
+
+    assert result.ok, result.issues
+    assert pretty.is_dir()
+    assert (pretty / "notes.txt").read_bytes() == b"keep me"
+    kept = next(i for i in result.issues if i.code == "migration.folder_kept")
+    assert kept.severity == Severity.WARNING
+    assert "notes.txt" in kept.text
+
+
+def test_rollback_leftover_is_reported(tmp_path, monkeypatch):
+    layout = RepoLayout.for_repo(tmp_path)
+    layout.symbols_dir.mkdir(parents=True, exist_ok=True)
+    layout.footprints_dir.mkdir(parents=True, exist_ok=True)
+    target_a = layout.symbols_dir / "A.kicad_sym"
+    target_a.write_bytes(b"a-original")
+    target_b = layout.symbols_dir / "B.kicad_sym"
+    target_b.write_bytes(b"b-original")
+    doomed_dir = layout.footprints_dir / "WontMake.pretty"
+
+    op_a = MigrationOp("write", target_a, "Custom/Symbols/A.kicad_sym", data=b"a-new", base_sha256=_sha(b"a-original"))
+    op_b = MigrationOp("write", target_b, "Custom/Symbols/B.kicad_sym", data=b"b-new", base_sha256=_sha(b"b-original"))
+    op_c = MigrationOp("mkdir", doomed_dir, "Custom/Footprints/WontMake.pretty")
+    plan = _plan(layout, (op_a, op_b, op_c))
+
+    real_mkdir = Path.mkdir
+
+    def failing_mkdir(self, *args, **kwargs):
+        if self == doomed_dir:
+            raise OSError("simulated mkdir failure")
+        return real_mkdir(self, *args, **kwargs)
+
+    real_write = fsutil.atomic_write_bytes
+
+    def restore_blocker(path, data, **kwargs):
+        if path == target_a and data == b"a-original":
+            return Issue(Severity.ERROR, "fs.write_failed", "simulated restore failure")
+        return real_write(path, data, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", failing_mkdir)
+    monkeypatch.setattr(applier_module.fsutil, "atomic_write_bytes", restore_blocker)
+
+    result = apply_migration(plan, backup_root=tmp_path / "backups")
+
+    assert result.ok is False
+    leftover = next(i for i in result.issues if i.code == "migration.rollback_incomplete")
+    assert "A.kicad_sym" in leftover.text
+    assert str(result.backup_dir) in leftover.text
+    assert target_b.read_bytes() == b"b-original"
