@@ -32,6 +32,8 @@ ALLOWED = {
     "atomic_fixes": {"models", "fsutil", "kicad_files", "sexpr", "atomic_check", "kicad_process", "importer"},
     # the saved scan reused at startup (quick 261027-gg7); plain JSON beside the settings
     "scan_cache": {"models", "fsutil", "library_scanner"},
+    # the chooser setup of TBL-02 (Phase 13); same config-write contract as library_scanner
+    "kicad_setup": {"fsutil", "kicad_files", "kicad_process", "library_scanner", "models"},
 }
 
 _CODE = """
@@ -42,6 +44,7 @@ import kicad_lib_manager.fsutil, kicad_lib_manager.kicad_files
 import kicad_lib_manager.table_generator, kicad_lib_manager.library_scanner, kicad_lib_manager.kicad_process
 import kicad_lib_manager.gitops, kicad_lib_manager.manufacturers, kicad_lib_manager.atomic_check
 import kicad_lib_manager.changes, kicad_lib_manager.atomic_fixes, kicad_lib_manager.scan_cache
+import kicad_lib_manager.kicad_setup
 for name in sorted(sys.modules):
     if name.split(".")[0] in ("PySide6", "shiboken6"):
         print(name)
