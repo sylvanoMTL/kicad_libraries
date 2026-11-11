@@ -1,9 +1,9 @@
 ---
-status: diagnosed
+status: partial
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
-source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md, 12-15-SUMMARY.md, 12-16-SUMMARY.md, 12-17-SUMMARY.md, 12-18-SUMMARY.md, 12-19-SUMMARY.md, 12-20-SUMMARY.md]
+source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md, 12-15-SUMMARY.md, 12-16-SUMMARY.md, 12-17-SUMMARY.md, 12-18-SUMMARY.md, 12-19-SUMMARY.md, 12-20-SUMMARY.md, 12-21-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
-updated: 2026-11-10T18:01:19.000Z
+updated: 2026-11-11T09:17:41.394Z
 ---
 
 ## Current Test
@@ -194,6 +194,12 @@ reported: "No by default it is selecting 4.4 Importing Parts"
 severity: major
 note: "Step 1: after F1 > 4.4 Importing Parts > 4.4.7 Conflicts, Close, F1 again, the guide selected the page 4.4 Importing Parts, not the section 4.4.7 Conflicts. settings.ini [help] last_topic=importing#conflicts, so the save works; the restore of the reused hidden guide (MainWindow.show_guide -> HelpDialog.show_remembered -> show_topic) lands on the page."
 
+### 28. User Guide reopens on the chosen section (re-check of 27, plan 12-21)
+setup: 100% scale. Start `.\env\Scripts\python.exe kicad_lib_manager.py`.
+steps: (1) F1, click "4.4 Importing Parts", then "4.4.7 Conflicts"; scroll the page to its top; Close. (2) F1. (3) scroll the page to its top, Escape, F1. (4) click "4.3 Generating Tables"; press on "4.4 Importing Parts", hold about a second, release; then click "4.4.7 Conflicts". (5) Ctrl+I, Help in the import window, Cancel in the import window, close the guide, F1 in the main window. (5b) Ctrl+I, Help, Cancel, leave the guide open, F1 in the main window. (5c) scroll the Conflicts page down a little, click the main window, F1. (6) close the app, start it again, F1. At 200%: repeat 1, 2 and 6.
+expected: at steps 2, 3, 5, 5b and 6 the selected menu row is "4.4.7 Conflicts" (white text on a blue fill; a hovered row only gets a faint grey), Importing Parts opened out, other pages folded, the Conflicts heading at the top of the page. Step 4: after the release "4.4 Importing Parts" is the selected row, not one of its sections. Step 5: the import window's Help shows Importing Parts. Step 5c: the guide comes to the front and the page does not move. Expand arrows and indentation still show. At 200% the selected row and the heading are visible and not cut off.
+result: pass
+
 ## Deferred Follow-Ups
 
 [none - the startup-scan skip idea moved to test 21 / G-12-21 on 2026-11-04, owner chose to fix it in Phase 12]
@@ -208,8 +214,8 @@ note: "Step 1: after F1 > 4.4 Importing Parts > 4.4.7 Conflicts, Close, F1 again
 
 ## Summary
 
-total: 27
-passed: 13
+total: 28
+passed: 14
 issues: 12
 pending: 0
 skipped: 1
@@ -490,7 +496,9 @@ blocked: 1
 
 - gap_id: G-12-27
   truth: "When the User Guide is closed and opened again, it shows the section last chosen (e.g. 4.4.7 Conflicts) with that section selected in the left menu, its page opened out and its heading in view."
-  status: failed
+  status: resolved
+  resolved_by: 12-21-PLAN.md
+  resolved_at: 2026-11-11
   reason: "User reported: No by default it is selecting 4.4 Importing Parts"
   severity: major
   test: 27
