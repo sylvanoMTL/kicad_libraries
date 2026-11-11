@@ -11,25 +11,31 @@ footprint text and added models for later.
 
 import hashlib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass, field, replace
+from pathlib import Path, PurePosixPath
 
 from ... import fsutil
 from ...kicad_files import (
     find_models,
     footprint_name,
     footprint_name_edit,
+    footprint_text_edit,
     load,
+    model_insert_edit,
     parse_bytes,
     retarget_model,
 )
 from ...models import Issue, Severity
-from ...sexpr import apply_edits
+from ...sexpr import apply_edits, token_stream
 from ..footprint_index import build_index, pad_numbers
-from ..naming import sanitize_filename
-from ..plan import MODEL_DIR_VAR, Conflict, FieldChange, PartText, Rename
+from ..footprint_text import describe, footprint_facts, generated_tags, vendor_texts
+from ..keywords import manufacturer_words, merge_words
+from ..naming import sanitize_filename, sanitize_name
+from ..package import MAX_MEMBER_BYTES, open_model_source
+from ..plan import MODEL_DIR_VAR, Conflict, FieldChange, PartText, Rename, Resolution
+from ..planner import suggest_free_name
 from ..verify import pin_pad_issues, symbol_pin_numbers
-from .inventory import SHARED_FOOTPRINT_LIBRARY, Inventory, InventoryFootprint
+from .inventory import SHARED_FOOTPRINT_LIBRARY, Inventory, InventoryFootprint, InventoryPart
 from .plan import LeftoverRow, MigrationChoices, MigrationOp, PartChoice, PartKey
 
 SHARED = SHARED_FOOTPRINT_LIBRARY
@@ -91,10 +97,9 @@ def _model_name_of(path_text: str) -> str:
     return path_text[len(_MODEL_VAR_PREFIX):]
 
 
-def _plain_move_bytes(path: Path, target_stem: str) -> bytes:
-    """path's bytes, with its internal name set to target_stem when it differs (no other change)."""
-    data = path.read_bytes()
-    loaded = parse_bytes(data, path.name)
+def _renamed_bytes(data: bytes, filename: str, target_stem: str) -> bytes:
+    """data's bytes, with the footprint's internal name set to target_stem when it differs."""
+    loaded = parse_bytes(data, filename)
     if isinstance(loaded, Issue):
         return data
     name_ref = footprint_name(loaded.root)
@@ -102,6 +107,11 @@ def _plain_move_bytes(path: Path, target_stem: str) -> bytes:
         return data
     edited = apply_edits(loaded.source.text, [footprint_name_edit(name_ref, target_stem)])
     return fsutil.encode_source(edited, loaded.source.bom)
+
+
+def _plain_move_bytes(path: Path, target_stem: str) -> bytes:
+    """path's bytes, with its internal name set to target_stem when it differs (no other change)."""
+    return _renamed_bytes(path.read_bytes(), path.name, target_stem)
 
 
 def _official_switch(
@@ -138,6 +148,134 @@ def _official_switch(
     return link, issues
 
 
+def _same_footprint_tokens(a: bytes, b: bytes, filename: str) -> bool:
+    """True when a and b are byte-equal, or parse to the same token stream (D-19)."""
+    if a == b:
+        return True
+    parsed_a, parsed_b = parse_bytes(a, filename), parse_bytes(b, filename)
+    if isinstance(parsed_a, Issue) or isinstance(parsed_b, Issue):
+        return False
+    return token_stream(parsed_a.root) == token_stream(parsed_b.root)
+
+
+def _suggest_clash_name(stem: str, mpn: str, taken_stems: set[str]) -> str:
+    """<stem>_<mpn>, or the next free <stem>_<n> when that is taken or mpn is blank (D-19)."""
+    if not mpn:
+        return suggest_free_name(stem, taken_stems, casefold=True)
+    base = sanitize_name(f"{stem}_{mpn}").sanitized
+    if base.casefold() not in {name.casefold() for name in taken_stems}:
+        return base
+    return suggest_free_name(base, taken_stems, casefold=True)
+
+
+def _resolve_clash(
+    *,
+    wanted_filename: str,
+    data: bytes,
+    shared_dir: Path,
+    known: dict[str, bytes],
+    taken_stems: set[str],
+    resolutions: Mapping[str, Resolution],
+    mpn: str,
+) -> tuple[str, bytes | None, Conflict | None, list[Issue]]:
+    """Settle one footprint's name against Atomic_Footprints.pretty (D-07, Phase 10 D-19).
+
+    Returns (final stem, bytes to write (None = reuse, nothing to write), conflict, issues).
+    """
+    if wanted_filename not in known:
+        existing_path = shared_dir / wanted_filename
+        if existing_path.exists():
+            known[wanted_filename] = existing_path.read_bytes()
+    stem = wanted_filename[: -len(".kicad_mod")] if wanted_filename.endswith(".kicad_mod") else wanted_filename
+    if wanted_filename not in known:
+        known[wanted_filename] = data
+        taken_stems.add(stem)
+        return stem, data, None, []
+    existing_bytes = known[wanted_filename]
+    if _same_footprint_tokens(data, existing_bytes, wanted_filename):
+        return stem, None, None, []
+
+    key = CLASH_PREFIX + stem
+    suggested = _suggest_clash_name(stem, mpn, taken_stems)
+    base_conflict = Conflict(
+        key=key,
+        kind="footprint",
+        name=stem,
+        existing=f"Atomic_Footprints already holds {wanted_filename} with different content",
+        suggested_name=suggested,
+    )
+    resolution = resolutions.get(key)
+    if resolution is None:
+        return stem, None, base_conflict, [
+            Issue(
+                Severity.ERROR,
+                "migration.conflict_unresolved",
+                f"{stem} is already in Atomic_Footprints with different content. Choose Overwrite, Rename or Skip.",
+            )
+        ]
+    resolved = replace(base_conflict, resolution=resolution)
+    if resolution.action == "overwrite":
+        known[wanted_filename] = data
+        return stem, data, resolved, []
+    if resolution.action == "skip":
+        return stem, None, resolved, []
+
+    chosen = resolution.rename_to if resolution.rename_to else suggested
+    new_filename = sanitize_filename(chosen + ".kicad_mod").sanitized
+    new_stem = new_filename[: -len(".kicad_mod")] if new_filename.endswith(".kicad_mod") else new_filename
+    if new_filename in known or (shared_dir / new_filename).exists():
+        existing2 = known.get(new_filename)
+        if existing2 is None:
+            existing2 = (shared_dir / new_filename).read_bytes()
+            known[new_filename] = existing2
+        if _same_footprint_tokens(data, existing2, new_filename):
+            return new_stem, None, resolved, []
+        return stem, None, resolved, [
+            Issue(
+                Severity.ERROR,
+                "migration.conflict_unresolved",
+                f"{stem}: {new_filename} is already taken; choose another name",
+            )
+        ]
+    known[new_filename] = data
+    taken_stems.add(new_stem)
+    return new_stem, data, resolved, []
+
+
+def _open_added_model(source: str, repo_root: Path) -> tuple[str, bytes, list[Issue]]:
+    """Open an owner-added 3D model source through the importer's intake checks (D-15).
+
+    Follows atomic_fixes._open_model's pattern (one member, size cap, sha256 re-check);
+    returns ("", b"", issues) on any refusal.
+    """
+    issues: list[Issue] = []
+    package = open_model_source(Path(source), repo_root)
+    try:
+        if package.refused:
+            issues.extend(i for i in package.issues if i.severity is Severity.ERROR)
+            return "", b"", [Issue(Severity.ERROR, "migration.model_unreadable", i.text) for i in issues]
+        if len(package.files) != 1 or package.files[0].kind != "model":
+            return "", b"", [
+                Issue(Severity.ERROR, "migration.model_unreadable", f"{Path(source).name} must be one 3D model file")
+            ]
+        entry = package.files[0]
+        name = PurePosixPath(entry.member.replace("\\", "/")).name
+        try:
+            with open(entry.path, "rb") as handle:
+                data = handle.read(MAX_MEMBER_BYTES + 1)
+        except OSError as e:
+            return "", b"", [
+                Issue(Severity.ERROR, "migration.model_unreadable", f"Could not read {name} ({e.strerror or e})")
+            ]
+        if len(data) > MAX_MEMBER_BYTES or hashlib.sha256(data).hexdigest() != entry.sha256:
+            return "", b"", [
+                Issue(Severity.ERROR, "migration.model_unreadable", f"{name} changed while it was read; choose it again")
+            ]
+        return name, data, []
+    finally:
+        package.close()
+
+
 def plan_footprints(
     inventory: Inventory,
     choices: MigrationChoices,
@@ -155,12 +293,23 @@ def plan_footprints(
     removed_folders: list[str] = []
     issues: list[Issue] = []
     model_renames: list[Rename] = []
+    conflicts: list[Conflict] = []
+    texts: dict[PartKey, tuple[PartText, PartText]] = {}
+    package_words: dict[PartKey, tuple[str, ...]] = {}
+    field_changes: dict[PartKey, tuple[FieldChange, ...]] = {}
 
     shared_dir = layout.footprints_dir / f"{SHARED}.pretty"
     shared_rel = _rel(layout, shared_dir)
     mkdir_added = shared_dir.exists()
     deleted_rels: set[str] = set()
     final_model_names: set[str] = set()
+    part_index: dict[PartKey, InventoryPart] = {part.key: part for part in inventory.parts}
+
+    try:
+        shared_taken_stems: set[str] = {p.stem for p in shared_dir.glob("*.kicad_mod")}
+    except OSError:
+        shared_taken_stems = set()
+    shared_known: dict[str, bytes] = {}
 
     model_name_set = frozenset(inventory.models)
 
@@ -272,35 +421,116 @@ def plan_footprints(
         resolvable = footprint_models.get((fp.library, fp.name), [])
 
         choice = choices.parts.get(first_key, PartChoice())
-        final_name = sanitize_filename((choice.footprint_name or fp.name) + ".kicad_mod").sanitized
-        final_stem = final_name[: -len(".kicad_mod")] if final_name.endswith(".kicad_mod") else final_name
+        wanted_name = sanitize_filename((choice.footprint_name or fp.name) + ".kicad_mod").sanitized
+        wanted_stem = wanted_name[: -len(".kicad_mod")] if wanted_name.endswith(".kicad_mod") else wanted_name
+        name_ref = footprint_name(loaded.root) if loaded is not None else None
 
         edits = []
         own_model_names: list[str] = []
-        if loaded is not None:
-            name_ref = footprint_name(loaded.root)
-            if name_ref is not None and name_ref.name != final_stem:
-                edits.append(footprint_name_edit(name_ref, final_stem))
-            for ref in resolvable:
-                old_model_name = _model_name_of(ref.path)
-                new_model_name = model_final_name.get(old_model_name, old_model_name)
+        if name_ref is not None and name_ref.name != wanted_stem:
+            edits.append(footprint_name_edit(name_ref, wanted_stem))
+        for ref in resolvable:
+            old_model_name = _model_name_of(ref.path)
+            new_model_name = model_final_name.get(old_model_name, old_model_name)
+            own_model_names.append(new_model_name)
+            new_path_text = f"{MODEL_DIR_VAR}/{new_model_name}"
+            if new_path_text != ref.path:
+                edits.append(retarget_model(ref, new_path_text))
+
+        # Added 3D model (D-15): only when the footprint carries none of its own to resolve.
+        if name_ref is not None and not resolvable and choice.model_source:
+            model_file_name, model_data, added_model_issues = _open_added_model(
+                choice.model_source, layout.repo_root
+            )
+            issues.extend(added_model_issues)
+            if model_file_name:
+                mpn = mpns.get(first_key, "")
+                ext = Path(model_file_name).suffix
+                stem = choice.model_name if choice.model_name else (mpn or Path(model_file_name).stem)
+                new_model_name = sanitize_filename(f"{stem}{ext}").sanitized
                 own_model_names.append(new_model_name)
-                new_path_text = f"{MODEL_DIR_VAR}/{new_model_name}"
-                if new_path_text != ref.path:
-                    edits.append(retarget_model(ref, new_path_text))
+                model_path = layout.models_dir / new_model_name
+                model_rel = _rel(layout, model_path)
+                existing_model_bytes = model_path.read_bytes() if model_path.exists() else None
+                model_base_sha256 = (
+                    hashlib.sha256(existing_model_bytes).hexdigest() if existing_model_bytes is not None else None
+                )
+                ops.append(MigrationOp("write", model_path, model_rel, data=model_data, base_sha256=model_base_sha256))
+                edits.append(
+                    model_insert_edit(loaded.source.text, name_ref.node, f"{MODEL_DIR_VAR}/{new_model_name}", loaded.source.eol)
+                )
+                final_model_names.add(new_model_name)
+
+        # Footprint text (D-11): the description is always regenerated, tags merged; never on an
+        # official footprint (those never reach this loop at all).
+        field_change_list: list[FieldChange] = []
+        package_word_list: tuple[str, ...] = ()
+        generated_text = PartText()
+        written_text = PartText()
+        if name_ref is not None:
+            old_descr, old_tags = vendor_texts(name_ref.node)
+            first_part = part_index.get(first_key)
+            manufacturer = first_part.fields.get("Manufacturer", "") if first_part is not None else ""
+            maker_list = manufacturer_words(manufacturer)
+            facts = footprint_facts(name_ref.node, code=fp.name, maker=maker_list[0] if maker_list else "")
+            package_word_list = tuple(word for word in (facts.family, fp.name) if word)
+            generated_description = describe(facts)
+            generated_tags_text = merge_words(old_tags, generated_tags(facts))
+            written_description = choice.fp_description if choice.fp_description is not None else generated_description
+            written_tags = choice.fp_tags if choice.fp_tags is not None else generated_tags_text
+            generated_text = PartText(fp_description=generated_description, fp_tags=generated_tags_text)
+            written_text = PartText(fp_description=written_description, fp_tags=written_tags)
+            if written_description != old_descr:
+                edits.append(
+                    footprint_text_edit(loaded.source.text, name_ref.node, "descr", written_description, loaded.source.eol)
+                )
+                field_change_list.append(
+                    FieldChange(
+                        symbol=wanted_stem, action="set", field="descr", old=old_descr,
+                        new=written_description, reason="generated", scope="footprint",
+                    )
+                )
+            if written_tags != old_tags:
+                edits.append(
+                    footprint_text_edit(loaded.source.text, name_ref.node, "tags", written_tags, loaded.source.eol)
+                )
+                field_change_list.append(
+                    FieldChange(
+                        symbol=wanted_stem, action="set", field="tags", old=old_tags,
+                        new=written_tags, reason="generated", scope="footprint",
+                    )
+                )
+
+        if loaded is not None:
             data = apply_edits(loaded.source.text, edits) if edits else loaded.source.text
             data_bytes = fsutil.encode_source(data, loaded.source.bom)
         else:
             data_bytes = (layout.repo_root / fp.rel_path).read_bytes()
 
-        new_rel = f"{shared_rel}/{final_name}"
-        new_path = layout.repo_root / new_rel
         if not mkdir_added:
             ops.append(MigrationOp("mkdir", shared_dir, shared_rel, note="Atomic_Footprints folder"))
             mkdir_added = True
-        existing_target_bytes = new_path.read_bytes() if new_path.exists() else None
-        base_sha256 = hashlib.sha256(existing_target_bytes).hexdigest() if existing_target_bytes is not None else None
-        ops.append(MigrationOp("write", new_path, new_rel, data=data_bytes, base_sha256=base_sha256))
+
+        resolved_stem, write_data, conflict, clash_issues = _resolve_clash(
+            wanted_filename=wanted_name,
+            data=data_bytes,
+            shared_dir=shared_dir,
+            known=shared_known,
+            taken_stems=shared_taken_stems,
+            resolutions=choices.resolutions,
+            mpn=mpns.get(first_key, ""),
+        )
+        issues.extend(clash_issues)
+        if conflict is not None:
+            conflicts.append(conflict)
+        if write_data is not None:
+            if resolved_stem != wanted_stem:
+                write_data = _renamed_bytes(write_data, wanted_name, resolved_stem)
+            new_rel = f"{shared_rel}/{resolved_stem}.kicad_mod"
+            new_path = layout.repo_root / new_rel
+            existing_target_bytes = new_path.read_bytes() if new_path.exists() else None
+            base_sha256 = hashlib.sha256(existing_target_bytes).hexdigest() if existing_target_bytes is not None else None
+            ops.append(MigrationOp("write", new_path, new_rel, data=write_data, base_sha256=base_sha256))
 
         old_path = layout.repo_root / fp.rel_path
         ops.append(
@@ -309,11 +539,17 @@ def plan_footprints(
             )
         )
         deleted_rels.add(fp.rel_path)
-        footprint_links.append((f"{fp.library}:{fp.name}", f"{SHARED}:{final_stem}"))
+        footprint_links.append((f"{fp.library}:{fp.name}", f"{SHARED}:{resolved_stem}"))
         for key in shared_linkers_list:
-            links[key] = f"{SHARED}:{final_stem}"
+            links[key] = f"{SHARED}:{resolved_stem}"
             targets[key] = "shared"
             models[key] = tuple(own_model_names)
+            if field_change_list:
+                field_changes[key] = tuple(field_change_list)
+            if package_word_list:
+                package_words[key] = package_word_list
+            if name_ref is not None:
+                texts[key] = (generated_text, written_text)
         final_model_names.update(own_model_names)
 
     # -- Leftovers (D-10, D-21): every Custom footprint no planned part links, after all parts are
@@ -360,14 +596,30 @@ def plan_footprints(
             continue
 
         data = _plain_move_bytes(old_path, fp.name)
-        new_rel = f"{shared_rel}/{fp.name}.kicad_mod"
-        new_path = layout.repo_root / new_rel
+        wanted_name = f"{fp.name}.kicad_mod"
         if not mkdir_added:
             ops.append(MigrationOp("mkdir", shared_dir, shared_rel, note="Atomic_Footprints folder"))
             mkdir_added = True
-        existing_bytes = new_path.read_bytes() if new_path.exists() else None
-        base_sha256 = hashlib.sha256(existing_bytes).hexdigest() if existing_bytes is not None else None
-        ops.append(MigrationOp("write", new_path, new_rel, data=data, base_sha256=base_sha256))
+        resolved_stem, write_data, conflict, clash_issues = _resolve_clash(
+            wanted_filename=wanted_name,
+            data=data,
+            shared_dir=shared_dir,
+            known=shared_known,
+            taken_stems=shared_taken_stems,
+            resolutions=choices.resolutions,
+            mpn="",
+        )
+        issues.extend(clash_issues)
+        if conflict is not None:
+            conflicts.append(conflict)
+        if write_data is not None:
+            if resolved_stem != fp.name:
+                write_data = _renamed_bytes(write_data, wanted_name, resolved_stem)
+            new_rel = f"{shared_rel}/{resolved_stem}.kicad_mod"
+            new_path = layout.repo_root / new_rel
+            existing_bytes = new_path.read_bytes() if new_path.exists() else None
+            base_sha256 = hashlib.sha256(existing_bytes).hexdigest() if existing_bytes is not None else None
+            ops.append(MigrationOp("write", new_path, new_rel, data=write_data, base_sha256=base_sha256))
         ops.append(MigrationOp("delete", old_path, rel, base_sha256=fp.sha256, note="moved into Atomic_Footprints"))
         deleted_rels.add(rel)
 
@@ -420,10 +672,10 @@ def plan_footprints(
         footprint_links=tuple(footprint_links),
         model_renames=tuple(model_renames),
         leftovers=tuple(leftover_rows),
-        conflicts=(),
-        texts={},
-        package_words={},
-        field_changes={},
+        conflicts=tuple(conflicts),
+        texts=texts,
+        package_words=package_words,
+        field_changes=field_changes,
         removed_folders=tuple(removed_folders),
         issues=tuple(issues),
     )

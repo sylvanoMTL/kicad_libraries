@@ -375,20 +375,21 @@ def test_emptied_pretty_folder_removed(tmp_path):
 
 
 def test_identical_footprint_is_reused(tmp_path):
-    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty").mkdir(parents=True, exist_ok=True)
-    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty" / "FPC.kicad_mod").write_bytes(
-        vendor_footprint("FPC", eol="\n")
-    )
+    """Running the migration a second time (first run's output already on disk) reuses it, no write."""
     _write_symbols(tmp_path, "LibC", [("PARTC", "LibC:FPC")])
     _write_footprint(tmp_path, "LibC", "FPC")
     layout = _layout(tmp_path)
-    inventory = read_inventory(layout)
-
     key = _key("LibC", "PARTC")
-    outcome = plan_footprints(inventory, MigrationChoices(), _CTX, mpns={key: "PARTC"})
+    shared_rel = f"Custom/Footprints/{SHARED}.pretty/FPC.kicad_mod"
+
+    first = plan_footprints(read_inventory(layout), MigrationChoices(), _CTX, mpns={key: "PARTC"})
+    first_data = _write_op(first.ops, shared_rel).data
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty").mkdir(parents=True, exist_ok=True)
+    (tmp_path / shared_rel).write_bytes(first_data)
+
+    outcome = plan_footprints(read_inventory(layout), MigrationChoices(), _CTX, mpns={key: "PARTC"})
 
     assert outcome.links[key] == f"{SHARED}:FPC"
-    shared_rel = f"Custom/Footprints/{SHARED}.pretty/FPC.kicad_mod"
     assert not any(op.kind == "write" and op.rel == shared_rel for op in outcome.ops)
     assert _has_op(outcome.ops, "delete", "Custom/Footprints/LibC.pretty/FPC.kicad_mod")
     assert outcome.conflicts == ()
