@@ -4,6 +4,15 @@
 **Status:** decisions taken by the owner, input for the next phase (library naming / atomic migration)
 **Replaces:** the `<Type>_<SubCategory>_<Manufacturer>` convention in `CLAUDE.md` and the 1:1 symbol/footprint library pairing in LIB-01/LIB-02
 
+**Update 2026-11:** planning (Phase 13 CONTEXT, D-22) replaced the `_MecaFrog` token this
+document used throughout with the `Atomic_` prefix, decided after this research: the owner's
+brand token became a scheme-wide marker instead. So `<stem>_MecaFrog` below reads as
+`Atomic_<stem>`, and the shared footprint library `MecaFrog.pretty` became
+`Atomic_Footprints.pretty`. KiCad 10 ships no `Crystal` symbol library, so `Atomic_Crystal` is
+not a legal name (`stems.name_verdict` refuses it); passive crystals stay in `Atomic_Oscillator`
+instead, and the section 4 crystal rule below is superseded by that decision. Section 5's table
+is refreshed to the live parts as migrated in Phase 13.
+
 This research was read-only. Sources:
 - the KiCad source (branches `9.0`, `10.0`, `master` on gitlab.com/kicad/code/kicad);
 - the KiCad 10 install;
@@ -157,21 +166,30 @@ Take the first match:
 
 ## 5. Target libraries for the current Custom parts
 
+Refreshed 2026-11 (Phase 13 CONTEXT, Specifics) to the live parts as migrated, including drift
+found after this research was written (the new `LED_Cree` library, and `Atomic_Oscillator`
+already committed holding the passive crystal CM315D32768DZFT per D-22).
+
 | Part | Current library | Target library |
 |---|---|---|
-| GCT FFC2A32-06-T, MEM2085-00-115-00-A, USB4056-03-A, USB4730-GF-A, USB4745-03-A | Connector_FFC_GCT, Connector_MicroSD_GCT, Connector_USB_GCT | `Connector_MecaFrog` |
-| TI BQ25180 (charger) | IC_Battery_Charger_TI | `Battery_Management_MecaFrog` |
-| ADI MAX17048 (fuel gauge) | IC_Battery_Fuel_Gauge_ADI | `Battery_Management_MecaFrog` |
-| ADI LTC2954 (push-button on/off) | IC_Button_Controller_ADI | `Power_Management_MecaFrog` |
-| TDK ICM-42688-P (IMU) | IC_IMU_TDK | `Sensor_Motion_MecaFrog` |
-| Memsic MMC5983MA (magnetometer) | IC_Magnetometer_Memsic | `Sensor_Magnetic_MecaFrog` |
-| TI CSD85301Q2 (dual N-MOSFET) | IC_PowerManagementMosfet_TI | `Transistor_FET_MecaFrog`, keywords `power-management half-bridge dual-nmos` |
-| u-blox NORA-W106 (Wi-Fi/BLE module) | IC_Wireless_BLE_uBlox | `RF_Module_MecaFrog`, keywords `wifi ble esp32-s3` |
-| Abracon ATXK-H14 (32.768 kHz TCXO) | Oscillator_TCXO_Abracon | `Oscillator_MecaFrog` |
-| RECOM RS3-1212S/H3 (isolated 3 W module) | RECOM_DCDC_converters | `Converter_DCDC_Isolated_MecaFrog` |
-| two `.bak` libraries | — | delete |
+| GCT FFC2A32-06-T, MEM2085-00-115-00-A, USB4056-03-A, USB4730-GF-A, USB4745-03-A | Connector_FFC_GCT, Connector_MicroSD_GCT, Connector_USB_GCT | `Atomic_Connector` |
+| TI BQ25180 (charger) | IC_Battery_Charger_TI | `Atomic_Battery_Management` |
+| ADI MAX17048G/X (fuel gauge) | IC_Battery_Fuel_Gauge_ADI | `Atomic_Battery_Management` |
+| ADI LTC2954 x4 (push-button on/off) | IC_Button_Controller_ADI | `Atomic_Power_Management` |
+| TDK ICM-42688-P (IMU) | IC_IMU_TDK | `Atomic_Sensor_Motion` |
+| Memsic MMC5983MA (magnetometer) | IC_Magnetometer_Memsic | `Atomic_Sensor_Magnetic` |
+| TI CSD85301Q2 (dual N-MOSFET) | IC_PowerManagementMosfet_TI | `Atomic_Transistor_FET`, keywords `power-management half-bridge dual-nmos` |
+| u-blox NORA-W106-00B/10B (Wi-Fi/BLE module) | IC_Wireless_BLE_uBlox | `Atomic_RF_Module`, keywords `wifi ble esp32-s3` |
+| Abracon ATXK-H14 (32.768 kHz TCXO) | Oscillator_TCXO_Abracon | `Atomic_Oscillator` |
+| CM315D32768DZFT (passive crystal) | `Atomic_Oscillator` (already committed) | `Atomic_Oscillator` (stays; D-22 — KiCad 10 has no `Crystal` library) |
+| Cree UHD1110 (LED) | LED_Cree | `Atomic_LED` |
+| RECOM RS3-1212S/H3 (isolated 3 W module) | RECOM_DCDC_converters | `Atomic_Converter_DCDC_Isolated` |
+| three `.bak` files | — | delete |
 
-That is 12 symbol libraries reduced to 9. All 11 `.pretty` folders go into `MecaFrog.pretty`, or to official footprints after a datasheet check (candidates: TSOT-23-8/DFN-8 for LTC2954, LGA-16 for MMC5983MA, DSBGA-8 for BQ25180).
+Target count: not fixed (D-04). Success is no v1-named library left, each part sitting in the
+library its migration preview showed, and the next scan reporting zero atomic violations.
+Footprints go into `Atomic_Footprints.pretty`, or to official footprints after a datasheet check
+(candidates: TSOT-23-8/DFN-8 for LTC2954, LGA-16 for MMC5983MA, DSBGA-8 for BQ25180).
 
 ---
 

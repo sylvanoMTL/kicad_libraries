@@ -98,8 +98,8 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 ### Active
 
 **Atomic libraries (v2.0)**
-- [ ] Own symbol libraries named `Atomic_<official KiCad stem>`, footprints in one shared `Atomic_Footprints`; parts filed by what the device is
-- [ ] Existing `Custom/` parts migrated in one previewed commit, every part passing the rule, tables regenerated
+- [x] Own symbol libraries named `Atomic_<official KiCad stem>`, footprints in one shared `Atomic_Footprints`; parts filed by what the device is — Phase 13
+- [x] Existing `Custom/` parts migrated in one previewed commit, every part passing the rule, tables regenerated — Phase 13
 
 **Quality**
 - [ ] Phase 11 review findings, open and non-blocking (11-REVIEW-DISPOSITION.md): WR-01 a kept atomic refusal line survives the Check again that follows Open Check Atomic Parts fixes (Commit enablement unaffected); IN-01..IN-03
@@ -140,7 +140,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | Support UL, SnapEDA, SamacSys/CSE and loose files in v1 | Owner uses all of them; zip layouts differ | ✓ Good — Phase 7 UAT passed on the real SnapEDA and SamacSys zips |
 | Preview before every write; per-conflict overwrite/rename/skip | Avoid silent damage to curated libraries | ✓ Good — Phase 5 UAT passed |
 | Library name suggested from `<Type>_<SubCategory>_<Manufacturer>`, editable | Keeps the convention without blocking edge cases | ⚠️ Revisit — replaced in v2.0 by `Atomic_<KiCad stem>` (worked in v1.0, Phase 5 UAT passed) |
-| Own libraries are `Atomic_<official KiCad stem>` with one shared `Atomic_Footprints`; every part must pass a blocking atomic rule (MPN, Manufacturer, footprint link, Value = MPN, Datasheet, Description, 3D model) | KiCad 10 ships libraries under every bare target stem, so a token is mandatory; "atomic" names the guarantee instead of a brand and appears nowhere in KiCad's stock libraries; the owner wants hand-made parts held to the same rule (2026-10-25) | — Pending (v2.0); the check and scan detection shipped in Phase 9 and the importer side in Phase 10 and the commit gate in Phase 11, all passed UAT; the migration (Phase 13) remains |
+| Own libraries are `Atomic_<official KiCad stem>` with one shared `Atomic_Footprints`; every part must pass a blocking atomic rule (MPN, Manufacturer, footprint link, Value = MPN, Datasheet, Description, 3D model) | KiCad 10 ships libraries under every bare target stem, so a token is mandatory; "atomic" names the guarantee instead of a brand and appears nowhere in KiCad's stock libraries; the owner wants hand-made parts held to the same rule (2026-10-25) | ✓ Good — the check and scan detection shipped in Phase 9, the importer side in Phase 10 and the commit gate in Phase 11, all passed UAT; the migration (Phase 13) delivers the scheme for the existing parts, pending the owner's live UAT run |
 | Importer details kept as built (owner, 2026-10-29): strict majority for sibling votes, a part with no clear match asks for a library, measured package size (2.1x2.1 mm) and IPC-style tag in footprint text, a package family from tied KiCad footprints only when they agree and are within one pad of the vendor footprint, conflict choices asked again after a refused library name is fixed (WR-07 kept) | The suggestion must never guess a wrong library or family; the owner prefers asking over a wrong default | ✓ Good — Phase 10 UAT passed |
 | Footprint keeps vendor name by default, editable | Package codes are often the right name; user can override | ✓ Good — Phase 5 UAT passed |
 | Footprint link set automatically; other fields editable in preview | Footprint link is the most error-prone manual step | ✓ Good — Phase 5 UAT passed |

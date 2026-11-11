@@ -79,6 +79,21 @@ These skip only on a machine that lacks something. None of them skip on the work
   `replacing a case twin leaves one entry only on NTFS (research spike S7)`.
 - Importer package not present: `kicad_lib_manager/importer not present yet ...` (`tests/test_importer_layering.py`).
 
+## Migration tests (Phase 13)
+
+Every migration test builds its own `Custom/` under `tmp_path` from `tests/migrationfixtures.py`
+(a rich synthetic v1 tree, never the live repo's `Custom/`), and its git repos with
+`tests/gitfixtures.py` (throwaway repos, never the live Custom submodule or parent repo).
+
+- `tests/test_migration_full.py`, `tests/test_migration_commit.py`,
+  `tests/test_migration_precheck.py` and `tests/test_commit_deletions.py` need a real git
+  binary (`requires_git`) to exercise the tag, commit and precheck paths against a throwaway
+  repo; they skip with `git is not on PATH` where git is unavailable.
+- `tests/test_migration_families.py::test_real_kicad_loads_derived_library` is marked
+  `@pytest.mark.kicad_cli` and skips with the same reason as the "No kicad-cli 10" row above
+  (`kicad-cli not found (these tests need KiCad 10)`, or the version-mismatch variant) when
+  KiCad 10's command-line tool is absent.
+
 ## Read-only live health checks
 
 A few tests read the live `Custom/` on purpose (decision D-04). They never write to it.
@@ -88,8 +103,13 @@ They fail when a live part breaks a rule, so a red result there is a finding abo
 - `test_naming_sanitize.py::test_sanitize_live_custom_names_unchanged`
 - `test_scanner_issues.py::test_live_custom_model_findings_are_zero`
 - the `custom/...` cases of the round-trip corpus in `test_roundtrip_corpus.py`
-- `test_edits.py`, which reads `Connector_USB_GCT.kicad_sym`.
-  It skips if that library is renamed (Phase 13 note).
+- `test_edits.py`, which reads `Connector_USB_GCT.kicad_sym`. After the owner's live Phase 13
+  migration this library no longer exists (it is re-filed into `Atomic_Connector`), so the
+  file-missing check (`CUSTOM_SYMBOL.exists()`) skips the test with the same message as the
+  submodule-not-checked-out case, `Custom submodule not checked out (git submodule update
+  --init Custom)` -- the submodule is still checked out, only that one file is gone. The other
+  live checks above keep reading whichever `Atomic_` libraries the migrated `Custom/` now
+  holds.
 
 ## WurthElektronik corpus timing
 
