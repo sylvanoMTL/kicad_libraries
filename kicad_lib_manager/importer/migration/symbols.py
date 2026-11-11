@@ -1,9 +1,10 @@
 """Plan the symbol side of the Atomic_ migration: who moves where, under what name (D-01, D-04, D-07).
 
-Thin for this plan (13-09 completes it): one source file is loaded once per library, a part's
-unit is normalised with the importer's own new_source/existing_source and edited with
-edit_symbol, then spliced into the target library text being assembled. Name clashes within one
-target are not yet turned into a blocking line (13-09); the fixtures this plan ships with have none.
+One source file is loaded once per library; a part's unit is normalised with the importer's own
+new_source/existing_source and edited with edit_symbol, then spliced into the target library text
+being assembled (several parts and sources can share one target, D-01 "an old library can be
+split"). Name clashes within one target are not yet turned into a blocking line (13-09); the
+fixtures this plan ships with have none.
 """
 
 from __future__ import annotations
@@ -214,13 +215,22 @@ def plan_symbols(
                     )
                 )
                 continue
-            block = block_text(edited.source.text, placed.node)  # noqa: F841 (13-09 splices this in)
+            block = block_text(edited.source.text, placed.node)
 
-            # Tracer scope (plan 13-06 Task 1): one part per target, so the edited unit is the
-            # whole library. 13-09 generalises this to splice additional parts in with
-            # symbol_insert_edit when several parts and sources share one target.
-            assembled = edited
-            base_version = source.version
+            if assembled is None:
+                # The first part for a brand-new target: the edited unit is the whole library.
+                assembled = edited
+                base_version = source.version
+            else:
+                # Every later part (several parts/sources sharing one target, or a target that
+                # already existed on disk): splice its block in after the last symbol (D-01).
+                insert_edit = symbol_insert_edit(assembled, block)
+                assembled_text = apply_edits(assembled.source.text, [insert_edit])
+                reparsed = _loaded_text(fsutil.encode_source(assembled_text, assembled.source.bom), target_path.name)
+                if isinstance(reparsed, Issue):
+                    issues.append(reparsed)
+                    continue
+                assembled = reparsed
 
             footprint_new = footprints.links.get(part.key, part.footprint)
             field_changes = tuple(changes) + tuple(footprints.field_changes.get(part.key, ()))
