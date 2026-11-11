@@ -10,11 +10,12 @@ controls, the Files tab, Run itself and the commit step; this plan only enables 
 import dataclasses
 import hashlib
 import html
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QSize, QTimer, Signal
-from PySide6.QtGui import QAction, QKeySequence
+from PySide6.QtCore import Qt, QSize, QTimer, QUrl, Signal
+from PySide6.QtGui import QAction, QDesktopServices, QFont, QGuiApplication, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton,
@@ -22,11 +23,15 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..importer.commit_step import (
+    changed_diff, combined_view, pre_import_diff, probe_commit, recheck_commit, run_commit, switch_to_main,
+)
 from ..importer.content import ContentText, MAX_READ, binary_text, cap_lines, decode_text, diff_text, sha256_file
 from ..importer.footprint_index import build_index
 from ..importer.form import FIELD_LABELS, TEXT_LABELS, library_badge
 from ..importer.layout import RepoLayout
 from ..importer.migration.applier import MigrationResult, apply_migration
+from ..importer.migration.commitplan import build_migration_commit_plan
 from ..importer.migration.draft import (
     LoadedDraft,
     changed_parts,
@@ -38,6 +43,7 @@ from ..importer.migration.draft import (
 from ..importer.migration.gate import GateOutcome, StripLine, check_plan as _gate_check_plan, end_state_context
 from ..importer.migration.inventory import Inventory, read_inventory
 from ..importer.migration.plan import (
+    MAP_FILE,
     MigrationChoices,
     MigrationOp,
     MigrationPlan,
@@ -58,11 +64,12 @@ from ..kicad_setup import checkout_mismatch, wrong_checkout_refusal
 from ..library_scanner import ConfirmAnswer
 from ..models import Issue, Severity
 from ..settings import migration_draft_file
+from .commit_panel import CommitPanel
 from .conflict_row import ConflictRow
 from .content_view import ContentViewDialog
 from .import_dialog import ADD_MODEL_TEXT, OFFICIAL_FOOTPRINT_TEXT, TaskWorker, fit_window, official_candidates
 from .preview_tree import PreviewTree
-from .theme import AMBER, AMBER_TINT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, MUTED, PRIMARY_BUTTON_QSS
+from .theme import AMBER, AMBER_TINT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, MONO_FAMILY, MONO_PT, MUTED, PRIMARY_BUTTON_QSS
 
 WINDOW_TITLE = "Migrate to Atomic Libraries"
 RUN_TEXT = "Run Migration"
@@ -94,6 +101,15 @@ _CLOSE_TEXT = "Close"
 _WINDOW_SIZE = QSize(1040, 700)
 
 RUN_REFUSAL_ACTION = "The migration cannot run"
+RESULT_TITLE = "Migration done"
+COPY_TEXT = "Copy"
+OPEN_MAP_TEXT = "Open MIGRATION-ATOMIC.md"
+GENERATE_TEXT = "Generate Tables"
+CHOOSER_TEXT = "Set Up KiCad Chooser..."
+NEXT_STEPS_TEXT = (
+    "Next: press Generate Tables so KiCad finds the new libraries, then commit below, then press "
+    "Set Up KiCad Chooser to pin them and show the MPN and Manufacturer columns."
+)
 _RUN_FAILED_TITLE = "Migration failed"
 _RUN_FAILED_NOT_RESTORED_TITLE = "Migration failed; not everything could be restored"
 _RUN_FAILED_RETRY = "Every file was restored."
@@ -167,6 +183,14 @@ def _ask_kicad_open(parent, names) -> ConfirmAnswer:
     if clicked is anyway:
         return ConfirmAnswer.WRITE
     return ConfirmAnswer.DECLINE
+
+
+def _open_file(path: Path) -> None:
+    """The default open_file: open a local file with the OS's own default application (D-16).
+
+    Tests replace this field so no test ever opens a real external viewer.
+    """
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
 def _is_model_rel(rel: str) -> bool:
@@ -260,6 +284,14 @@ class MigrationCore:
     ensure_tag: object = ensure_tag
     checkout_mismatch: object = checkout_mismatch
     ask_kicad_open: object = _ask_kicad_open
+    commit_plan: object = build_migration_commit_plan
+    probe_commit: object = probe_commit
+    recheck_commit: object = recheck_commit
+    run_commit: object = run_commit
+    switch_to_main: object = switch_to_main
+    pre_import_diff: object = pre_import_diff
+    changed_diff: object = changed_diff
+    open_file: object = _open_file
 
 
 @dataclass(frozen=True)
@@ -270,6 +302,189 @@ class _LoadOutcome:
     ctx: PlanContext
     prints: dict
     loaded: "LoadedDraft | Issue"
+
+
+class _CommitStepHost:
+    """The import dialog's commit glue (import_dialog.py lines 3196-3450), copied almost verbatim: a
+    generation-cancelled probe, Check again, commit, switch to main, and the amber-file diff views.
+
+    Known debt (RESEARCH F-10): this duplicates import_dialog.py's own commit-step methods rather than
+    factoring them into one shared base; extracting that base would touch import_dialog.py, outside this
+    plan's isolation boundary. A future plan should fold the two implementations together.
+    """
+
+    def __init__(self, dialog: "MigrationDialog", panel: CommitPanel, core: "MigrationCore", kicad_fp_dir, spawn):
+        self._dialog = dialog
+        self._panel = panel
+        self._core = core
+        self._kicad_fp_dir = kicad_fp_dir
+        self._spawn = spawn
+        self._plan: CommitPlan | None = None
+        self._probe: CommitProbe | None = None
+        self._probe_worker: TaskWorker | None = None
+        self._git_worker: TaskWorker | None = None
+        self._probe_cancels: list[threading.Event] = []
+        self._closing = False
+
+        panel.commit_requested.connect(self._on_commit_requested)
+        panel.switch_requested.connect(self._on_switch_requested)
+        panel.file_activated.connect(self._on_file_activated)
+        panel.check_again_requested.connect(self._on_check_again)
+        panel.open_check_requested.connect(self._on_open_check_requested)
+
+    def is_committing(self) -> bool:
+        return self._git_worker is not None
+
+    def start(self, plan: CommitPlan):
+        self._plan = plan
+        self._panel.show_plan(plan)
+        self._start_probe()
+
+    def shutdown(self):
+        """Stop any running probe/check (never a commit itself) when the Result view is torn down."""
+        self._closing = True
+        for event in self._probe_cancels:
+            event.set()
+
+    def _begin_probe_generation(self) -> threading.Event:
+        for older in self._probe_cancels:
+            older.set()
+        event = threading.Event()
+        self._probe_cancels = [event]
+        self._probe = None
+        return event
+
+    def _start_probe(self, *, reprobe: bool = False):
+        if self._closing or self._plan is None:
+            return
+        event = self._begin_probe_generation()
+        if reprobe:
+            self._panel.begin_reprobe()
+        core, fp_dir, plan = self._core, self._kicad_fp_dir, self._plan
+
+        def task(progress):
+            return core.probe_commit(plan, kicad_fp_dir=fp_dir, cancelled=event.is_set)
+
+        worker = self._spawn(task)
+        self._probe_worker = worker
+        worker.result.connect(lambda probe, w=worker: self._on_probe_done(w, probe))
+        worker.start()
+
+    def _on_probe_done(self, worker: TaskWorker, probe: CommitProbe):
+        if worker is not self._probe_worker:
+            return
+        self._probe_worker = None
+        if self._closing:
+            return
+        self._probe = probe
+        self._panel.apply_probe(probe)
+        if probe.issues:
+            self._dialog.issues_logged.emit(list(probe.issues))
+
+    def _on_check_again(self):
+        if self._git_worker is not None or self._probe_worker is not None or self._closing or self._plan is None:
+            return
+        event = self._begin_probe_generation()
+        self._panel.begin_reprobe()
+        core, fp_dir, plan = self._core, self._kicad_fp_dir, self._plan
+
+        def task(progress):
+            return core.recheck_commit(plan, kicad_fp_dir=fp_dir, cancelled=event.is_set)
+
+        worker = self._spawn(task)
+        self._probe_worker = worker
+        worker.result.connect(lambda result, w=worker: self._on_recheck_done(w, result))
+        worker.start()
+
+    def _on_recheck_done(self, worker: TaskWorker, result):
+        if worker is not self._probe_worker:
+            return
+        self._probe_worker = None
+        if self._closing:
+            return
+        new_plan, probe = result
+        self._plan = new_plan
+        self._panel.begin_reprobe(new_plan)
+        self._probe = probe
+        self._panel.apply_probe(probe)
+        if probe.issues:
+            self._dialog.issues_logged.emit(list(probe.issues))
+
+    def _on_switch_requested(self):
+        if self._git_worker is not None or self._probe_worker is not None or self._closing or self._plan is None:
+            return
+        core, plan = self._core, self._plan
+        self._panel.set_switching()
+        worker = self._spawn(lambda progress: core.switch_to_main(plan))
+        self._git_worker = worker
+        worker.result.connect(lambda outcome, w=worker: self._on_switch_done(w, outcome))
+        worker.start()
+
+    def _on_switch_done(self, worker: TaskWorker, outcome):
+        if self._git_worker is worker:
+            self._git_worker = None
+        if self._closing:
+            return
+        self._dialog.issues_logged.emit(list(outcome.issues))
+        if outcome.ok:
+            self._start_probe(reprobe=True)
+            return
+        texts = [i.text for i in outcome.issues if i.severity is Severity.ERROR] or [i.text for i in outcome.issues]
+        self._panel.show_switch_failed(texts[0] if texts else "git could not switch Custom to main")
+
+    def _on_commit_requested(self, message: str, bump_parent: bool):
+        if self._git_worker is not None or self._probe_worker is not None or self._closing or self._plan is None:
+            return
+        probe = self._probe
+        if probe is None:
+            return
+        core, fp_dir, plan = self._core, self._kicad_fp_dir, self._plan
+        self._panel.set_committing()
+        worker = self._spawn(
+            lambda progress, br=probe.branch: core.run_commit(
+                plan, message, bump_parent, expected_branch=br, progress=progress, kicad_fp_dir=fp_dir,
+            )
+        )
+        self._git_worker = worker
+        worker.progress.connect(self._on_commit_progress)
+        worker.result.connect(lambda outcome, w=worker: self._on_commit_done(w, outcome))
+        worker.start()
+
+    def _on_commit_progress(self, message: str, current: int, total: int):
+        if self.is_committing():
+            self._panel.set_step(message)
+
+    def _on_commit_done(self, worker: TaskWorker, outcome):
+        if self._git_worker is worker:
+            self._git_worker = None
+        if self._closing:
+            return
+        self._panel.show_outcome(outcome)
+        if outcome.issues:
+            self._dialog.issues_logged.emit(list(outcome.issues))
+        if not self._panel.committed():
+            self._start_probe(reprobe=True)
+
+    def _on_file_activated(self, rel: str):
+        cplan, probe = self._plan, self._probe
+        if cplan is None or self._closing:
+            return
+        core = self._core
+        cfile = next((f for f in cplan.files if f.rel == rel), None)
+        stale = probe.stale if probe is not None else ()
+        marked = cfile is not None and bool(cfile.note or cfile.display in stale)
+        dirty = probe is not None and rel in probe.dirty_before
+        if marked and dirty:
+            self._dialog._run_content(
+                lambda cp=cplan, r=rel: combined_view(core.changed_diff(cp, r), core.pre_import_diff(cp, r))
+            )
+        elif marked:
+            self._dialog._run_content(lambda cp=cplan, r=rel: core.changed_diff(cp, r))
+        else:
+            self._dialog._run_content(lambda cp=cplan, r=rel: core.pre_import_diff(cp, r))
+
+    def _on_open_check_requested(self, rel_path: str, name: str):
+        self._dialog.atomic_check_requested.emit(rel_path, name)
 
 
 class MigrationDialog(QDialog):
@@ -316,6 +531,9 @@ class MigrationDialog(QDialog):
         self._pending_result: int | None = None
         self._running = False
         self._run_worker: TaskWorker | None = None
+        self._result_plan: MigrationPlan | None = None
+        self._commit_host: "_CommitStepHost | None" = None
+        self._commit_panel: CommitPanel | None = None
 
         self._rebuild_timer = QTimer(self)
         self._rebuild_timer.setSingleShot(True)
@@ -337,9 +555,10 @@ class MigrationDialog(QDialog):
         self._loading_page = self._build_loading_page()
         self._edit_page = self._build_edit_page()
         self._running_page = self._build_running_page()
+        self._result_page = self._build_result_page()
         for page in (
             self._checking_page, self._refusal_page, self._loading_page, self._edit_page,
-            self._running_page,
+            self._running_page, self._result_page,
         ):
             self._stack.addWidget(page)
         self._stack.setCurrentWidget(self._checking_page)
@@ -355,8 +574,8 @@ class MigrationDialog(QDialog):
         return self._running
 
     def is_committing(self) -> bool:
-        """True while the parent commit runs (plan 13-16 Task 2 fills this in)."""
-        return False
+        """True while the parent commit or a Switch to main runs (MIG-04)."""
+        return self._commit_host is not None and self._commit_host.is_committing()
 
     def is_busy(self) -> bool:
         return self.is_running() or self.is_committing() or any(w.isRunning() for w in self._workers)
@@ -1381,13 +1600,15 @@ class MigrationDialog(QDialog):
             self._running_label.setText(message)
 
     def _on_run_done(self, plan: MigrationPlan, result: MigrationResult):
-        """Task 2 replaces the success branch with the Result view; this tracer just proves the worker chain."""
         self._run_worker = None
         self._running = False
         self.issues_logged.emit(list(result.issues))
         if result.ok:
+            clear_issue = self._core.clear_draft(self._core.draft_file(self._repo_root))
+            if isinstance(clear_issue, Issue):
+                self.issues_logged.emit([clear_issue])
             self.migrated.emit(result)
-            self._show_page(self._edit_page)
+            self._show_result(result, plan)
             return
         self._show_run_failure(result)
         self._start_load()
@@ -1407,6 +1628,114 @@ class MigrationDialog(QDialog):
             closing = f"The original files are in {result.backup_dir}."
         lines = [issue.text for issue in result.issues if issue.severity is Severity.ERROR]
         self._show_run_banner(title, "\n".join([*lines, closing]))
+
+    # -- the Result view: map, Copy, open file, Generate Tables, chooser and the commit panel (D-14, D-16,
+    # D-17, D-24, MIG-04, MIG-05) --
+
+    def _build_result_page(self) -> QWidget:
+        page = QWidget()
+        outer = QVBoxLayout(page)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        inner = QWidget()
+        lay = QVBoxLayout(inner)
+
+        self._result_title = QLabel(RESULT_TITLE)
+        self._result_title.setTextFormat(Qt.TextFormat.PlainText)
+        font = self._result_title.font()
+        font.setBold(True)
+        self._result_title.setFont(font)
+        lay.addWidget(self._result_title)
+
+        self._result_map_text = QPlainTextEdit()
+        self._result_map_text.setReadOnly(True)
+        self._result_map_text.setFont(QFont(MONO_FAMILY, MONO_PT))
+        self._result_map_text.setMaximumHeight(220)
+        lay.addWidget(self._result_map_text)
+
+        map_buttons = QHBoxLayout()
+        self._copy_map_btn = QPushButton(COPY_TEXT)
+        self._copy_map_btn.clicked.connect(self._on_copy_map)
+        map_buttons.addWidget(self._copy_map_btn)
+        self._open_map_btn = QPushButton(OPEN_MAP_TEXT)
+        self._open_map_btn.clicked.connect(self._on_open_map)
+        map_buttons.addWidget(self._open_map_btn)
+        map_buttons.addStretch()
+        lay.addLayout(map_buttons)
+
+        self._next_steps_label = QLabel(NEXT_STEPS_TEXT)
+        self._next_steps_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._next_steps_label.setWordWrap(True)
+        lay.addWidget(self._next_steps_label)
+
+        actions = QHBoxLayout()
+        self._generate_btn = QPushButton(GENERATE_TEXT)
+        self._generate_btn.clicked.connect(self.generate_requested.emit)
+        actions.addWidget(self._generate_btn)
+        self._chooser_btn = QPushButton(CHOOSER_TEXT)
+        self._chooser_btn.clicked.connect(self.setup_chooser_requested.emit)
+        actions.addWidget(self._chooser_btn)
+        actions.addStretch()
+        lay.addLayout(actions)
+
+        self._commit_panel_host = QWidget()
+        host_lay = QVBoxLayout(self._commit_panel_host)
+        host_lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self._commit_panel_host)
+
+        lay.addStretch()
+        scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        self._result_close_btn = QPushButton(_CLOSE_TEXT)
+        self._result_close_btn.clicked.connect(self.accept)
+        close_row.addWidget(self._result_close_btn)
+        outer.addLayout(close_row)
+        return page
+
+    def _show_result(self, result: MigrationResult, plan: MigrationPlan):
+        self._result_plan = plan
+        self._result_map_text.setPlainText(plan.map_text)
+        self._start_commit_step(result, plan)
+        self._show_page(self._result_page)
+
+    def _on_copy_map(self):
+        text = self._result_plan.map_text if self._result_plan is not None else ""
+        QGuiApplication.clipboard().setText(text)
+
+    def _on_open_map(self):
+        self._core.open_file(self._layout.custom_dir / MAP_FILE)
+
+    # -- the commit step (MIG-04): one Custom commit plus the parent ref -----------------------------
+
+    def _start_commit_step(self, result: MigrationResult, plan: MigrationPlan):
+        self._clear_commit_host()
+        cplan = self._core.commit_plan(result, plan)
+        panel = CommitPanel()
+        self._commit_panel = panel
+        self._commit_panel_host.layout().addWidget(panel)
+        host = _CommitStepHost(self, panel, self._core, self._kicad_fp_dir, self._spawn)
+        self._commit_host = host
+        host.start(cplan)
+
+    def _clear_commit_host(self):
+        host, self._commit_host = self._commit_host, None
+        if host is not None:
+            host.shutdown()
+        panel, self._commit_panel = self._commit_panel, None
+        if panel is not None:
+            self._commit_panel_host.layout().removeWidget(panel)
+            panel.hide()
+            panel.setParent(None)
+            panel.deleteLater()
+
+    def _run_content(self, build):
+        """Build a ContentText on a worker (a diff or hash never runs on the GUI thread), then show it."""
+        worker = self._spawn(lambda progress: build())
+        worker.result.connect(self._on_file_content_ready)
+        worker.start()
 
     # -- closing (D-14 Task 3 extends this with the "waits without blocking" rule) --
 
