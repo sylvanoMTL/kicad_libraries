@@ -12,19 +12,22 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QSettings, Qt
 
+from kicad_lib_manager.importer.migration.draft import LoadedDraft
 from kicad_lib_manager.importer.migration.gate import GateOutcome, StripLine
 from kicad_lib_manager.importer.migration.inventory import Inventory, InventoryPart
-from kicad_lib_manager.importer.migration.plan import MigrationPlan, PartPlan
+from kicad_lib_manager.importer.migration.plan import MigrationChoices, MigrationPlan, PartChoice, PartPlan
 from kicad_lib_manager.importer.migration.precheck import Precheck
 from kicad_lib_manager.importer.plan import FieldChange, PartText, ToolContext
 from kicad_lib_manager.importer.stems import name_verdict
 from kicad_lib_manager.importer.suggest import LibrarySuggestion, suggestion_text
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.widgets.migration_dialog import (
+    CHANGED_MARK,
     MigrationCore,
     MigrationDialog,
     PASS_MARK,
     UNDECIDED_GROUP,
+    _DRAFT_DELAY_MS,
     _REBUILD_DELAY_MS,
 )
 
@@ -418,3 +421,121 @@ def test_vendor_text_is_plain(qtbot, make_dialog, tmp_path):
                 item = group.child(j)
     assert item is not None
     assert item.toolTip(0) == html.escape(vendor_text)
+
+
+# -- Task 3: draft save/restore, changed-since-draft marks, and closing (D-14) -------------------
+
+
+def test_edits_save_the_draft(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1")
+    calls = {}
+
+    def fake_save_draft(path, repo_root, choices, prints):
+        calls["count"] = calls.get("count", 0) + 1
+        calls["choices"] = choices
+        calls["prints"] = prints
+        return Issue(Severity.WARNING, "draft.save_failed", "Could not save the migration draft: disk full")
+
+    core = core_with(
+        tmp_path,
+        build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a,)),
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+        save_draft=fake_save_draft,
+        fingerprints=lambda inventory: {KEY_A: "print-a"},
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    dialog._field_edits["mpn"].setText("NEWMPN")
+    dialog._field_edits["mpn"].textEdited.emit("NEWMPN")
+    qtbot.waitUntil(lambda: calls.get("count") == 1, timeout=_DRAFT_DELAY_MS + 5000)
+    assert calls["choices"].parts[KEY_A].mpn == "NEWMPN"
+    assert calls["prints"] == {KEY_A: "print-a"}
+    qtbot.waitUntil(lambda: "Could not save the migration draft" in dialog._status_label.text())
+
+
+def test_reopen_restores_the_draft(qtbot, make_dialog, tmp_path):
+    saved_choice = PartChoice(mpn="SAVEDMPN", manufacturer="ACME")
+    loaded = LoadedDraft(
+        choices=MigrationChoices(parts={KEY_A: saved_choice}),
+        fingerprints={KEY_A: "print-a"},
+        saved_at="2026-01-01T00:00:00",
+    )
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1", mpn="SAVEDMPN")
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured.setdefault("calls", []).append(choices)
+        return _plan_for(inventory, (part_a,))
+
+    core = core_with(
+        tmp_path,
+        load_draft=lambda path, repo_root: loaded,
+        build_plan=fake_build_plan,
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    assert captured["calls"][0].parts[KEY_A] == saved_choice
+    assert dialog._field_edits["mpn"].text() == "SAVEDMPN"
+    assert dialog._field_edits["manufacturer"].text() == "ACME"
+
+
+def test_changed_since_draft_is_marked(qtbot, make_dialog, tmp_path):
+    saved_choice = PartChoice(mpn="SAVEDMPN")
+    loaded = LoadedDraft(
+        choices=MigrationChoices(parts={KEY_A: saved_choice}),
+        fingerprints={KEY_A: "old-print"},
+        saved_at="2026-01-01T00:00:00",
+    )
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1", mpn="SAVEDMPN")
+
+    core = core_with(
+        tmp_path,
+        load_draft=lambda path, repo_root: loaded,
+        fingerprints=lambda inventory: {KEY_A: "new-print"},
+        changed_parts=lambda loaded_, current: frozenset({KEY_A}),
+        build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a,)),
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    group = dialog._tree.topLevelItem(0)
+    row = group.child(0)
+    assert CHANGED_MARK in row.text(1)
+    assert CHANGED_MARK in dialog._changed_label.text()
+    assert dialog._field_edits["mpn"].text() == "SAVEDMPN"
+
+
+def test_unreadable_draft_starts_clean(qtbot, make_dialog, tmp_path):
+    note = Issue(
+        Severity.INFO, "draft.unreadable", "The saved migration draft could not be read; starting without it"
+    )
+    core = core_with(tmp_path, load_draft=lambda path, repo_root: note)
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._gate is not None)
+
+    assert dialog._choices.parts == {}
+    qtbot.waitUntil(lambda: "could not be read" in dialog._status_label.text())
+    assert dialog._status_label.text().count("could not be read") == 1
+
+
+def test_close_while_planning_waits_without_blocking(qtbot, make_dialog, tmp_path):
+    gate = threading.Event()
+
+    def slow_build_plan(inventory, choices, ctx):
+        gate.wait(5)
+        return _plan_for(inventory, ())
+
+    core = core_with(tmp_path, build_plan=slow_build_plan)
+    dialog = make_dialog(core)
+    dialog.show()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._edit_page)
+
+    dialog.reject()
+    assert dialog.isVisible()  # returns at once; the worker is still gated
+
+    gate.set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=10000)
