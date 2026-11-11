@@ -106,8 +106,16 @@ def check_custom(custom_dir: Path, repo_root: Path, *, git: GitContext | None = 
     elif existing == head:
         tag_action = "reuse"
     else:
-        # TODO(13-03 Task 2): refuse with migration.tag_elsewhere instead of proceeding
-        tag_action = ""
+        short = short_hash(ctx, custom_dir, existing) or existing[:7]
+        text = (
+            f"the tag {PRE_ATOMIC_TAG} already points at {short} (the recovery point of an earlier migration). "
+            f"To keep it under another name and free the name, run from the repo root: "
+            f"git -C Custom tag {PRE_ATOMIC_TAG}-old {PRE_ATOMIC_TAG}, then git -C Custom tag -d {PRE_ATOMIC_TAG}. "
+            "Then open the migration again."
+        )
+        return Precheck(
+            False, (Issue(Severity.ERROR, "migration.tag_elsewhere", _CANNOT_START + text),), head, branch, ""
+        )
 
     return Precheck(True, (), head, branch, tag_action)
 
