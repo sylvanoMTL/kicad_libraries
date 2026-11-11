@@ -267,6 +267,7 @@ class MigrationDialog(QDialog):
         self._current_key: PartKey | None = None
         self._targets: dict[str, QWidget] = {}
         self._workers: list[TaskWorker] = []
+        self._content_views: list[ContentViewDialog] = []
         self._closing = False
         self._pending_result: int | None = None
 
@@ -377,7 +378,9 @@ class MigrationDialog(QDialog):
 
         self._tabs = QTabWidget()
         self._part_tab = self._build_part_tab()
-        self._tabs.addTab(self._part_tab, "Part")
+        self._tabs.addTab(self._part_tab, PART_TAB_TEXT)
+        self._files_tab = self._build_files_tab()
+        self._tabs.addTab(self._files_tab, FILES_TAB_TEXT)
         splitter.addWidget(self._tabs)
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
@@ -848,6 +851,8 @@ class MigrationDialog(QDialog):
         self._plan_gen = gen
         self._populate_tree()
         self._render_strip(self._gate.lines)
+        self._files_tree.render(self._files_sections(self._plan))
+        self._populate_leftovers(self._plan.leftovers)
         if self._current_key is None and self._plan.parts:
             self._select_part(self._plan.parts[0].key)
         else:
@@ -1100,6 +1105,109 @@ class MigrationDialog(QDialog):
         self._pad_warning_label.setVisible(bool(pad_warning))
 
     # -- showing pages ---------------------------------------------------------
+
+    # -- the Files tab: every operation, its diff, and the leftover check boxes (D-10, D-15, D-21) --
+
+    def _build_files_tab(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        self._files_tree = PreviewTree()
+        self._files_tree.row_activated.connect(self._on_file_row)
+        lay.addWidget(self._files_tree, 2)
+
+        leftovers_label = QLabel(LEFTOVERS_TEXT)
+        leftovers_label.setTextFormat(Qt.TextFormat.PlainText)
+        lay.addWidget(leftovers_label)
+        self._leftovers_list = QListWidget()
+        self._leftovers_list.itemChanged.connect(self._on_leftover_changed)
+        lay.addWidget(self._leftovers_list, 1)
+        return page
+
+    def _files_sections(self, plan: MigrationPlan) -> tuple[PreviewSection, ...]:
+        """One row per planned op: a model/footprint rename (write+delete paired by source_rel) is one
+        "Move or rename" row; mkdir ops are not shown (not in the must_haves truth's own list)."""
+        ops = plan.ops
+        delete_index_by_rel = {op.rel: idx for idx, op in enumerate(ops) if op.kind == "delete"}
+        paired_delete_indexes: set[int] = set()
+        write_rows: list[PreviewRow] = []
+        move_rows: list[PreviewRow] = []
+        delete_rows: list[PreviewRow] = []
+        rmdir_rows: list[PreviewRow] = []
+        for index, op in enumerate(ops):
+            if op.kind == "write":
+                paired_index = delete_index_by_rel.get(op.source_rel) if op.source_rel is not None else None
+                if paired_index is not None:
+                    paired_delete_indexes.add(paired_index)
+                    move_rows.append(PreviewRow(text=f"{op.source_rel} → {op.rel}", kind="file", op_index=index))
+                else:
+                    write_rows.append(PreviewRow(text=op.rel, kind="file", op_index=index))
+            elif op.kind == "delete":
+                if index not in paired_delete_indexes:
+                    delete_rows.append(PreviewRow(text=op.rel, kind="file", op_index=index))
+            elif op.kind == "rmdir":
+                rmdir_rows.append(PreviewRow(text=op.rel, kind="file", op_index=index))
+        delete_rows = [row for row in delete_rows if row.op_index not in paired_delete_indexes]
+        sections = (
+            PreviewSection(_WRITE_SECTION, tuple(write_rows)),
+            PreviewSection(_MOVE_SECTION, tuple(move_rows)),
+            PreviewSection(_DELETE_SECTION, tuple(delete_rows)),
+            PreviewSection(_RMDIR_SECTION, tuple(rmdir_rows)),
+        )
+        return tuple(section for section in sections if section.rows)
+
+    def _on_file_row(self, row: PreviewRow):
+        """A Files-tab row was double-clicked or entered: build its ContentText on a worker (T-13-36)."""
+        if self._plan is None or row.op_index is None or row.op_index >= len(self._plan.ops):
+            return
+        op = self._plan.ops[row.op_index]
+        repo_root = self._repo_root
+        core = self._core
+
+        def task(progress):
+            return core.op_content(op, repo_root)
+
+        worker = self._spawn(task)
+        worker.result.connect(self._on_file_content_ready)
+        worker.start()
+
+    def _on_file_content_ready(self, content: ContentText):
+        view = ContentViewDialog(content, parent=self)
+        self._content_views.append(view)
+        view.finished.connect(lambda _result=0, v=view: self._on_content_view_closed(v))
+        view.open()
+
+    def _on_content_view_closed(self, view: ContentViewDialog):
+        if view in self._content_views:
+            self._content_views.remove(view)
+
+    def _populate_leftovers(self, rows: tuple):
+        self._leftovers_list.blockSignals(True)
+        try:
+            self._leftovers_list.clear()
+            for row in rows:
+                item = QListWidgetItem(row.rel)
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                item.setCheckState(Qt.CheckState.Unchecked if row.keep else Qt.CheckState.Checked)
+                item.setToolTip(html.escape(row.reason))
+                item.setData(Qt.ItemDataRole.UserRole, row.rel)
+                self._leftovers_list.addItem(item)
+        finally:
+            self._leftovers_list.blockSignals(False)
+
+    def _on_leftover_changed(self, item: QListWidgetItem):
+        rel = item.data(Qt.ItemDataRole.UserRole)
+        if rel is None:
+            return
+        keep = item.checkState() != Qt.CheckState.Checked
+        self._update_leftover(rel, keep)
+
+    def _update_leftover(self, rel: str, keep: bool):
+        leftovers = dict(self._choices.leftovers)
+        leftovers[rel] = keep
+        self._choices = dataclasses.replace(self._choices, leftovers=leftovers)
+        self._gen += 1
+        self._rebuild_timer.start(_REBUILD_DELAY_MS)
+        self._draft_timer.start(_DRAFT_DELAY_MS)
 
     def _show_page(self, page: QWidget):
         self._stack.setCurrentWidget(page)
