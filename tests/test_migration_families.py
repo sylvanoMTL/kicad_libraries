@@ -6,6 +6,7 @@ hand; the live Custom/ is never touched.
 
 from pathlib import Path
 
+import pytest
 from fakecli import FakeCli
 from installfixtures import V10_VERSION, vendor_footprint
 from migrationfixtures import EXPECTED_TARGETS, POWER_LIBRARY, _tab_lib, _tab_symbol, write_v1_custom
@@ -15,7 +16,7 @@ from kicad_lib_manager import fsutil, kicad_files
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.migration.families import derived_edits, find_families
 from kicad_lib_manager.importer.migration.gate import check_plan, end_state_context
-from kicad_lib_manager.importer.migration.inventory import Inventory, read_inventory
+from kicad_lib_manager.importer.migration.inventory import Inventory, InventoryPart, read_inventory
 from kicad_lib_manager.importer.migration.plan import FamilyRow, MigrationChoices, PartChoice, PartKey
 from kicad_lib_manager.importer.migration.planner import build_migration_plan, prepare_context
 from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, ToolContext
@@ -186,3 +187,178 @@ def test_derived_members_pass_the_gate(tmp_path):
     # Once every field is complete, the derived member's own fields pass the gate exactly like a
     # standalone part's would (gate.py judges each part's own written fields).
     assert outcome.run_enabled, outcome.lines
+
+
+# -- Task 2: untick, edge families and a real KiCad load ------------------------------------------
+
+
+def _raw_symbol(
+    name: str,
+    *,
+    pins: tuple[tuple[str, str, str], ...] = (("1", "-5.08", "0"), ("2", "5.08", "180")),
+    extra: str = "",
+) -> str:
+    pin_lines = "\n".join(
+        f'      (pin passive line (at {x} 0 {angle}) (length 2.54) (name "~") (number "{num}"))'
+        for num, x, angle in pins
+    )
+    return (
+        f'  (symbol "{name}"\n'
+        f"    (exclude_from_sim no) (in_bom yes) (on_board yes)\n"
+        f'    (property "Reference" "U" (at 0 0 0))\n'
+        f'    (property "Value" "{name}" (at 0 0 0))\n'
+        + extra
+        + f'    (symbol "{name}_1_1"\n'
+        + f"{pin_lines}\n"
+        + "    )\n"
+        + "  )\n"
+    )
+
+
+def _raw_lib(symbols: list[str]) -> str:
+    return '(kicad_symbol_lib (version 20231120) (generator "x")\n' + "".join(symbols) + ")\n"
+
+
+def _parts_inventory(root: Path, library: str, names: list[str]) -> Inventory:
+    layout = RepoLayout.for_repo(root)
+    rel_path = f"Custom/Symbols/{library}.kicad_sym"
+    parts = tuple(
+        InventoryPart(
+            key=(rel_path, name),
+            library=library,
+            rel_path=rel_path,
+            name=name,
+            extends=None,
+            fields={},
+            footprint="",
+            version=20231120,
+            block_sha256="",
+            atomic=False,
+        )
+        for name in names
+    )
+    return Inventory(
+        layout=layout,
+        parts=parts,
+        footprints=(),
+        models=(),
+        model_linkers={},
+        bak_files=(),
+        symbol_libraries=(library,),
+        footprint_libraries=(),
+        issues=(),
+    )
+
+
+def _write_lib(root: Path, library: str, text: str) -> None:
+    symbols_dir = root / "Custom" / "Symbols"
+    symbols_dir.mkdir(parents=True, exist_ok=True)
+    (symbols_dir / f"{library}.kicad_sym").write_bytes(text.encode("utf-8"))
+
+
+def test_untick_keeps_member_standalone(tmp_path):
+    library = "TestLib"
+    _write_lib(tmp_path, library, _raw_lib([_raw_symbol("PARTA"), _raw_symbol("PARTB")]))
+    inventory = _parts_inventory(tmp_path, library, ["PARTA", "PARTB"])
+    targets = {part.key: "Atomic_Test" for part in inventory.parts}
+    mpns = {part.key: "PART100" for part in inventory.parts}
+    parent_key = (f"Custom/Symbols/{library}.kicad_sym", "PARTA")
+    member_key = (f"Custom/Symbols/{library}.kicad_sym", "PARTB")
+    choices = MigrationChoices(parts={member_key: PartChoice(derive=False)})
+
+    fam = find_families(inventory, choices, targets=targets, mpns=mpns)
+
+    assert member_key not in fam.derived
+    row = next(r for r in fam.rows if r.member == member_key)
+    assert row == FamilyRow(parent_key, member_key, False)
+
+
+def test_members_in_different_libraries_are_not_a_family(tmp_path):
+    library = "TestLib"
+    _write_lib(tmp_path, library, _raw_lib([_raw_symbol("PARTA"), _raw_symbol("PARTB")]))
+    inventory = _parts_inventory(tmp_path, library, ["PARTA", "PARTB"])
+    key_a = (f"Custom/Symbols/{library}.kicad_sym", "PARTA")
+    key_b = (f"Custom/Symbols/{library}.kicad_sym", "PARTB")
+    targets = {key_a: "Atomic_One", key_b: "Atomic_Two"}
+    mpns = {key_a: "PART100", key_b: "PART100"}
+
+    fam = find_families(inventory, MigrationChoices(), targets=targets, mpns=mpns)
+
+    assert fam.rows == ()
+    assert fam.derived == {}
+
+
+def test_name_only_difference_is_identical(tmp_path):
+    library = "TestLib"
+    names = ["PARTA", "PARTB", "PARTC", "PARTD", "PARTE"]
+    text = _raw_lib(
+        [
+            _raw_symbol("PARTA"),
+            # Identical graphics, differs only by its own name (and so its sub-symbol's name).
+            _raw_symbol("PARTB"),
+            # A different pin number (3 instead of 2) at the same position.
+            _raw_symbol("PARTC", pins=(("1", "-5.08", "0"), ("3", "5.08", "180"))),
+            # The same pin numbers, but one pin moved.
+            _raw_symbol("PARTD", pins=(("1", "-6.00", "0"), ("2", "5.08", "180"))),
+            # An extra graphic line the parent does not have.
+            _raw_symbol("PARTE", extra='    (rectangle (start -2.54 2.54) (end 2.54 -2.54))\n'),
+        ]
+    )
+    _write_lib(tmp_path, library, text)
+    inventory = _parts_inventory(tmp_path, library, names)
+    targets = {part.key: "Atomic_Test" for part in inventory.parts}
+    mpns = {part.key: "PART100" for part in inventory.parts}
+
+    fam = find_families(inventory, MigrationChoices(), targets=targets, mpns=mpns)
+
+    rel_path = f"Custom/Symbols/{library}.kicad_sym"
+    members = {row.member for row in fam.rows}
+    assert members == {(rel_path, "PARTB")}
+    assert fam.derived == {(rel_path, "PARTB"): (rel_path, "PARTA")}
+
+
+def test_single_member_has_no_family(tmp_path):
+    library = "TestLib"
+    _write_lib(tmp_path, library, _raw_lib([_raw_symbol("PARTA")]))
+    inventory = _parts_inventory(tmp_path, library, ["PARTA"])
+    targets = {part.key: "Atomic_Test" for part in inventory.parts}
+    mpns = {part.key: "PART100" for part in inventory.parts}
+
+    fam = find_families(inventory, MigrationChoices(), targets=targets, mpns=mpns)
+
+    assert fam.rows == ()
+    assert fam.derived == {}
+
+
+@pytest.mark.kicad_cli
+def test_real_kicad_loads_derived_library(kicad_cli_path):
+    from kicad_lib_manager.importer import kicad_cli
+
+    text = _tab_lib(
+        V10_VERSION,
+        [
+            _tab_symbol("PARTA", [("Reference", "U", False), ("Value", "PARTA", False)]),
+            _tab_symbol("PARTB", [("Reference", "U", False), ("Value", "PARTB", False)]),
+            _tab_symbol("PARTC", [("Reference", "U", False), ("Value", "PARTC", False)]),
+        ],
+    ).decode("utf-8")
+    loaded = kicad_files.parse_bytes(text.encode("utf-8"), "AtomicFamilyTest.kicad_sym")
+
+    edits = []
+    for member_name in ("PARTB", "PARTC"):
+        ref = kicad_files.find_symbol(loaded.root, member_name)
+        edits.extend(derived_edits(loaded, ref, "PARTA"))
+    edited_text = apply_edits(loaded.source.text, edits)
+    final = kicad_files.parse_bytes(
+        fsutil.encode_source(edited_text, loaded.source.bom), "AtomicFamilyTest.kicad_sym"
+    )
+    assert kicad_files.extends_name(kicad_files.find_symbol(final.root, "PARTB").node) == "PARTA"
+    assert kicad_files.extends_name(kicad_files.find_symbol(final.root, "PARTC").node) == "PARTA"
+
+    issues = kicad_cli.load_gate(
+        kicad_cli_path,
+        library="AtomicFamilyTest",
+        symbol_lib=fsutil.encode_source(edited_text, loaded.source.bom),
+        footprints=[],
+    )
+    assert issues == []
