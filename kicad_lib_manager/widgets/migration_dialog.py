@@ -17,14 +17,16 @@ from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
-    QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea,
-    QSplitter, QStackedWidget, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton,
+    QScrollArea, QSplitter, QStackedWidget, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem,
+    QVBoxLayout, QWidget,
 )
 
 from ..importer.content import ContentText, MAX_READ, binary_text, cap_lines, decode_text, diff_text, sha256_file
 from ..importer.footprint_index import build_index
 from ..importer.form import FIELD_LABELS, TEXT_LABELS, library_badge
 from ..importer.layout import RepoLayout
+from ..importer.migration.applier import MigrationResult, apply_migration
 from ..importer.migration.draft import (
     LoadedDraft,
     changed_parts,
@@ -45,20 +47,22 @@ from ..importer.migration.plan import (
     PlanContext,
 )
 from ..importer.migration.planner import build_migration_plan, prepare_context
-from ..importer.migration.precheck import check_custom
+from ..importer.migration.precheck import check_custom, ensure_tag
 from ..importer.plan import FieldChange, Resolution
 from ..importer.planner import detect_tools
 from ..importer.preview import PreviewRow, PreviewSection
 from ..importer.stems import name_verdict
 from ..importer.suggest import existing_libraries, suggestion_text
 from ..kicad_process import kicad_running
+from ..kicad_setup import checkout_mismatch, wrong_checkout_refusal
+from ..library_scanner import ConfirmAnswer
 from ..models import Issue, Severity
 from ..settings import migration_draft_file
 from .conflict_row import ConflictRow
 from .content_view import ContentViewDialog
 from .import_dialog import ADD_MODEL_TEXT, OFFICIAL_FOOTPRINT_TEXT, TaskWorker, fit_window, official_candidates
 from .preview_tree import PreviewTree
-from .theme import AMBER, AMBER_TINT, FIELD_FRAME_QSS, MUTED, PRIMARY_BUTTON_QSS
+from .theme import AMBER, AMBER_TINT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, MUTED, PRIMARY_BUTTON_QSS
 
 WINDOW_TITLE = "Migrate to Atomic Libraries"
 RUN_TEXT = "Run Migration"
@@ -88,6 +92,16 @@ _RMDIR_SECTION = "Remove folder"
 _HELP_TEXT = "Help"
 _CLOSE_TEXT = "Close"
 _WINDOW_SIZE = QSize(1040, 700)
+
+RUN_REFUSAL_ACTION = "The migration cannot run"
+_RUN_FAILED_TITLE = "Migration failed"
+_RUN_FAILED_NOT_RESTORED_TITLE = "Migration failed; not everything could be restored"
+_RUN_FAILED_RETRY = "Every file was restored."
+_KICAD_OPEN_RUN_TEXT = (
+    "It may hold the old libraries open; a locked file stops the migration and everything is "
+    "restored. Close KiCad, then press Retry."
+)
+_WRONG_CHECKOUT_RUN_TEXT = "Running it here would rewrite a copy KiCad does not read."
 
 
 def _plural(count: int, one: str, many: str) -> str:
@@ -129,6 +143,30 @@ def _pick_model_file(parent) -> str:
         parent, "Add 3D model", str(Path.home()), "3D models (*.step *.stp *.wrl)"
     )
     return path
+
+
+def _ask_kicad_open(parent, names) -> ConfirmAnswer:
+    """The default ask_kicad_open: Retry (default) / Run anyway / Cancel (P-13, MIG-01).
+
+    Tests replace this field with a fake so no test ever opens a real modal dialog.
+    """
+    box = QMessageBox(parent)
+    box.setWindowModality(Qt.WindowModality.WindowModal)
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setWindowTitle("KiCad is open")
+    box.setText(f"KiCad is open ({', '.join(names)}). {_KICAD_OPEN_RUN_TEXT}")
+    retry = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
+    anyway = box.addButton("Run anyway", QMessageBox.ButtonRole.DestructiveRole)
+    cancel = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+    box.setDefaultButton(retry)
+    box.setEscapeButton(cancel)
+    box.exec()
+    clicked = box.clickedButton()
+    if clicked is retry:
+        return ConfirmAnswer.RETRY
+    if clicked is anyway:
+        return ConfirmAnswer.WRITE
+    return ConfirmAnswer.DECLINE
 
 
 def _is_model_rel(rel: str) -> bool:
@@ -218,6 +256,10 @@ class MigrationCore:
     official_candidates: object = official_candidates
     op_content: object = op_content
     pick_model_file: object = _pick_model_file
+    apply: object = apply_migration
+    ensure_tag: object = ensure_tag
+    checkout_mismatch: object = checkout_mismatch
+    ask_kicad_open: object = _ask_kicad_open
 
 
 @dataclass(frozen=True)
@@ -237,6 +279,8 @@ class MigrationDialog(QDialog):
     migrated = Signal(object)
     generate_requested = Signal()
     setup_chooser_requested = Signal()
+    issues_logged = Signal(list)
+    atomic_check_requested = Signal(str, str)
 
     def __init__(
         self,
@@ -270,6 +314,8 @@ class MigrationDialog(QDialog):
         self._content_views: list[ContentViewDialog] = []
         self._closing = False
         self._pending_result: int | None = None
+        self._running = False
+        self._run_worker: TaskWorker | None = None
 
         self._rebuild_timer = QTimer(self)
         self._rebuild_timer.setSingleShot(True)
@@ -290,7 +336,11 @@ class MigrationDialog(QDialog):
         self._refusal_page = self._build_refusal_page()
         self._loading_page = self._build_loading_page()
         self._edit_page = self._build_edit_page()
-        for page in (self._checking_page, self._refusal_page, self._loading_page, self._edit_page):
+        self._running_page = self._build_running_page()
+        for page in (
+            self._checking_page, self._refusal_page, self._loading_page, self._edit_page,
+            self._running_page,
+        ):
             self._stack.addWidget(page)
         self._stack.setCurrentWidget(self._checking_page)
 
@@ -301,11 +351,11 @@ class MigrationDialog(QDialog):
     # -- status --------------------------------------------------------------
 
     def is_running(self) -> bool:
-        """True while Run itself is applying the migration (plan 13-16 fills this in)."""
-        return False
+        """True while Run itself is applying the migration (MIG-01, MIG-03)."""
+        return self._running
 
     def is_committing(self) -> bool:
-        """True while the parent commit runs (plan 13-16 fills this in)."""
+        """True while the parent commit runs (plan 13-16 Task 2 fills this in)."""
         return False
 
     def is_busy(self) -> bool:
@@ -359,9 +409,51 @@ class MigrationDialog(QDialog):
         lay.addStretch()
         return page
 
+    def _build_running_page(self) -> QWidget:
+        page = QWidget()
+        lay = QVBoxLayout(page)
+        self._running_label = QLabel("Starting the migration...")
+        self._running_label.setTextFormat(Qt.TextFormat.PlainText)
+        lay.addWidget(self._running_label)
+        lay.addStretch()
+        return page
+
+    def _build_run_failure_banner(self, lay: QVBoxLayout):
+        """A failed Run's reasons, in the same style as the import dialog's failure banner (D-15)."""
+        banner = QFrame()
+        banner.setObjectName("runFailureBanner")
+        banner.setStyleSheet(
+            f"QFrame#runFailureBanner {{ background-color: {ERROR_TINT}; border-left: 2px solid {ERROR}; }}"
+        )
+        outer = QHBoxLayout(banner)
+        column = QVBoxLayout()
+        title = QLabel()
+        title.setTextFormat(Qt.TextFormat.PlainText)
+        title.setWordWrap(True)
+        font = title.font()
+        font.setBold(True)
+        title.setFont(font)
+        title.setStyleSheet(f"color: {ERROR};")
+        column.addWidget(title)
+        body = QPlainTextEdit()
+        body.setReadOnly(True)
+        body.setFrameShape(QFrame.Shape.NoFrame)
+        body.setMaximumHeight(120)
+        column.addWidget(body)
+        outer.addLayout(column, 1)
+        dismiss = QPushButton("✕")
+        dismiss.setToolTip("Dismiss")
+        dismiss.clicked.connect(banner.hide)
+        outer.addWidget(dismiss, alignment=Qt.AlignmentFlag.AlignTop)
+        banner.hide()
+        lay.addWidget(banner)
+        self._run_failure_banner, self._run_failure_title, self._run_failure_body = banner, title, body
+
     def _build_edit_page(self) -> QWidget:
         page = QWidget()
         lay = QVBoxLayout(page)
+
+        self._build_run_failure_banner(lay)
 
         self._strip = QListWidget()
         self._strip.setStyleSheet(f"QListWidget {{ background-color: {AMBER_TINT}; border: none; }}")
@@ -393,6 +485,7 @@ class MigrationDialog(QDialog):
         self._run_btn = QPushButton(RUN_TEXT)
         self._run_btn.setStyleSheet(PRIMARY_BUTTON_QSS)
         self._run_btn.setEnabled(False)
+        self._run_btn.clicked.connect(self._on_run)
         bottom.addWidget(self._run_btn)
         close_btn = QPushButton(_CLOSE_TEXT)
         close_btn.clicked.connect(self.reject)
@@ -1211,6 +1304,109 @@ class MigrationDialog(QDialog):
 
     def _show_page(self, page: QWidget):
         self._stack.setCurrentWidget(page)
+
+    # -- Run itself: wrong-checkout refusal, KiCad-open check, tag and the transaction (MIG-01, MIG-03, D-26) --
+
+    def _on_run(self):
+        if not self._run_btn.isEnabled() or self.is_running() or self._plan is None:
+            return
+        self._run_failure_banner.hide()
+        self._running = True
+        self._start_checkout_check()
+
+    def _start_checkout_check(self):
+        core = self._core
+        repo_root = self._repo_root
+
+        def task(progress):
+            return core.checkout_mismatch(repo_root)
+
+        worker = self._spawn(task)
+        worker.result.connect(self._on_checkout_checked)
+        worker.start()
+
+    def _on_checkout_checked(self, mismatch):
+        if mismatch is not None:
+            text = f"{wrong_checkout_refusal(mismatch, RUN_REFUSAL_ACTION)} {_WRONG_CHECKOUT_RUN_TEXT}"
+            self._running = False
+            self._show_run_banner(_RUN_FAILED_TITLE, text)
+            return
+        self._start_kicad_check_for_run()
+
+    def _start_kicad_check_for_run(self):
+        core = self._core
+
+        def task(progress):
+            return core.kicad_running()
+
+        worker = self._spawn(task)
+        worker.result.connect(self._on_run_kicad_checked)
+        worker.start()
+
+    def _on_run_kicad_checked(self, names):
+        names = list(names)
+        if names:
+            answer = self._core.ask_kicad_open(self, names)
+            if answer is ConfirmAnswer.RETRY:
+                self._start_kicad_check_for_run()
+                return
+            if answer is not ConfirmAnswer.WRITE:
+                self._running = False
+                return
+        self._start_run()
+
+    def _start_run(self):
+        self._show_page(self._running_page)
+        self._running_label.setText("Starting the migration...")
+        core = self._core
+        plan = self._plan  # the rendered object, never a rebuilt copy
+        layout = self._layout
+        repo_root = self._repo_root
+        tools = getattr(self._ctx, "tools", None)
+
+        def before_first_write():
+            return core.ensure_tag(layout.custom_dir, repo_root)
+
+        def task(progress):
+            return core.apply(plan, tools=tools, progress=progress, before_first_write=before_first_write)
+
+        worker = self._spawn(task)
+        self._run_worker = worker
+        worker.progress.connect(self._on_run_progress)
+        worker.result.connect(lambda result, p=plan: self._on_run_done(p, result))
+        worker.start()
+
+    def _on_run_progress(self, message: str, current: int, total: int):
+        if self.is_running():
+            self._running_label.setText(message)
+
+    def _on_run_done(self, plan: MigrationPlan, result: MigrationResult):
+        """Task 2 replaces the success branch with the Result view; this tracer just proves the worker chain."""
+        self._run_worker = None
+        self._running = False
+        self.issues_logged.emit(list(result.issues))
+        if result.ok:
+            self.migrated.emit(result)
+            self._show_page(self._edit_page)
+            return
+        self._show_run_failure(result)
+        self._start_load()
+
+    def _show_run_banner(self, title: str, text: str):
+        self._run_failure_title.setText(title)
+        self._run_failure_body.setPlainText(text)
+        self._run_failure_banner.show()
+        self._show_page(self._edit_page)
+
+    def _show_run_failure(self, result: MigrationResult):
+        """List every reason and say every file was restored, or name the backup folder (MIG-03)."""
+        restore_failed = any(issue.code == "migration.rollback_incomplete" for issue in result.issues)
+        title = _RUN_FAILED_NOT_RESTORED_TITLE if restore_failed else _RUN_FAILED_TITLE
+        closing = _RUN_FAILED_RETRY
+        if restore_failed and result.backup_dir is not None:
+            closing = f"The original files are in {result.backup_dir}."
+        lines = [issue.text for issue in result.issues if issue.severity is Severity.ERROR]
+        self._show_run_banner(title, "\n".join([*lines, closing]))
 
     # -- closing (D-14 Task 3 extends this with the "waits without blocking" rule) --
 
