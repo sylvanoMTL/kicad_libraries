@@ -20,10 +20,13 @@ from kicad_lib_manager.models import Issue, Severity
 
 PACKAGE = Path(gitops.__file__).resolve().parent
 
-# The subcommand set fixed by plan 06-01; widening it is a deliberate, reviewed act
+# The subcommand set fixed by plan 06-01; widening it is a deliberate, reviewed act.
+# "tag" added by plan 13-03 (MIG-01): the pre-atomic recovery tag only, a constant lightweight tag
+# name the code chooses, never typed text, never -f/--force, never pushed.
 EXPECTED_ALLOWED = {
     "--version", "rev-parse", "symbolic-ref", "status", "merge-base", "rev-list", "log", "ls-tree",
     "cat-file", "var", "add", "reset", "switch", "commit", "ls-files", "diff-tree", "check-ignore",
+    "tag",
 }
 # Subcommands that talk to a remote, rewrite history, move refs or discard work
 FORBIDDEN_SUBCOMMANDS = (
@@ -41,6 +44,7 @@ GIT_MODULES = (
     "importer/commit_plan.py",
     "widgets/commit_panel.py",
     "widgets/import_dialog.py",
+    "importer/migration/precheck.py",
 )
 REPO = Path("repo-for-tests")
 

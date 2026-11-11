@@ -21,10 +21,14 @@ from .models import Issue, Severity
 ALLOWED_SUBCOMMANDS = frozenset({
     "--version", "rev-parse", "symbolic-ref", "status", "merge-base", "rev-list", "log", "ls-tree",
     "cat-file", "var", "add", "reset", "switch", "commit", "ls-files", "diff-tree", "check-ignore",
+    "tag",  # Phase 13 MIG-01: the pre-atomic recovery tag only, a lightweight tag the code names, never -f/--force
 })
 DEFAULT_TIMEOUT = 30.0
 COMMIT_TIMEOUT = 300.0  # hooks can be slow
 MIN_GIT_VERSION = (2, 25)  # --pathspec-from-file; assumed to appear in 2.25 (RESEARCH A4), so older git is refused
+# a tag name the code picks, never typed text (MIG-01); matches git's own tag-name rule closely enough
+# for the one constant name this app ever passes (PRE_ATOMIC_TAG)
+_TAG_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 # (marker under the git directory, label) in the order they are checked; --git-path finds each one in a linked worktree
 _BUSY_MARKERS = (
     ("MERGE_HEAD", "a merge"),
@@ -206,6 +210,12 @@ def has_ref(ctx: GitContext, repo: Path, ref: str) -> bool:
     return _ok(run_git(ctx, repo, "rev-parse", "-q", "--verify", f"{ref}^{{commit}}"))
 
 
+def tag_commit(ctx: GitContext, repo: Path, name: str) -> str | None:
+    """The full commit hash tag name points at, or None when the tag does not exist."""
+    run = run_git(ctx, repo, "rev-parse", "-q", "--verify", f"refs/tags/{name}^{{commit}}")
+    return run.stdout.strip() or None if _ok(run) else None
+
+
 def main_ref(ctx: GitContext, repo: Path) -> str | None:
     """The ref that stands for main: the local branch when it exists, else origin/main, else None."""
     for ref in ("refs/heads/main", "refs/remotes/origin/main"):
@@ -347,6 +357,16 @@ def switch_branch(ctx: GitContext, repo: Path, name: str) -> GitRun | Issue:
     A success also writes to stderr, so callers use the exit code only. Never forced, merged or discarded.
     """
     return run_git(ctx, repo, "switch", name)
+
+
+def create_tag(ctx: GitContext, repo: Path, name: str) -> GitRun | Issue:
+    """Create a lightweight tag named name at HEAD; raises ValueError before anything starts for an odd name.
+
+    name must be a constant the code chose (MIG-01), never typed text. No message, no -f/--force, never pushed.
+    """
+    if not _TAG_NAME_RE.fullmatch(name):
+        raise ValueError(f"{name!r} is not an allowed tag name")
+    return run_git(ctx, repo, "tag", name)
 
 
 def _nul_paths(rels) -> bytes:

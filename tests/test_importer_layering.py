@@ -184,6 +184,52 @@ ALLOWED: dict[str, set[str]] = {
     "importer.keywords": {"manufacturers"},
     "importer.footprint_text": {"kicad_files", "sexpr"},
     "importer.incoming": {"models", "kicad_files", "atomic_check"},
+    # Phase 13 migration package (plan 13-03 registers every module; the plans that create them add nothing here)
+    "importer.migration": set(),
+    "importer.migration.precheck": {"models", "gitops"},
+    "importer.migration.plan": {
+        "models", "importer.plan", "importer.layout", "importer.suggest", "importer.siblings",
+    },
+    "importer.migration.inventory": {
+        "models", "fsutil", "kicad_files", "sexpr", "atomic_check", "importer.layout", "importer.package",
+        "importer.fieldrules", "importer.migration.plan",
+    },
+    "importer.migration.symbols": {
+        "models", "fsutil", "kicad_files", "sexpr", "manufacturers", "atomic_check", "importer.plan",
+        "importer.planner", "importer.candidate", "importer.naming", "importer.fieldrules", "importer.keywords",
+        "importer.kicad_cli", "importer.stems", "importer.suggest", "importer.migration.plan",
+        "importer.migration.inventory", "importer.migration.families",
+    },
+    "importer.migration.footprints": {
+        "models", "fsutil", "kicad_files", "sexpr", "importer.plan", "importer.planner", "importer.package",
+        "importer.naming", "importer.keywords", "importer.footprint_text", "importer.footprint_index",
+        "importer.verify", "importer.migration.plan", "importer.migration.inventory",
+    },
+    "importer.migration.families": {
+        "models", "kicad_files", "sexpr", "importer.siblings", "importer.migration.plan",
+        "importer.migration.inventory",
+    },
+    "importer.migration.planner": {
+        "models", "importer.plan", "importer.layout", "importer.candidate", "importer.fieldrules",
+        "importer.suggest", "importer.siblings", "importer.stems", "importer.planner", "importer.migration.plan",
+        "importer.migration.inventory", "importer.migration.symbols", "importer.migration.footprints",
+        "importer.migration.families", "importer.migration.mapfile",
+    },
+    "importer.migration.gate": {
+        "models", "kicad_files", "atomic_check", "importer.form", "importer.incoming", "importer.migration.plan",
+        "importer.migration.inventory",
+    },
+    "importer.migration.mapfile": {"importer.plan", "importer.migration.plan"},
+    "importer.migration.applier": {
+        "models", "fsutil", "kicad_files", "importer.applier", "importer.kicad_cli", "importer.plan",
+        "importer.layout", "importer.migration.plan", "importer.migration.precheck",
+    },
+    "importer.migration.draft": {
+        "models", "fsutil", "importer.plan", "importer.migration.plan", "importer.migration.inventory",
+    },
+    "importer.migration.commitplan": {
+        "models", "importer.plan", "importer.commit_plan", "importer.migration.plan", "importer.migration.applier",
+    },
 }
 
 CORE_MODULES = (
