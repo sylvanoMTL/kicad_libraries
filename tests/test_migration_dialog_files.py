@@ -13,12 +13,18 @@ from PySide6.QtCore import QSettings, Qt
 
 from kicad_lib_manager.importer.migration.inventory import Inventory
 from kicad_lib_manager.importer.migration.gate import GateOutcome
-from kicad_lib_manager.importer.migration.plan import MigrationOp, MigrationPlan, PartPlan
+from kicad_lib_manager.importer.migration.plan import (
+    FamilyRow,
+    MigrationOp,
+    MigrationPlan,
+    PartPlan,
+)
 from kicad_lib_manager.importer.migration.precheck import Precheck
-from kicad_lib_manager.importer.plan import PartText, ToolContext
+from kicad_lib_manager.importer.plan import Conflict, PartText, Resolution, ToolContext
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.widgets.migration_dialog import (
     ADD_MODEL_TEXT,
+    DERIVE_TEXT,
     MigrationCore,
     MigrationDialog,
     MOVE_FOOTPRINT_TEXT,
@@ -27,6 +33,7 @@ from kicad_lib_manager.widgets.migration_dialog import (
 )
 
 KEY_A = ("Custom/Symbols/Connector_USB_GCT.kicad_sym", "USB1")
+KEY_B = ("Custom/Symbols/Connector_USB_GCT.kicad_sym", "USB2")
 
 
 @pytest.fixture(autouse=True)
@@ -69,7 +76,7 @@ def _part(
     )
 
 
-def _plan_for(inventory, parts=(), ops=()) -> MigrationPlan:
+def _plan_for(inventory, parts=(), ops=(), conflicts=(), families=(), leftovers=()) -> MigrationPlan:
     return MigrationPlan(
         layout=inventory.layout,
         parts=tuple(parts),
@@ -78,9 +85,9 @@ def _plan_for(inventory, parts=(), ops=()) -> MigrationPlan:
         symbol_renames=(),
         footprint_links=(),
         model_renames=(),
-        leftovers=(),
-        families=(),
-        conflicts=(),
+        leftovers=tuple(leftovers),
+        families=tuple(families),
+        conflicts=tuple(conflicts),
         removed_libraries=(),
         bak_files=(),
         map_text="",
@@ -209,3 +216,132 @@ def test_default_is_move(qtbot, make_dialog, tmp_path):
 
     qtbot.waitUntil(lambda: captured.get("choices") is not None and KEY_A in captured["choices"].parts)
     assert captured["choices"].parts[KEY_A].footprint_name == "USB_Micro-B_renamed"
+
+
+# -- Task 2: model row, Add 3D model, clash rows and the derive box (D-06, D-07, D-09) -----------
+
+
+def test_model_row_lists_files_and_renames(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1", model_files=("P1.step",))
+    part_b = _part(KEY_B, "Lib", "Atomic_Connector", "P2", model_files=("P2_a.step", "P2_b.step"))
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        return _plan_for(inventory, (part_a, part_b))
+
+    core = core_with(
+        tmp_path, build_plan=fake_build_plan, check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {})
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    assert dialog._model_name_edit.text() == "P1.step"
+    dialog._model_name_edit.setText("P1_renamed.step")
+    dialog._model_name_edit.textEdited.emit("P1_renamed.step")
+    qtbot.waitUntil(lambda: captured.get("choices") is not None and KEY_A in captured["choices"].parts)
+    assert captured["choices"].parts[KEY_A].model_name == "P1_renamed.step"
+
+    dialog._select_part(KEY_B)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_B)
+    items = [dialog._model_list.item(i).text() for i in range(dialog._model_list.count())]
+    assert items == ["P2_a.step", "P2_b.step"]
+
+
+def test_add_model_sets_source(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1", model_files=())
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        return _plan_for(inventory, (part_a,))
+
+    core = core_with(
+        tmp_path,
+        build_plan=fake_build_plan,
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+        pick_model_file=lambda parent: str(tmp_path / "picked.step"),
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    assert dialog._add_model_btn.text() == ADD_MODEL_TEXT
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(
+        lambda: captured.get("choices") is not None
+        and captured["choices"].parts.get(KEY_A) is not None
+        and captured["choices"].parts[KEY_A].model_source == str(tmp_path / "picked.step")
+    )
+
+    captured.clear()
+    dialog._remove_model_btn.click()
+    qtbot.waitUntil(
+        lambda: captured.get("choices") is not None and captured["choices"].parts[KEY_A].model_source is None
+    )
+
+
+def test_clash_row_resolution_reaches_plan(qtbot, make_dialog, tmp_path):
+    part_a = _part(
+        KEY_A, "Lib", "Atomic_Connector", "P1",
+        footprint_old="Lib:FP1", footprint_new="Atomic_Footprints:FP1",
+    )
+    conflict = Conflict(
+        key="footprint:FP1", kind="footprint", name="FP1",
+        existing="Atomic_Footprints already holds FP1.kicad_mod with different content",
+        suggested_name="FP1_P1",
+    )
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        return _plan_for(inventory, (part_a,), conflicts=(conflict,))
+
+    core = core_with(
+        tmp_path, build_plan=fake_build_plan, check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {})
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    row = dialog._conflict_rows["footprint:FP1"]
+    assert row.rename_edit.text() == "FP1_P1"
+
+    row.overwrite_button.click()
+    qtbot.waitUntil(
+        lambda: captured.get("choices") is not None
+        and captured["choices"].resolutions.get("footprint:FP1") is not None
+        and captured["choices"].resolutions["footprint:FP1"].action == "overwrite"
+    )
+
+    strip_target = dialog._targets.get("conflict:footprint:FP1")
+    assert strip_target is row.overwrite_button
+
+
+def test_derive_box(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1")
+    part_b = _part(KEY_B, "Lib", "Atomic_Connector", "P2")
+    family = FamilyRow(parent=KEY_A, member=KEY_B, derive=True)
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        return _plan_for(inventory, (part_a, part_b), families=(family,))
+
+    core = core_with(
+        tmp_path, build_plan=fake_build_plan, check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {})
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+    assert dialog._derive_check.isHidden()
+
+    dialog._select_part(KEY_B)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_B)
+    assert not dialog._derive_check.isHidden()
+    assert dialog._derive_check.text() == DERIVE_TEXT.format(parent="P1")
+    assert dialog._derive_check.isChecked()
+
+    dialog._derive_check.setChecked(False)
+    dialog._derive_check.toggled.emit(False)
+    qtbot.waitUntil(
+        lambda: captured.get("choices") is not None and captured["choices"].parts.get(KEY_B) is not None
+        and captured["choices"].parts[KEY_B].derive is False
+    )
