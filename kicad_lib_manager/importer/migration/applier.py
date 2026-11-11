@@ -28,6 +28,9 @@ from .plan import MigrationOp, MigrationPlan
 
 MIGRATION_BACKUPS = "migrations"
 MIGRATION_BACKUPS_KEPT = 10
+# Sums to about 1 s: the same retry window fsutil.atomic_write_bytes gives a locked write (D-05)
+_DELETE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.3, 0.35)
+_DELETE_RETRY_S = sum(_DELETE_RETRY_DELAYS)
 
 
 @dataclass(frozen=True)
@@ -62,9 +65,14 @@ def _notify(progress: Callable | None, message: str, current: int, total: int) -
         pass
 
 
-def _rollback(undo: list[_Undo]) -> list[Issue]:
-    """Reverse the transaction's steps in reverse order; keep going past a failed step (D-04)."""
+def _rollback(undo: list[_Undo], backup_dir: Path | None) -> list[Issue]:
+    """Reverse the transaction's steps in reverse order; keep going past a failed step (D-04).
+
+    A leftover names backup_dir so the owner can restore the file by hand from the app-data copy
+    (every replaced/deleted file was backed up there before the first write, see _backup_all).
+    """
     leftovers: list[Issue] = []
+    where = f"; see the backup folder at {backup_dir}" if backup_dir is not None else ""
     for step in reversed(undo):
         try:
             if step.kind == "mkdir":
@@ -77,15 +85,15 @@ def _rollback(undo: list[_Undo]) -> list[Issue]:
                 else:
                     problem = fsutil.atomic_write_bytes(step.path, step.pre_image)
                     if problem is not None:
-                        leftovers.append(_err("migration.rollback_failed", f"{step.path} could not be restored ({problem.text})"))
+                        leftovers.append(_err("migration.rollback_incomplete", f"{step.path} could not be restored ({problem.text}){where}"))
             elif step.kind == "delete":
                 problem = fsutil.atomic_write_bytes(step.path, step.pre_image or b"")
                 if problem is not None:
-                    leftovers.append(_err("migration.rollback_failed", f"{step.path} could not be restored ({problem.text})"))
+                    leftovers.append(_err("migration.rollback_incomplete", f"{step.path} could not be restored ({problem.text}){where}"))
         except FileNotFoundError:
             continue
         except OSError as e:
-            leftovers.append(_err("migration.rollback_failed", f"{step.path} could not be restored ({e.strerror or e})"))
+            leftovers.append(_err("migration.rollback_incomplete", f"{step.path} could not be restored ({e.strerror or e}){where}"))
     return leftovers
 
 
@@ -102,9 +110,18 @@ def _backup_folder(root: Path) -> Path:
         number += 1
 
 
+def _rolled_back_summary(undo: list[_Undo], leftovers: list[Issue]) -> list[Issue]:
+    """An INFO migration.rolled_back once anything was actually undone; silent when undo is empty."""
+    if not undo:
+        return []
+    summary = "some files could not be restored" if leftovers else "every change was undone"
+    return [Issue(Severity.INFO, "migration.rolled_back", f"The migration failed; {summary}.")]
+
+
 def _failed(plan: MigrationPlan, issues: list[Issue], undo: list[_Undo], backup_dir: Path | None) -> MigrationResult:
-    leftovers = _rollback(undo)
-    return MigrationResult(False, (*issues, *leftovers), (), (), backup_dir, plan, {})
+    leftovers = _rollback(undo, backup_dir)
+    summary = _rolled_back_summary(undo, leftovers)
+    return MigrationResult(False, (*issues, *summary, *leftovers), (), (), backup_dir, plan, {})
 
 
 # -- preflight: containment, links, staleness, name clashes, case twins (P-11, T-13-30, T-13-31) --
@@ -343,10 +360,57 @@ def _still_fresh(op: MigrationOp, expected: dict[str, str | None]) -> Issue | No
     return None
 
 
+# -- deleting a locked file: a short retry window before giving up (P-13, D-05) -------------------
+
+
+def _delete_with_retry(path: Path) -> Issue | None:
+    """Unlink path; a PermissionError (another process holds the file) retries for about 1s."""
+    for delay in _DELETE_RETRY_DELAYS:
+        try:
+            path.unlink()
+            return None
+        except FileNotFoundError:
+            return None
+        except PermissionError:
+            time.sleep(delay)
+    try:
+        path.unlink()
+        return None
+    except FileNotFoundError:
+        return None
+    except PermissionError as e:
+        return _err("migration.locked", f"{path.name} is in use and could not be deleted ({e.strerror or e})")
+
+
+# -- a non-empty folder a planned rmdir cannot remove is kept, never torn down (P-11) --------------
+
+
+def _rmdir_or_keep(path: Path, rel: str) -> tuple[bool, Issue | None]:
+    """(removed, warning): a folder that is not empty is kept in place, never recursively deleted.
+
+    Emptiness is checked by listing first, not by catching rmdir's OSError: that error does not
+    reliably distinguish "not empty" (kept, a WARNING, migration still succeeds) from any other
+    OS-level failure (a real problem that must roll back the whole transaction), so only the
+    FileNotFoundError race is swallowed here -- everything else propagates.
+    """
+    try:
+        remaining = sorted(os.listdir(path))
+    except FileNotFoundError:
+        return True, None
+    if remaining:
+        names = ", ".join(remaining)
+        return False, Issue(Severity.WARNING, "migration.folder_kept", f"{rel} still holds {names}; it was left in place")
+    try:
+        path.rmdir()
+    except FileNotFoundError:
+        pass
+    return True, None
+
+
 # -- post-write verification (RESEARCH Pattern 2) -------------------------------------------------
 
 
-def _verify(plan: MigrationPlan, written: list[str], deleted: list[str]) -> list[Issue]:
+def _verify(plan: MigrationPlan, written: list[str], deleted: list[str], removed_dirs: list[str]) -> list[Issue]:
     issues: list[Issue] = []
     by_rel = {op.rel: op for op in plan.ops}
     for rel in written:
@@ -363,6 +427,10 @@ def _verify(plan: MigrationPlan, written: list[str], deleted: list[str]) -> list
         op = by_rel[rel]
         if op.path.exists():
             issues.append(_err("migration.verify_failed", f"{rel} still exists after the migration deleted it"))
+    for rel in removed_dirs:
+        op = by_rel[rel]
+        if op.path.exists():
+            issues.append(_err("migration.verify_failed", f"{rel} still exists after the migration removed it"))
     return issues
 
 
@@ -409,6 +477,8 @@ def apply_migration(
     undo: list[_Undo] = []
     written: list[str] = []
     deleted: list[str] = []
+    removed_dirs: list[str] = []
+    kept_issues: list[Issue] = []
     sha: dict[str, str] = {}
     expected: dict[str, str | None] = {}
     total = len(plan.ops)
@@ -437,28 +507,38 @@ def apply_migration(
             elif op.kind == "delete":
                 # Already backed up above (_backup_all), before the first write of this transaction.
                 pre_image = op.path.read_bytes()
-                op.path.unlink()
+                problem = _delete_with_retry(op.path)
+                if problem is not None:
+                    return _failed(plan, [problem], undo, backup_dir)
                 undo.append(_Undo("delete", op.path, pre_image))
                 deleted.append(op.rel)
                 expected[str(op.path).casefold()] = None
             elif op.kind == "rmdir":
-                op.path.rmdir()
-                undo.append(_Undo("rmdir", op.path, None))
+                removed, kept = _rmdir_or_keep(op.path, op.rel)
+                if removed:
+                    undo.append(_Undo("rmdir", op.path, None))
+                    removed_dirs.append(op.rel)
+                else:
+                    kept_issues.append(kept)
             else:
                 return _failed(plan, [_err("migration.unknown_op", f"Unknown operation kind {op.kind!r}")], undo, backup_dir)
     except BaseException as error:
-        leftovers = _rollback(undo)
+        leftovers = _rollback(undo, backup_dir)
         if not isinstance(error, Exception):
             raise
         issue = _err("migration.unexpected", f"The migration stopped unexpectedly ({type(error).__name__}: {error})")
-        return MigrationResult(False, (issue, *leftovers), (), (), backup_dir, plan, {})
+        summary = _rolled_back_summary(undo, leftovers)
+        return MigrationResult(False, (issue, *summary, *leftovers), (), (), backup_dir, plan, {})
 
-    verify_issues = _verify(plan, written, deleted)
+    verify_issues = _verify(plan, written, deleted, removed_dirs)
     if verify_issues:
         return _failed(plan, verify_issues, undo, backup_dir)
 
     prune_issues = install_applier.prune_install_backups(
         backup_dir.parent, keep=MIGRATION_BACKUPS_KEPT, exclude=backup_dir
     )
-    issues = (*extra_issues, *prune_issues)
+    n_parts = len(plan.parts)
+    n_libs = len({p.target_library for p in plan.parts if p.target_library})
+    done = Issue(Severity.SUCCESS, "migration.done", f"Migrated {n_parts} parts into {n_libs} Atomic_ libraries")
+    issues = (*extra_issues, *kept_issues, *prune_issues, done)
     return MigrationResult(True, issues, tuple(written), tuple(deleted), backup_dir, plan, sha)
