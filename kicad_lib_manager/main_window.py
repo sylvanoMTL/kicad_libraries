@@ -12,6 +12,7 @@ from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 from . import scan_cache
 from .importer.layout import RepoLayout
 from .kicad_process import kicad_running
+from .kicad_setup import sync_kicad_chooser
 from .library_scanner import (
     ConfirmAnswer, LibraryRescan, find_kicad_footprint_dir, rescan_library, scan_all,
     sync_kicad_path_vars,
@@ -45,6 +46,9 @@ ATOMIC_BACKUP_ROOT: Path | None = None
 
 # Shown when the Destination box is blank: Path("") would be the working directory (REV-02)
 _NO_DEST_TEXT = "No destination folder set; library tables not changed"
+# Menu text and the Destination-blank warning for the chooser setup action (D-17, D-18)
+SETUP_CHOOSER_TEXT = "Set Up KiCad &Chooser..."
+_NO_DEST_CHOOSER_TEXT = "No destination folder set; KiCad's chooser not set up"
 
 
 def _selected_count(result: ScanResult) -> int:
@@ -237,6 +241,12 @@ class MainWindow(QMainWindow):
         self._path_var_check: TaskWorker | None = None
         self._path_var_workers: list[TaskWorker] = []
         self._close_after_check = False
+        # The chooser setup's KiCad-open check runs the same way (D-17): one check at a
+        # time, off the GUI thread, and a close during it waits instead of blocking
+        self._chooser_busy = False
+        self._chooser_check: TaskWorker | None = None
+        self._chooser_workers: list[TaskWorker] = []
+        self._close_after_chooser = False
         self._close_after_dialog = False  # the import dialog is finishing: close this window after it
         self.setAcceptDrops(True)
         self._build_menu()
@@ -294,6 +304,19 @@ class MainWindow(QMainWindow):
         )
         self._act_check_atomic.triggered.connect(lambda: self._open_atomic_check())
         file_menu.addAction(self._act_check_atomic)
+
+        self._act_setup_chooser = QAction(SETUP_CHOOSER_TEXT, self)
+        self._act_setup_chooser.setShortcut(QKeySequence("Ctrl+Shift+K"))
+        self._act_setup_chooser.setToolTip(
+            "Pin the Atomic_ libraries and show the MPN and Manufacturer columns in "
+            "KiCad's symbol chooser"
+        )
+        self._act_setup_chooser.setStatusTip(
+            "Pin the Atomic_ libraries and show the MPN and Manufacturer columns in "
+            "KiCad's symbol chooser"
+        )
+        self._act_setup_chooser.triggered.connect(self._on_setup_chooser)
+        file_menu.addAction(self._act_setup_chooser)
 
         self._act_set_kicad_path = QAction("Set KiCad &Footprint Path...", self)
         self._act_set_kicad_path.setShortcut(QKeySequence("Ctrl+K"))
@@ -474,7 +497,7 @@ class MainWindow(QMainWindow):
             self._rescan_btn, self._act_rescan, self._act_set_kicad_path,
             self._act_generate, self._generate_btn, self._act_import,
             self._import_btn, self._select_all_btn, self._deselect_all_btn,
-            self._act_check_atomic,
+            self._act_check_atomic, self._act_setup_chooser,
         ):
             control.setEnabled(not running)
         self._tree.set_library_rescan_enabled(not running)
@@ -1154,6 +1177,8 @@ class MainWindow(QMainWindow):
     # (PROJECT.md Safety constraint: no write without a preview first). With KiCad open the
     # same confirmation is a three-button variant (Retry, Change anyway, Not now). Both are
     # window-modal, so only the main window waits and the User Guide stays usable (G-12-22).
+    # The chooser setup's confirm (_confirm_chooser_changes, below) is the same sanctioned
+    # exception for KiCad's chooser pins and columns (D-17).
     def _confirm_path_var_changes(self, changes, names=()):
         if names:
             return self._ask_kicad_open(changes, names)
@@ -1173,20 +1198,33 @@ class MainWindow(QMainWindow):
         )
         return answer == QMessageBox.StandardButton.Yes
 
-    def _kicad_open_box(self, changes, names) -> tuple[QMessageBox, dict]:
-        """The dialog for a change while KiCad is open, and the answer each button gives."""
-        lines = [
-            f"{var}: {old if old else '(not set)'} -> {new}" for var, old, new in changes
-        ]
+    def _kicad_open_box(
+        self, changes, names, *, intro: str | None = None, lines: list[str] | None = None,
+        outro: str | None = None,
+    ) -> tuple[QMessageBox, dict]:
+        """The dialog for a change while KiCad is open, and the answer each button gives.
+
+        `intro`/`lines`/`outro` default to today's path-variable text byte for byte, so a
+        caller that still passes only `changes`/`names` sees the identical dialog. A caller
+        that already has formatted lines (the chooser confirm) passes `lines` directly and
+        `changes` is unused.
+        """
+        if lines is None:
+            lines = [
+                f"{var}: {old if old else '(not set)'} -> {new}" for var, old, new in changes
+            ]
+        if intro is None:
+            intro = "These KiCad path variables in KiCad's settings file would change:"
+        if outro is None:
+            outro = "KiCad may undo them when it exits. Close KiCad, then press Retry."
         box = QMessageBox(self)
         box.setWindowModality(Qt.WindowModality.WindowModal)
         box.setIcon(QMessageBox.Icon.Warning)
         box.setWindowTitle("KiCad is open")
         box.setText(
-            f"KiCad is open ({', '.join(names)}). These KiCad path variables in "
-            "KiCad's settings file would change:\n\n"
+            f"KiCad is open ({', '.join(names)}). {intro}\n\n"
             + "\n".join(lines)
-            + "\n\nKiCad may undo them when it exits. Close KiCad, then press Retry."
+            + f"\n\n{outro}"
         )
         retry = box.addButton("Retry", QMessageBox.ButtonRole.AcceptRole)
         anyway = box.addButton("Change anyway", QMessageBox.ButtonRole.DestructiveRole)
@@ -1251,6 +1289,90 @@ class MainWindow(QMainWindow):
         if self._path_var_check is worker:
             self._path_var_check = None
         if self._close_after_check and self._path_var_check is None:
+            self.close()
+
+    @staticmethod
+    def _chooser_lines(changes) -> list[str]:
+        return [f"{c.label}: {c.old} -> {c.new}" for c in changes]
+
+    def _ask_chooser_kicad_open(self, lines, names) -> ConfirmAnswer:
+        """Chooser-specific KiCad-open dialog (Retry / Change anyway / Not now)."""
+        box, answers = self._kicad_open_box(
+            None, names,
+            intro="These settings of KiCad's symbol chooser would change:",
+            lines=lines,
+        )
+        box.exec()
+        return answers.get(box.clickedButton(), ConfirmAnswer.DECLINE)
+
+    # Sanctioned exception, same as _confirm_path_var_changes above (D-17).
+    def _confirm_chooser_changes(self, changes, names=()):
+        lines = self._chooser_lines(changes)
+        if names:
+            return self._ask_chooser_kicad_open(lines, names)
+        text = (
+            "These settings of KiCad's symbol chooser would change:\n\n"
+            + "\n".join(lines)
+            + "\n\nKiCad shows them after a restart. Change them?"
+        )
+        answer = self._question(
+            "Set up KiCad's chooser?",
+            text,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
+
+    def _on_setup_chooser(self):
+        """Offer the KiCad chooser setup: check for a running KiCad first, off the GUI thread."""
+        if self._dest_path() is None:
+            self._log.log(_NO_DEST_CHOOSER_TEXT, "warning")
+            return
+        if self._chooser_busy:
+            return
+        self._chooser_busy = True
+        self._start_chooser_check()
+
+    def _start_chooser_check(self):
+        # kicad_running is looked up at call time so tests can replace the module attribute
+        worker = TaskWorker(lambda progress: kicad_running(), parent=self)
+        # Finished threads are never deleteLater'd, same rule as the import dialog's _reap
+        self._chooser_workers.append(worker)
+        self._chooser_check = worker
+        worker.result.connect(self._on_chooser_check)
+        worker.failed.connect(self._on_chooser_check_failed)
+        worker.finished.connect(lambda w=worker: self._on_chooser_check_finished(w))
+        worker.start()
+
+    def _on_chooser_check_failed(self, text):
+        # A failed check counts as KiCad closed, like kicad_running itself
+        self._on_chooser_check([])
+
+    def _on_chooser_check(self, names):
+        if self._close_after_chooser:
+            self._chooser_busy = False
+            return
+        names = list(names)
+        issues = sync_kicad_chooser(
+            REPO_ROOT, self._dest_path(),
+            running=lambda: names,
+            confirm=lambda changes: self._confirm_chooser_changes(changes, names),
+        )
+        self._log_issues(issues)
+        if any(issue.code == "chooser.retry" for issue in issues):
+            # Retry: look again; with KiCad closed the normal Yes/No question follows, so
+            # nothing is written without a confirm. _chooser_busy stays set meanwhile.
+            self._start_chooser_check()
+            return
+        self._chooser_busy = False
+
+    def _on_chooser_check_finished(self, worker):
+        # QThread.finished arrives just before the thread ends, so this only joins a thread
+        # whose work has returned
+        worker.wait(2000)
+        if self._chooser_check is worker:
+            self._chooser_check = None
+        if self._close_after_chooser and self._chooser_check is None:
             self.close()
 
     def _stock_descriptions(self) -> dict[str, str]:
@@ -1432,6 +1554,11 @@ class MainWindow(QMainWindow):
         # finished handler closes the window once the check is over (T-12-16)
         if self._path_var_check is not None:
             self._close_after_check = True
+            event.ignore()
+            return
+        # Same deferral for the chooser setup's KiCad-open check (D-17)
+        if self._chooser_check is not None:
+            self._close_after_chooser = True
             event.ignore()
             return
         # The check dialog only holds the last scan result, so closing it loses nothing

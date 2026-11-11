@@ -88,10 +88,17 @@ def test_help_shortcuts_complete():
         ("Ctrl+I", "Import Part"), ("Ctrl+Shift+R", "Rescan Libraries"),
         ("Ctrl+G", "Generate Tables"), ("Ctrl+R", "Restore Backup"),
         ("Ctrl+K", "Set KiCad Footprint Path"), ("Ctrl+Q", "Exit"), ("F1", "User Guide"),
-        ("Ctrl+Shift+A", "Check Atomic Parts"),
+        ("Ctrl+Shift+A", "Check Atomic Parts"), ("Ctrl+Shift+K", "Set Up KiCad Chooser"),
     ):
         assert shortcut in page, shortcut
         assert action in page, action
+
+
+def test_help_generating_page_explains_the_chooser():
+    page = _page_text("generating")
+    assert "KiCad chooser" in page
+    for word in ("pins", "MPN", "Manufacturer", "Retry", "worktree"):
+        assert word in page, word
 
 
 def test_help_library_tree_explains_the_atomic_marks():
@@ -555,7 +562,7 @@ def test_help_outline_numbers_follow_the_menu_order():
     assert [entry.text for entry in importing] == [f"4.4.{i} {name}" for i, name in enumerate(IMPORTING_SECTIONS, 1)]
     assert numbers["importing#conflicts"] == "4.4.7"
     assert [entry.text for entry in outline if entry.parent == "filter"] == ["5.1 How it works", "5.2 Per-source scoping"]
-    assert sum(1 for entry in outline if entry.anchor is not None) == 20
+    assert sum(1 for entry in outline if entry.anchor is not None) == 21
     first = outline[0]
     assert (first.key, first.text, first.parent, first.page, first.anchor) == ("overview", "1 Overview", None, "overview", None)
     group = next(entry for entry in outline if entry.key == "_how_to_use")
