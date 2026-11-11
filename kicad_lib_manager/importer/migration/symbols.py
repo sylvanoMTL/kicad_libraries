@@ -37,7 +37,7 @@ from ..fieldrules import GENERIC_VOLATILE, MPN_FIELDS, FieldRules
 from ..keywords import generate_keywords
 from ..naming import sanitize_name
 from ..planner import SymbolFields, edit_symbol, existing_source, new_source, unit_text
-from .families import FamiliesOutcome
+from .families import FamiliesOutcome, derived_edits
 from .inventory import Inventory, InventoryPart
 from .plan import (
     FieldChange,
@@ -504,6 +504,39 @@ def plan_symbols(
                     )
                 )
                 continue
+            # D-06: an identical family member is written as (extends <parent>) plus its own
+            # properties. The parent sorts first within the target (find_families picks the
+            # smallest (rel_path, name) as parent and ordered_parts sorts the same way), so by now
+            # it is already in the assembled text; a parent that was blocked or lost keeps this
+            # member standalone rather than writing an extends to a symbol that is not there.
+            parent_key = families.derived.get(part.key)
+            parent_plan_key = None
+            if parent_key is not None:
+                parent_new_name = new_names.get(parent_key)
+                if (
+                    parent_new_name is not None
+                    and assembled is not None
+                    and find_symbol(assembled.root, parent_new_name) is not None
+                ):
+                    derived_text = apply_edits(edited.source.text, derived_edits(edited, placed, parent_new_name))
+                    derived_loaded = _loaded_text(
+                        fsutil.encode_source(derived_text, edited.source.bom), "the derived symbol"
+                    )
+                    if isinstance(derived_loaded, Issue):
+                        issues.append(derived_loaded)
+                        continue
+                    derived_ref = find_symbol(derived_loaded.root, new_name)
+                    if derived_ref is None:
+                        issues.append(
+                            Issue(
+                                Severity.ERROR,
+                                "migration.missing_symbol",
+                                f"{new_name} was lost while deriving it from {parent_new_name}",
+                            )
+                        )
+                        continue
+                    edited, placed = derived_loaded, derived_ref
+                    parent_plan_key = parent_key
             block = block_text(edited.source.text, placed.node)
 
             if assembled is None:
@@ -551,7 +584,7 @@ def plan_symbols(
                     old_name=part.name,
                     new_name=new_name,
                     mpn=final_mpn,
-                    parent=families.derived.get(part.key),
+                    parent=parent_plan_key,
                     footprint_old=part.footprint,
                     footprint_new=footprint_new,
                     footprint_target=footprints.targets.get(part.key, "official"),
