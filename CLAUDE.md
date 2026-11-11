@@ -21,24 +21,42 @@ These must be set in KiCad: Preferences > Configure Paths:
 - `KICAD_LIB_GITHUB` — points to this repo root (wherever the repo is cloned)
 - `CUSTOM_3DMODEL_DIR` — points to `Custom/3DModels/` for custom 3D step files
 - `WE_3DMODEL_DIR` — used by WurthElektronik footprints (set by their library)
+- On the owner's workstation KiCad reads the main checkout: `KICAD_LIB_GITHUB` =
+  `C:/Git_Repo_Clones/Kicad_Libraries` and `CUSTOM_3DMODEL_DIR` =
+  `C:/Git_Repo_Clones/Kicad_Libraries/Custom/3DModels`. A git worktree such as
+  `Kicad_Libraries-importer` is for development only — imports, Generate Tables, the
+  migration, Set Up KiCad Chooser and their commits run from the main checkout (D-26).
 
 ## Library Naming Convention
-Format: `<Type>_<SubCategory>_<Manufacturer>`
+Own symbol libraries are named `Atomic_<official KiCad symbol library stem>`
+(examples: `Atomic_Connector`, `Atomic_Battery_Management`, `Atomic_Transistor_FET`,
+`Atomic_Oscillator`), filed by what the device is — never by manufacturer. Every
+footprint lives in the one shared `Custom/Footprints/Atomic_Footprints.pretty` (or the
+part links an official KiCad footprint instead), so symbol and footprint libraries no
+longer pair by name.
 
-Examples:
-- `IC_Battery_Charger_TI`, `IC_DCDC_Buck_TI`, `IC_LDO_TI`
-- `Connector_USB_GCT`, `Connector_FFC_GCT`
-- `Capacitor_MLCC_Murata`, `Inductor_Power_TDK`
-- `Oscillator_TCXO_Abracon`
+Every part in an `Atomic_` library must pass the atomic rule:
+- `MPN` and `Manufacturer` fields are set
+- `Footprint` resolves to exactly one `Lib:FP`
+- `Value` = `MPN`
+- `Datasheet` is set (not empty or `~`)
+- `Description` is set
+- its 3D model file exists
 
-Symbol and footprint folder names must match (e.g., `Connector_USB_GCT.kicad_sym` + `Connector_USB_GCT.pretty/`).
+Symbol name = sanitised MPN. 3D models live in `Custom/3DModels/` named `<MPN>.<ext>`
+and are linked as `${CUSTOM_3DMODEL_DIR}/<file>`.
 
-## Importing from SnapEDA
-1. Download the .kicad_sym and .kicad_mod files
-2. Move the .kicad_mod into the appropriate `<Type>_<SubCategory>_<Manufacturer>.pretty/` folder
-3. Add the symbol to the matching .kicad_sym file via KiCad Symbol Editor (copy/paste)
-4. Fix 3D model paths to use `${CUSTOM_3DMODEL_DIR}/<filename>.step`
-5. Commit in the Custom submodule first, then update parent repo
+## Importing Parts
+File > Import Part... (`Ctrl+I`) is the way in for Ultra Librarian, SnapEDA, SamacSys
+and loose files — it extracts the package, places the symbol, footprint and 3D model,
+and rewrites names and paths to the atomic scheme before any write.
+
+Manual route (rare — when the importer can't be used):
+1. Move the `.kicad_mod` into `Atomic_Footprints.pretty`
+2. Add the symbol to the matching `Atomic_<stem>` library via KiCad Symbol Editor
+   (copy/paste), with fields filled per the atomic rule above
+3. Fix 3D model paths to use `${CUSTOM_3DMODEL_DIR}/<filename>.step`
+4. Commit in the Custom submodule first, then update parent repo
 
 ## Python Environment
 - Use `py -m venv env` (Windows CPython from python.org, NOT MSYS2 Python) — PySide6 requires standard Windows Python
@@ -60,11 +78,16 @@ Symbol and footprint folder names must match (e.g., `Connector_USB_GCT.kicad_sym
 - **Right-click**: Expand All / Collapse All context menu on both trees. Right-clicking a library row also offers **Rescan this library**, which re-reads just that library (and, for a footprint library, the Atomic_ symbol libraries that link to it) and keeps the check boxes.
 - **Saved scan**: stored in `%APPDATA%/KiCadExtLibManager/scan_cache/` (one file per repository folder, beside `settings.ini`, never inside the repo). Safe to delete; the next start then runs the full scan.
 - **User Guide**: `F1` or Help > User Guide opens it in its own window, which stays open beside the other windows. It reopens on the page or section you last chose, scrolled to its heading (saved beside `settings.ini`, also after a restart). The import window's Help and `F1` open it on Importing Parts without changing that saved place; the main window's Help and `F1` then bring it back to that place, also while it is still open. If it is already open on that place, it is only brought to the front.
+- **Migrate to Atomic Libraries...** (`Ctrl+Shift+M`): offered while `Custom/` still has a v1-named (non-`Atomic_`) symbol or footprint library, or a `.bak` file; otherwise greyed out with a tooltip explaining there is nothing to migrate. Refuses while `Custom` has uncommitted files. Tags `Custom` `pre-atomic` before writing. Shows a part list grouped by target library with a failure strip for every remaining atomic-rule problem and a draft that is saved and restored; Run Migration stays disabled until the strip is empty. It runs as one transaction, then opens a Result view with the old -> new map (also saved as `Custom/MIGRATION-ATOMIC.md`), a Generate Tables button, a commit step, and a Set Up KiCad Chooser button.
+- **Set Up KiCad Chooser...** (`Ctrl+Shift+K`): pins every `Atomic_` symbol library and `Atomic_Footprints` in KiCad's chooser, and adds the `MPN` and `Manufacturer` columns right after Description (removing a stray `MANUFACTURER` column). Shows old -> new before writing and backs up the KiCad config files first. Refuses from a git worktree or from a checkout other than the one KiCad's `KICAD_LIB_GITHUB` names.
+- **Wrong checkout** (D-26): when KiCad's `KICAD_LIB_GITHUB` names another folder than the one this app runs from, Generate Tables and Install Part still write but show an amber warning naming both folders (KiCad will not see the new libraries or parts until they exist in the folder KiCad reads), while the migration's Run and Set Up KiCad Chooser refuse outright, naming both folders and saying to run the app from the folder KiCad reads or fix `KICAD_LIB_GITHUB` in KiCad Preferences > Configure Paths. Nothing is said when the variable is not set or there's no KiCad config to read.
 
 ### Menu Shortcuts
 - `Ctrl+G` — Generate Tables
 - `Ctrl+R` — Restore Backup (paired sym + fp)
 - `Ctrl+K` — Set KiCad Path (rescans after change)
+- `Ctrl+Shift+M` — Migrate to Atomic Libraries...
+- `Ctrl+Shift+K` — Set Up KiCad Chooser...
 - `Ctrl+Q` — Exit
 
 ## Adding a New Library Submodule
