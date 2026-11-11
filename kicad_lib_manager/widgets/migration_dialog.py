@@ -172,6 +172,11 @@ class MigrationDialog(QDialog):
         self._rebuild_timer.setInterval(_REBUILD_DELAY_MS)
         self._rebuild_timer.timeout.connect(self._start_rebuild)
 
+        self._draft_timer = QTimer(self)
+        self._draft_timer.setSingleShot(True)
+        self._draft_timer.setInterval(_DRAFT_DELAY_MS)
+        self._draft_timer.timeout.connect(self._start_save_draft)
+
         outer = QVBoxLayout(self)
         self._build_toolbar(outer)
         self._stack = QStackedWidget()
@@ -310,6 +315,12 @@ class MigrationDialog(QDialog):
         inner = QWidget()
         form = QFormLayout(inner)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+
+        self._changed_label = QLabel()
+        self._changed_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._changed_label.setStyleSheet(f"color: {AMBER}; font-weight: bold;")
+        self._changed_label.hide()
+        form.addRow(self._changed_label)
 
         self._library_combo = QComboBox()
         self._library_combo.setEditable(True)
@@ -483,6 +494,22 @@ class MigrationDialog(QDialog):
         self._choices = dataclasses.replace(self._choices, parts=parts)
         self._gen += 1
         self._rebuild_timer.start(_REBUILD_DELAY_MS)
+        self._draft_timer.start(_DRAFT_DELAY_MS)
+
+    def _start_save_draft(self):
+        choices = self._choices
+        prints = self._prints
+
+        def task(progress):
+            return self._core.save_draft(self._core.draft_file(self._repo_root), self._repo_root, choices, prints)
+
+        worker = self._spawn(task)
+        worker.result.connect(self._on_draft_saved)
+        worker.start()
+
+    def _on_draft_saved(self, issue):
+        if isinstance(issue, Issue):
+            self._status_label.setText(issue.text)
 
     def _on_field_edited(self, name: str, text: str):
         if self._current_key is None:
@@ -603,6 +630,9 @@ class MigrationDialog(QDialog):
         choice = self._choices.parts.get(part.key, PartChoice())
         raw = self._raw_fields.get(part.key, {})
         allowed = getattr(self._ctx, "allowed", None)
+
+        self._changed_label.setText(CHANGED_MARK if part.key in self._changed else "")
+        self._changed_label.setVisible(part.key in self._changed)
 
         self._library_combo.blockSignals(True)
         library_text = choice.library if choice.library is not None else (
