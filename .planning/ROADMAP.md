@@ -331,4 +331,20 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 
 ## Backlog
 
-No open items. Former backlog 999.1 is now VER-01 (Phase 8) and 999.2 is now VER-02 (Phase 12).
+Former backlog 999.1 is now VER-01 (Phase 8) and 999.2 is now VER-02 (Phase 12).
+
+### Phase 999.3: Follow-up — Phase 12 deferred UAT follow-up: Test 3 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 12 verification
+**Source phase:** 12
+**Deferred at:** 2026-11-11 during /gsd-verify-work 12 session completion
+**Follow-ups:**
+- [ ] Test 3: KiCad-open question before the path-variable change (REV-05): re-test after the merge from the main checkout (not a worktree), changing CUSTOM_3DMODEL_DIR, with KiCad open; check Retry / Change anyway / Not now and that KiCad's other settings are kept. (deferred 2026-11-11)
+
+### Phase 999.4: Follow-up — Phase 12 deferred UAT follow-up: Test 4 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 12 verification
+**Source phase:** 12
+**Deferred at:** 2026-11-11 during /gsd-verify-work 12 session completion
+**Follow-ups:**
+- [ ] Test 4: Window stays live during a real kicad-cli rebuild (REV-04): Finishing strip, slow note and Cancel with a real rebuild; too fast to catch by hand, covered by automated tests. (deferred 2026-11-11)
