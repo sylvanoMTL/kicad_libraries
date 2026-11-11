@@ -9,18 +9,24 @@ already in an Atomic_ library is edited in place.
 from pathlib import Path
 
 from fakecli import FakeCli
-from installfixtures import V10_VERSION
+from installfixtures import V10_VERSION, vendor_footprint
 from migrationfixtures import (
     ATOMIC_OSCILLATOR,
     FFC_LIBRARY,
+    FUEL_GAUGE_LIBRARY,
     IMU_LIBRARY,
+    POWER_LIBRARY,
+    USB_LIBRARY,
     EXPECTED_TARGETS,
+    _tab_lib,
+    _tab_symbol,
     write_v1_custom,
     write_v1_stock,
 )
 
 from kicad_lib_manager import kicad_files
 from kicad_lib_manager.importer import stems
+from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.migration import symbols
 from kicad_lib_manager.importer.migration.gate import check_plan, end_state_context
 from kicad_lib_manager.importer.migration.inventory import read_inventory
@@ -193,3 +199,209 @@ def test_refused_library_name_blocks(tmp_path):
         outcome = check_plan(plan, inventory, gate_ctx)
         assert not outcome.run_enabled
         assert any(line.key == key for line in outcome.lines)
+
+
+# -- Task 2: names, MPN defaults and clashes (D-05, D-06 MPN rule) -------------------------------
+
+FAMILY_LIBRARY = "LibD_Family"
+
+
+def _write_family_tree(root: Path) -> RepoLayout:
+    """One v1 library holding a parent and a derived part, both renamed-by-MPN candidates."""
+    custom = root / "Custom"
+    symbols_dir = custom / "Symbols"
+    footprints_dir = custom / "Footprints"
+    models_dir = custom / "3DModels"
+    for folder in (symbols_dir, footprints_dir, models_dir):
+        folder.mkdir(parents=True, exist_ok=True)
+
+    (symbols_dir / f"{FAMILY_LIBRARY}.kicad_sym").write_bytes(
+        _tab_lib(
+            20241209,
+            [
+                _tab_symbol(
+                    "PARENT1_REVA",
+                    [
+                        ("Reference", "U", False),
+                        ("Value", "PARENT1_REVA", False),
+                        ("Footprint", f"{FAMILY_LIBRARY}:FP1", True),
+                        ("Datasheet", "https://example.com/parent.pdf", True),
+                        ("Description", "Parent part", True),
+                        ("MPN", "PARENT-NEW", True),
+                        ("Manufacturer", "Global Connector Technology", True),
+                    ],
+                ),
+                _tab_symbol(
+                    "CHILD1_REVA",
+                    [
+                        ("Reference", "U", False),
+                        ("Value", "CHILD1_REVA", False),
+                        ("Footprint", f"{FAMILY_LIBRARY}:FP1", True),
+                        ("Datasheet", "https://example.com/child.pdf", True),
+                        ("Description", "Child part", True),
+                        ("MPN", "CHILD-NEW", True),
+                        ("Manufacturer", "Global Connector Technology", True),
+                    ],
+                    extends="PARENT1_REVA",
+                ),
+            ],
+        )
+    )
+    pretty = footprints_dir / f"{FAMILY_LIBRARY}.pretty"
+    pretty.mkdir(parents=True, exist_ok=True)
+    (pretty / "FP1.kicad_mod").write_bytes(vendor_footprint("FP1", eol="\r\n"))
+    return RepoLayout.for_repo(root)
+
+
+def test_rename_to_sanitised_mpn(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    usb_key = _key(USB_LIBRARY, "USB4056-03-A_REVA2")
+    ffc_key = _key(FFC_LIBRARY, "FFC2A32-06-T")
+    choices = MigrationChoices(
+        parts={
+            usb_key: PartChoice(library="Atomic_Connector"),
+            # A typed MPN with a slash sanitises to an underscore.
+            ffc_key: PartChoice(library="Atomic_Connector", mpn="RS3-1212S/H3"),
+        }
+    )
+    inventory, plan = _plan_for(layout, choices)
+
+    usb_part = next(p for p in plan.parts if p.key == usb_key)
+    ffc_part = next(p for p in plan.parts if p.key == ffc_key)
+    assert usb_part.new_name == "USB4056-03-A"
+    assert ffc_part.new_name == "RS3-1212S_H3"
+    assert f"{USB_LIBRARY}:USB4056-03-A_REVA2 -> Atomic_Connector:USB4056-03-A" in [
+        f"{r.old} -> {r.new}" for r in plan.symbol_renames
+    ]
+
+    # A typed symbol_name wins over the MPN and is itself sanitised.
+    choices = MigrationChoices(parts={usb_key: PartChoice(library="Atomic_Connector", symbol_name="Weird/Name")})
+    inventory, plan = _plan_for(layout, choices)
+    usb_part = next(p for p in plan.parts if p.key == usb_key)
+    assert usb_part.new_name == "Weird_Name"
+
+
+def test_shared_default_mpn_is_blanked(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    inventory = read_inventory(layout)
+    choices = MigrationChoices()
+    mpns = symbols.part_mpns(inventory, choices)
+
+    ltc_names = ("LTC2954-1-DFN8", "LTC2954-1-TSOT-23", "LTC2954-2-DFN8", "LTC2954-2-TSOT-23")
+    for name in ltc_names:
+        assert mpns[_key(POWER_LIBRARY, name)] == ""
+    assert mpns[_key(FUEL_GAUGE_LIBRARY, "MAX17048G")] == "MAX17048G"
+    assert mpns[_key(FUEL_GAUGE_LIBRARY, "MAX17048X")] == "MAX17048X"
+
+    choices = MigrationChoices(parts={_key(POWER_LIBRARY, name): PartChoice(library="Atomic_Power_Management") for name in ltc_names})
+    inventory, plan = _plan_for(layout, choices)
+    for name in ltc_names:
+        part = next(p for p in plan.parts if p.key == _key(POWER_LIBRARY, name))
+        assert part.mpn == ""
+
+    gate_ctx = end_state_context(plan, inventory, None)
+    outcome = check_plan(plan, inventory, gate_ctx)
+    assert not outcome.run_enabled
+    for name in ltc_names:
+        assert any(line.key == _key(POWER_LIBRARY, name) for line in outcome.lines)
+
+
+def test_typed_mpn_renames_the_part(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    key = _key(POWER_LIBRARY, "LTC2954-1-DFN8")
+    choices = MigrationChoices(
+        parts={key: PartChoice(library="Atomic_Power_Management", mpn="LTC2954CTS8-1#TRMPBF")}
+    )
+    inventory, plan = _plan_for(layout, choices)
+    part = next(p for p in plan.parts if p.key == key)
+    assert part.mpn == "LTC2954CTS8-1#TRMPBF"
+    assert part.new_name == "LTC2954CTS8-1_TRMPBF"  # the symbol name is sanitised; the MPN value is not
+
+    write_op = next(op for op in plan.ops if op.kind == "write" and op.rel == "Custom/Symbols/Atomic_Power_Management.kicad_sym")
+    loaded = kicad_files.parse_bytes(write_op.data, "Atomic_Power_Management.kicad_sym")
+    ref = kicad_files.find_symbol(loaded.root, part.new_name)
+    fields = {prop.name: prop.value for prop in kicad_files.list_properties(ref.node)}
+    assert fields["Value"] == "LTC2954CTS8-1#TRMPBF"
+
+
+def test_name_clash_blocks_run(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    usb_key = _key(USB_LIBRARY, "USB4056-03-A_REVA2")
+    ffc_key = _key(FFC_LIBRARY, "FFC2A32-06-T")
+    choices = MigrationChoices(
+        parts={
+            usb_key: PartChoice(library="Atomic_Connector", symbol_name="CLASH"),
+            ffc_key: PartChoice(library="Atomic_Connector", symbol_name="clash"),
+        }
+    )
+    inventory, plan = _plan_for(layout, choices)
+
+    usb_part = next(p for p in plan.parts if p.key == usb_key)
+    ffc_part = next(p for p in plan.parts if p.key == ffc_key)
+    for part in (usb_part, ffc_part):
+        errors = [i for i in part.issues if i.severity is Severity.ERROR and i.code == "migration.name_clash"]
+        assert len(errors) == 1
+        assert "CLASH" in errors[0].text or "clash" in errors[0].text
+        assert USB_LIBRARY in errors[0].text or FFC_LIBRARY in errors[0].text or "Atomic_Connector" in errors[0].text
+
+    gate_ctx = end_state_context(plan, inventory, None)
+    outcome = check_plan(plan, inventory, gate_ctx)
+    assert not outcome.run_enabled
+    assert any(line.key == usb_key for line in outcome.lines)
+    assert any(line.key == ffc_key for line in outcome.lines)
+
+    # A migrated part named like a part already committed in the target Atomic_ library clashes too.
+    choices = MigrationChoices(parts={ffc_key: PartChoice(library=ATOMIC_OSCILLATOR, symbol_name="CM315D32768DZFT")})
+    inventory, plan = _plan_for(layout, choices)
+    ffc_part = next(p for p in plan.parts if p.key == ffc_key)
+    errors = [i for i in ffc_part.issues if i.severity is Severity.ERROR and i.code == "migration.name_clash"]
+    assert len(errors) == 1
+    rels = {(op.kind, op.rel) for op in plan.ops}
+    # The clash blocks the write: the existing Atomic_Oscillator target is left untouched.
+    assert ("write", f"Custom/Symbols/{ATOMIC_OSCILLATOR}.kicad_sym") not in rels
+
+
+def test_rename_follows_extends(tmp_path):
+    layout = _write_family_tree(tmp_path)
+    parent_key = _key(FAMILY_LIBRARY, "PARENT1_REVA")
+    child_key = _key(FAMILY_LIBRARY, "CHILD1_REVA")
+    choices = MigrationChoices(
+        parts={
+            parent_key: PartChoice(library="Atomic_Connector"),
+            child_key: PartChoice(library="Atomic_Connector"),
+        }
+    )
+    inventory, plan = _plan_for(layout, choices)
+
+    write_op = next(op for op in plan.ops if op.kind == "write" and op.rel == "Custom/Symbols/Atomic_Connector.kicad_sym")
+    loaded = kicad_files.parse_bytes(write_op.data, "Atomic_Connector.kicad_sym")
+    names = [ref.name for ref in kicad_files.find_symbols(loaded.root)]
+    assert names == ["PARENT-NEW", "CHILD-NEW"]
+
+    child_ref = kicad_files.find_symbol(loaded.root, "CHILD-NEW")
+    assert kicad_files.extends_name(child_ref.node) == "PARENT-NEW"
+
+    rename_pairs = {f"{r.old} -> {r.new}" for r in plan.symbol_renames}
+    assert f"{FAMILY_LIBRARY}:PARENT1_REVA -> Atomic_Connector:PARENT-NEW" in rename_pairs
+    assert f"{FAMILY_LIBRARY}:CHILD1_REVA -> Atomic_Connector:CHILD-NEW" in rename_pairs
+
+
+def test_parent_in_other_library_blocks(tmp_path):
+    layout = _write_family_tree(tmp_path)
+    parent_key = _key(FAMILY_LIBRARY, "PARENT1_REVA")
+    child_key = _key(FAMILY_LIBRARY, "CHILD1_REVA")
+    choices = MigrationChoices(
+        parts={
+            parent_key: PartChoice(library="Atomic_Connector"),
+            child_key: PartChoice(library="Atomic_LED"),
+        }
+    )
+    inventory, plan = _plan_for(layout, choices)
+
+    child_part = next(p for p in plan.parts if p.key == child_key)
+    errors = [i for i in child_part.issues if i.severity is Severity.ERROR and i.code == "migration.parent_elsewhere"]
+    assert len(errors) == 1
+
+    gate_ctx = end_state_context(plan, inventory, None)
+    outcome = check_plan(plan, inventory, gate_ctx)
+    assert not outcome.run_enabled
