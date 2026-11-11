@@ -185,9 +185,14 @@ def _head_view_context(
 
 
 def _committed_footprints(cplan: CommitPlan) -> dict[str, str]:
-    """Each committed Footprints/<Lib>.pretty/<Name>.kicad_mod as {"Lib:Name": path relative to Custom}."""
+    """Each committed Footprints/<Lib>.pretty/<Name>.kicad_mod as {"Lib:Name": path relative to Custom}.
+
+    A deleted footprint is skipped (MIG-04): it is gone from the work tree, so it is never a link target.
+    """
     found: dict[str, str] = {}
     for cfile in cplan.files:
+        if cfile.deleted:
+            continue
         parts = PurePosixPath(cfile.rel).parts
         if cfile.kind != "footprint" or len(parts) != 3 or parts[0] != "Footprints":
             continue
@@ -198,9 +203,9 @@ def _committed_footprints(cplan: CommitPlan) -> dict[str, str]:
 
 
 def _committed_models(cplan: CommitPlan) -> frozenset[str]:
-    """The committed 3D model files as names relative to 3DModels/."""
+    """The committed 3D model files as names relative to 3DModels/; a deleted model is skipped (MIG-04)."""
     prefix = "3DModels/"
-    return frozenset(c.rel[len(prefix):] for c in cplan.files if c.kind == "model" and c.rel.startswith(prefix))
+    return frozenset(c.rel[len(prefix):] for c in cplan.files if not c.deleted and c.kind == "model" and c.rel.startswith(prefix))
 
 
 def _atomic_symbol_files(custom_dir: Path) -> tuple[list[str], str]:
@@ -359,6 +364,8 @@ def run_gate(
     # file name (casefolded) -> (parsed root or None, names judged as changed) of each committed library
     committed: dict[str, tuple[kicad_files.Node | None, set[str]]] = {}
     for cfile in cplan.files:
+        if cfile.deleted:
+            continue  # gone from the work tree by design (MIG-04, P-04): nothing left in it to judge
         library = PurePosixPath(cfile.rel).stem
         if cfile.kind != "symbol_lib" or not is_atomic(library):
             continue
@@ -436,7 +443,7 @@ def linked_custom_files(
     prefix = f"{cplan.custom_rel}/"
     footprints = {rel.casefold(): rel for _, rel in sorted(_committed_footprints(cplan).items())}
     for cfile in cplan.files:
-        if cfile.kind != "symbol_lib":
+        if cfile.deleted or cfile.kind != "symbol_lib":
             continue
         if cancelled is not None and cancelled():
             return ()

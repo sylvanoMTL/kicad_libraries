@@ -33,6 +33,7 @@ class CommitFile:
     base_sha256: str | None  # the content before the install; None when the install created the file
     note: str = ""  # NOTE_CHANGED or NOTE_ADDED once Check again has seen the file differ (D-08, D-10)
     installed: bytes | None = None  # the bytes the install wrote, for the "changed since install" diff; None for a model
+    deleted: bool = False  # the commit removes this tracked file; expected_sha256 is "" and the file is fresh while absent
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,7 @@ class CommitPlan:
     overwrite: bool
     backup_dir: Path | None
     issues: tuple[Issue, ...]
+    message: str | None = None  # a plan-supplied commit message; default_message returns it as-is when set (MIG-04)
 
 
 def sanitize_line(text: str) -> str:
@@ -173,8 +175,20 @@ def file_sha256(path: Path) -> str | None:
 
 
 def changed_since_install(cplan: CommitPlan) -> tuple[str, ...]:
-    """Display paths, in plan order, of the planned files that are missing or no longer hold what the install wrote (D-11)."""
-    return tuple(f.display for f in cplan.files if file_sha256(f.path) != f.expected_sha256)
+    """Display paths, in plan order, of the planned files that are missing or no longer hold what the install wrote (D-11).
+
+    A deleted file is fresh while it is absent from disk: it is listed only once it reappears (RESEARCH P-05),
+    because a reappeared file carries unknown content and must be checked before it is committed.
+    """
+    result = []
+    for f in cplan.files:
+        current = file_sha256(f.path)
+        if f.deleted:
+            if current is not None:
+                result.append(f.display)
+        elif current != f.expected_sha256:
+            result.append(f.display)
+    return tuple(result)
 
 
 def rebaseline(cplan: CommitPlan) -> CommitPlan:
@@ -182,10 +196,14 @@ def rebaseline(cplan: CommitPlan) -> CommitPlan:
 
     The changed file is noted "changed" (a file already noted "added" keeps that note). A file that cannot
     be read keeps its old hash, so the stale refusal still stops a commit of a missing file. The install-time
-    bytes stay in `installed`. Nothing is mutated.
+    bytes stay in `installed`. A deleted file's entry is left exactly as it is: a reappeared deleted file
+    stays stale until the plan itself is rebuilt (RESEARCH P-05). Nothing is mutated.
     """
     files = []
     for cfile in cplan.files:
+        if cfile.deleted:
+            files.append(cfile)
+            continue
         current = file_sha256(cfile.path)
         if current is None or current == cfile.expected_sha256:
             files.append(cfile)
@@ -252,7 +270,13 @@ def pre_install_bytes(cfile: CommitFile, backup_dir: Path | None) -> bytes | Non
 
 
 def default_message(cplan: CommitPlan) -> str:
-    """The Custom commit message of D-18: subject, what was installed, then the Import-* trailers."""
+    """The Custom commit message of D-18: subject, what was installed, then the Import-* trailers.
+
+    A plan-supplied message (MIG-04) replaces this one entirely: it is returned as-is, with no
+    sanitising or trailers added, so the caller is free to write its own subject and body.
+    """
+    if cplan.message is not None:
+        return cplan.message
     symbol, library = sanitize_line(cplan.symbol), sanitize_line(cplan.library)
     footprint = sanitize_line(cplan.footprint or "")
     model = sanitize_line(cplan.model or "")
