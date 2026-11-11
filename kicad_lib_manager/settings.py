@@ -51,6 +51,14 @@ def scan_cache_file(repo_root: Path) -> Path:
     return Path(get_settings().fileName()).parent / "scan_cache" / f"{key}.json"
 
 
+# ── Migration draft ──────────────────────────────────────────────────
+
+def migration_draft_file(repo_root: Path) -> Path:
+    """The saved migration draft of one repository: migration_draft/<hash>.json beside settings.ini, never in the repo."""
+    key = hashlib.sha256(os.path.normcase(str(Path(repo_root).resolve())).encode("utf-8")).hexdigest()[:16]
+    return Path(get_settings().fileName()).parent / "migration_draft" / f"{key}.json"
+
+
 # ── Import folder ────────────────────────────────────────────────────
 
 def load_import_dir() -> Path | None:
