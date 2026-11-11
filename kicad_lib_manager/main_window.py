@@ -58,8 +58,10 @@ _NO_DEST_TEXT = "No destination folder set; library tables not changed"
 # Menu text and the Destination-blank warning for the chooser setup action (D-17, D-18)
 SETUP_CHOOSER_TEXT = "Set Up KiCad &Chooser..."
 _NO_DEST_CHOOSER_TEXT = "No destination folder set; KiCad's chooser not set up"
-# Menu text, the disabled-tooltip reason and the help topic key for the migration action (D-13)
+# Menu text, the enabled tooltip, the disabled-tooltip reason and the help topic key for
+# the migration action (D-13)
 MIGRATE_TEXT = "&Migrate to Atomic Libraries..."
+_MIGRATE_TOOLTIP = "Move every Custom part into Atomic_ libraries, previewed first"
 _NOTHING_TO_MIGRATE = "Nothing to migrate: every library in Custom already uses the Atomic_ names"
 _MIGRATION_TOPIC = "migrating"
 
@@ -270,6 +272,7 @@ class MainWindow(QMainWindow):
         self._chooser_workers: list[TaskWorker] = []
         self._close_after_chooser = False
         self._close_after_dialog = False  # the import dialog is finishing: close this window after it
+        self._close_after_migration = False  # same, for the migration window (D-17)
         self.setAcceptDrops(True)
         self._build_menu()
         self._build_ui()
@@ -329,12 +332,8 @@ class MainWindow(QMainWindow):
 
         self._act_migrate = QAction(MIGRATE_TEXT, self)
         self._act_migrate.setShortcut(QKeySequence("Ctrl+Shift+M"))
-        self._act_migrate.setToolTip(
-            "Move every Custom part into Atomic_ libraries, previewed first"
-        )
-        self._act_migrate.setStatusTip(
-            "Move every Custom part into Atomic_ libraries, previewed first"
-        )
+        self._act_migrate.setToolTip(_MIGRATE_TOOLTIP)
+        self._act_migrate.setStatusTip(_MIGRATE_TOOLTIP)
         self._act_migrate.triggered.connect(self._open_migration)
         file_menu.addAction(self._act_migrate)
 
@@ -553,10 +552,33 @@ class MainWindow(QMainWindow):
             self._rescan_btn, self._act_rescan, self._act_set_kicad_path,
             self._act_generate, self._generate_btn, self._act_import,
             self._import_btn, self._select_all_btn, self._deselect_all_btn,
-            self._act_check_atomic, self._act_setup_chooser, self._act_migrate,
+            self._act_check_atomic, self._act_setup_chooser,
         ):
             control.setEnabled(not running)
         self._tree.set_library_rescan_enabled(not running)
+        # Migrate's enabled state also depends on migration_reason(), not just the scan
+        # state, so it is refreshed rather than blanket-enabled (D-13)
+        if running:
+            self._act_migrate.setEnabled(False)
+        else:
+            self._refresh_migrate_action()
+
+    def _refresh_migrate_action(self):
+        """Enable Migrate exactly when Custom still has something to migrate (D-13).
+
+        Called whenever a scan ends (_set_scan_running(False), and again at the very end
+        of _finish_scan in case that start a fresh scan for a reason of its own) so the
+        menu always reflects the Custom folder as it stands after the last scan.
+        """
+        reason = migration_reason(RepoLayout.for_repo(REPO_ROOT))
+        if reason is None:
+            self._act_migrate.setEnabled(False)
+            self._act_migrate.setToolTip(_NOTHING_TO_MIGRATE)
+            self._act_migrate.setStatusTip(_NOTHING_TO_MIGRATE)
+        else:
+            self._act_migrate.setEnabled(True)
+            self._act_migrate.setToolTip(_MIGRATE_TOOLTIP)
+            self._act_migrate.setStatusTip(_MIGRATE_TOOLTIP)
 
     def _start_scan(self, show_progress: bool = True, reuse_cache: bool = False):
         """Start a scan; every scan request must go through here.
@@ -693,6 +715,10 @@ class MainWindow(QMainWindow):
         if self._pending_migration and not self._migration_scan_started:
             # A migration committed while an unrelated scan ran; scan again now, quietly
             self._start_scan(show_progress=False)
+        if self._worker is None:
+            # Only when nothing above started a fresh scan; otherwise _set_scan_running(True)
+            # already disabled the action again and this would wrongly re-enable it
+            self._refresh_migrate_action()
 
     def _on_scan_finished(self, result: ScanResult):
         try:
@@ -1074,8 +1100,13 @@ class MainWindow(QMainWindow):
         return text, Severity.INFO
 
     def _import_busy(self) -> bool:
-        """True while a scan runs or the import dialog is open (D-19)."""
-        return self._worker is not None or self._import_dialog is not None
+        """True while a scan runs, the import dialog is open, or the migration window
+        is open (D-19, T-13-40): the drag-and-drop refusal then covers migration too."""
+        return (
+            self._worker is not None
+            or self._import_dialog is not None
+            or self._migration_dialog is not None
+        )
 
     def _refuse_busy_drag(self, event) -> bool:
         """Ignore a drag or drop while busy and say why; True when refused."""
@@ -1131,6 +1162,9 @@ class MainWindow(QMainWindow):
 
     def _open_import(self, path: Path | None = None):
         """Open the Import Part dialog, optionally with a package already chosen."""
+        if self._migration_dialog is not None:
+            self._log.log("Close the migration window before importing.", "info")
+            return
         if self._import_busy():
             return
         dialog = ImportDialog(
@@ -1234,6 +1268,10 @@ class MainWindow(QMainWindow):
         dialog, self._migration_dialog = self._migration_dialog, None
         if dialog is not None:
             dialog.deleteLater()
+        self._refresh_migrate_action()
+        if self._close_after_migration:
+            self._close_after_migration = False
+            QTimer.singleShot(0, self.close)
 
     def _on_migrated(self, result):
         """A migration committed: rescan quietly, then select the new Atomic_ libraries (D-24)."""
@@ -1741,6 +1779,18 @@ class MainWindow(QMainWindow):
             dialog.reject()
             if dialog.is_finishing():
                 self._close_after_dialog = True
+                event.ignore()
+                return
+        # A migration run or commit cannot be interrupted either (MIG-01, MIG-04)
+        migration = self._migration_dialog
+        if migration is not None:
+            if migration.is_running() or migration.is_committing():
+                event.ignore()
+                return
+            # Same closes-at-once-or-defers shape as the import dialog above
+            migration.reject()
+            if migration.is_busy():
+                self._close_after_migration = True
                 event.ignore()
                 return
         # The KiCad-open check runs on a worker: the window never waits for it here. The
