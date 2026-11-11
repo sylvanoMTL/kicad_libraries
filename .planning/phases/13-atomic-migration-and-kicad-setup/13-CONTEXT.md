@@ -149,6 +149,13 @@ The target count is therefore no longer 9 (see D-04).
   - Several model blocks are neither an atomic-rule failure nor a leftover row. The importer's "extra_models" warning must not block the migration.
 - **D-24:** **Tables are regenerated behind a "Generate Tables" button in the migration Result view, not automatically.** The button calls the existing Generate path with every new `Atomic_` library selected first (research P-01: a plain rescan unchecks them). The path-variable confirm and the table backups therefore behave as today.
 - **D-25:** **The migration window is planned from D-15 directly.** There is no separate UI design contract (UI-SPEC).
+- **D-26:** **Wrong-checkout check.** Before writing, Generate Tables, Install Part, the migration Run and Set Up KiCad Chooser compare the app's repo folder with the folder KiCad's `KICAD_LIB_GITHUB` names (in `kicad_common.json`). The compare uses resolved paths, normalised separators, and is case-insensitive on Windows.
+  - **Migration Run: refuses** when they differ. Running it would rewrite a copy KiCad does not read. The refusal names both folders and says to run the app from the folder KiCad reads, or to fix the path in KiCad Preferences → Configure Paths.
+  - **Set Up KiCad Chooser:** already refuses per D-17. It reuses the same check and wording.
+  - **Generate Tables and Install Part: warn, not block.** Importing in the development copy, pushing, then pulling in the copy KiCad reads is a legitimate workflow. The warning is plain: it names both folders and says that KiCad will not see the new libraries or parts until they exist in the folder KiCad reads (push, then pull there). It appears where the user will see it before or right after the write, not only as a log line; the planner chooses where (the existing Generate confirm or the Result view).
+  - **No variable, or no KiCad config:** no warning. The existing path-variable sync handles that case.
+  - **Why:** on 2026-11-11 the app, run from the `Kicad_Libraries-importer` worktree, wrote an `Atomic_Footprints` entry into the USBlitz project table. KiCad resolved it through `KICAD_LIB_GITHUB` to the `Kicad_Libraries` checkout, which lacked the library, and reported "Atomic_Footprints not found". Today only the path-variable sync detects another checkout.
+  - The check is a Qt-free service function with an injectable config path, so tests run from worktrees and temp folders without touching the owner's KiCad config.
 
 ### Claude's Discretion
 - **Research defaults the owner did not override** (13-RESEARCH.md Open Questions 2, 3, 5):
