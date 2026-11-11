@@ -14,10 +14,10 @@ from zipfixtures import STEP_BYTES
 
 from kicad_lib_manager import kicad_files
 from kicad_lib_manager.importer.layout import RepoLayout
-from kicad_lib_manager.importer.migration.footprints import SHARED, plan_footprints
+from kicad_lib_manager.importer.migration.footprints import CLASH_PREFIX, SHARED, plan_footprints
 from kicad_lib_manager.importer.migration.inventory import read_inventory
 from kicad_lib_manager.importer.migration.plan import MigrationChoices, PartChoice
-from kicad_lib_manager.importer.plan import MODEL_DIR_VAR
+from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, Resolution
 
 _CTX = SimpleNamespace(kicad_fp_dir=None)
 
@@ -72,6 +72,22 @@ def _model_paths(data: bytes) -> list[str]:
 
 def _write_op(ops, rel: str):
     return next(op for op in ops if op.kind == "write" and op.rel == rel)
+
+
+def _footprint_with_text(
+    name: str, *, descr: str = "", tags: str = "", pads: tuple[str, ...] = ("1", "2"), model: str | None = None
+) -> bytes:
+    """vendor_footprint's bytes with a (descr ...) / (tags ...) line inserted, for footprint-text tests."""
+    data = vendor_footprint(name, pads=pads, model=model, eol="\r\n")
+    text = data.decode("utf-8")
+    insert = ""
+    if descr:
+        insert += f'\r\n  (descr "{descr}")'
+    if tags:
+        insert += f'\r\n  (tags "{tags}")'
+    marker = '(layer "F.Cu")'
+    idx = text.index(marker) + len(marker)
+    return (text[:idx] + insert + text[idx:]).encode("utf-8")
 
 
 def _has_op(ops, kind: str, rel: str) -> bool:
@@ -353,3 +369,139 @@ def test_emptied_pretty_folder_removed(tmp_path):
 
     assert _has_op(outcome.ops, "rmdir", "Custom/Footprints/LibQ.pretty")
     assert "Custom/Footprints/LibQ.pretty" in outcome.removed_folders
+
+
+# -- Task 3: Atomic_Footprints clashes, footprint text and added 3D models (D-07, D-11) ----------
+
+
+def test_identical_footprint_is_reused(tmp_path):
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty" / "FPC.kicad_mod").write_bytes(
+        vendor_footprint("FPC", eol="\n")
+    )
+    _write_symbols(tmp_path, "LibC", [("PARTC", "LibC:FPC")])
+    _write_footprint(tmp_path, "LibC", "FPC")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibC", "PARTC")
+    outcome = plan_footprints(inventory, MigrationChoices(), _CTX, mpns={key: "PARTC"})
+
+    assert outcome.links[key] == f"{SHARED}:FPC"
+    shared_rel = f"Custom/Footprints/{SHARED}.pretty/FPC.kicad_mod"
+    assert not any(op.kind == "write" and op.rel == shared_rel for op in outcome.ops)
+    assert _has_op(outcome.ops, "delete", "Custom/Footprints/LibC.pretty/FPC.kicad_mod")
+    assert outcome.conflicts == ()
+
+
+def test_different_footprint_clash_asks(tmp_path):
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty" / "FPD.kicad_mod").write_bytes(
+        vendor_footprint("FPD", pads=("1", "2"), eol="\n")
+    )
+    _write_symbols(tmp_path, "LibD", [("PARTD", "LibD:FPD")])
+    _write_footprint(tmp_path, "LibD", "FPD")
+    (tmp_path / "Custom" / "Footprints" / "LibD.pretty" / "FPD.kicad_mod").write_bytes(
+        vendor_footprint("FPD", pads=("1", "2", "3"), eol="\r\n")
+    )
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibD", "PARTD")
+    shared_rel = f"Custom/Footprints/{SHARED}.pretty/FPD.kicad_mod"
+    clash_key = f"{CLASH_PREFIX}FPD"
+
+    outcome = plan_footprints(inventory, MigrationChoices(), _CTX, mpns={key: "PARTD"})
+    assert any(c.key == clash_key and c.kind == "footprint" and c.suggested_name == "FPD_PARTD" for c in outcome.conflicts)
+    assert any(i.code == "migration.conflict_unresolved" for i in outcome.issues)
+    assert not any(op.kind == "write" and op.rel == shared_rel for op in outcome.ops)
+
+    rename_choices = MigrationChoices(resolutions={clash_key: Resolution(action="rename")})
+    renamed = plan_footprints(inventory, rename_choices, _CTX, mpns={key: "PARTD"})
+    assert renamed.links[key] == f"{SHARED}:FPD_PARTD"
+    assert _has_op(renamed.ops, "write", f"Custom/Footprints/{SHARED}.pretty/FPD_PARTD.kicad_mod")
+
+    overwrite_choices = MigrationChoices(resolutions={clash_key: Resolution(action="overwrite")})
+    overwritten = plan_footprints(inventory, overwrite_choices, _CTX, mpns={key: "PARTD"})
+    assert overwritten.links[key] == f"{SHARED}:FPD"
+    assert _has_op(overwritten.ops, "write", shared_rel)
+
+    skip_choices = MigrationChoices(resolutions={clash_key: Resolution(action="skip")})
+    skipped = plan_footprints(inventory, skip_choices, _CTX, mpns={key: "PARTD"})
+    assert skipped.links[key] == f"{SHARED}:FPD"
+    assert not any(op.kind == "write" and op.rel == shared_rel for op in skipped.ops)
+    assert _has_op(skipped.ops, "delete", "Custom/Footprints/LibD.pretty/FPD.kicad_mod")
+
+
+def test_footprint_text_generated_and_merged(tmp_path):
+    _write_symbols(tmp_path, "LibE", [("PARTE", "LibE:FPE")])
+    pretty = tmp_path / "Custom" / "Footprints" / "LibE.pretty"
+    pretty.mkdir(parents=True, exist_ok=True)
+    (pretty / "FPE.kicad_mod").write_bytes(
+        _footprint_with_text("FPE", descr="DFN-8 package, TI", tags="vendortag")
+    )
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibE", "PARTE")
+    outcome = plan_footprints(inventory, MigrationChoices(), _CTX, mpns={key: "PARTE"})
+
+    data = _write_op(outcome.ops, f"Custom/Footprints/{SHARED}.pretty/FPE.kicad_mod").data
+    loaded = kicad_files.parse_bytes(data, "FPE.kicad_mod")
+    ref = kicad_files.footprint_name(loaded.root)
+    descr_node = kicad_files.footprint_text_node(ref.node, "descr")
+    tags_node = kicad_files.footprint_text_node(ref.node, "tags")
+    new_descr = kicad_files.unquote(descr_node.text)
+    new_tags = kicad_files.unquote(tags_node.text)
+
+    assert new_descr != "DFN-8 package, TI"
+    assert "vendortag" in new_tags.split()
+
+    footprint_changes = [c for c in outcome.field_changes[key] if c.scope == "footprint"]
+    descr_changes = [c for c in footprint_changes if c.field == "descr"]
+    assert len(descr_changes) == 1
+    assert descr_changes[0].old == "DFN-8 package, TI"
+    assert descr_changes[0].new == new_descr
+
+    generated_text, written_text = outcome.texts[key]
+    assert generated_text.fp_description == new_descr
+    assert written_text.fp_description == new_descr
+
+    choices = MigrationChoices(parts={key: PartChoice(fp_description="Typed description", fp_tags="typed tag")})
+    outcome2 = plan_footprints(inventory, choices, _CTX, mpns={key: "PARTE"})
+    data2 = _write_op(outcome2.ops, f"Custom/Footprints/{SHARED}.pretty/FPE.kicad_mod").data
+    loaded2 = kicad_files.parse_bytes(data2, "FPE.kicad_mod")
+    ref2 = kicad_files.footprint_name(loaded2.root)
+    descr2 = kicad_files.unquote(kicad_files.footprint_text_node(ref2.node, "descr").text)
+    tags2 = kicad_files.unquote(kicad_files.footprint_text_node(ref2.node, "tags").text)
+    assert descr2 == "Typed description"
+    assert tags2 == "typed tag"
+
+
+def test_added_model_is_linked(tmp_path):
+    _write_symbols(tmp_path, "LibF", [("PARTF", "LibF:FPF")])
+    _write_footprint(tmp_path, "LibF", "FPF")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    external = tmp_path / "external"
+    external.mkdir(parents=True, exist_ok=True)
+    model_source = external / "x.step"
+    model_source.write_bytes(STEP_BYTES)
+
+    key = _key("LibF", "PARTF")
+    choices = MigrationChoices(parts={key: PartChoice(model_source=str(model_source))})
+
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key: "PARTF"})
+
+    model_write = _write_op(outcome.ops, "Custom/3DModels/PARTF.step")
+    assert model_write.data == STEP_BYTES
+
+    data = _write_op(outcome.ops, f"Custom/Footprints/{SHARED}.pretty/FPF.kicad_mod").data
+    assert _model_paths(data) == [f"{MODEL_DIR_VAR}/PARTF.step"]
+
+    bad_choices = MigrationChoices(
+        parts={key: PartChoice(model_source=str(external / "does-not-exist.step"))}
+    )
+    bad_outcome = plan_footprints(inventory, bad_choices, _CTX, mpns={key: "PARTF"})
+    assert any(i.code == "migration.model_unreadable" and i.severity.value == "error" for i in bad_outcome.issues)
