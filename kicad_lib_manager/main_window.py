@@ -1160,6 +1160,9 @@ class MainWindow(QMainWindow):
 
     def _on_import_installed(self, result, plan):
         """An install finished: rescan quietly and select the installed library."""
+        text = self._check_checkout("install")
+        if text is not None:
+            self._set_import_status("checkout_hint", f"⚠ {text}", Severity.WARNING)
         root = plan.layout.repo_root
         # The footprint library is a repo folder only when it is the .pretty the plan writes; one
         # outside the repo (an official KiCad library) is never added to fp-lib-table (D-16)

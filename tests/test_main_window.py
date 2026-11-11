@@ -75,6 +75,9 @@ def make_window(qtbot, monkeypatch, tmp_path):
             )
 
         monkeypatch.setattr(main_window, "REPO_ROOT", repo)
+        # D-26: the checkout check must never read the owner's real %APPDATA% KiCad
+        # config either; this tree has no KICAD_LIB_GITHUB, so nothing changes here
+        monkeypatch.setattr(main_window, "CHECKOUT_CONFIG_BASE", config_base)
         monkeypatch.setattr(main_window, "load_kicad_fp_dir", lambda: fp_dir)
         monkeypatch.setattr(main_window, "scan_all", fake_scan)
         monkeypatch.setattr(main_window, "sync_kicad_path_vars", fake_sync)

@@ -3452,7 +3452,8 @@ class ImportDialog(QDialog):
         self.issues_logged.emit([Issue(Severity.WARNING, "commit.not_committed", text)])
 
     def set_post_install_status(self, row: str, text: str, severity: Severity):
-        """Set a status row of the Result view: library_list, tables or generate_hint (D-16, D-17)."""
+        """Set a status row of the Result view: library_list, tables, generate_hint or
+        checkout_hint (D-16, D-17, D-26)."""
         self._result_view.set_status(row, text, severity)
 
     def _start_kicad_check(self, library: str):

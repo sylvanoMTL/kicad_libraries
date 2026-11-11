@@ -18,6 +18,7 @@ from . import theme
 
 _FILES_ROWS = 8  # Files written rows shown before the list scrolls
 _STATUS_TITLES = {"library_list": "Library list", "tables": "Library tables"}
+_HINT_ROWS = ("generate_hint", "checkout_hint")  # standalone lines, hidden until set
 _NO_WARNINGS = "No warnings."
 _QWIDGETSIZE_MAX = 16777215  # Qt's "no maximum height"
 
@@ -160,11 +161,12 @@ class ImportResultView(QWidget):
         status = QVBoxLayout()
         status.setSpacing(theme.SP_XS)
         self._status_labels: dict[str, QLabel] = {}
-        for row in ("library_list", "tables", "generate_hint"):
+        for row in ("library_list", "tables", *_HINT_ROWS):
             label = _plain_label()
             self._status_labels[row] = label
             status.addWidget(label)
-        self._status_labels["generate_hint"].hide()
+        for row in _HINT_ROWS:
+            self._status_labels[row].hide()
         lay.addLayout(status)
 
         files = QVBoxLayout()
@@ -285,9 +287,10 @@ class ImportResultView(QWidget):
             label = self._status_labels[row]
             label.setText(title)
             label.setStyleSheet("")
-        hint = self._status_labels["generate_hint"]
-        hint.setText("")
-        hint.hide()
+        for row in _HINT_ROWS:
+            hint = self._status_labels[row]
+            hint.setText("")
+            hint.hide()
 
     def _fill_files(self, touched, repo_root: Path):
         files = self._files_list
@@ -314,9 +317,10 @@ class ImportResultView(QWidget):
         self._kicad_notice.show()
 
     def set_status(self, row: str, text: str, severity: Severity):
-        """Set one post-install status row: library_list, tables, or generate_hint (D-16, D-17).
+        """Set one post-install status row: library_list, tables, generate_hint, or
+        checkout_hint (D-16, D-17, D-26).
 
-        The first two read "{Row title}: {text}"; the hint is a line of its own and appears when set.
+        The first two read "{Row title}: {text}"; a hint is a line of its own and appears when set.
         """
         label = self._status_labels[row]
         title = _STATUS_TITLES.get(row)
