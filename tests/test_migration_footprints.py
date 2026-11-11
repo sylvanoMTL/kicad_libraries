@@ -7,6 +7,7 @@ following the pattern tests/test_migration_e2e.py already established for this p
 from pathlib import Path
 from types import SimpleNamespace
 
+from customfixtures import OFFICIAL_FOOTPRINT, OFFICIAL_LIBRARY, OFFICIAL_PADS, write_fake_kicad
 from installfixtures import vendor_footprint
 from migrationfixtures import _id_lib, _id_symbol
 from zipfixtures import STEP_BYTES
@@ -25,12 +26,19 @@ def _key(library: str, name: str) -> tuple[str, str]:
     return (f"Custom/Symbols/{library}.kicad_sym", name)
 
 
-def _write_symbols(root: Path, library: str, parts: list[tuple[str, str]]) -> None:
-    """parts: (symbol name, footprint field value "Lib:FP")."""
+def _write_symbols(
+    root: Path, library: str, parts: list[tuple[str, str]], *, pins: dict[str, tuple[str, ...]] | None = None
+) -> None:
+    """parts: (symbol name, footprint field value "Lib:FP"); pins overrides a part's pin numbers."""
+    pins = pins or {}
     symbols_dir = root / "Custom" / "Symbols"
     symbols_dir.mkdir(parents=True, exist_ok=True)
     syms = [
-        _id_symbol(name, [("Reference", "U", False), ("Value", name, False), ("Footprint", footprint, True)])
+        _id_symbol(
+            name,
+            [("Reference", "U", False), ("Value", name, False), ("Footprint", footprint, True)],
+            pins=pins.get(name, ("1", "2")),
+        )
         for name, footprint in parts
     ]
     (symbols_dir / f"{library}.kicad_sym").write_bytes(_id_lib(syms))
@@ -194,3 +202,154 @@ def test_blank_mpn_keeps_model_name(tmp_path):
     assert ("model", "OLDNAME2.step", "CustomName.step") in [
         (r.kind, r.old, r.new) for r in outcome.model_renames
     ]
+
+
+# -- Task 2: official footprints, leftovers and board features (D-08, D-10, D-21) ----------------
+
+
+def _leftover(outcome, rel: str):
+    return next(row for row in outcome.leftovers if row.rel == rel)
+
+
+def test_official_switch_links_kicad_footprint(tmp_path):
+    footprints_dir, _models_dir = write_fake_kicad(tmp_path)
+    _write_symbols(tmp_path, "LibO", [("PARTO", "LibO:FPO")], pins={"PARTO": OFFICIAL_PADS})
+    _write_footprint(tmp_path, "LibO", "FPO", model=f"{MODEL_DIR_VAR}/FPO.step")
+    _write_model(tmp_path, "FPO.step")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibO", "PARTO")
+    official_link = f"{OFFICIAL_LIBRARY}:{OFFICIAL_FOOTPRINT}"
+    choices = MigrationChoices(
+        parts={key: PartChoice(footprint_target="official", official_footprint=official_link)}
+    )
+    ctx = SimpleNamespace(kicad_fp_dir=footprints_dir)
+
+    outcome = plan_footprints(inventory, choices, ctx, mpns={key: "PARTO"})
+
+    assert outcome.links[key] == official_link
+    assert outcome.targets[key] == "official"
+    kicad_root = footprints_dir.parent
+    assert not any(op.path.is_relative_to(kicad_root) for op in outcome.ops)
+    assert not any(i.severity.value == "error" for i in outcome.issues)
+
+    fp_row = _leftover(outcome, "Custom/Footprints/LibO.pretty/FPO.kicad_mod")
+    assert fp_row.default_keep is False
+    assert fp_row.keep is False
+    assert official_link in fp_row.reason
+
+    model_row = _leftover(outcome, "Custom/3DModels/FPO.step")
+    assert model_row.default_keep is False
+    assert model_row.keep is False
+    assert official_link in model_row.reason
+
+
+def test_official_pad_mismatch_is_amber(tmp_path):
+    footprints_dir, _models_dir = write_fake_kicad(tmp_path)
+    pins = tuple(str(n) for n in range(1, 9))
+    _write_symbols(tmp_path, "LibM", [("PARTM", "LibM:FPM")], pins={"PARTM": pins})
+    _write_footprint(tmp_path, "LibM", "FPM")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibM", "PARTM")
+    official_link = f"{OFFICIAL_LIBRARY}:{OFFICIAL_FOOTPRINT}"
+    choices = MigrationChoices(
+        parts={key: PartChoice(footprint_target="official", official_footprint=official_link)}
+    )
+    ctx = SimpleNamespace(kicad_fp_dir=footprints_dir)
+
+    outcome = plan_footprints(inventory, choices, ctx, mpns={key: "PARTM"})
+
+    warnings = [i for i in outcome.issues if i.code == "migration.pad_mismatch"]
+    assert len(warnings) == 1
+    assert warnings[0].severity.value == "warning"
+    assert not any(i.severity.value == "error" for i in outcome.issues)
+
+
+def test_official_link_must_exist(tmp_path):
+    _write_symbols(tmp_path, "LibN", [("PARTN", "LibN:FPN")])
+    _write_footprint(tmp_path, "LibN", "FPN")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibN", "PARTN")
+    choices = MigrationChoices(
+        parts={key: PartChoice(footprint_target="official", official_footprint="Nope_Library:NOPE-FP")}
+    )
+
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key: "PARTN"})
+
+    assert any(i.code == "migration.official_missing" and i.severity.value == "error" for i in outcome.issues)
+
+
+def test_board_feature_defaults_to_keep(tmp_path):
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty").mkdir(parents=True, exist_ok=True)
+    _write_footprint(tmp_path, SHARED, "BOARD-FEATURE-SHARED")
+    _write_footprint(tmp_path, "LibP", "BOARD-FEATURE-V1")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    outcome = plan_footprints(inventory, MigrationChoices(), _CTX, mpns={})
+
+    shared_row = _leftover(outcome, f"Custom/Footprints/{SHARED}.pretty/BOARD-FEATURE-SHARED.kicad_mod")
+    assert shared_row.default_keep is True
+    assert shared_row.keep is True
+    assert not any(
+        op.rel == f"Custom/Footprints/{SHARED}.pretty/BOARD-FEATURE-SHARED.kicad_mod" for op in outcome.ops
+    )
+
+    v1_rel = "Custom/Footprints/LibP.pretty/BOARD-FEATURE-V1.kicad_mod"
+    v1_row = _leftover(outcome, v1_rel)
+    assert v1_row.default_keep is True
+    assert v1_row.keep is True
+    assert _has_op(outcome.ops, "write", f"Custom/Footprints/{SHARED}.pretty/BOARD-FEATURE-V1.kicad_mod")
+    assert _has_op(outcome.ops, "delete", v1_rel)
+
+    choices = MigrationChoices(leftovers={v1_rel: False})
+    outcome2 = plan_footprints(inventory, choices, _CTX, mpns={})
+    row2 = _leftover(outcome2, v1_rel)
+    assert row2.keep is False
+    assert _has_op(outcome2.ops, "delete", v1_rel)
+    assert not _has_op(outcome2.ops, "write", f"Custom/Footprints/{SHARED}.pretty/BOARD-FEATURE-V1.kicad_mod")
+
+
+def test_kept_leftover_footprint_moves(tmp_path):
+    footprints_dir, _models_dir = write_fake_kicad(tmp_path)
+    _write_symbols(tmp_path, "LibO", [("PARTO", "LibO:FPO")], pins={"PARTO": OFFICIAL_PADS})
+    _write_footprint(tmp_path, "LibO", "FPO", model=f"{MODEL_DIR_VAR}/FPO.step")
+    _write_model(tmp_path, "FPO.step")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibO", "PARTO")
+    official_link = f"{OFFICIAL_LIBRARY}:{OFFICIAL_FOOTPRINT}"
+    fp_rel = "Custom/Footprints/LibO.pretty/FPO.kicad_mod"
+    model_rel = "Custom/3DModels/FPO.step"
+    choices = MigrationChoices(
+        parts={key: PartChoice(footprint_target="official", official_footprint=official_link)},
+        leftovers={fp_rel: True, model_rel: True},
+    )
+    ctx = SimpleNamespace(kicad_fp_dir=footprints_dir)
+
+    outcome = plan_footprints(inventory, choices, ctx, mpns={key: "PARTO"})
+
+    assert _has_op(outcome.ops, "write", f"Custom/Footprints/{SHARED}.pretty/FPO.kicad_mod")
+    assert _has_op(outcome.ops, "delete", fp_rel)
+    assert not any(op.rel == model_rel for op in outcome.ops)
+    assert not any(op.rel.startswith("Custom/3DModels/") for op in outcome.ops)
+
+
+def test_emptied_pretty_folder_removed(tmp_path):
+    _write_symbols(tmp_path, "LibQ", [("PARTQ", "LibQ:FPQ")])
+    _write_footprint(tmp_path, "LibQ", "FPQ")
+    _write_footprint(tmp_path, "LibQ", "FEATUREQ")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibQ", "PARTQ")
+    outcome = plan_footprints(inventory, MigrationChoices(), _CTX, mpns={key: "PARTQ"})
+
+    assert _has_op(outcome.ops, "rmdir", "Custom/Footprints/LibQ.pretty")
+    assert "Custom/Footprints/LibQ.pretty" in outcome.removed_folders
