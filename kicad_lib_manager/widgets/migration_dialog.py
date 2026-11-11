@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..importer.form import FIELD_LABELS, TEXT_LABELS, library_badge
+from ..importer.layout import RepoLayout
 from ..importer.migration.draft import (
     LoadedDraft,
     changed_parts,
@@ -144,9 +145,6 @@ class MigrationDialog(QDialog):
         self._repo_root = Path(repo_root)
         self._kicad_fp_dir = kicad_fp_dir
         self._core = core or MigrationCore()
-        # importer.layout.RepoLayout is built straight from repo_root; avoids a second constructor arg
-        from ..importer.layout import RepoLayout
-
         self._layout = RepoLayout.for_repo(self._repo_root)
 
         self.setWindowTitle(WINDOW_TITLE)
@@ -567,8 +565,9 @@ class MigrationDialog(QDialog):
                     item = QTreeWidgetItem([part.new_name, self._status_text(part)])
                     item.setData(0, Qt.ItemDataRole.UserRole, part.key)
                     choice = self._choices.parts.get(part.key)
+                    override = choice.description if choice is not None else None
                     raw_description = self._raw_fields.get(part.key, {}).get("Description", "")
-                    description = choice.description if choice is not None and choice.description is not None else raw_description
+                    description = override if override is not None else raw_description
                     item.setToolTip(0, html.escape(description))
                     group_item.addChild(item)
             self._tree.expandAll()
