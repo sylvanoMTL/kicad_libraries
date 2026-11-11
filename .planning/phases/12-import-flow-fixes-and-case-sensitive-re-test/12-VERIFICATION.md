@@ -1,8 +1,8 @@
 ---
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
-verified: 2026-11-04T18:00:00Z
+verified: 2026-11-11T12:00:00Z
 status: human_needed
-score: 12/12 must-haves verified
+score: 12/13 must-haves verified
 covered_files:
   - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-01-PLAN.md
   - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-01-SUMMARY.md
@@ -44,6 +44,8 @@ covered_files:
   - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-19-SUMMARY.md
   - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-20-PLAN.md
   - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-20-SUMMARY.md
+  - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-21-PLAN.md
+  - .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-21-SUMMARY.md
   - CLAUDE.md
   - kicad_lib_manager/importer/applier.py
   - kicad_lib_manager/importer/kicad_cli.py
@@ -70,65 +72,70 @@ covered_files:
   - tests/test_main_window_import.py
   - tests/test_scan_cache.py
   - tests/test_scan_skip.py
-covered_digest: "v3:sha256:6506fe784a7f4991768126b989c89469eb66f2e8a6fc8cc3737a2f6611e709d1"
+covered_digest: "v3:sha256:8a58e57d6cfdb44e4c709a55349f5944b279ba33373d42a7edbd4d6f4f80618d"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
   previous_status: human_needed
-  previous_score: 8/8
-  gaps_closed:
-    - "G-12-12 start page is compact: Cancel shares the Browse row, window is 640 wide and as tall as its content (plan 12-15)"
-    - "G-12-21 Loading Libraries window has a per-source Skip for the 3D model path check, honest saved scan, narrowed code signature, weighted progress (plans 12-16, 12-17)"
-    - "G-12-22 one shared, parentless, non-modal User Guide usable beside the main window, the import window and its dialogs; main-window dialogs made window-modal (plans 12-18, 12-20)"
-    - "G-12-23 the User Guide remembers the owner's last page or section (plan 12-19)"
-  gaps_remaining: []
+  previous_score: 12/12
+  gaps_closed: []
+  gaps_remaining:
+    - "G-12-27 (UAT test 27) stays failed in 12-UAT.md until the owner's re-check; code and tests for it are present and green, but the owner's step-1 report (Close, then F1) was never reproduced"
   regressions: []
 advisory:
-  - finding: "WR-06: Help or F1 does not restore a minimized User Guide (show()/raise_()/activateWindow() do not un-minimize on Windows); reasoned from Qt behaviour, not reproduced"
+  - finding: "WR-09 (12-REVIEW.md, open): shows_asked_topic() is a flag, not a comparison with the saved place. If the topic a caller asked for equals the owner's saved place (import window Help opens 'importing' while 'importing' is saved), main-window F1 on the visible guide runs show_remembered() and scrolls a page entry to its top, contradicting the 'only brought to the front' wording in CLAUDE.md, the Help F1 row and the show_guide docstring"
     category: other
-    reason: "Raised by 12-REVIEW.md, disposition open. The guide is now a parentless window with its own taskbar button, so minimizing is ordinary. Resolve by the review's two-line fix plus a test, or confirm on a real Windows display (human item 4)"
+    reason: "Read in the code (main_window.py:1368, help_dialog.py:699-742); not covered by any test and not run here. It is an edge of the 12-21 'owner's own place is only raised' truth, not the UAT 27 scenario. Resolve with the review's place comparison plus a test, or accept"
+    evidence_status: "code reading only (no failing test)"
+  - finding: "WR-10 (12-REVIEW.md, open): clicking the already-current asked row neither saves nor clears the asked-topic flag, so the next main-window F1 moves the owner to the previously saved place"
+    category: other
+    reason: "Predates 12-21 for the missing save; the flag part is new. Same area as WR-09; fix in _on_item_clicked per the review"
+    evidence_status: "code reading only (no failing test)"
+  - finding: "WR-06: Help or F1 does not restore a minimized User Guide"
+    category: other
+    reason: "12-REVIEW.md, disposition open; reasoned from Qt behaviour, human item 4"
     evidence_status: "none provided (no failing test)"
-  - finding: "WR-07: source folder name goes unescaped into the Skip button text and tooltip ('&' becomes a mnemonic, '<..>' renders as markup)"
+  - finding: "WR-07: source folder name goes unescaped into the Skip button text and tooltip"
     category: other
-    reason: "12-REVIEW.md, disposition open. Only reachable with a source folder name containing & or <; the shipped sources are Custom and WurthElektronik"
+    reason: "12-REVIEW.md, disposition open; only reachable with '&' or '<' in a source folder name"
     evidence_status: "none provided (no failing test)"
-  - finding: "WR-08: test_a_skip_click_after_the_check_ended_logs_no_skip and test_loading_dialog_skips_the_source_being_checked use a fake scan that ignores the skip hook, so the late-click path is not proven by that test"
+  - finding: "WR-08: late-Skip-click test uses a fake scan that ignores the skip hook"
     category: other
-    reason: "12-REVIEW.md, disposition open. The invariant itself is enforced in code (skipped set is filled only when skip() answered True, library_scanner.py:576-580) and the real scan_all is driven in test_generate_after_a_skip_removes_no_entry and tests/test_scan_skip.py"
+    reason: "12-REVIEW.md, disposition open; the invariant is enforced in library_scanner.py and the real scan_all is driven in other tests"
     evidence_status: "code reading supports the invariant; the named test is shallow"
 human_verification:
-  - test: "G-12-12 / plan 12-15, real Windows display at 100% and 200% scale: run `.\\env\\Scripts\\python.exe kicad_lib_manager.py`, press Ctrl+I; look at the start page; open `downloaded_examples\\ul_CSD85301Q2.zip` and pick an Atomic_ library; press 'Choose another package...'; then Cancel. Note `git -C Custom status --short` first and compare after"
-    expected: "Start window is about 640 wide and only as tall as its content, with Browse zip..., Browse folder... and Cancel in one row (Cancel at the right end) and no empty band below. The window does not change size when the Downloads line appears or while a package is read. After a package opens the window grows and stays above the taskbar; 'Choose another package...' returns it to the compact size; Cancel closes; `Custom` status unchanged. Text sharp and not clipped at 200%"
-    why_human: "Tests model the screens as logical free areas offscreen. Real DPI scaling, real taskbar, fonts and the first-show placement cannot be reproduced headless. The owner's UAT 12 run at 200% was still open"
-  - test: "G-12-11 / plan 12-14 at 200% (UAT 13, 200% look still open): F1, click '4.4 Importing Parts', click its Conflicts section, then Ctrl+I, Help and F1 in the import window"
-    expected: "Guide fully on screen with Close visible; numbers match the menu; section click scrolls to the heading; text sharp and not cut off"
+  - test: "G-12-27 / UAT test 27 / plan 12-21 Task 3 human-check, real Windows desktop at 100% and again at 200% (steps 1 to 6, plus 5b and 5c): .\\env\\Scripts\\python.exe kicad_lib_manager.py. (1) F1, click 4.4 Importing Parts, then 4.4.7 Conflicts, scroll the page to its top, Close. (2) F1. (3) scroll to top, Escape, F1. (4) click 4.3 Generating Tables, press on 4.4 Importing Parts, hold about a second, release, then click 4.4.7 Conflicts. (5) Ctrl+I, Help in the import window, Cancel, close the guide, F1. (5b) Ctrl+I, Help again, Cancel, leave the guide open, F1. (5c) scroll the Conflicts page down a little, click the main window, F1 again. (6) close the app, start it, F1. At 200% repeat 1, 2 and 6"
+    expected: "At steps 2, 3, 5, 5b and 6 the guide shows 4.4.7 Conflicts as the selected row (white text on a blue fill; a hovered row only gets a faint grey), Importing Parts opened out, other pages folded, the Conflicts heading at the top of the page. Step 4: 4.4 Importing Parts is the selected row, not one of its sections. Step 5 shows 4.4 Importing Parts from the import window's Help. Step 5c: the guide comes to the front and the page does not move. The small expand arrows and the indentation still show. Selected row and heading visible and not cut off at 200%"
+    why_human: "The owner's complaint (page row 4.4 selected on reopen) was not reproduced for the step-1 order (Close, then F1) in 7 full-app runs; only the guide-left-open path (step 5b) has a RED-then-GREEN test. Offscreen Qt has no real mouse press timing, no windows11 style and no display scaling. Plan 12-21 makes this re-check the gate, so G-12-27 and test 27 must not be marked resolved from automated results. Blocking fallback: if the row 4.4 or the page top shows at a step that expects Conflicts, the gap stays failed; the owner runs .\\env\\Scripts\\python.exe .claude\\debug\\guide_trace.py (present, git-ignored) in place of kicad_lib_manager.py, repeats steps 1, 2 and 6 with a screenshot at each, and returns .claude\\debug\\guide_trace.log for a new debug round"
+  - test: "G-12-12 / plan 12-15, real Windows display at 100% and 200%: Ctrl+I, look at the start page; open downloaded_examples\\ul_CSD85301Q2.zip and pick an Atomic_ library; 'Choose another package...'; Cancel. Note git -C Custom status --short first and compare after"
+    expected: "Start window about 640 wide and only as tall as its content, Browse zip..., Browse folder... and Cancel in one row, no empty band, no size change when the Downloads line appears or a package is read; the window grows above the taskbar for the edit page and 'Choose another package...' returns it to compact; Custom status unchanged; text sharp at 200%"
+    why_human: "Real DPI scaling, taskbar, fonts and first-show placement cannot be reproduced headless; the owner's 200% run of UAT 12 was still open"
+  - test: "G-12-11 / plan 12-14 at 200% (UAT 13 200% look): F1, '4.4 Importing Parts', its Conflicts section, then Ctrl+I, Help and F1 in the import window"
+    expected: "Guide fully on screen with Close visible; numbers match the menu; section click scrolls to the heading; text sharp"
     why_human: "Look and sharpness at 200%"
-  - test: "G-12-21 / plans 12-16, 12-17, real startup with a real Wurth library: delete the saved scan (%APPDATA%/KiCadExtLibManager/scan_cache/) or edit a scan module so the full scan runs; while 'Loading Libraries' shows 'Checking 3D paths', click 'Skip WurthElektronik'. Close the app, start it again, then press Rescan"
-    expected: "Button reads 'Skip WurthElektronik' during the 3D check, 'Skipping WurthElektronik...' after the click, window closes by itself, Escape and X do nothing while loading. The log has the single line '3D model paths of WurthElektronik were not checked: skipped while the libraries loaded. Rescan checks them.' and does not say 'No warnings.'. Both trees still list every WurthElektronik library; Generate Tables removes no Wurth entry. The next start shows the saved scan with the note that the 3D model paths were skipped in that scan; Rescan does the full check and the note disappears. Startup is noticeably faster"
-    why_human: "Real timing against 5645 Wurth footprints and a real loading window; tests use a synthetic Wurth repo and fake workers for the GUI clicks"
-  - test: "G-12-22 / plans 12-18, 12-20, real display: press F1 in the main window, leave the guide open, click in the main window, Generate Tables, open About and Restore Backup, trigger a rescan, press Ctrl+I and use Help in the import window, open a content view and Check Atomic Parts; then close the import window and the main window. Also minimize the guide and press F1 again (WR-06)"
-    expected: "The guide is a separate window with its own taskbar button, scrolls and changes page while the main window, About, Restore Backup, the KiCad questions, the Loading Libraries window, the import window and its content view / Check Atomic Parts are open. A second F1 reuses the same window. The main window stays locked while the import window is open (design kept). System file pickers may block the guide (owner-approved exclusion). The guide stays open after the import window closes and closes with the main window. A minimized guide comes back on F1 (review WR-06 predicts it does not on Windows)"
+  - test: "G-12-21 / plans 12-16, 12-17, real startup with the real Wurth library: delete %APPDATA%/KiCadExtLibManager/scan_cache/ so the full scan runs; while 'Loading Libraries' shows 'Checking 3D paths' click 'Skip WurthElektronik'; close and restart; press Rescan"
+    expected: "Button 'Skip WurthElektronik' then 'Skipping WurthElektronik...', window closes by itself, Escape and X do nothing while loading; one plain log line that the 3D paths were not checked and no 'No warnings.'; both trees list every Wurth library, Generate Tables removes no Wurth entry; next start shows the saved scan with the skip note; Rescan does the full check and the note disappears; startup noticeably faster"
+    why_human: "Real 60+ s timing against 5645 Wurth footprints and a real loading window; tests use a synthetic Wurth repo and fake workers for the GUI clicks"
+  - test: "G-12-22 / plans 12-18, 12-20, real display: F1, leave the guide open, click in the main window, Generate Tables, About, Restore Backup, Rescan, Ctrl+I and Help in the import window, content view, Check Atomic Parts; close the import window, then the main window. Also minimize the guide and press F1 again (WR-06)"
+    expected: "The guide is its own window with its own taskbar button, scrolls and changes page while every one of those windows is open; a second F1 reuses it; the main window stays locked while the import window is open; system file pickers may block it (owner-approved exclusion); the guide stays open after the import window closes and closes with the main window; a minimized guide comes back on F1 (WR-06 predicts it does not)"
     why_human: "Window-system modality, focus and taskbar behaviour on real Windows; tests use offscreen QWindow clicks"
-  - test: "G-12-23 / plan 12-19, real app: in the guide browse to 4.4 Importing Parts > Conflicts, close with Close, press F1; repeat closing with Escape; restart the app and press F1; open the guide from the import window Help"
-    expected: "F1 and a restarted app reopen on Importing Parts with its sections expanded, other pages folded, 4.4.7 Conflicts selected and in view. The import window's Help always opens Importing Parts and does not overwrite the remembered place"
-    why_human: "Real restart and the scroll position in a shown window; the tests cover the saved key and selection, the owner said exact pixel scroll does not matter"
   - test: "UAT 10(a-e) toolbar Help in the real import window (carried; G-12-9 appearance)"
-    expected: "Toolbar row with the help icon and 'Help' at the top of every page; Help or F1 opens the User Guide on Importing Parts; both windows take input; row not clipped, no stray gap. Note: since plan 12-18 the guide no longer closes with the import window (owner decision G-12-22), so the old expectation 'cancelling the import window closes the guide' is replaced by 'the guide stays open'"
+    expected: "Toolbar row with the help icon and 'Help' at the top of every page; Help or F1 opens the User Guide on Importing Parts; both windows take input; row not clipped. The guide stays open when the import window closes (owner decision G-12-22)"
     why_human: "Nobody has seen the toolbar drawn with real fonts"
   - test: "UAT 3 (blocked by the worktree guard): from the main checkout change CUSTOM_3DMODEL_DIR in KiCad, leave KiCad open, press Generate Tables"
-    expected: "Dialog 'KiCad is open' with Retry (default), Change anyway, Not now. Retry after closing KiCad leads to the Yes/No question. Not now writes nothing. The dialog is now window-modal: the guide stays usable while it is open"
-    why_human: "Needs a live KiCad process and a modal dialog; the tests replace kicad_running"
+    expected: "Dialog 'KiCad is open' with Retry (default), Change anyway, Not now; Retry after closing KiCad leads to the Yes/No question; Not now writes nothing; the dialog is window-modal so the guide stays usable"
+    why_human: "Needs a live KiCad process and a modal dialog; tests replace kicad_running"
   - test: "UAT 4 (skipped by owner): Finishing strip during a real kicad-cli rebuild"
     expected: "Dialog greys out with 'Finishing the preview...', window stays live, slow note after 10 s, no hang"
-    why_human: "Real timing; covered only by gated stand-in workers. The owner chose to skip the manual check"
+    why_human: "Real timing; covered only by gated stand-in workers"
 ---
 
 # Phase 12: Import Flow Fixes and Case-Sensitive Re-test Verification Report
 
 **Phase Goal:** The import dialog, the post-install table step and the `kicad_common.json` write behave correctly in the cases the v1.0 reviews left open. The Help dialog follows the theme, and case-twin rollback is proven on a case-sensitive folder.
-**Verified:** 2026-11-04
+**Verified:** 2026-11-11
 **Status:** human_needed
-**Re-verification:** Yes, after gap-closure plans 12-15..12-20 (UAT gaps G-12-12, G-12-21, G-12-22, G-12-23), merged at 130c3b8. The previous report (covering 12-01..12-14) is replaced and now covers all 20 plans. Code for 12-01..12-14 was only regression-checked (targeted tests re-run, orchestrator full suite green at 130c3b8). 12-15..12-20 were read in the code and their named tests collected and run here.
+**Re-verification:** Yes, after gap-closure plan 12-21 (G-12-27, UAT test 27), merged at 90c2db9. The previous report (12-01..12-20, human_needed, 12/12) is replaced. Code from 12-01..12-20 was regression-checked only (targeted tests re-run, plus the orchestrator's full runs at HEAD); 12-21 was read in the code and its named tests collected and run here. No source file under `kicad_lib_manager/` or `tests/` differs from the merge commit (`git status` shows only `.planning/state.json`, the `Custom` submodule pointer, `milestone.lock` and `uv.lock`).
 
 ## Goal Achievement
 
@@ -136,70 +143,78 @@ human_verification:
 
 | # | Truth | Status | Evidence |
 | - | ----- | ------ | -------- |
-| 1 | "Already listed" only when the managed entry points at that library; empty Destination writes no table, never in the working directory | VERIFIED | `table_generator.py` and the post-install path are not in the diff of 12-15..12-20 for those functions; `main_window.py` changes are limited to the guide, scan dialog and dialog modality. Covered by tests/test_main_window_import.py (134 passed here with test_main_window.py) and the orchestrator's full suite (9382 passed at 130c3b8) |
-| 2 | One-off conflict build never runs during Install; window responsive while kicad-cli works | VERIFIED (live timing is human item 8) | Finishing logic untouched by 12-15; start Cancel still calls `reject()` only (`import_dialog.py:792`); `test_start_page_cancel_while_reading_waits_then_closes` and the `cancel_button` tests pass in the 44-test import-dialog selection |
-| 3 | KiCad-running confirm says so before writing; confirmed write starts from current content | VERIFIED (real dialog is human item 7) | 12-20 only changes modality: `_kicad_open_box` keeps title "KiCad is open", Retry/Change anyway/Not now, default Retry (`main_window.py:1170-1196`); `_confirm_path_var_changes` keeps text, buttons and default through `_question` (1136-1167). `test_kicad_open_box_texts_and_buttons` and the existing path-variable tests pass (test_main_window*.py 134 passed) |
-| 4 | Help dialog and conflict rows use theme tokens only | VERIFIED | grep for `#hex` literals and `font-size:..px` in `help_dialog.py`, `scan_progress.py`, `conflict_row.py`: no match. `test_help_css_uses_theme_tokens_only` passes inside test_help_dialog.py (168 passed across the batch). `scan_progress.py` imports spacing from `.theme` only |
-| 5 | Case-twin rollback proven on a case-sensitive folder | VERIFIED | `tests/test_case_sensitive_install.py` re-run with `-rs`: passes, no skips (inside the 168 passed) |
+| 1 | "Already listed" only when the managed entry points at that library; empty Destination writes no table, never in the working directory | VERIFIED | Unchanged since the previous report; `table_generator.py` and the post-install path are not touched by 12-21 (diff of 12-21 is `help_dialog.py`, one condition in `main_window.py`, two test files, CLAUDE.md). Covered by tests/test_main_window_import.py in the orchestrator's green full run (3366 passed, 0 failed at HEAD) |
+| 2 | One-off conflict build never runs during Install; window responsive while kicad-cli works | VERIFIED (live timing is human item 8) | Untouched by 12-21; same full-suite evidence |
+| 3 | KiCad-running confirm says so before writing; confirmed write starts from current content | VERIFIED (real dialog is human item 7) | Untouched by 12-21; same full-suite evidence |
+| 4 | Help dialog and conflict rows use theme tokens only | VERIFIED | `help_dialog.py` carries only the token-built page CSS (lines 26-40 interpolate `LINK`, `ACCENT`, `SP_*`, `BORDER` etc.); the new `_MenuSelectionDelegate` uses `QColor(ACCENT)` and `QColor(SURFACE_BASE)` only; grep for a `#RRGGBB` literal in `help_dialog.py` finds none; `test_help_css_uses_theme_tokens_only` passes (99 passed run) |
+| 5 | Case-twin rollback proven on a case-sensitive folder | VERIFIED | `tests/test_case_sensitive_install.py` re-run here with `-rs`: passes, no skips (inside the 99 passed) |
 
 ### Gap-closure truths (UAT)
 
 | Gap | Truth | Status | Evidence |
 | --- | ----- | ------ | -------- |
-| G-12-12 | Cancel shares the Browse zip.../Browse folder... row at its right end, no separate bottom row | VERIFIED | `import_dialog.py:785-794`: `_start_buttons` QHBoxLayout holds Browse zip, Browse folder, `addStretch(1)`, `_start_cancel_btn` (clicked -> `self.reject`). `_start_bottom` no longer exists (grep: no match). `test_start_page_cancel_shares_the_browse_row` passes |
-| G-12-12 | Start page 640 wide and exactly as tall as its content (no empty band); refits when the issue list shows/clears | VERIFIED in model, HUMAN for real display | `_START_WIDTH = 640` (83); `_start_size()` (604-618) invalidates/activates the nested layouts then uses `totalHeightForWidth(640)`, never below `minimumSizeHint`; used in `_show_page` (648), `showEvent` (1381), `_hide_issue_box` (1585), `_show_start_issues` (1608). `test_start_page_is_as_tall_as_its_content` (100%/200%), `test_start_issues_refit_the_window` pass. The leftover `outer.addStretch(1)` (727) cannot create a band because the height is computed from the content |
-| G-12-12 | Downloads line and reading box share one constant-height slot | VERIFIED | `_offer_slot` QGridLayout with `setRetainSizeWhenHidden(True)` on both members (770-778). `test_start_page_keeps_its_height_when_the_offer_arrives` passes |
-| G-12-12 | Choose another package... returns to the compact size; edit size remembered; Help names where Cancel sits | VERIFIED | `_show_page` branch for the start page uses `_start_size()`; `test_window_grows_for_the_edit_page_and_shrinks_back` and `test_help_names_the_start_page_cancel` pass |
-| G-12-21 | Loading Libraries window has a Skip button naming the source, enabled only while a source's 3D check runs, never closable by Escape/X | VERIFIED | New `widgets/scan_progress.py` `ScanProgressDialog`: `set_skippable(source)` -> "Skip <source>" enabled; idle -> "Skip" disabled; click -> "Skipping <source>..." and `skip_requested`; `reject()` is a no-op until `finish()`. `main_window.py` creates it in `_start_scan` (498), wires `checking` -> `_on_scan_checking` (518) and `skip_requested` -> `_on_skip_requested` (499) -> `ScanWorker.request_skip` (lock-guarded set, 93-99) -> `scan_all(skip=self._skip_requested, checking=self.checking.emit)` (136). Tests in test_main_window.py pass |
-| G-12-21 | A skip stops only that source's 3D path check, drops no library or link, logs one plain line, claims no 'No warnings.' | VERIFIED | `_check_model_files` (library_scanner.py:553-615): the `skipped` set is filled only when `skip(source)` answered True, remaining files of the source are not read and its earlier lines are filtered out of the return value (615); `scan_all` still lists libraries and reads links, records `skipped_sources` and `models_unchecked` (705-730) and appends the exact line (621-632). main_window.py:648 prints "No warnings in the checks that ran." after a skip. tests/test_scan_skip.py (skipped lines, keep every library and link, unchanged scan without skip, rescan-library record, progress 0..100) all pass; `test_generate_after_a_skip_removes_no_entry` drives the real `scan_all` and passes |
-| G-12-21 | Skipped scan is saved with skipped sources, reuse note says so, old format re-scans, code signature narrowed | VERIFIED | `scan_cache.py`: `FORMAT = 2` (38) with `skipped_sources`/`models_unchecked` encoded (432-445), skip reuse note (591-594), `_scan_code_files` follows package-internal imports from `library_scanner.py` and `scan_cache.py` only (206-242), `_code_signature_of` hashes that closure (245-255). `test_skipped_scan_round_trips`, `test_reuse_note_names_the_skipped_sources`, `test_format_1_saved_scan_is_a_different_version`, `test_code_signature_covers_the_scan_modules_only`, `test_code_signature_follows_scan_code_edits`, `test_skipped_scan_is_saved_and_the_next_start_says_so` pass. Layering: library_scanner and scan_cache import no Qt (`tests/test_layering.py` passes) |
-| G-12-21 | Help 'Repository Scan' and CLAUDE.md explain Skip and the saved scan | VERIFIED | help_dialog.py:130-134 (Skip, the logged source, the saved scan); CLAUDE.md:55. `test_help_repo_scan_explains_skip_and_the_saved_scan` passes |
-| G-12-22 | One shared, parentless, non-modal User Guide for Help menu and F1, reused on every call | VERIFIED | `main_window.py:1349-1377`: `_guide_window()` builds `HelpDialog()` with no parent and centres it; `show_guide(topic=None)` shows, raises, activates the same instance; `_on_help` no longer calls `exec()`. `test_main_window_help_opens_one_shared_non_modal_guide` and `test_main_window_and_guide_both_take_clicks` pass |
-| G-12-22 | Import window Help/F1 use the shared guide via an injected callable, never own or close it; guide survives the import window; closes with the main window; refused close keeps it | VERIFIED | `ImportDialog(show_guide=...)` (import_dialog.py:449, 462), `_on_help` calls `self._show_guide(_HELP_TOPIC)` (673-674); `main_window.py:1045` passes `show_guide=self.show_guide`; no widget imports main_window (grep). `closeEvent` closes the guide only after every refusal branch (1421-1422). Tests `test_import_help_uses_the_shared_guide`, `test_import_window_with_a_guide_hook_creates_no_guide`, `test_guide_takes_clicks_beside_the_import_window_and_its_dialogs`, `test_guide_stays_open_after_the_import_window_closes`, `test_closing_the_main_window_closes_the_guide`, `test_a_refused_close_keeps_the_guide`, `test_guide_first_shows_over_the_main_window` pass |
-| G-12-22 | Main-window dialogs (path question, KiCad-open box, Restore Backup, About) and the Loading Libraries window block only the main window; guide stays usable | VERIFIED | `_question` (1136-1146) and the KiCad-open box (1177), `BackupDialog` (1301) and About (1381) all call `setWindowModality(WindowModal)` and keep their blocking `exec()`; `ScanProgressDialog` is WindowModal with the main window as parent. `test_main_window_dialogs_are_window_modal_and_leave_the_guide_usable` (four cases) and `test_guide_takes_clicks_while_the_libraries_load` pass. System file pickers are intentionally left application-modal (owner-approved exclusion in 12-UAT.md; not a gap) |
-| G-12-23 | Guide remembers the owner's last page or section across close, Esc, deleted parent and restart; explicit topics win and are not remembered; stale values fall back | VERIFIED | `settings.py:72-81` `load_help_topic`/`save_help_topic` ("help/last_topic", non-text or empty reads None). `help_dialog.py`: `__init__` calls `show_remembered()` only when no topic is given (610-619); `show_topic` and `show_remembered` run quiet so nothing programmatic is saved (630-658); `_on_topic_selected` saves `entry.key` for every owner move, not in closeEvent (695-696); fallback key -> page part -> first item (630-638). `test_owner_choice_is_remembered_after_close_escape_and_parent_deleted`, `test_saved_place_survives_a_restart`, `test_an_explicit_topic_wins_and_is_not_remembered`, `test_stale_saved_places_fall_back`, `test_import_help_keeps_opening_importing_parts_with_a_saved_place`, `test_main_window_help_reopens_the_owner_choice`, `test_main_window_help_on_a_visible_guide_only_raises`, `test_main_window_help_after_restart_opens_the_saved_place` pass. `show_guide` (1356-1374) restores only on a hidden, already-built guide; a new one restores itself in `__init__` |
-| G-12-9..11 | Toolbar Help/F1, start Cancel, screen fit, numbered menu (earlier gap closures) | VERIFIED (no regression) | `test_help_dialog.py` (menu numbers, scroll, fit), `test_plain_names.py` and the 44-test import-dialog selection re-run and pass. Two assertions changed by design: the guide now outlives the import window (G-12-22) |
+| G-12-9..12-23 | Toolbar Help/F1, start Cancel and compact start page, numbered menu, Skip for the 3D check, shared parentless guide, remembered place | VERIFIED (no regression) | Verified in the previous report; the 12-21 diff touches `help_dialog.py` and `show_guide` only. `tests/test_help_dialog.py` (61 incl. all 12-14, 12-19 tests), `test_layering.py`, `test_importer_layering.py`, `test_plain_names.py`, `test_case_sensitive_install.py` pass: 99 passed. Orchestrator full suite at HEAD: `-m "not wurth"` 3366 passed, 4 expected skips, 0 failed (1115 s); `-m wurth` 6036 passed (316 s) |
+| G-12-27 D1 | A reused guide reopened with Close or Escape (also after the import window's Help) brings the chosen section heading to the top; asking the guide for the topic it already shows does too | VERIFIED | `_show_current_heading()` (help_dialog.py:712-723) scrolls a section to its anchor and a page to 0, never selects or saves. Called from `show_topic` after `setCurrentItem` (line 741, also when the item is already current) and from every non-spontaneous `showEvent` at once and on the next event-loop turn (663-664) after `fit_window`. Tests located and passing: `test_main_window_help_brings_the_section_heading_back[close, escape, import help between, import help guide left open]`, `test_reopened_guide_brings_the_section_heading_back[close, escape]`, `test_show_topic_on_the_shown_topic_brings_its_heading_back` |
+| G-12-27 D2 | A fresh guide narrowed by `fit_window` still shows the saved heading | VERIFIED | `showEvent` re-runs the heading helper after `fit_window`; `test_fresh_guide_shows_the_saved_heading_after_fit_window_narrows` passes |
+| G-12-27 D6 | Main-window Help on a visible guide still on a topic a caller asked for goes back to the owner's section with that row alone selected; a visible guide on the owner's own place is only raised, page not moved; the flag never saves | VERIFIED (edge case WR-09 noted) | `_on_asked_topic` set in `show_topic` (742), cleared in `show_remembered` (706) and in the owner-move save (786); `shows_asked_topic()` (708); `main_window.py:1368` `elif not first and (not guide.isVisible() or guide.shows_asked_topic()): guide.show_remembered()`. One non-comment `save_help_topic(` call and zero `load_help_topic` in `main_window.py` (grep). `test_main_window_help_brings_the_section_heading_back[import help, guide left open]`, `test_main_window_help_on_a_visible_guide_only_raises`, `test_asked_topic_lasts_until_the_owner_moves` pass. WR-09: when the asked topic equals the saved place the flag is still True and a page entry scrolls to its top, contradicting "only brought to the front"; read in the code, no test, advisory |
+| G-12-27 D3 | A held left press selects and saves the pressed row; the menu folds only after the release; only the left button holds; the hold ends on left release, hide, key press, or a move with the left button reported up | VERIFIED | `eventFilter` on the menu viewport and the menu (help_dialog.py:675-697, `installEventFilter` twice at 625-626) sets `_menu_held` on a left press or double-click only, clears it on left release and schedules the fold after it, clears it on `KeyPress`; `hideEvent` (666-673) ends it; `_on_topic_selected` (790-794) defers only while `_menu_held` and `QGuiApplication.mouseButtons() & LeftButton`, else folds at once. The filter never consumes an event (ends in `super().eventFilter`). `test_held_press_on_a_page_row_selects_that_row` (4 cases), `test_only_a_left_press_holds_the_menu`, `test_keyboard_move_after_a_lost_release_still_folds` (3 cases) pass |
+| G-12-27 D4 | Selected menu row in the accent fill with white text from theme tokens by the menu's row painter; no stylesheet on the menu or the guide; Help F1 row and CLAUDE.md say where the guide reopens | VERIFIED (look on the real desktop is human item 1) | `_MenuSelectionDelegate` (help_dialog.py:47-61), `setItemDelegate` once (620). Non-comment `setStyleSheet` count in `help_dialog.py`: 0. `test_menu_selected_row_stands_out`, `test_menu_keeps_its_arrows_and_indentation`, `test_help_says_the_guide_reopens_where_you_left_it` pass. CLAUDE.md User Guide bullet greps for 'scrolled to its heading', 'also while it is still open', 'only brought to the front' each print 1 |
+| G-12-27 / UAT 27 | After the owner chooses 4.4.7 Conflicts and closes the guide, Help or F1 shows 4.4.7 Conflicts selected with its heading at the top, also on the real desktop at 100% and 200% | UNCERTAIN (human decision requested) | The owner's report (row 4.4 selected, page top, with `settings.ini` `last_topic=importing#conflicts`) was inconclusive in the debug session (7 full-app runs, not reproduced). Only two confirmed defects (D1, D3) and one reproduced path (guide left open after the import window's Help, now RED-then-GREEN) are fixed. The step-1 order (Close, then F1) has no reproduced mechanism and no RED test; the Close and Escape cases pin the selection and pass already. 12-UAT.md still records G-12-27 `status: failed` (line 491-496). Plan 12-21 names the owner's re-check as the gate and forbids marking it resolved from automated results. Not FAILED: the implementation is present, wired and tested; not VERIFIED: the owner-observed behaviour is unconfirmed |
 
-**Score:** 12/12 truths verified (5 roadmap success criteria, plus G-12-9/10/11 gap contracts counted as three, plus G-12-12, G-12-21, G-12-22 and G-12-23); 0 present-but-behavior-unverified. Status is `human_needed` only because real-display and real-timing behaviour cannot be confirmed headless (see below).
+**Score:** 12/13 truths verified (5 roadmap success criteria, the earlier gap-closure contracts counted as in the previous report, plus G-12-27 D1, D2, D3, D4, D6 counted together as the automated half); 1 UNCERTAIN (G-12-27 page-row half, human gate); 0 present-but-behavior-unverified. `human_needed` because the owner's re-check of test 27 and the real-display items below cannot be confirmed headless.
+
+### Deferred Items
+
+None. Later phase 13 (atomic migration, KiCad setup) does not cover guide behaviour.
+
+### Advisory (New Scope, Unevidenced)
+
+| # | Finding | Category | Why Advisory |
+|---|---------|----------|--------------|
+| 1 | WR-09 visible guide on an asked topic equal to the saved place scrolls to the heading, contradicting "only brought to the front" | other | code reading, no failing test; edge of the D6 truth, not the UAT 27 scenario |
+| 2 | WR-10 clicking the already-current asked row neither saves nor clears the asked-topic flag | other | code reading, no failing test; the missing save predates 12-21 |
+| 3 | WR-06 minimized guide not restored by F1 | other | reasoned from Qt behaviour, not reproduced (human item 5) |
+| 4 | WR-07 unescaped source name in Skip button text | other | only reachable with `&` or `<` in a source folder name |
+| 5 | WR-08 late-click test uses a fake scan | other | invariant enforced in `library_scanner.py`, covered by real `scan_all` tests |
+
+12-REVIEW.md: 0 critical, 5 warnings (WR-06..WR-10, all `open` in 12-REVIEW-DISPOSITION.md), info IN-07..IN-13. WR-09 and WR-10 sit in the area the owner is about to re-check; if the owner sees F1 jump a page in step 5c-style flows, those are the first places to look. 12-SECURITY.md: threats closed. 12-VALIDATION.md and 12-UI-REVIEW.md advisory.
 
 ### Required Artifacts
 
 | Artifact | Status | Details |
 | -------- | ------ | ------- |
-| `widgets/import_dialog.py` `_START_WIDTH`, `_start_size`, `_start_buttons`, `_offer_slot`, `show_guide` hook | VERIFIED | present, substantive, wired (lines above) |
-| `widgets/scan_progress.py` `ScanProgressDialog` | VERIFIED | new file, imports PySide6 and `.theme` only; wired in `main_window._start_scan` |
-| `main_window.py` `ScanWorker.request_skip/checking`, `_on_scan_checking`, `_on_skip_requested`, `_guide_window`, `show_guide`, `_question`, `closeEvent` guide close | VERIFIED | present, substantive, wired |
-| `library_scanner.py` skip hooks, `models_skipped_issue`, `models_rechecked`, `models.py` `skipped_sources`/`models_unchecked`, `scan_cache.py` FORMAT 2, `_scan_code_files` | VERIFIED | present, substantive, wired; data flows from `ScanResult` to cache and note |
-| `settings.py` `load_help_topic`/`save_help_topic`; `help_dialog.py` `show_remembered`, quiet counter | VERIFIED | present, substantive, wired |
-| `tests/test_scan_skip.py` and the named tests of 12-15..12-20 | VERIFIED | all 40 named tests located by grep (none missing) and passing |
+| `kicad_lib_manager/widgets/help_dialog.py` `_show_current_heading`, `shows_asked_topic`, `_on_asked_topic`, `eventFilter`, `hideEvent`, `_MenuSelectionDelegate` | VERIFIED | present, substantive (real scroll, flag, filter, painter), wired (show_topic, showEvent, `__init__`, `_on_topic_selected`) |
+| `kicad_lib_manager/main_window.py` `show_guide` condition | VERIFIED | line 1368 contains `shows_asked_topic()`; docstring matches |
+| `tests/test_help_dialog.py`, `tests/test_main_window.py` named tests | VERIFIED | all ten help_dialog tests and both main-window tests located by grep; collection shows `[close]`, `[escape]`, `[import help between]`, `[import help, guide left open]` parameter sets |
+| `CLAUDE.md` User Guide bullet | VERIFIED | three scoped greps each print 1 |
+| Tracer `.claude/debug/guide_trace.py` | VERIFIED | file exists, `git check-ignore` confirms ignored, `git ls-files -- '*guide_trace*'` prints nothing |
+| Earlier artifacts (scan_progress.py, scan_cache.py FORMAT 2, settings help helpers, etc.) | VERIFIED | unchanged since the previous report; regression-checked by tests |
 
 ### Key Link Verification
 
 | From | To | Status |
 | ---- | -- | ------ |
-| `_show_page` / `showEvent` / `_show_start_issues` -> `_start_size()` -> `_fit_to_screen` | WIRED (648, 1381, 1608) |
-| `_start_cancel_btn.clicked` -> `self.reject` | WIRED (792) |
-| `ScanProgressDialog.skip_requested` -> `MainWindow._on_skip_requested` -> `ScanWorker.request_skip` | WIRED (499, 532-539, 93) |
-| `ScanWorker.run` -> `scan_all(skip=, checking=)` -> `_check_model_files` | WIRED (136; scan_all passes both, 705-708) |
-| `scan_all` -> `ScanResult.skipped_sources` -> `scan_cache.save` / `load_fresh` note | WIRED (729-730; 432-445; 591-594) |
-| `_code_signature` -> `_scan_code_files` | WIRED (245-262) |
-| `_open_import` -> `ImportDialog(show_guide=self.show_guide)` -> `_on_help` -> `_show_guide('importing')` | WIRED (1045; 673-674) |
-| `MainWindow.closeEvent` -> `self._guide.close()` after the refusal branches | WIRED (1421-1422) |
-| `HelpDialog._on_topic_selected` -> `save_help_topic`; `show_remembered` -> `load_help_topic`; `show_guide` -> `show_remembered` | WIRED (695-696; 632; 1369) |
-| `_confirm_path_var_changes` -> `_question` | WIRED (1163) |
+| `HelpDialog.showEvent` -> `_show_current_heading` (after `fit_window`, at once and next turn) | WIRED (663-664) |
+| `HelpDialog.show_topic` -> `_show_current_heading` (also when already current) | WIRED (741) |
+| menu viewport release -> `_sync_expansion` after the view handled it | WIRED (684-686) |
+| `_on_topic_selected` -> `QGuiApplication.mouseButtons()` live check | WIRED (790); `from PySide6.QtGui import QGuiApplication` present |
+| menu key press -> ends hold, schedules fold | WIRED (688-693) |
+| `HelpDialog.__init__` -> `_MenuSelectionDelegate` via `setItemDelegate` | WIRED (619-620) |
+| `hideEvent` -> ends hold, runs a waiting fold | WIRED (666-673) |
+| `MainWindow.show_guide` -> `show_remembered()` for hidden or asked-topic guide | WIRED (main_window.py:1368-1369) |
+| `_on_topic_selected` owner-move save -> `_on_asked_topic = False` | WIRED (785-786) |
 
 ### Data-Flow Trace (Level 4)
 
-Skip: the request set on `ScanWorker` -> per-file `skip(source)` answer -> `skipped` set -> `ScanResult.skipped_sources` -> log line, "No warnings in the checks that ran." and saved scan -> next-start reuse note. FLOWING (real `scan_all` driven in `test_generate_after_a_skip_removes_no_entry` and `tests/test_scan_skip.py`). Guide place: owner move -> `save_help_topic` -> QSettings -> `load_help_topic` -> `show_topic`. FLOWING (restart test reads through a fresh settings object).
+Owner click -> `currentItemChanged` -> `_on_topic_selected` -> `save_help_topic(entry.key)` -> QSettings -> `show_remembered` -> `load_help_topic` -> `show_topic` -> `_show_current_heading` -> `QTextBrowser.scrollToAnchor`. FLOWING (the main-window end-to-end test reads `settings.load_help_topic()` and the browser's heading position after a reopen; the restart test reads through a fresh settings object). The scroll uses `entry.anchor` of an outline entry found by key lookup, never the saved text (T-12-51).
 
 ### Behavioral Spot-Checks (run here with `env/Scripts/python.exe`, targeted files only)
 
 | Behavior | Command | Result | Status |
 | -------- | ------- | ------ | ------ |
-| Skip, saved scan, code signature, progress, guide persistence, help text, layering, plain names, case-twin rollback, rescan-library, settings | `pytest tests/test_scan_skip.py tests/test_scan_cache.py tests/test_help_dialog.py tests/test_layering.py tests/test_importer_layering.py tests/test_plain_names.py tests/test_case_sensitive_install.py tests/test_rescan_library.py tests/test_settings_import.py -q -rs` | 168 passed, no skips, 75 s | PASS |
-| Main window: Skip button, shared guide, window-modal dialogs, import window beside the guide, post-install table step | `pytest tests/test_main_window.py tests/test_main_window_import.py -q -rs` | 134 passed, 79 s | PASS |
-| Import window: start Cancel in the Browse row, compact height, offer slot, issue refit, grow/shrink, screen fit, Help/F1, guide hook, window-modal | `pytest tests/test_import_dialog.py -q -rs -k "start_page or start_issues or fits_the_screen or fit_size or screen_area or grows_for_the_edit or result_page_keeps or guide or help or f1 or cancel_button or window_modal"` | 44 passed, 211 deselected | PASS |
-| Full suite at merge commit 130c3b8 (orchestrator evidence, not re-run) | `pytest -q` | 9382 passed, 4 skipped (environment-only: two UAT scratch-dir tests, two symlink-privilege tests), 0 failed | PASS (reported) |
+| Guide reopen, asked topic, held press, selected row, Help wording, theme tokens, layering, plain names, case-twin rollback | `pytest tests/test_help_dialog.py tests/test_case_sensitive_install.py tests/test_layering.py tests/test_importer_layering.py tests/test_plain_names.py -q -rs -m "not wurth"` | 99 passed, 6.4 s, no skips | PASS |
+| Main-window Help end to end (four reopen cases, visible-guide raise-only, shared guide, window-modal dialogs) | `pytest tests/test_main_window.py -q -rs -k "guide or help"` | 17 passed, 2.2 s | PASS |
+| Full suite at HEAD (orchestrator evidence, not re-run; code unchanged since 90c2db9) | `pytest -m "not wurth"` and `pytest -m wurth` | 3366 passed, 4 expected skips, 0 failed (1115 s); 6036 passed (316 s) | PASS (reported) |
 
 ### Probe Execution
 
@@ -209,57 +224,55 @@ No `probe-*.sh` declared or found. SKIPPED.
 
 | Requirement | Source Plans | Status | Evidence |
 | ----------- | ------------ | ------ | -------- |
-| VER-02 | 12-01 | SATISFIED | SC5, case-sensitive tests re-run, no skips |
-| UI-01 | 12-02, 12-12..12-20 (and others) | SATISFIED | SC4; no colour literal or px font size in help_dialog.py, scan_progress.py, conflict_row.py; theme-token guard passes |
+| VER-02 | 12-01 | SATISFIED | SC5; case-sensitive tests re-run, no skips |
+| UI-01 | 12-02, 12-12..12-21 | SATISFIED for code and tests; owner re-check of UAT 27 pending | SC4; theme-token guard passes; 12-21 declares `requirements: [UI-01]`. The guide look and reopen behaviour on the real desktop is the human gate |
 | REV-01 | 12-03, 12-08 | SATISFIED | SC1 |
 | REV-02 | 12-04, 12-08 | SATISFIED | SC1 |
 | REV-03 | 12-05, 12-08 | SATISFIED | SC2 |
 | REV-04 | 12-05, 12-07, 12-08, 12-09, 12-11, 12-13 | SATISFIED | SC2 (live timing pending, human item 8) |
 | REV-05 | 12-06, 12-08, 12-10 | SATISFIED | SC3 (live dialog pending, human item 7) |
 
-All seven phase IDs appear in PLAN frontmatter `requirements:` (grepped across 12-01..12-20; the gap plans 12-15..12-20 each declare `[UI-01]`) and in REQUIREMENTS.md (lines 88, 92-96, 106). No orphaned requirements.
+All seven phase IDs appear in PLAN frontmatter `requirements:` (grepped across 12-01..12-21) and in REQUIREMENTS.md (lines 88, 92-96, 106; traceability rows 169-174, 181). No orphaned requirements.
 
-**Bookkeeping, not a goal gap (orchestrator owns these edits):** REQUIREMENTS.md still shows all seven as `[ ]` / "Pending" (lines 88-96, 106, 169-181). ROADMAP.md line 33 shows Phase 12 unchecked and line 257 still says "6 gap-closure plans pending: 12-15 to 12-20". 12-UAT.md records G-12-12, G-12-21, G-12-22 and G-12-23 as `status: failed` and its header as `diagnosed`; set them resolved after the human checks below pass.
+**Bookkeeping, not a goal gap (orchestrator owns these edits):** REQUIREMENTS.md still shows all seven as `[ ]` / Pending. ROADMAP.md line 33 shows Phase 12 unchecked and line 257 still says "1 gap-closure plan pending: 12-21". 12-UAT.md header is `status: diagnosed` with G-12-27 `status: failed`; leave G-12-27 failed until the owner's re-check passes (plan 12-21 forbids resolving it from automated results).
 
 ### Anti-Patterns Found
 
-No `TBD`/`FIXME`/`XXX` in any file changed by 12-15..12-20 (grep). No stubs or hollow props in the new code.
+No `TBD`/`FIXME`/`XXX` marker in `help_dialog.py` or `main_window.py` additions of 12-21 (the only hex-looking matches are CSS built from theme tokens). No stubs or hollow props in the new code.
 
 | File | Line | Pattern | Severity | Impact |
 | ---- | ---- | ------- | -------- | ------ |
-| `main_window.py` | 1369-1374 | `show()/raise_()/activateWindow()` does not restore a minimized guide (WR-06, open) | Warning | F1/Help may appear to do nothing after the guide was minimized; add `setWindowState(... & ~WindowMinimized)` and a test. Human item 4 |
-| `widgets/scan_progress.py` | 62-67, 90 | Source name used raw in button text and tooltip (WR-07, open) | Warning | `&` or `<..>` in a source folder name mis-renders; not reachable with the shipped sources |
-| `tests/test_main_window.py` | 1517-1553 | Late Skip click test uses a fake scan that ignores the hook (WR-08, open) | Warning | Test is shallow; invariant is enforced in `_check_model_files` and covered by real `scan_all` tests |
-| `widgets/import_dialog.py` | 677-689 | Parentless fallback guide is a second guide lifetime, unreachable from the app (IN-09) | Info | Drift risk only |
-
-12-REVIEW.md (incremental, 12-15..12-20): 0 critical, 3 warnings (WR-06..08, all open in 12-REVIEW-DISPOSITION.md), info IN-07..IN-11. 12-SECURITY.md: 51/51 threats closed. 12-VALIDATION.md: 0 gaps. 12-UI-REVIEW.md: 17/24 (advisory).
+| `main_window.py` / `help_dialog.py` | 1368; 699-742 | Asked-topic flag not compared with the saved place (WR-09, open) | Warning | A visible guide whose asked topic equals the saved place jumps to the heading on F1, against the documented "only brought to the front" |
+| `help_dialog.py` | 786, 843-847 | Clicking the already-current asked row does not clear the flag or save (WR-10, open) | Warning | Next F1 may move the owner to the earlier saved place |
+| `main_window.py` | 1369-1374 | Minimized guide not restored (WR-06, open) | Warning | F1 may appear to do nothing |
+| `widgets/scan_progress.py` | 62-67, 90 | Source name unescaped (WR-07, open) | Warning | Not reachable with shipped sources |
+| `tests/test_main_window.py` | 1517-1553 | Shallow late-Skip test (WR-08, open) | Warning | Invariant covered elsewhere |
+| `help_dialog.py` | 688-693 | Any key press, including a bare modifier, ends the hold mid-drag (IN-12) | Info | Rare |
 
 ### Prohibitions
 
-- Test-tier, 12-15: start Cancel calls `reject()` only (`import_dialog.py:792`); the edit page, splitter and bottom row are untouched; `fit_window` stays the only sizing path. Tests pass. Resolved.
-- Test-tier, 12-16: library_scanner and scan_cache stay Qt-free (`tests/test_layering.py` passes); a skip never drops a library or link (`test_skip_keeps_every_library_and_link`); the skip line is plain words (exact text asserted). Resolved.
-- Test-tier, 12-17: the scan cannot be cancelled, only a source's 3D check skipped; the quiet post-install scan shows no dialog (`self._progress = None` when `show_progress` is false); `scan_progress.py` imports only PySide6 and the theme. Resolved.
-- Test-tier, 12-18: the import window stays window-modal over the main window; no widget imports main_window; system file pickers stay application-modal by the owner-approved exclusion (recorded in 12-UAT.md Owner Decisions). Not a gap. Resolved.
-- Test-tier, 12-19: persistence goes through `settings.py` helpers only (help_dialog.py imports `load_help_topic`/`save_help_topic`, no QSettings use); tests are isolated from the real settings.ini by the autouse fixture; import Help/F1 keep opening Importing Parts. Resolved.
-- Test-tier, 12-20: the four main-window dialogs keep their blocking `exec()` and their text; pickers not converted. Resolved.
-- Judgment-tier (12-08, carried): user-facing text must not use raw KiCad field names or code identifiers. New texts ("Skip WurthElektronik", "Loading Libraries", "its own window", "Required - type...") name no identifiers. Mechanical verdict: satisfied; plain-language judgment of the wording stays with the owner (non-authoritative).
+- Test-tier, 12-21: no colour literal or px font size in `help_dialog.py`: `test_help_css_uses_theme_tokens_only` passes. Resolved.
+- Test-tier, 12-21: no stylesheet in `help_dialog.py`: non-comment `setStyleSheet` count 0; `test_menu_keeps_its_arrows_and_indentation` passes. Resolved.
+- Test-tier, 12-21: only one save, no settings read in `main_window.py`: non-comment `save_help_topic(` count 1, `load_help_topic` count in `main_window.py` 0; `test_an_explicit_topic_wins_and_is_not_remembered` passes. Resolved.
+- Test-tier, 12-21: tracer not in the repo: `git ls-files -- '*guide_trace*'` prints nothing, `git check-ignore -q .claude/debug/guide_trace.py` exits 0. Resolved.
+- Judgment-tier (carried): user-facing text uses no raw KiCad field names or code identifiers. The new Help F1 sentence and CLAUDE.md wording ("page or section you last chose", "scrolled to that heading", "brought to the front") are plain. Mechanical verdict: satisfied; wording judgment stays with the owner (non-authoritative).
 
 ### Human Verification Required
 
-1. **G-12-12 / plan 12-15, real Windows display at 100% and 200%.** Start page compact with Browse zip..., Browse folder... and Cancel in one row, no empty band, no size jump when the Downloads line or the reading bar appears; edit page grows above the taskbar; Choose another package... shrinks; Cancel closes; `git -C Custom status --short` unchanged. Why human: real DPI, taskbar and fonts. The owner's 200% run of UAT 12 was still open.
-2. **User Guide at 200% (UAT 13 remainder).** F1, 4.4 Importing Parts, Conflicts, then the import window Help and F1. Look and sharpness only.
-3. **G-12-21 live Skip against the real Wurth library.** Skip WurthElektronik during "Checking 3D paths"; log line, trees, Generate Tables, restart note, Rescan, startup speed-up. Why human: real 60+ s timing and a real loading window.
-4. **G-12-22 guide beside every window on real Windows, including a minimized guide (WR-06).** Main window, About, Restore Backup, KiCad questions, Loading Libraries, import window, content view, Check Atomic Parts; close order; minimize then F1.
-5. **G-12-23 persistence in the real app across Close, Escape and a restart.** Selected, expanded node and section in view; import Help keeps opening Importing Parts and leaves the remembered place alone.
-6. **Toolbar and Help in the real import window (UAT 10, G-12-9 appearance).** Folded into checks 1 and 4; note the guide now stays open when the import window closes (by owner decision).
-7. **UAT 3 live KiCad-open dialog** from the main checkout. Why human: live KiCad process and a modal dialog.
-8. **UAT 4 (owner skipped)**: Finishing strip with a real kicad-cli rebuild. Why human: real timing.
+1. **G-12-27 / UAT test 27 owner re-check (the gate for this plan).** Steps 1 to 6 plus 5b and 5c at 100%, then 1, 2 and 6 at 200%, as in the frontmatter. Expected: 4.4.7 Conflicts selected (blue fill, white text), Importing Parts open, heading at the top, arrows and indentation intact, step 5c page not moving. Why human: the owner's step-1 report was never reproduced and has no RED test. If the row 4.4 or the page top still shows where Conflicts is expected, G-12-27 stays failed; the owner runs `.claude\debug\guide_trace.py` and returns `guide_trace.log` with screenshots for a new debug round. Also confirm step 5b's behaviour (guide goes back to Conflicts) is wanted; if not, that is a behaviour change, not a failure.
+2. **G-12-12 real display at 100% and 200%** (compact start page, Cancel in the Browse row, no size jump).
+3. **User Guide at 200%** (UAT 13 remainder).
+4. **G-12-21 live Skip against the real Wurth library** (timing, log line, trees, Generate Tables, restart note, Rescan).
+5. **G-12-22 guide beside every window on real Windows, including a minimized guide (WR-06).**
+6. **Toolbar and Help in the real import window** (UAT 10 appearance).
+7. **UAT 3 live KiCad-open dialog** from the main checkout.
+8. **UAT 4 (owner skipped)**: Finishing strip with a real kicad-cli rebuild.
 
 ### Gaps Summary
 
-No gaps. All five ROADMAP success criteria and the gap-closure contracts for G-12-12, G-12-21, G-12-22 and G-12-23 are present, substantive, wired and backed by named tests that were located and re-run here (168 + 134 + 44 passed, no skips), plus the orchestrator's full-suite run at 130c3b8 (9382 passed, 0 failed). Three open review warnings (WR-06..08) are recorded as advisory items, none contradicts a must-have: WR-06 (minimized guide not restored by F1) is the one most worth fixing before the owner's real-display pass because it touches the G-12-22 "usable beside every window" expectation on Windows. Status is `human_needed` because the owner's actual complaints in these gaps are about real-display look, window-system behaviour and real timing, which cannot be confirmed headless. After the human checks pass, mark G-12-12, G-12-21, G-12-22 and G-12-23 resolved in 12-UAT.md and flip REQUIREMENTS.md and ROADMAP.md.
+No code gaps. All five ROADMAP success criteria are verified, and plan 12-21's implementation is present, substantive, wired and backed by named tests that were located and re-run here (99 + 17 passed) plus the orchestrator's green full runs at HEAD (3366 and 6036 passed, 0 failed). The phase is not `passed` because G-12-27 (UAT test 27) remains `failed` in 12-UAT.md: the owner's exact report was not reproduced for the Close-then-F1 order, the plan makes the owner's real-desktop re-check the gate, and the seven real-display items carried from earlier rounds are still open. Two open review warnings (WR-09, WR-10) concern the new asked-topic flag; fixing them before the owner's pass would remove the most likely source of a surprising F1 in step 5b/5c. After the owner's re-check passes, mark G-12-27 and the other failed UAT gaps resolved in 12-UAT.md and flip REQUIREMENTS.md and ROADMAP.md.
 
 ---
 
-_Verified: 2026-11-04_
+_Verified: 2026-11-11_
 _Verifier: Claude (gsd-verifier)_
