@@ -38,6 +38,8 @@ _NOTHING_TO_COMMIT = "Nothing to commit: Custom already holds these files"
 _CHANGED_MARK = "changed since install"  # bare words; the row adds the parentheses
 _ADDED_MARK = "added: linked by a committed part"
 _DIRTY_MARK = "also changed before this import"
+_DELETED_MARK = "deleted"  # bare word; the row adds the parentheses (MIG-04)
+_DELETED_TOOLTIP = "Removed from Custom by this commit"
 _CHANGED_HINT = (
     "⚠ Marked files changed after the install, or are committed because a committed part links them. "
     "Double-click one to see it."
@@ -344,13 +346,17 @@ class CommitPanel(QWidget):
         self._set_state("probing")
 
     def _fill_files(self, cplan: CommitPlan):
-        """The file rows, their heading and the list height."""
+        """The file rows, their heading and the list height; a deleted file is marked from the start (MIG-04)."""
         files = self._files_list
         files.clear()
         for commit_file in cplan.files:
-            item = QListWidgetItem(commit_file.display)
+            if commit_file.deleted:
+                text, tooltip = f"{commit_file.display} ({_DELETED_MARK})", _DELETED_TOOLTIP
+            else:
+                text, tooltip = commit_file.display, commit_file.display
+            item = QListWidgetItem(text)
             item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)  # read-only, no check boxes
-            item.setToolTip(commit_file.display)
+            item.setToolTip(tooltip)
             item.setData(Qt.ItemDataRole.UserRole, commit_file.rel)
             files.addItem(item)
         self._files_heading.setText(f"Files to commit ({files.count()})")
@@ -583,6 +589,12 @@ class CommitPanel(QWidget):
             item = files.item(row)
             rel = item.data(Qt.ItemDataRole.UserRole)
             cfile = self._plan.files[row] if self._plan is not None and row < len(self._plan.files) else None
+            if cfile is not None and cfile.deleted:
+                # keeps the "(deleted)" text _fill_files set; a deleted file is never "changed after
+                # the install" while absent (RESEARCH P-05), so it is never marked amber here
+                if rel is not None:
+                    self._activatable.add(rel)
+                continue
             display = cfile.display if cfile is not None else item.text()
             changed = cfile is not None and (cfile.note == NOTE_CHANGED or cfile.display in stale)
             added = cfile is not None and cfile.note == NOTE_ADDED

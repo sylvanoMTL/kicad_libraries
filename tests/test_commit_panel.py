@@ -1012,6 +1012,25 @@ def test_panel_plain_row_has_no_marker_and_does_not_activate(qtbot, tmp_path):
     assert panel._changed_hint.isHidden()
 
 
+def test_panel_marks_deleted_rows(qtbot, tmp_path):
+    base = make_cplan(tmp_path).files
+    deleted = replace(base[0], deleted=True)
+    files = (deleted, *base[1:])
+    panel, _ = new_panel(qtbot, tmp_path, files=files)
+    activated = []
+    panel.file_activated.connect(activated.append)
+
+    assert rows(panel)[0] == f"{deleted.display} (deleted)"
+    assert panel._files_list.item(0).toolTip() == "Removed from Custom by this commit"
+
+    panel.apply_probe(make_probe(parent_dir=tmp_path))
+
+    assert rows(panel)[0] == f"{deleted.display} (deleted)"
+    assert panel._files_list.item(0).data(Qt.ItemDataRole.ForegroundRole) is None
+    panel._files_list.itemActivated.emit(panel._files_list.item(0))
+    assert activated == [deleted.rel]
+
+
 def test_panel_changed_or_added_and_dirty_before_combined(qtbot, tmp_path):
     base = make_cplan(tmp_path).files
     files = (replace(base[0], note="changed"), replace(base[1], note="added"), base[2])

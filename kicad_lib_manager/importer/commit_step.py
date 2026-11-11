@@ -33,6 +33,9 @@ from .commit_plan import (
 from .content import MAX_READ, ContentText, binary_text, diff_text
 
 
+DELETED_TEXT = "This file is deleted by this commit."  # pre_import_diff and changed_diff for a CommitFile.deleted (MIG-04)
+
+
 @dataclass(frozen=True)
 class CommitProbe:
     """What the probe found. state: "ready" | "gated" | "unavailable" | "refused" | "offer_switch".
@@ -718,6 +721,8 @@ def pre_import_diff(cplan: CommitPlan, rel: str, *, git: GitContext | None = Non
         return ContentText(f"{rel} - HEAD vs before this import", rel, f"{rel} is not part of this commit.", "error")
     shown = cfile.display
     title = f"{shown} - HEAD vs before this import"
+    if cfile.deleted:
+        return ContentText(title, shown, DELETED_TEXT, "text")
     if cfile.base_sha256 is None:
         return ContentText(title, shown, "This file did not exist before this import.", "text")
     pre = pre_install_bytes(cfile, cplan.backup_dir)
@@ -763,6 +768,8 @@ def changed_diff(cplan: CommitPlan, rel: str, *, git: GitContext | None = None) 
     shown = cfile.display
     added = cfile.note == NOTE_ADDED
     title = f"{shown} - HEAD vs now" if added else f"{shown} - as installed vs now"
+    if cfile.deleted:
+        return ContentText(title, shown, DELETED_TEXT, "text")
     try:
         current = _read_now(cfile.path)
     except OSError as e:
