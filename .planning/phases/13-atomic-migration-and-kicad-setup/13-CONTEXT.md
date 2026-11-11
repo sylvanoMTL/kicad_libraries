@@ -276,6 +276,7 @@ The target count is therefore no longer 9 (see D-04).
 - An editable per-library description column in the main window. It was rejected in favour of generated descriptions (D-20).
 - A "create a part" flow (new symbol and footprint from scratch, not from a vendor package). Today a creation goes through Import Part with a loose-files folder. A board feature is footprint-only (D-21).
 - Documenting the board-feature rule (D-21) in `CLAUDE.md` can ride with DOC-01 if the planner sees fit.
+- **A reserved prefix for intentionally non-atomic own parts** (for example `Generic_Symbols`, `Generic_Footprints`). The atomic check, the migration and the Migrate menu would recognise it as deliberate: not checked, not migrated, not counted as v1. Without it, any non-`Atomic_` library in `Custom/` counts as v1-named (D-04, D-13). It was raised on 2026-11-11 and deferred by the owner. For now, generic parts use KiCad's stock symbols, and board features use `Atomic_Footprints` (D-21).
 
 </deferred>
 

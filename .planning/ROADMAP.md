@@ -312,7 +312,45 @@ Plans:
   4. One confirmed action sets up KiCad 10's chooser: it pins the `Atomic_` libraries, shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column. Like the path-variable sync, it shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout.
   5. The app shows and saves the old → new library name map with the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB). `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
 
-**Plans**: TBD
+**Plans**: 20 plans
+
+Plans:
+**Wave 1**
+- [ ] 13-01-PLAN.md — Library descriptions in every generated table entry (stock KiCad text for Atomic_ stems, kept existing descriptions, add-only entry) (TBL-01, D-20)
+- [ ] 13-02-PLAN.md — Qt-free chooser setup: pins and MPN/Manufacturer columns with the path-variable contract; shared wrong-checkout check (TBL-02, D-17..D-19, D-26)
+- [ ] 13-03-PLAN.md — `tag` in gitops, MIG-01 clean check and pre-atomic tag, migration package and layering registrations (MIG-01, D-02)
+- [ ] 13-04-PLAN.md — Commit plan, gate, step and panel accept deleted files and a plan message (MIG-04)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+- [ ] 13-05-PLAN.md — Migration inventory, the plan contract, the rich v1 fixture, importer symbol helpers made public (MIG-02, MIG-03, D-13, D-21)
+- [ ] 13-07-PLAN.md — File > Set Up KiCad Chooser... with the KiCad-open dialog, Retry and the guide (TBL-02, D-17)
+
+**Wave 3** *(blocked on Wave 2 completion)*
+- [ ] 13-06-PLAN.md — Tracer: one part migrates end to end (plan, end-state gate, transaction, map file) (MIG-02, MIG-03, MIG-05)
+- [ ] 13-08-PLAN.md — Migration draft in app data with changed-since-draft marks (MIG-02, D-14)
+- [ ] 13-19-PLAN.md — Wrong-checkout warnings after Generate Tables and Install Part (D-26)
+
+**Wave 4** *(blocked on Wave 3 completion)*
+- [ ] 13-09-PLAN.md — Symbols: targets, MPN names, fields, keywords, clashes, Atomic_ parts, one format per library (D-01, D-03, D-05, D-11, D-12, D-22)
+- [ ] 13-10-PLAN.md — Footprints and 3D models: moves, clashes, official switch, model renames, multi-model, leftovers, texts (D-07..D-11, D-21, D-23)
+- [ ] 13-11-PLAN.md — Variant families as derived symbols (D-06)
+- [ ] 13-12-PLAN.md — Run gate strip lines and the MIGRATION-ATOMIC.md map (MIG-02, MIG-05, D-15, D-16)
+- [ ] 13-13-PLAN.md — Transaction safety, tag at Run, migration CommitPlan and real-git commit (MIG-01, MIG-03, MIG-04)
+- [ ] 13-14-PLAN.md — Migration window: refusal, part list, detail fields, failure strip, draft (MIG-01, MIG-02, D-15, D-25)
+
+**Wave 5** *(blocked on Wave 4 completion)*
+- [ ] 13-15-PLAN.md — Migration window: footprint and official picker, models, clashes, derives, Files tab and leftovers (D-06..D-10, D-15)
+- [ ] 13-20-PLAN.md — Whole-fixture end-to-end migration and commit against real git (MIG-01, MIG-03..05, D-04)
+
+**Wave 6** *(blocked on Wave 5 completion)*
+- [ ] 13-16-PLAN.md — Migration window: wrong-checkout refusal, Run, Result view, commit panel (MIG-01, MIG-03..05, D-24, D-26)
+
+**Wave 7** *(blocked on Wave 6 completion)*
+- [ ] 13-17-PLAN.md — Main window: Migrate menu action, post-Run rescan with Atomic_ libraries selected, Generate hand-off, guide page (MIG-02, MIG-04, D-13, D-24)
+
+**Wave 8** *(blocked on Wave 7 completion)*
+- [ ] 13-18-PLAN.md — CLAUDE.md, PROJECT.md, LIBRARY-NAMING.md, test notes, full-suite gate and the owner's live UAT from the main checkout (DOC-01, D-26)
+
 **UI hint**: yes
 
 ## Progress
@@ -327,7 +365,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 21/21 | Complete    | 2026-11-11 |
-| 13. Atomic Migration and KiCad Setup | v2.0 | 0/TBD | Not started | - |
+| 13. Atomic Migration and KiCad Setup | v2.0 | 0/20 | Planned | - |
 
 ## Backlog
 
