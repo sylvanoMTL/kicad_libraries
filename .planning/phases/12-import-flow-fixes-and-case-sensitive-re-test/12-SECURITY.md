@@ -95,7 +95,11 @@ Plans 12-02 and 12-08 add no new boundary (static stylesheets, Help text and a p
 | T-12-48 | Tampering | KiCad settings confirm dialogs answered while the guide has focus | low | accept | Questions stay window-modal for the main window with default No / Retry and escape Not now (main_window.py L1136-1190); the guide holds only static help; see Accepted Risks Log | closed |
 | T-12-49 | Tampering | edited or stale "help/last_topic" value | low | mitigate | `load_help_topic` returns only a non-empty str (settings.py L74-77); `show_topic` only compares the key with known menu items and returns False otherwise (help_dialog.py L640-658), never formatting it into HTML or a path; `test_help_topic_settings_round_trip`, `test_stale_saved_places_fall_back` | closed |
 | T-12-50 | Tampering | tests writing the owner's real settings.ini while browsing the guide | medium | mitigate | Autouse `_isolated_settings(tmp_path)` in tests/test_help_dialog.py (L40-48) points QSettings under tmp_path and asserts the settings file lies there | closed |
-| T-12-SC | Tampering | npm/pip/cargo installs (12-13 .. 12-20) | low | accept | Neither plan installs or upgrades a package; see Accepted Risks Log | closed |
+| T-12-51 | Tampering | `_show_current_heading` driven by an edited or stale saved key | low | mitigate | The helper looks the current item up in `self._entries` and passes only a known outline entry's `anchor` to `scrollToAnchor` (help_dialog.py L712-721); the saved text never reaches HTML or a path; `test_stale_saved_places_fall_back`, `test_reopened_guide_brings_the_section_heading_back` | closed |
+| T-12-52 | Denial of service | menu event filter (held-button tracking) leaving the menu waiting | low | mitigate | `eventFilter` always ends with `return super().eventFilter(...)` and consumes nothing (L675-695); the hold ends on the left release, a key press on the menu (L688-693), `hideEvent` (L666-672) and the live `QGuiApplication.mouseButtons()` check in `_on_topic_selected` (L790-794); `test_held_press_on_a_page_row_selects_that_row`, `test_only_a_left_press_holds_the_menu`, `test_keyboard_move_after_a_lost_release_still_folds` | closed |
+| T-12-53 | Information disclosure | debug tracer and probe scripts (call stacks, settings paths) | low | mitigate | Tracer kept untracked at `.claude/debug/guide_trace.py` (git-ignored `.claude/`); `git ls-files -- '*guide_trace*'` prints nothing and `git check-ignore -q .claude/debug/guide_trace.py` exits 0 (checked 2026-11-11 after merge) | closed |
+| T-12-54 | Tampering | `shows_asked_topic()` condition in `MainWindow.show_guide` | low | mitigate | In-memory flag only: main_window.py L1368 adds the condition and has no `load_help_topic` call; help_dialog.py keeps one `save_help_topic(` call (the owner move); `test_asked_topic_lasts_until_the_owner_moves`, `test_main_window_help_on_a_visible_guide_only_raises`, `test_an_explicit_topic_wins_and_is_not_remembered` | closed |
+| T-12-SC | Tampering | npm/pip/cargo installs (12-13 .. 12-21) | low | accept | Neither plan installs or upgrades a package; see Accepted Risks Log | closed |
 
 *Status: open · closed · open — below high threshold (non-blocking)*
 *Severity: critical > high > medium > low — only open threats at or above workflow.security_block_on count toward threats_open*
@@ -112,7 +116,7 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 | AR-12-01 | T-12-04 | The Help stylesheet and pages are fixed strings built from theme constants; no user or vendor text reaches the Help rich text, so there is nothing to spoof. | plan 12-02 threat model (owner-approved plan) | 2026-11-01 |
 | AR-12-02 | T-12-31 | The Help pages are static text built from constants; plan 12-12 adds only static sentences naming the toolbar Help and F1, and no vendor, user or path value is formatted into them. | plan 12-12 threat model (owner-approved plan) | 2026-11-03 |
 | AR-12-03 | T-12-36 | The Help pages stay static text built from constants; plan 12-14 adds only rendered menu numbers and anchors derived from that static text, and no vendor, user or path value is formatted into them. | plan 12-14 threat model (owner-approved plan) | 2026-11-04 |
-| AR-12-04 | T-12-SC | Plans 12-13 to 12-20 install and upgrade no package (12-16's `ast` is stdlib), so there is no new supply-chain surface. | plans 12-13 .. 12-20 threat models (owner-approved plans) | 2026-11-04 |
+| AR-12-04 | T-12-SC | Plans 12-13 to 12-21 install and upgrade no package (12-16's `ast` is stdlib), so there is no new supply-chain surface. | plans 12-13 .. 12-21 threat models (owner-approved plans) | 2026-11-04 |
 | AR-12-05 | T-12-48 | The main window's KiCad-settings questions stay window-modal with their safe defaults (No / Retry, escape Not now); the User Guide beside them holds only static help text and has no action that can answer them. | plan 12-20 threat model (owner-approved plan) | 2026-11-04 |
 
 *Accepted risks do not resurface in future audit runs.*
@@ -166,4 +170,12 @@ Observation outside the register (no new threat): `MainWindow` still joins the s
 |---|---|
 | Threats found | 51 |
 | Closed | 51 |
+| Open | 0 |
+
+## Security Audit 2026-11-11
+
+| Metric | Count |
+|---|---|
+| Threats found | 55 |
+| Closed | 55 |
 | Open | 0 |
