@@ -19,15 +19,18 @@ from ...kicad_files import (
     find_models,
     footprint_name,
     footprint_name_edit,
+    load,
     parse_bytes,
     retarget_model,
 )
 from ...models import Issue, Severity
 from ...sexpr import apply_edits
+from ..footprint_index import build_index, pad_numbers
 from ..naming import sanitize_filename
 from ..plan import MODEL_DIR_VAR, Conflict, FieldChange, PartText, Rename
+from ..verify import pin_pad_issues, symbol_pin_numbers
 from .inventory import SHARED_FOOTPRINT_LIBRARY, Inventory, InventoryFootprint
-from .plan import MigrationChoices, MigrationOp, PartChoice, PartKey
+from .plan import LeftoverRow, MigrationChoices, MigrationOp, PartChoice, PartKey
 
 SHARED = SHARED_FOOTPRINT_LIBRARY
 CLASH_PREFIX = "footprint:"
@@ -88,6 +91,53 @@ def _model_name_of(path_text: str) -> str:
     return path_text[len(_MODEL_VAR_PREFIX):]
 
 
+def _plain_move_bytes(path: Path, target_stem: str) -> bytes:
+    """path's bytes, with its internal name set to target_stem when it differs (no other change)."""
+    data = path.read_bytes()
+    loaded = parse_bytes(data, path.name)
+    if isinstance(loaded, Issue):
+        return data
+    name_ref = footprint_name(loaded.root)
+    if name_ref is None or name_ref.name == target_stem:
+        return data
+    edited = apply_edits(loaded.source.text, [footprint_name_edit(name_ref, target_stem)])
+    return fsutil.encode_source(edited, loaded.source.bom)
+
+
+def _official_switch(
+    part_rel_path: str,
+    part_name: str,
+    choice: PartChoice,
+    ctx,
+    *,
+    symbol_cache: dict[str, object | None],
+    repo_root: Path,
+) -> tuple[str, list[Issue]]:
+    """Resolve one part's "Use an official KiCad footprint" choice (D-08): (link, issues)."""
+    link = choice.official_footprint or ""
+    if not link:
+        return "", [
+            Issue(Severity.ERROR, "migration.official_missing", f"{part_name}: choose an official KiCad footprint")
+        ]
+    index = build_index(ctx.kicad_fp_dir)
+    if not index.contains(link):
+        return link, [
+            Issue(Severity.ERROR, "migration.official_missing", f"{part_name}: {link} is not in KiCad's footprints")
+        ]
+    issues: list[Issue] = []
+    pads = pad_numbers(index, link)
+    if pads is not None:
+        if part_rel_path not in symbol_cache:
+            result = load(repo_root / part_rel_path)
+            symbol_cache[part_rel_path] = None if isinstance(result, Issue) else result
+        loaded = symbol_cache[part_rel_path]
+        pins = symbol_pin_numbers(loaded.root, part_name) if loaded is not None else set()
+        mismatch = pin_pad_issues(part_name, link, pins, pads)
+        if mismatch:
+            issues.append(Issue(Severity.WARNING, "migration.pad_mismatch", mismatch[0].text))
+    return link, issues
+
+
 def plan_footprints(
     inventory: Inventory,
     choices: MigrationChoices,
@@ -109,14 +159,30 @@ def plan_footprints(
     shared_dir = layout.footprints_dir / f"{SHARED}.pretty"
     shared_rel = _rel(layout, shared_dir)
     mkdir_added = shared_dir.exists()
-    moved_from: dict[str, int] = {}
     deleted_rels: set[str] = set()
+    final_model_names: set[str] = set()
 
     model_name_set = frozenset(inventory.models)
+
+    # -- Stage A: "Use an official KiCad footprint" (D-08) -- an active per-part choice, never an op
+    # under KiCad's own folders; the vendor footprint and model this orphans become leftovers below.
+    symbol_cache: dict[str, object | None] = {}
+    for part in inventory.parts:
+        choice = choices.parts.get(part.key, PartChoice())
+        if choice.footprint_target != "official":
+            continue
+        link, official_issues = _official_switch(
+            part.rel_path, part.name, choice, ctx, symbol_cache=symbol_cache, repo_root=layout.repo_root
+        )
+        issues.extend(official_issues)
+        links[part.key] = link
+        targets[part.key] = "official"
 
     # -- Pass 1: already-shared footprints are untouched; their linkers resolve directly (D-07) ----
     for fp in inventory.footprints:
         if fp.library != SHARED:
+            continue
+        if not _shared_linkers(fp, choices):
             continue
         for key in fp.linked_by:
             if _target_for(choices, key) == "official":
@@ -124,6 +190,7 @@ def plan_footprints(
             links[key] = f"{SHARED}:{fp.name}"
             targets[key] = "shared"
             models[key] = fp.models
+        final_model_names.update(fp.models)
 
     # -- Pass 2: plan each moved v1 footprint once, in key order of its first linker (determinism) --
     move_candidates: list[tuple[PartKey, InventoryFootprint, list[PartKey]]] = []
@@ -247,13 +314,94 @@ def plan_footprints(
             links[key] = f"{SHARED}:{final_stem}"
             targets[key] = "shared"
             models[key] = tuple(own_model_names)
-        moved_from[fp.library] = moved_from.get(fp.library, 0) + 1
+        final_model_names.update(own_model_names)
+
+    # -- Leftovers (D-10, D-21): every Custom footprint no planned part links, after all parts are
+    # planned. default_keep is True only when the file was already unlinked before the migration;
+    # a kept v1 footprint moves into Atomic_Footprints.pretty under its own name (Task 3 adds the
+    # name-clash rules this move pathway shares with the main one). A kept footprint's own model(s)
+    # are not auto-kept: a model's default follows its own original linkage, independently (D-10).
+    leftover_rows: list[LeftoverRow] = []
+    footprint_leftover_reason: dict[tuple[str, str], str] = {}
+
+    for fp in inventory.footprints:
+        if fp.library == SHARED:
+            if _shared_linkers(fp, choices):
+                continue
+        elif fp.rel_path in deleted_rels:
+            continue
+
+        default_keep = not fp.linked_by
+        if default_keep:
+            reason = "no part links it"
+        else:
+            cause_key = sorted(fp.linked_by)[0]
+            reason = f"no part links it after the switch to {links.get(cause_key, '')}"
+        footprint_leftover_reason[(fp.library, fp.name)] = reason
+
+        rel = fp.rel_path
+        keep = choices.leftovers.get(rel, default_keep)
+        leftover_rows.append(LeftoverRow(rel=rel, kind="footprint", keep=keep, default_keep=default_keep, reason=reason))
+
+        if fp.library == SHARED:
+            if not keep:
+                ops.append(
+                    MigrationOp(
+                        "delete", layout.repo_root / rel, rel, base_sha256=fp.sha256, note="leftover, not kept"
+                    )
+                )
+                deleted_rels.add(rel)
+            continue
+
+        old_path = layout.repo_root / rel
+        if not keep:
+            ops.append(MigrationOp("delete", old_path, rel, base_sha256=fp.sha256, note="leftover, not kept"))
+            deleted_rels.add(rel)
+            continue
+
+        data = _plain_move_bytes(old_path, fp.name)
+        new_rel = f"{shared_rel}/{fp.name}.kicad_mod"
+        new_path = layout.repo_root / new_rel
+        if not mkdir_added:
+            ops.append(MigrationOp("mkdir", shared_dir, shared_rel, note="Atomic_Footprints folder"))
+            mkdir_added = True
+        existing_bytes = new_path.read_bytes() if new_path.exists() else None
+        base_sha256 = hashlib.sha256(existing_bytes).hexdigest() if existing_bytes is not None else None
+        ops.append(MigrationOp("write", new_path, new_rel, data=data, base_sha256=base_sha256))
+        ops.append(MigrationOp("delete", old_path, rel, base_sha256=fp.sha256, note="moved into Atomic_Footprints"))
+        deleted_rels.add(rel)
+
+    models_rel_dir = _rel(layout, layout.models_dir)
+    for name in inventory.models:
+        # model_final_name's *keys* are old model names tied to a moving footprint's single model
+        # (whether renamed or not); final_model_names holds every moved footprint's final name(s).
+        # A renamed model's old name is in the former but not the latter, and must not re-enter here.
+        if name in final_model_names or name in model_final_name:
+            continue
+        linkers = inventory.model_linkers.get(name, ())
+        default_keep = not linkers
+        if default_keep:
+            reason = "no footprint links it"
+        else:
+            cause_lib, _, cause_fp = linkers[0].partition(":")
+            reason = footprint_leftover_reason.get((cause_lib, cause_fp), "no footprint links it")
+        rel = f"{models_rel_dir}/{name}"
+        keep = choices.leftovers.get(rel, default_keep)
+        leftover_rows.append(LeftoverRow(rel=rel, kind="model", keep=keep, default_keep=default_keep, reason=reason))
+        if not keep:
+            path = layout.models_dir / name
+            ops.append(
+                MigrationOp(
+                    "delete", path, rel, base_sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+                    note="leftover, not kept",
+                )
+            )
 
     for library in inventory.footprint_libraries:
         if library == SHARED:
             continue
-        total = sum(1 for fp in inventory.footprints if fp.library == library)
-        if total and moved_from.get(library, 0) == total:
+        library_footprints = [fp for fp in inventory.footprints if fp.library == library]
+        if library_footprints and all(fp.rel_path in deleted_rels for fp in library_footprints):
             folder = layout.footprints_dir / f"{library}.pretty"
             folder_rel = _rel(layout, folder)
             removed_folders.append(folder_rel)
@@ -271,7 +419,7 @@ def plan_footprints(
         ops=tuple(ops),
         footprint_links=tuple(footprint_links),
         model_renames=tuple(model_renames),
-        leftovers=(),
+        leftovers=tuple(leftover_rows),
         conflicts=(),
         texts={},
         package_words={},
