@@ -8,6 +8,7 @@ controls, the Files tab, Run itself and the commit step; this plan only enables 
 """
 
 import dataclasses
+import html
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
     QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from ..importer.form import FIELD_LABELS, TEXT_LABELS, library_badge
 from ..importer.migration.draft import (
     LoadedDraft,
     changed_parts,
@@ -39,7 +41,10 @@ from ..importer.migration.plan import (
 )
 from ..importer.migration.planner import build_migration_plan, prepare_context
 from ..importer.migration.precheck import check_custom
+from ..importer.plan import FieldChange
 from ..importer.planner import detect_tools
+from ..importer.stems import name_verdict
+from ..importer.suggest import existing_libraries, suggestion_text
 from ..kicad_process import kicad_running
 from ..models import Issue
 from ..settings import migration_draft_file
@@ -62,6 +67,26 @@ _WINDOW_SIZE = QSize(1040, 700)
 
 def _plural(count: int, one: str, many: str) -> str:
     return f"{count} {one if count == 1 else many}"
+
+
+def _plain_field(name: str) -> str:
+    """A field name in words, never the raw ki_ form (D-09, P-14)."""
+    lowered = name.lower()
+    if lowered in FIELD_LABELS:
+        return FIELD_LABELS[lowered]
+    if lowered.startswith("ki_"):
+        return lowered[3:].replace("_", " ")
+    return name
+
+
+def _field_change_text(change: FieldChange) -> str:
+    """One field_changes row in plain words: 'Removed MF', 'Value: old -> new' style (D-09)."""
+    label = _plain_field(change.field)
+    if change.action == "drop":
+        return f"Removed {label}"
+    if change.action == "rename":
+        return f"Renamed {label} to {_plain_field(change.new)}"
+    return f"{label}: {change.old} -> {change.new}"
 
 
 def _check_plan(plan: MigrationPlan, inventory: Inventory, kicad_fp_dir: Path | None) -> GateOutcome:
@@ -290,6 +315,16 @@ class MigrationDialog(QDialog):
         self._library_combo.setEditable(True)
         self._library_combo.lineEdit().textEdited.connect(self._on_library_edited)
         form.addRow("Library", self._framed(self._library_combo, "library"))
+        self._library_badge = QLabel()
+        self._library_badge.setTextFormat(Qt.TextFormat.PlainText)
+        self._library_badge.setStyleSheet(f"color: {MUTED};")
+        form.addRow("", self._library_badge)
+        self._library_note = QLabel()
+        self._library_note.setTextFormat(Qt.TextFormat.PlainText)
+        self._library_note.setWordWrap(True)
+        self._library_note.setStyleSheet(f"color: {MUTED};")
+        self._library_note.hide()
+        form.addRow("", self._library_note)
 
         self._symbol_name_edit = QLineEdit()
         self._symbol_name_edit.textEdited.connect(lambda text: self._on_field_edited("symbol_name", text))
@@ -311,6 +346,27 @@ class MigrationDialog(QDialog):
         self._value_edit.setReadOnly(True)
         self._value_edit.setToolTip("Value follows the MPN")
         form.addRow("Value", self._value_edit)
+
+        self._field_changes_list = QListWidget()
+        self._field_changes_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
+        form.addRow("Field changes", self._field_changes_list)
+
+        self._text_edits: dict[str, QPlainTextEdit] = {}
+        self._text_regenerate: dict[str, QPushButton] = {}
+        for name, label in TEXT_LABELS.items():
+            edit = QPlainTextEdit()
+            edit.setMaximumHeight(60)
+            edit.textChanged.connect(lambda n=name: self._on_text_changed(n))
+            row = QWidget()
+            row_lay = QHBoxLayout(row)
+            row_lay.setContentsMargins(0, 0, 0, 0)
+            row_lay.addWidget(self._framed(edit, name), 1)
+            regenerate = QPushButton("Regenerate")
+            regenerate.clicked.connect(lambda _checked=False, n=name: self._on_regenerate(n))
+            row_lay.addWidget(regenerate)
+            form.addRow(label, row)
+            self._text_edits[name] = edit
+            self._text_regenerate[name] = regenerate
 
         scroll.setWidget(inner)
         outer.addWidget(scroll)
@@ -435,6 +491,22 @@ class MigrationDialog(QDialog):
 
     def _on_library_edited(self, text: str):
         self._on_field_edited("library", text)
+        allowed = getattr(self._ctx, "allowed", None)
+        verdict = name_verdict(text, allowed)
+        self._library_note.setText("" if verdict.ok else verdict.reason)
+        self._library_note.setVisible(not verdict.ok)
+        self._library_badge.setText(library_badge(text, self._library_names(), allowed))
+
+    def _on_text_changed(self, name: str):
+        if self._current_key is None:
+            return
+        edit = self._text_edits[name]
+        self._update_choice(self._current_key, **{name: edit.toPlainText()})
+
+    def _on_regenerate(self, name: str):
+        if self._current_key is None:
+            return
+        self._update_choice(self._current_key, **{name: None})
 
     # -- the part tree, grouped by target library (D-15) ----------------------
 
@@ -467,6 +539,10 @@ class MigrationDialog(QDialog):
                 for part in sorted(groups[name], key=lambda p: (p.new_name.casefold(), p.new_name)):
                     item = QTreeWidgetItem([part.new_name, self._status_text(part)])
                     item.setData(0, Qt.ItemDataRole.UserRole, part.key)
+                    choice = self._choices.parts.get(part.key)
+                    raw_description = self._raw_fields.get(part.key, {}).get("Description", "")
+                    description = choice.description if choice is not None and choice.description is not None else raw_description
+                    item.setToolTip(0, html.escape(description))
                     group_item.addChild(item)
             self._tree.expandAll()
         finally:
@@ -516,37 +592,70 @@ class MigrationDialog(QDialog):
 
     # -- displaying one part in the detail pane -------------------------------
 
+    def _library_names(self) -> list[str]:
+        """The existing Atomic_ libraries of the current plan, for the library picker's list (D-03)."""
+        names = {p.target_library for p in (self._plan.parts if self._plan is not None else ()) if p.target_library}
+        allowed = getattr(self._ctx, "allowed", None)
+        return existing_libraries(names, allowed)
+
     def _display_part(self, part: PartPlan):
         self._current_key = part.key
         choice = self._choices.parts.get(part.key, PartChoice())
         raw = self._raw_fields.get(part.key, {})
+        allowed = getattr(self._ctx, "allowed", None)
 
         self._library_combo.blockSignals(True)
         library_text = choice.library if choice.library is not None else (
             part.target_library or (part.suggestion.name if part.suggestion is not None else "")
         )
+        names = self._library_names()
+        if part.source_library and part.source_library not in names:
+            names = sorted({*names, part.source_library}, key=lambda n: (n.casefold(), n))
+        self._library_combo.clear()
+        self._library_combo.addItems(names)
         self._library_combo.setEditText(library_text)
+        self._library_combo.setToolTip(suggestion_text(part.suggestion) if part.suggestion is not None else "")
         self._library_combo.blockSignals(False)
+        verdict = name_verdict(library_text, allowed)
+        self._library_note.setText("" if verdict.ok else verdict.reason)
+        self._library_note.setVisible(not verdict.ok)
+        self._library_badge.setText(library_badge(library_text, names, allowed))
 
         self._symbol_name_edit.blockSignals(True)
         self._symbol_name_edit.setText(part.new_name)
         self._symbol_name_edit.blockSignals(False)
 
+        description_text = choice.description if choice.description is not None else raw.get("Description", "")
         text_values = {
             "mpn": part.mpn,
             "manufacturer": choice.manufacturer if choice.manufacturer is not None else (
                 raw.get("Manufacturer") or raw.get("MF") or ""
             ),
             "datasheet": choice.datasheet if choice.datasheet is not None else raw.get("Datasheet", ""),
-            "description": choice.description if choice.description is not None else raw.get("Description", ""),
+            "description": description_text,
         }
         for name, value in text_values.items():
             edit = self._field_edits[name]
             edit.blockSignals(True)
             edit.setText(value)
             edit.blockSignals(False)
+        self._field_edits["description"].setToolTip(html.escape(description_text))
 
         self._value_edit.setText(part.mpn)
+
+        self._field_changes_list.clear()
+        for change in part.field_changes:
+            self._field_changes_list.addItem(_field_change_text(change))
+
+        for name in TEXT_LABELS:
+            override = choice.keywords if name == "keywords" else (
+                choice.fp_description if name == "fp_description" else choice.fp_tags
+            )
+            generated = getattr(part.generated_text, name)
+            edit = self._text_edits[name]
+            edit.blockSignals(True)
+            edit.setPlainText(override if override is not None else generated)
+            edit.blockSignals(False)
 
     # -- showing pages ---------------------------------------------------------
 

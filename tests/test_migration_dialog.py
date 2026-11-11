@@ -295,7 +295,7 @@ def test_library_picker_lists_atomic_libraries_and_current(qtbot, make_dialog, t
     dialog._library_combo.setEditText("Atomic_Crystal")
     dialog._library_combo.lineEdit().textEdited.emit("Atomic_Crystal")
     assert dialog._library_note.text() == name_verdict("Atomic_Crystal").reason
-    assert dialog._library_note.isVisible()
+    assert not dialog._library_note.isHidden()
 
     qtbot.waitUntil(lambda: captured.get("choices") is not None and captured["choices"].parts.get(KEY_A) is not None)
     assert captured["choices"].parts[KEY_A].library == "Atomic_Crystal"
@@ -391,7 +391,7 @@ def test_texts_regenerate(qtbot, make_dialog, tmp_path):
         lambda: captured.get("choices") is not None
         and captured["choices"].parts[KEY_A].keywords is None
     )
-    assert dialog._text_edits["keywords"].toPlainText() == "gen keywords"
+    qtbot.waitUntil(lambda: dialog._text_edits["keywords"].toPlainText() == "gen keywords")
 
 
 def test_vendor_text_is_plain(qtbot, make_dialog, tmp_path):
