@@ -8,6 +8,7 @@ controls, the Files tab, Run itself and the commit step; this plan only enables 
 """
 
 import dataclasses
+import hashlib
 import html
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,11 +16,13 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QSize, QTimer, Signal
 from PySide6.QtGui import QAction, QKeySequence
 from PySide6.QtWidgets import (
-    QComboBox, QDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit, QListWidget,
-    QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea, QSplitter, QStackedWidget, QTabWidget,
-    QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
+    QButtonGroup, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QRadioButton, QScrollArea, QSplitter,
+    QStackedWidget, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget,
 )
 
+from ..importer.content import ContentText, MAX_READ, binary_text, cap_lines, decode_text, diff_text, sha256_file
+from ..importer.footprint_index import build_index
 from ..importer.form import FIELD_LABELS, TEXT_LABELS, library_badge
 from ..importer.layout import RepoLayout
 from ..importer.migration.draft import (
@@ -34,6 +37,7 @@ from ..importer.migration.gate import GateOutcome, StripLine, check_plan as _gat
 from ..importer.migration.inventory import Inventory, read_inventory
 from ..importer.migration.plan import (
     MigrationChoices,
+    MigrationOp,
     MigrationPlan,
     PartChoice,
     PartKey,
@@ -42,14 +46,18 @@ from ..importer.migration.plan import (
 )
 from ..importer.migration.planner import build_migration_plan, prepare_context
 from ..importer.migration.precheck import check_custom
-from ..importer.plan import FieldChange
+from ..importer.plan import FieldChange, Resolution
 from ..importer.planner import detect_tools
+from ..importer.preview import PreviewRow, PreviewSection
 from ..importer.stems import name_verdict
 from ..importer.suggest import existing_libraries, suggestion_text
 from ..kicad_process import kicad_running
-from ..models import Issue
+from ..models import Issue, Severity
 from ..settings import migration_draft_file
-from .import_dialog import TaskWorker, fit_window
+from .conflict_row import ConflictRow
+from .content_view import ContentViewDialog
+from .import_dialog import ADD_MODEL_TEXT, OFFICIAL_FOOTPRINT_TEXT, TaskWorker, fit_window, official_candidates
+from .preview_tree import PreviewTree
 from .theme import AMBER, AMBER_TINT, FIELD_FRAME_QSS, MUTED, PRIMARY_BUTTON_QSS
 
 WINDOW_TITLE = "Migrate to Atomic Libraries"
@@ -60,6 +68,22 @@ CHANGED_MARK = "changed since the draft"
 PASS_MARK = "✓"
 _REBUILD_DELAY_MS = 300
 _DRAFT_DELAY_MS = 800
+
+MOVE_FOOTPRINT_TEXT = "Move into Atomic_Footprints"
+DERIVE_TEXT = "Make it a derived symbol of {parent}"
+FILES_TAB_TEXT = "Files"
+LEFTOVERS_TEXT = "Leftover files (ticked ones are deleted)"
+PART_TAB_TEXT = "Part"
+# Duplicated from import_dialog._OFFICIAL_HINT (private there): the two windows show the same hint
+# text but never import a leading-underscore name across modules.
+_OFFICIAL_HINT = "KiCad's own footprints are never changed"
+_MODEL_EXTS = (".step", ".stp", ".wrl")
+_DELETED_HEADER = "Deleted by the migration."
+_FOLDER_REMOVED = "Folder removed."
+_WRITE_SECTION = "Write"
+_MOVE_SECTION = "Move or rename"
+_DELETE_SECTION = "Delete"
+_RMDIR_SECTION = "Remove folder"
 
 _HELP_TEXT = "Help"
 _CLOSE_TEXT = "Close"
@@ -96,6 +120,83 @@ def _check_plan(plan: MigrationPlan, inventory: Inventory, kicad_fp_dir: Path | 
     return _gate_check_plan(plan, inventory, ctx)
 
 
+def _pick_model_file(parent) -> str:
+    """The default pick_model_file: a plain file dialog filtered to the model extensions (D-09, D-15).
+
+    Tests replace this field with a fake so no test ever opens a real system dialog.
+    """
+    path, _selected_filter = QFileDialog.getOpenFileName(
+        parent, "Add 3D model", str(Path.home()), "3D models (*.step *.stp *.wrl)"
+    )
+    return path
+
+
+def _is_model_rel(rel: str) -> bool:
+    return rel.lower().endswith(_MODEL_EXTS)
+
+
+def _read_capped(path: Path) -> bytes:
+    """Read at most content.MAX_READ + 1 bytes, raising OSError past the cap (never a partial file, T-13-36)."""
+    with open(path, "rb") as handle:
+        data = handle.read(MAX_READ + 1)
+    if len(data) > MAX_READ:
+        raise OSError(f"the file is larger than {MAX_READ} bytes")
+    return data
+
+
+def op_content(op: MigrationOp, repo_root: Path) -> ContentText:
+    """Qt-free text for one planned MigrationOp (D-15, T-13-36): a diff, new text, a binary summary, or the
+    deleted/removed text.
+
+    A model (.step/.stp/.wrl) is only ever sized and hashed, never decoded; every disk read is capped by
+    content.MAX_READ. Always run on a worker thread - hashing a large STEP file is slow.
+    """
+    rel = op.rel
+    path = repo_root / rel
+    if op.kind == "rmdir":
+        return ContentText(title=f"{rel} - removed", header=rel, body=_FOLDER_REMOVED, kind="text")
+    if op.kind == "delete":
+        if _is_model_rel(rel):
+            try:
+                size, sha = sha256_file(path)
+                body = f"{_DELETED_HEADER}\n\n{binary_text(Path(rel).name, size, sha)}"
+            except OSError:
+                body = _DELETED_HEADER
+            return ContentText(title=f"{rel} - deleted", header=rel, body=body, kind="binary")
+        try:
+            data = _read_capped(path)
+        except OSError:
+            data = b""
+        body = f"{_DELETED_HEADER}\n\n{decode_text(data)}"
+        return ContentText(title=f"{rel} - deleted", header=rel, body=body, kind="text")
+    # write (new or modified)
+    data = op.data or b""
+    if _is_model_rel(rel):
+        sha = hashlib.sha256(data).hexdigest()
+        existing = None
+        if op.base_sha256 is not None:
+            try:
+                existing = sha256_file(path)
+            except OSError:
+                existing = None
+        suffix = " - new" if op.base_sha256 is None else " - changes"
+        body = binary_text(Path(rel).name, len(data), sha, existing)
+        return ContentText(title=f"{rel}{suffix}", header=rel, body=body, kind="binary")
+    if op.base_sha256 is None:
+        body = "\n".join(cap_lines(decode_text(data).splitlines()))
+        return ContentText(title=f"{rel} - new file", header=rel, body=body, kind="text")
+    try:
+        old = _read_capped(path)
+    except OSError as e:
+        return ContentText(
+            title=f"{rel} - changes", header=rel, body=f"Could not read {rel}: {e.strerror or e}.", kind="error",
+        )
+    if old == data:
+        return ContentText(title=f"{rel} - unchanged", header=rel, body="This file is unchanged.", kind="unchanged")
+    body = diff_text(old, data, f"{rel} (current)", f"{rel} (planned)")
+    return ContentText(title=f"{rel} - changes", header=rel, body=body, kind="diff")
+
+
 @dataclass(frozen=True)
 class MigrationCore:
     """The migration functions the dialog calls; tests replace single fields with fakes."""
@@ -113,6 +214,10 @@ class MigrationCore:
     changed_parts: object = changed_parts
     draft_file: object = migration_draft_file
     kicad_running: object = kicad_running
+    footprint_index: object = build_index
+    official_candidates: object = official_candidates
+    op_content: object = op_content
+    pick_model_file: object = _pick_model_file
 
 
 @dataclass(frozen=True)
@@ -360,6 +465,8 @@ class MigrationDialog(QDialog):
         self._field_changes_list.setSelectionMode(QListWidget.SelectionMode.NoSelection)
         form.addRow("Field changes", self._field_changes_list)
 
+        self._build_footprint_section(form)
+
         self._text_edits: dict[str, QPlainTextEdit] = {}
         self._text_regenerate: dict[str, QPushButton] = {}
         for name, label in TEXT_LABELS.items():
@@ -380,6 +487,110 @@ class MigrationDialog(QDialog):
         scroll.setWidget(inner)
         outer.addWidget(scroll)
         return page
+
+    def _build_footprint_section(self, form: QFormLayout):
+        """Move into Atomic_Footprints or switch to an official KiCad footprint (D-08, D-07)."""
+        self._fp_move_radio = QRadioButton(MOVE_FOOTPRINT_TEXT)
+        self._fp_official_radio = QRadioButton(OFFICIAL_FOOTPRINT_TEXT)
+        self._fp_move_radio.setChecked(True)
+        self._fp_target_group = QButtonGroup(self)
+        self._fp_target_group.addButton(self._fp_move_radio)
+        self._fp_target_group.addButton(self._fp_official_radio)
+        radios = QWidget()
+        radios_lay = QVBoxLayout(radios)
+        radios_lay.setContentsMargins(0, 0, 0, 0)
+        radios_lay.addWidget(self._fp_move_radio)
+        radios_lay.addWidget(self._fp_official_radio)
+        form.addRow("Footprint", radios)
+        self._fp_official_radio.toggled.connect(self._on_fp_target_toggled)
+
+        self._fp_name_edit = QLineEdit()
+        self._fp_name_edit.textEdited.connect(lambda text: self._on_field_edited("footprint_name", text))
+        form.addRow("Name", self._framed(self._fp_name_edit, "footprint"))
+
+        box = QWidget()
+        box_lay = QVBoxLayout(box)
+        box_lay.setContentsMargins(0, 0, 0, 0)
+        self._official_combo = QComboBox()
+        self._official_combo.setEditable(True)
+        self._official_combo.lineEdit().textEdited.connect(self._on_official_text_edited)
+        self._official_combo.textActivated.connect(self._on_official_activated)
+        box_lay.addWidget(self._official_combo)
+        self._pad_warning_label = QLabel()
+        self._pad_warning_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._pad_warning_label.setWordWrap(True)
+        self._pad_warning_label.setStyleSheet(f"color: {AMBER};")
+        self._pad_warning_label.hide()
+        box_lay.addWidget(self._pad_warning_label)
+        self._official_hint_label = QLabel(_OFFICIAL_HINT)
+        self._official_hint_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._official_hint_label.setWordWrap(True)
+        self._official_hint_label.setStyleSheet(f"color: {MUTED};")
+        box_lay.addWidget(self._official_hint_label)
+        box.hide()
+        self._official_box = box
+        form.addRow("", box)
+
+    # -- the official-footprint picker (D-08, D-16) ----------------------------
+
+    def _vendor_footprint_path(self, part: PartPlan) -> Path | None:
+        """The part's current Custom footprint file, for the pad-fit ranking; None when it cannot be found."""
+        library, _sep, name = part.footprint_old.partition(":")
+        if not library or not name:
+            return None
+        path = self._layout.footprints_dir / f"{library}.pretty" / f"{name}.kicad_mod"
+        return path if path.exists() else None
+
+    def _start_official_list(self):
+        part = self._part_by_key(self._current_key)
+        if part is None:
+            return
+        folder = self._kicad_fp_dir
+        core = self._core
+        code = part.footprint_old.rpartition(":")[-1]
+        vendor_path = self._vendor_footprint_path(part)
+
+        def task(progress):
+            return core.official_candidates(
+                core.footprint_index, folder, package_code=code, vendor_path=vendor_path,
+                stock=getattr(self._ctx, "stock", None), part=part.mpn, progress=progress,
+            )
+
+        worker = self._spawn(task)
+        worker.result.connect(self._on_official_list_ready)
+        worker.start()
+
+    def _on_official_list_ready(self, links: list[str]):
+        combo = self._official_combo
+        typed = combo.currentText()
+        combo.blockSignals(True)
+        try:
+            combo.clear()
+            combo.addItems(links)
+            combo.setCurrentIndex(-1)
+            combo.setEditText(typed)
+        finally:
+            combo.blockSignals(False)
+
+    def _on_fp_target_toggled(self, checked: bool):
+        if self._current_key is None:
+            return
+        self._official_box.setVisible(checked)
+        if checked:
+            self._update_choice(self._current_key, footprint_target="official")
+            self._start_official_list()
+        else:
+            self._update_choice(self._current_key, footprint_target="shared", official_footprint=None)
+
+    def _on_official_activated(self, text: str):
+        if self._current_key is None:
+            return
+        self._update_choice(self._current_key, official_footprint=text)
+
+    def _on_official_text_edited(self, text: str):
+        if self._current_key is None:
+            return
+        self._update_choice(self._current_key, official_footprint=text)
 
     # -- precheck (MIG-01, D-02) ----------------------------------------------
 
@@ -676,6 +887,8 @@ class MigrationDialog(QDialog):
         for change in part.field_changes:
             self._field_changes_list.addItem(_field_change_text(change))
 
+        self._display_footprint(part, choice)
+
         for name in TEXT_LABELS:
             override = choice.keywords if name == "keywords" else (
                 choice.fp_description if name == "fp_description" else choice.fp_tags
@@ -685,6 +898,39 @@ class MigrationDialog(QDialog):
             edit.blockSignals(True)
             edit.setPlainText(override if override is not None else generated)
             edit.blockSignals(False)
+
+    def _display_footprint(self, part: PartPlan, choice: PartChoice):
+        """Fill the footprint radios, name and official picker for the selected part (D-07, D-08)."""
+        is_official = choice.footprint_target == "official"
+        self._fp_move_radio.blockSignals(True)
+        self._fp_official_radio.blockSignals(True)
+        self._fp_move_radio.setChecked(not is_official)
+        self._fp_official_radio.setChecked(is_official)
+        self._fp_move_radio.blockSignals(False)
+        self._fp_official_radio.blockSignals(False)
+        self._official_box.setVisible(is_official)
+
+        self._fp_name_edit.blockSignals(True)
+        default_fp_name = (part.footprint_new or part.footprint_old).rpartition(":")[-1]
+        self._fp_name_edit.setText(choice.footprint_name if choice.footprint_name is not None else default_fp_name)
+        self._fp_name_edit.blockSignals(False)
+
+        self._official_combo.blockSignals(True)
+        official_text = choice.official_footprint if choice.official_footprint is not None else (
+            part.footprint_new if is_official else ""
+        )
+        self._official_combo.setEditText(official_text)
+        self._official_combo.blockSignals(False)
+
+        pad_warning = next(
+            (
+                issue.text for issue in part.issues
+                if issue.severity is Severity.WARNING and issue.code == "migration.pad_mismatch"
+            ),
+            None,
+        )
+        self._pad_warning_label.setText(pad_warning or "")
+        self._pad_warning_label.setVisible(bool(pad_warning))
 
     # -- showing pages ---------------------------------------------------------
 
