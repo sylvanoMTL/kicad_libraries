@@ -368,6 +368,38 @@ def test_with_added_files_skips_a_file_that_cannot_be_read(install):
     assert new_plan.files == cplan.files and new_plan.issues == ()
 
 
+# ── Deleted files (Phase 13, MIG-04) ────────────────────────────────────────────────────────
+
+
+def _deleted_file(install) -> commit_plan.CommitFile:
+    missing = install.layout.custom_dir / "Symbols" / "Gone.kicad_sym"
+    return commit_plan.CommitFile(
+        "Symbols/Gone.kicad_sym", "Custom/Symbols/Gone.kicad_sym", missing, "symbol_lib", "", sha(b"old"), deleted=True,
+    )
+
+
+def test_deleted_file_is_fresh_while_absent(install):
+    cplan = install.commit_plan()
+    deleted = _deleted_file(install)
+    with_deleted = replace(cplan, files=(*cplan.files, deleted))
+
+    assert commit_plan.changed_since_install(with_deleted) == ()
+
+
+def test_reappeared_deleted_file_is_stale(install):
+    cplan = install.commit_plan()
+    deleted = _deleted_file(install)
+    with_deleted = replace(cplan, files=(*cplan.files, deleted))
+    deleted.path.parent.mkdir(parents=True, exist_ok=True)
+    deleted.path.write_bytes(b"reappeared")
+
+    assert commit_plan.changed_since_install(with_deleted) == ("Custom/Symbols/Gone.kicad_sym",)
+
+    new_plan = commit_plan.rebaseline(with_deleted)
+    assert next(f for f in new_plan.files if f.rel == "Symbols/Gone.kicad_sym") == deleted
+    assert commit_plan.changed_since_install(new_plan) == ("Custom/Symbols/Gone.kicad_sym",)
+
+
 # ── The default message (D-18) ──────────────────────────────────────────────────────────────
 
 
@@ -385,6 +417,13 @@ def test_default_message_layout(install):
         "Import-Package: ul_P1.zip\n"
         "Import-Date: 2026-10-22"
     )
+
+
+def test_plan_message_overrides_default(install):
+    cplan = install.commit_plan()
+
+    assert commit_plan.default_message(replace(cplan, message=None)) == commit_plan.default_message(cplan)
+    assert commit_plan.default_message(replace(cplan, message="X\n\nY")) == "X\n\nY"
 
 
 def test_default_message_date_is_the_local_date(install):

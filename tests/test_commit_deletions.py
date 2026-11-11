@@ -136,3 +136,59 @@ def test_migration_shaped_commit_records_deletions_and_moves(tmp_path):
 
     parent_log = repos.git(repos.parent, "log", "-1", "--format=%s").strip()
     assert "Custom" in parent_log
+
+
+@requires_git
+def test_deleted_only_commit_is_committed(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    custom = repos.custom
+    data = b"(kicad_symbol_lib (version 20211014) (generator kicad_symbol_editor))\n"
+    commit_file(repos, custom, "Symbols/ToDelete.kicad_sym", data, "Seed ToDelete")
+    path = custom / "Symbols" / "ToDelete.kicad_sym"
+    path.unlink()
+
+    cfile = CommitFile("Symbols/ToDelete.kicad_sym", "Custom/Symbols/ToDelete.kicad_sym", path, "symbol_lib", "", _sha(data), deleted=True)
+    cplan = _plan(repos, (cfile,), message="Remove ToDelete")
+
+    outcome = commit_step.run_commit(cplan, commit_plan.default_message(cplan), False, git=_ctx())
+
+    assert outcome.custom_commit is not None
+    assert not any(i.code == "commit.nothing_to_commit" for i in outcome.issues)
+    names = set(repos.git(custom, "diff-tree", "--root", "--no-commit-id", "--name-only", "-r", "HEAD").splitlines())
+    assert names == {"Symbols/ToDelete.kicad_sym"}
+
+
+@requires_git
+def test_ignored_file_in_plan_is_refused(tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    custom = repos.custom
+    bak_path = custom / "Symbols" / "IC_X.bak"
+    bak_path.write_bytes(b"backup")
+
+    cfile = CommitFile("Symbols/IC_X.bak", "Custom/Symbols/IC_X.bak", bak_path, "doc", _sha(b"backup"), None)
+    cplan = _plan(repos, (cfile,))
+
+    outcome = commit_step.run_commit(cplan, commit_plan.default_message(cplan), False, git=_ctx())
+
+    assert outcome.custom_commit is None
+    assert any(i.code == "commit.ignored" for i in outcome.issues)
+
+
+def test_deleted_views(tmp_path):
+    custom = tmp_path / "Custom"
+    custom.mkdir(parents=True)
+    cfile = CommitFile(
+        "Symbols/Gone.kicad_sym", "Custom/Symbols/Gone.kicad_sym", custom / "Symbols" / "Gone.kicad_sym",
+        "symbol_lib", "", _sha(b"old"), deleted=True,
+    )
+    cplan = CommitPlan(
+        repo_root=tmp_path, custom_dir=custom, custom_rel="Custom", files=(cfile,), library="L", new_library=False,
+        symbol="S", footprint=None, model=None, vendor="V", package=None, date="2026-11-11", overwrite=False,
+        backup_dir=None, issues=(),
+    )
+
+    pre = commit_step.pre_import_diff(cplan, cfile.rel)
+    changed = commit_step.changed_diff(cplan, cfile.rel)
+
+    assert pre.kind == "text" and pre.body == commit_step.DELETED_TEXT
+    assert changed.kind == "text" and changed.body == commit_step.DELETED_TEXT
