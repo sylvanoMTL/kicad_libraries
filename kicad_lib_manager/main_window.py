@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QComboBox, QLabel, QFileDialog, QMessageBox,
+    QPushButton, QComboBox, QLabel, QFileDialog, QMessageBox, QFrame, QToolButton,
 )
 from PySide6.QtCore import QThread, QTimer, Signal, Qt
 from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
@@ -12,7 +12,7 @@ from PySide6.QtGui import QAction, QKeySequence, QCloseEvent
 from . import scan_cache
 from .importer.layout import RepoLayout
 from .kicad_process import kicad_running
-from .kicad_setup import sync_kicad_chooser
+from .kicad_setup import CHECKOUT_MISMATCH, checkout_mismatch, sync_kicad_chooser, wrong_checkout_warning
 from .library_scanner import (
     ConfirmAnswer, LibraryRescan, find_kicad_footprint_dir, rescan_library, scan_all,
     sync_kicad_path_vars,
@@ -34,7 +34,7 @@ from .widgets.atomic_check_dialog import AtomicCheckDialog
 from .widgets.backup_dialog import BackupDialog
 from .widgets.help_dialog import HelpDialog
 from .widgets.import_dialog import ImportCore, ImportDialog, TaskWorker, centre_window
-from .widgets.theme import PRIMARY_BUTTON_QSS
+from .widgets.theme import AMBER, AMBER_TINT, PRIMARY_BUTTON_QSS, SP_MD, SP_SM
 
 APP_TITLE = "KiCad External Lib Manager"
 REPO_ROOT = Path(__file__).parent.parent.resolve()
@@ -43,6 +43,9 @@ REPO_ROOT = Path(__file__).parent.parent.resolve()
 IMPORT_CORE: ImportCore | None = None
 IMPORT_BACKUP_ROOT: Path | None = None
 ATOMIC_BACKUP_ROOT: Path | None = None
+# None means the real %APPDATA% KiCad config; tests point this at a tmp folder so the
+# D-26 wrong-checkout check never reads the owner's real KiCad settings
+CHECKOUT_CONFIG_BASE: Path | None = None
 
 # Shown when the Destination box is blank: Path("") would be the working directory (REV-02)
 _NO_DEST_TEXT = "No destination folder set; library tables not changed"
@@ -404,6 +407,29 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._generate_btn)
 
         layout.addLayout(toolbar)
+
+        # D-26: the wrong-checkout notice, hidden until _check_checkout finds a mismatch
+        self._checkout_banner = QFrame()
+        self._checkout_banner.setObjectName("checkoutBanner")
+        self._checkout_banner.setStyleSheet(
+            f"QFrame#checkoutBanner {{ background-color: {AMBER_TINT}; border-left: 2px solid {AMBER}; }}"
+        )
+        checkout_layout = QHBoxLayout(self._checkout_banner)
+        checkout_layout.setContentsMargins(SP_MD, SP_SM, SP_SM, SP_SM)
+        checkout_layout.setSpacing(SP_SM)
+        self._checkout_label = QLabel()
+        self._checkout_label.setTextFormat(Qt.TextFormat.PlainText)
+        self._checkout_label.setWordWrap(True)
+        checkout_layout.addWidget(self._checkout_label, stretch=1)
+        checkout_dismiss = QToolButton()
+        checkout_dismiss.setText("✕")
+        checkout_dismiss.setAccessibleName("Dismiss checkout warning")
+        checkout_dismiss.setToolTip("Dismiss")
+        checkout_dismiss.setAutoRaise(True)
+        checkout_dismiss.clicked.connect(self._checkout_banner.hide)
+        checkout_layout.addWidget(checkout_dismiss, alignment=Qt.AlignmentFlag.AlignTop)
+        self._checkout_banner.hide()
+        layout.addWidget(self._checkout_banner)
 
         # Library tree
         self._tree = LibraryTableWidget()
@@ -1161,6 +1187,27 @@ class MainWindow(QMainWindow):
         for issue in issues:
             self._log.log_issue(issue)
 
+    def _check_checkout(self, after: str) -> str | None:
+        """D-26: compare REPO_ROOT with the folder KiCad's KICAD_LIB_GITHUB names.
+
+        `after` is "generate" or "install"; a mismatch never blocks either one -- the
+        write already happened. Returns the warning text, or None when there is
+        nothing to compare (no variable, no config, or an unreadable config). Logged
+        once as a WARNING either way; only "generate" shows or hides the banner above
+        the library tree, since Install Part has its own Result-view row for it.
+        """
+        mismatch = checkout_mismatch(REPO_ROOT, config_base=CHECKOUT_CONFIG_BASE)
+        if mismatch is None:
+            if after == "generate":
+                self._checkout_banner.hide()
+            return None
+        text = wrong_checkout_warning(mismatch)
+        self._log_issues([Issue(Severity.WARNING, CHECKOUT_MISMATCH, text)])
+        if after == "generate":
+            self._checkout_label.setText(text)
+            self._checkout_banner.show()
+        return text
+
     def _question(self, title, text, buttons, default) -> QMessageBox.StandardButton:
         """A Yes/No question that blocks only the main window, so the User Guide stays usable."""
         box = QMessageBox(QMessageBox.Icon.Question, title, text, buttons, self)
@@ -1421,6 +1468,9 @@ class MainWindow(QMainWindow):
             dest, self._scan_result.symbol_libs, self._scan_result.footprint_libs,
             stock=self._stock_descriptions(),
         ))
+
+        # D-26: warn, never block -- the tables above are already written
+        self._check_checkout("generate")
 
         # Offer KiCad path variable changes (never written silently), independent of
         # how the table writes went
