@@ -312,14 +312,14 @@ Plans:
   4. One confirmed action sets up KiCad 10's chooser: it pins the `Atomic_` libraries, shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column. Like the path-variable sync, it shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout.
   5. The app shows and saves the old → new library name map with the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB). `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
 
-**Plans**: 20 plans
+**Plans**: 4/20 plans executed
 
 Plans:
 **Wave 1**
-- [ ] 13-01-PLAN.md — Library descriptions in every generated table entry (stock KiCad text for Atomic_ stems, kept existing descriptions, add-only entry) (TBL-01, D-20)
-- [ ] 13-02-PLAN.md — Qt-free chooser setup: pins and MPN/Manufacturer columns with the path-variable contract; shared wrong-checkout check (TBL-02, D-17..D-19, D-26)
-- [ ] 13-03-PLAN.md — `tag` in gitops, MIG-01 clean check and pre-atomic tag, migration package and layering registrations (MIG-01, D-02)
-- [ ] 13-04-PLAN.md — Commit plan, gate, step and panel accept deleted files and a plan message (MIG-04)
+- [x] 13-01-PLAN.md — Library descriptions in every generated table entry (stock KiCad text for Atomic_ stems, kept existing descriptions, add-only entry) (TBL-01, D-20)
+- [x] 13-02-PLAN.md — Qt-free chooser setup: pins and MPN/Manufacturer columns with the path-variable contract; shared wrong-checkout check (TBL-02, D-17..D-19, D-26)
+- [x] 13-03-PLAN.md — `tag` in gitops, MIG-01 clean check and pre-atomic tag, migration package and layering registrations (MIG-01, D-02)
+- [x] 13-04-PLAN.md — Commit plan, gate, step and panel accept deleted files and a plan message (MIG-04)
 
 **Wave 2** *(blocked on Wave 1 completion)*
 - [ ] 13-05-PLAN.md — Migration inventory, the plan contract, the rich v1 fixture, importer symbol helpers made public (MIG-02, MIG-03, D-13, D-21)
@@ -365,7 +365,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 21/21 | Complete    | 2026-11-11 |
-| 13. Atomic Migration and KiCad Setup | v2.0 | 0/20 | Planned | - |
+| 13. Atomic Migration and KiCad Setup | v2.0 | 4/20 | In Progress | - |
 
 ## Backlog
 
