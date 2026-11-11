@@ -280,6 +280,26 @@ def wrong_checkout_warning(m: CheckoutMismatch) -> str:
 CHECKOUT_MISMATCH = "checkout.mismatch"
 
 
+def checkout_mismatch(repo_root: Path, *, config_base: Path | None = None) -> "CheckoutMismatch | None":
+    """Compare repo_root with the KICAD_LIB_GITHUB folder named in the newest
+    kicad_common.json (D-26). None when there is no config folder or file, when
+    KICAD_LIB_GITHUB is absent/blank/non-string, or when the file cannot be read
+    (never a warning -- that is the existing path-variable sync's job). Qt-free and
+    takes an injectable config_base so tests never read the owner's real config.
+    """
+    config_dir = find_kicad_config_dir(config_base)
+    if not config_dir:
+        return None
+    common_path = config_dir / COMMON_FILE
+    if not common_path.exists():
+        return None
+    read = _read_config(common_path)
+    if isinstance(read, Issue):
+        return None
+    _src, _config, old_vars = read
+    return wrong_checkout(repo_root, old_vars.get("KICAD_LIB_GITHUB"))
+
+
 def _chooser_refusal(repo_root: Path, repo_str: str, old_vars: dict) -> Issue | None:
     """A WARNING when the chooser setup must not run here, else None (D-17, D-26)."""
     if (repo_root / ".git").is_file():
