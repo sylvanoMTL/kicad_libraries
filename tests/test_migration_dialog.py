@@ -4,18 +4,21 @@ Every test uses a fake MigrationCore (dataclasses.replace) with small hand-built
 MigrationPlan / GateOutcome values; the live Custom/ is never read.
 """
 
+import html
 import threading
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, Qt
 
 from kicad_lib_manager.importer.migration.gate import GateOutcome, StripLine
-from kicad_lib_manager.importer.migration.inventory import Inventory
+from kicad_lib_manager.importer.migration.inventory import Inventory, InventoryPart
 from kicad_lib_manager.importer.migration.plan import MigrationPlan, PartPlan
 from kicad_lib_manager.importer.migration.precheck import Precheck
-from kicad_lib_manager.importer.plan import PartText, ToolContext
+from kicad_lib_manager.importer.plan import FieldChange, PartText, ToolContext
+from kicad_lib_manager.importer.stems import name_verdict
+from kicad_lib_manager.importer.suggest import LibrarySuggestion, suggestion_text
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.widgets.migration_dialog import (
     MigrationCore,
@@ -46,7 +49,21 @@ def _empty_inventory(layout) -> Inventory:
     )
 
 
-def _part(key, source_library, target_library, new_name, *, mpn=None, suggestion=None) -> PartPlan:
+def _inventory_with_part(layout, key, fields) -> Inventory:
+    part = InventoryPart(
+        key=key, library=Path(key[0]).stem, rel_path=key[0], name=key[1], extends=None,
+        fields=fields, footprint="", version=None, block_sha256="", atomic=True,
+    )
+    return Inventory(
+        layout=layout, parts=(part,), footprints=(), models=(), model_linkers={}, bak_files=(),
+        symbol_libraries=(), footprint_libraries=(), issues=(),
+    )
+
+
+def _part(
+    key, source_library, target_library, new_name, *, mpn=None, suggestion=None,
+    field_changes=(), generated_text=None, part_text=None,
+) -> PartPlan:
     return PartPlan(
         key=key,
         source_library=source_library,
@@ -60,9 +77,9 @@ def _part(key, source_library, target_library, new_name, *, mpn=None, suggestion
         footprint_new="",
         footprint_target="shared",
         model_files=(),
-        field_changes=(),
-        generated_text=PartText(),
-        part_text=PartText(),
+        field_changes=field_changes,
+        generated_text=generated_text or PartText(),
+        part_text=part_text or PartText(),
         issues=(),
     )
 
@@ -246,3 +263,158 @@ def test_long_work_runs_off_the_gui_thread(qtbot, make_dialog, tmp_path):
     for name in ("check_custom", "read_inventory", "prepare_context", "build_plan", "check_plan"):
         assert name in seen, f"{name} was never called"
         assert seen[name] != main, f"{name} ran on the GUI thread"
+
+
+# -- Task 2: the detail pane (library picker, fields, field changes, texts) --------------------
+
+
+def test_library_picker_lists_atomic_libraries_and_current(qtbot, make_dialog, tmp_path):
+    suggestion = LibrarySuggestion(
+        "Atomic_Timer", "own", "Suggested from 3 similar parts in your Atomic_Timer", (), (), ()
+    )
+    part_a = _part(KEY_A, "Atomic_Oscillator", "Atomic_Timer", "OSC1", suggestion=suggestion)
+    part_b = _part(KEY_B, "Connector_X", "Atomic_Connector", "CONN1")
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        return _plan_for(inventory, (part_a, part_b))
+
+    core = core_with(
+        tmp_path, build_plan=fake_build_plan, check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {})
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._tree.topLevelItemCount() >= 1)
+    dialog._select_part(KEY_A)
+
+    assert dialog._library_combo.currentText() == "Atomic_Timer"
+    items = [dialog._library_combo.itemText(i) for i in range(dialog._library_combo.count())]
+    assert items == ["Atomic_Connector", "Atomic_Oscillator", "Atomic_Timer"]
+    assert dialog._library_combo.toolTip() == suggestion_text(suggestion)
+
+    dialog._library_combo.setEditText("Atomic_Crystal")
+    dialog._library_combo.lineEdit().textEdited.emit("Atomic_Crystal")
+    assert dialog._library_note.text() == name_verdict("Atomic_Crystal").reason
+    assert dialog._library_note.isVisible()
+
+    qtbot.waitUntil(lambda: captured.get("choices") is not None and captured["choices"].parts.get(KEY_A) is not None)
+    assert captured["choices"].parts[KEY_A].library == "Atomic_Crystal"
+
+
+def test_field_edits_reach_the_plan(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1", mpn="PLANNEDMPN")
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        return _plan_for(inventory, (part_a,))
+
+    core = core_with(
+        tmp_path, build_plan=fake_build_plan, check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {})
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    edits = {
+        "mpn": "NEWMPN",
+        "manufacturer": "ACME",
+        "datasheet": "https://acme.example/ds.pdf",
+        "description": "A widget",
+    }
+    for name, text in edits.items():
+        edit = dialog._field_edits[name]
+        edit.setText(text)
+        edit.textEdited.emit(text)
+    dialog._symbol_name_edit.setText("P1-REV2")
+    dialog._symbol_name_edit.textEdited.emit("P1-REV2")
+
+    qtbot.waitUntil(lambda: captured.get("choices") is not None and KEY_A in captured["choices"].parts)
+    choice = captured["choices"].parts[KEY_A]
+    assert choice.mpn == "NEWMPN"
+    assert choice.manufacturer == "ACME"
+    assert choice.datasheet == "https://acme.example/ds.pdf"
+    assert choice.description == "A widget"
+    assert choice.symbol_name == "P1-REV2"
+
+    assert dialog._value_edit.isReadOnly()
+    assert dialog._value_edit.text() == part_a.mpn
+
+
+def test_field_changes_listed(qtbot, make_dialog, tmp_path):
+    changes = (
+        FieldChange("P1", "drop", "MF", "Acme Corp", "", "duplicate"),
+        FieldChange("P1", "set", "Value", "p1-old", "p1-new", "follows_mpn"),
+    )
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1", field_changes=changes)
+
+    core = core_with(
+        tmp_path,
+        build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a,)),
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    rows = [dialog._field_changes_list.item(i).text() for i in range(dialog._field_changes_list.count())]
+    assert "Removed MF" in rows
+    assert "Value: p1-old -> p1-new" in rows
+    assert not any("ki_" in row for row in rows)
+
+
+def test_texts_regenerate(qtbot, make_dialog, tmp_path):
+    generated = PartText(keywords="gen keywords", fp_description="gen fp desc", fp_tags="gen fp tags")
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1", generated_text=generated)
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        return _plan_for(inventory, (part_a,))
+
+    core = core_with(
+        tmp_path, build_plan=fake_build_plan, check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {})
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    assert dialog._text_edits["keywords"].toPlainText() == "gen keywords"
+
+    dialog._text_edits["keywords"].setPlainText("my keywords")
+    qtbot.waitUntil(
+        lambda: captured.get("choices") is not None
+        and captured["choices"].parts.get(KEY_A) is not None
+        and captured["choices"].parts[KEY_A].keywords == "my keywords"
+    )
+
+    captured.clear()
+    dialog._text_regenerate["keywords"].click()
+    qtbot.waitUntil(
+        lambda: captured.get("choices") is not None
+        and captured["choices"].parts[KEY_A].keywords is None
+    )
+    assert dialog._text_edits["keywords"].toPlainText() == "gen keywords"
+
+
+def test_vendor_text_is_plain(qtbot, make_dialog, tmp_path):
+    vendor_text = "<b>bold</b> widget"
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1")
+
+    core = core_with(
+        tmp_path,
+        read_inventory=lambda layout: _inventory_with_part(layout, KEY_A, {"Description": vendor_text}),
+        build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a,)),
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._current_key == KEY_A)
+
+    assert dialog._field_edits["description"].text() == vendor_text
+    assert dialog._field_edits["description"].toolTip() == html.escape(vendor_text)
+
+    item = None
+    for i in range(dialog._tree.topLevelItemCount()):
+        group = dialog._tree.topLevelItem(i)
+        for j in range(group.childCount()):
+            if group.child(j).data(0, Qt.ItemDataRole.UserRole) == KEY_A:
+                item = group.child(j)
+    assert item is not None
+    assert item.toolTip(0) == html.escape(vendor_text)
