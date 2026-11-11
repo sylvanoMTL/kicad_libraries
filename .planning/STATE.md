@@ -2,44 +2,44 @@
 gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Atomic Libraries
-current_phase: 12
-current_phase_name: Import Flow Fixes and Case-Sensitive Re-test
-status: executing
-stopped_at: Phase 12 context gathered
-last_updated: "2026-11-10T23:31:50.197Z"
-last_activity: 2026-11-10
-last_activity_desc: Phase 12 execution resumed (wave continue)
-state_head: 98a2099269868708debbf8a5d32a135a2eaed866
+current_phase: 13
+current_phase_name: Atomic Migration and KiCad Setup
+status: planning
+stopped_at: Phase 12 complete, ready to plan Phase 13
+last_updated: "2026-11-11T09:30:02.372Z"
+last_activity: 2026-11-11
+last_activity_desc: Phase 12 complete, transitioned to Phase 13
+state_head: 803f4cfa88ce6d5451ad6b46cdca9a6c5ea207ac
 progress:
   total_phases: 6
-  completed_phases: 4
+  completed_phases: 5
   total_plans: 83
-  completed_plans: 82
-  percent: 67
+  completed_plans: 83
+  percent: 83
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-01)
+See: .planning/PROJECT.md (updated 2026-11-11)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 12 — Import Flow Fixes and Case-Sensitive Re-test
+**Current focus:** Phase 13 — Atomic Migration and KiCad Setup
 
 ## Current Position
 
-Phase: 12 (Import Flow Fixes and Case-Sensitive Re-test) — EXECUTING
-Plan: 1 of 8
-Status: Executing Phase 12
-Last activity: 2026-11-10 — Phase 12 execution resumed (wave continue)
+Phase: 13 — Atomic Migration and KiCad Setup
+Plan: Not started
+Status: Ready to plan
+Last activity: 2026-11-11 — Phase 12 complete, transitioned to Phase 13
 
-Progress: [███████░░░] 67%
+Progress: [████████░░] 83%
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 132
+- Total plans completed: 153
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -58,6 +58,7 @@ Progress: [███████░░░] 67%
 | 09 | 9 | - | - |
 | 10 | 30 | - | - |
 | 11 | 17 | - | - |
+| 12 | 21 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -96,6 +97,8 @@ The full decision log is in the PROJECT.md Key Decisions table. The v1.0 per-pha
 - [Phase 08]: VER-01 closed: the KiCad 10 Symbol Editor check (08-UAT.md test 2) passed on 2026-10-26, with the scratch library unchanged by the session
 - [Phase 11]: UAT passed 2026-11-01 (3/3): commit panel look checked from rendered screenshots at 100% and 200%; the "Finish it by hand" command pasted into real interactive Windows PowerShell 5.1 and PowerShell 7.6 consoles made the parent commit with quotes, $, $(...) and backticks intact
 - [Phase 11]: The commit gate fails closed: an unreadable outside `Atomic_` library or unlistable Symbols folder refuses the commit (owner decision, plan 11-15)
+- [Phase 12]: UAT complete 2026-11-11 (28 checks, 12 gaps closed by plans 12-09..12-21); the User Guide is one shared parentless window that reopens on the owner's last chosen section; import window stays locked to the main window
+- [Phase 12]: UAT tests 3 (KiCad-open dialog, unreachable from a worktree) and 4 (Finishing strip, too fast by hand) deferred to backlog 999.3 / 999.4 for after the merge
 
 ### Pending Todos
 
@@ -108,9 +111,9 @@ None yet.
 
 Open, carried into v2.0 and now mapped to phases (none block the milestone):
 
-- [Backlog]: 999.2 (case-twin rollback on a case-sensitive folder) → VER-02 in Phase 12; removed from the ROADMAP backlog. 999.1 closed as VER-01 in Phase 8
-- [Review]: Phase 4 WR-04, IN-01/02/03/05; Phase 5 WR-01..WR-06 (WR-04 closed, WR-05 GUI thread waits up to 60 s on kicad-cli); Phase 6 WR-01..WR-05, IN-01..IN-03. See the REVIEW-DISPOSITION files under `milestones/v1.0-phases/`. → Phase 5 WR-01/02/03/05/06 are REV-01..05 (Phase 12). Phase 6 WR-01..05 and IN-01..03 are REV-06..11 (Phase 11). Phase 4 WR-04 is deferred as REF-01. Phase 4 IN-01/02/03/05 and Phase 5 IN-01..06 are not in v2.0.
-- [UI review]: Help dialog hard-codes colours and px font sizes outside `theme.py`, and `conflict_row.py` has `#FFFFFF` literals (05-UI-REVIEW 17/24). → UI-01 (Phase 12). The Commit panel items (UI-02) closed in Phase 11
+- [Phase 12]: Review findings open and non-blocking (12-REVIEW-DISPOSITION.md)
+- [Backlog]: 999.3 re-test the KiCad-open dialog from the main checkout after the merge; 999.4 Finishing strip with a real kicad-cli rebuild. 999.1/999.2 closed as VER-01 (Phase 8) / VER-02 (Phase 12)
+- [Review]: Phase 4 WR-04, IN-01/02/03/05; Phase 5 WR-01..WR-06 (WR-04 closed, WR-05 GUI thread waits up to 60 s on kicad-cli); Phase 6 WR-01..WR-05, IN-01..IN-03. See the REVIEW-DISPOSITION files under `milestones/v1.0-phases/`. → Phase 5 WR-01/02/03/05/06 closed as REV-01..05 (Phase 12). Phase 6 WR-01..05 and IN-01..03 are REV-06..11 (Phase 11). Phase 4 WR-04 is deferred as REF-01. Phase 4 IN-01/02/03/05 and Phase 5 IN-01..06 are not in v2.0.
 
 ### Quick Tasks Completed
 
@@ -130,10 +133,10 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-01T11:49:52.958Z
-Stopped at: Phase 12 context gathered
-Resume file: .planning/phases/12-import-flow-fixes-and-case-sensitive-re-test/12-CONTEXT.md
+Last session: 2026-11-11
+Stopped at: Phase 12 complete, ready to plan Phase 13
+Resume file: None
 
 ## Operator Next Steps
 
-- Discuss Phase 12 with /gsd-discuss-phase 12, then plan it with /gsd-plan-phase 12
+- Discuss Phase 13 with /gsd-discuss-phase 13, then plan it with /gsd-plan-phase 13

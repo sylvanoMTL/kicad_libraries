@@ -93,6 +93,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ Every scan runs the check: failing symbols marked in the tree per part with Status count and one row per broken rule and note, one log line per failure; parts new or changed since the last `Custom` commit highlighted; Check Atomic Parts (Ctrl+Shift+A, or double-click) previews and applies only safe fixes (SCAN-01..03, UAT 2026-10-26) — Phase 9
 - ✓ Importer on the atomic scheme: suggests `Atomic_<stem>` from KiCad sibling votes, then the vendor category map, else asks; refuses official KiCad names and manufacturer tokens; installs footprints into the shared `Atomic_Footprints` or links an official KiCad footprint (1:1 pairing dropped); Install blocked with clickable reasons until the part passes the atomic rule; generated `ki_keywords`, footprint description and tags, editable in the preview (LIB-04..07, FLD-01, FLD-03; UAT 2026-10-29) — Phase 10
 - ✓ Commit gate and commit panel: Commit refuses (and fails closed on unreadable linked libraries) while any committed part breaks the atomic rule, naming part and rule; the panel keeps git's output, the refusal detail and the manual command across re-probes, checks HEAD after a timeout, uses one parent-message builder and PowerShell quoting on Windows, keeps the parent checkbox choice and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` identity; primary Commit button, tinted outcomes, "Committed in Custom only" (GIT-06, REV-06..11, UI-02; UAT 2026-11-01, pasted command checked in real Windows PowerShell 5.1 and PowerShell 7 consoles) — Phase 11
+- ✓ Import-flow fixes: Phase 5 review warnings closed (table step text, empty Destination, build/Install overlap, GUI thread never waits on kicad-cli, fresh settings write gated by a KiCad-open question); Help and conflict rows on theme tokens; case-twin rollback/overwrite re-tested on a case-sensitive folder; plus UAT-raised fixes: Cancel on every import page, compact start page, per-source Skip while libraries load, a shared User Guide window with a numbered menu that reopens on the last chosen section (REV-01..05, UI-01, VER-02; UAT 2026-11-11, live re-tests of REV-05's KiCad-open dialog and REV-04's Finishing strip deferred to backlog 999.3/999.4) — Phase 12
 
 ### Active
 
@@ -101,9 +102,8 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - [ ] Existing `Custom/` parts migrated in one previewed commit, every part passing the rule, tables regenerated
 
 **Quality**
-- [ ] Phase 5 review warnings, open and non-blocking: WR-01 misleading "already listed" text, WR-02 table write to the process cwd when Destination is empty, WR-03 one-off build can overlap Install, WR-05 GUI thread waits up to 60 s on kicad-cli, WR-06 stale `kicad_common.json` content after the confirm dialog (05-REVIEW-DISPOSITION.md)
-- [ ] Help dialog styling outside the theme tokens (hard-coded colours, px font sizes) per 05-UI-REVIEW.md
 - [ ] Phase 11 review findings, open and non-blocking (11-REVIEW-DISPOSITION.md): WR-01 a kept atomic refusal line survives the Check again that follows Open Check Atomic Parts fixes (Commit enablement unaffected); IN-01..IN-03
+- [ ] Phase 12 review findings, open and non-blocking (12-REVIEW-DISPOSITION.md)
 
 ### Out of Scope
 
@@ -186,4 +186,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-01 after Phase 11*
+*Last updated: 2026-11-11 after Phase 12*

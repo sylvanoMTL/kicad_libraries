@@ -85,15 +85,15 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 ### Re-tests
 
 - [x] **VER-01**: The D-01 "install as-is with warning" case is re-tested on KiCad 10 (backlog 999.1).
-- [ ] **VER-02**: Case-twin rollback and overwrite are re-tested on a case-sensitive folder (backlog 999.2).
+- [x] **VER-02**: Case-twin rollback and overwrite are re-tested on a case-sensitive folder (backlog 999.2).
 
 ### v1.0 Review Fixes
 
-- [ ] **REV-01**: The post-install table step only says "already listed" when the managed entry really points at that library (Phase 5 WR-01).
-- [ ] **REV-02**: The post-install table write never goes to the process working directory when Destination is empty (Phase 5 WR-02).
-- [ ] **REV-03**: A one-off conflict build can never overlap Install (Phase 5 WR-03).
-- [ ] **REV-04**: The GUI thread never blocks waiting for a kicad-cli call (Phase 5 WR-05).
-- [ ] **REV-05**: The `kicad_common.json` write uses fresh content after the confirm dialog, and the KiCad-running check gates it (Phase 5 WR-06).
+- [x] **REV-01**: The post-install table step only says "already listed" when the managed entry really points at that library (Phase 5 WR-01).
+- [x] **REV-02**: The post-install table write never goes to the process working directory when Destination is empty (Phase 5 WR-02).
+- [x] **REV-03**: A one-off conflict build can never overlap Install (Phase 5 WR-03).
+- [x] **REV-04**: The GUI thread never blocks waiting for a kicad-cli call (Phase 5 WR-05).
+- [x] **REV-05**: The `kicad_common.json` write uses fresh content after the confirm dialog, and the KiCad-running check gates it (Phase 5 WR-06).
 - [x] **REV-06**: A commit timeout checks HEAD before reporting "nothing committed" (Phase 6 WR-01).
 - [x] **REV-07**: The parent-message preview matches the committed text when there's no previous gitlink (Phase 6 WR-02).
 - [x] **REV-08**: The "finish it by hand" command uses Windows quoting on Windows (Phase 6 WR-03).
@@ -103,7 +103,7 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### UI Polish
 
-- [ ] **UI-01**: The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes (05-UI-REVIEW).
+- [x] **UI-01**: The Help dialog and the conflict rows use theme tokens only, with no hard-coded colours, `#FFFFFF` literals or px font sizes (05-UI-REVIEW).
 - [x] **UI-02**: The Commit button is styled as the primary action, error and success outcomes are tinted, the parent-failed state is not labelled "Committed", and `commit_panel.py` sizes are on the theme scale (06-UI-REVIEW).
 
 ### Docs
@@ -166,19 +166,19 @@ Which phases cover which requirements. Filled in during roadmap creation.
 | MIG-05 | Phase 13 | Pending |
 | GIT-06 | Phase 11 | Complete |
 | VER-01 | Phase 8 | Complete |
-| VER-02 | Phase 12 | Pending |
-| REV-01 | Phase 12 | Pending |
-| REV-02 | Phase 12 | Pending |
-| REV-03 | Phase 12 | Pending |
-| REV-04 | Phase 12 | Pending |
-| REV-05 | Phase 12 | Pending |
+| VER-02 | Phase 12 | Complete |
+| REV-01 | Phase 12 | Complete |
+| REV-02 | Phase 12 | Complete |
+| REV-03 | Phase 12 | Complete |
+| REV-04 | Phase 12 | Complete |
+| REV-05 | Phase 12 | Complete |
 | REV-06 | Phase 11 | Complete |
 | REV-07 | Phase 11 | Complete |
 | REV-08 | Phase 11 | Complete |
 | REV-09 | Phase 11 | Complete |
 | REV-10 | Phase 11 | Complete |
 | REV-11 | Phase 11 | Complete |
-| UI-01 | Phase 12 | Pending |
+| UI-01 | Phase 12 | Complete |
 | UI-02 | Phase 11 | Complete |
 | DOC-01 | Phase 13 | Pending |
 
