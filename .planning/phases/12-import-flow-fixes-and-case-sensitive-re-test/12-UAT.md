@@ -1,9 +1,9 @@
 ---
-status: partial
+status: complete
 phase: 12-import-flow-fixes-and-case-sensitive-re-test
 source: [12-VERIFICATION.md, 12-09-SUMMARY.md, 12-10-SUMMARY.md, 12-11-SUMMARY.md, 12-15-SUMMARY.md, 12-16-SUMMARY.md, 12-17-SUMMARY.md, 12-18-SUMMARY.md, 12-19-SUMMARY.md, 12-20-SUMMARY.md, 12-21-SUMMARY.md]
 started: 2026-11-01T15:45:00Z
-updated: 2026-11-11T09:17:41.394Z
+updated: 2026-11-11T09:27:06.898Z
 ---
 
 ## Current Test
@@ -28,16 +28,16 @@ result: pass
 setup: make one of the two path variables differ from this repo so the app needs to change it: in KiCad, Preferences > Configure Paths, set `KICAD_LIB_GITHUB` to any other folder, OK, and leave KiCad (or the Symbol Editor) open. Start the app.
 steps: press Generate Tables (Ctrl+G) with the usual Destination.
 expected: a dialog titled "KiCad is open" names the open KiCad program(s), lists the change, and offers Retry (default), Change anyway and Not now. Not now: nothing changes in KiCad's settings and the log says so. Press Generate again, close KiCad, press Retry: the normal Yes/No question appears; Yes changes the path back, and KiCad's other settings (e.g. one changed while the question was open) are kept.
-result: blocked
-blocked_by: other
-reason: "App refused before the dialog: \"Not changing KiCad path variables: this app runs from a git worktree (C:/Git_Repo_Clones/Kicad_Libraries-importer). KICAD_LIB_GITHUB stays C:\Temp.\" The worktree / other-checkout guard (_path_var_refusal, quick-261022-gnn) runs first, so the KiCad-open dialog cannot be reached from this worktree, and changing KICAD_LIB_GITHUB itself always trips the other-checkout guard. Re-test after merge, from the main checkout, by changing CUSTOM_3DMODEL_DIR instead."
+result: skipped
+reason: "Deferred follow-up: re-test after the merge, from the main checkout, by changing CUSTOM_3DMODEL_DIR. From this worktree the app refuses before the dialog (worktree guard, _path_var_refusal); a throwaway non-worktree clone (2026-11-11) was too involved to set up by hand, owner chose to defer."
+note: "First attempt (2026-11-01): \"Not changing KiCad path variables: this app runs from a git worktree (C:/Git_Repo_Clones/Kicad_Libraries-importer). KICAD_LIB_GITHUB stays C:\\Temp.\" The worktree / other-checkout guard runs first, so the KiCad-open dialog cannot be reached from this worktree, and changing KICAD_LIB_GITHUB itself always trips the other-checkout guard."
 
 ### 4. Window stays live during a real kicad-cli rebuild (REV-04)
 setup: start the app; open `downloaded_examples\ul_CSD85301Q2.zip` with Ctrl+I and choose a target library so the preview builds.
 steps: (a) edit one letter of the part name and immediately press Change...; (b) repeat, and press Cancel on the strip; (c) repeat, and close the import dialog with its X; (d) repeat, and close the main window with its X.
 expected: each time the dialog greys out with "Finishing the preview..." and a wait cursor while the window still moves and repaints; after about 10 s a "slow to respond" note may appear; Escape does nothing while it shows. (a) the package picker opens by itself once the preview ends; (b) the dialog comes back usable; (c) the dialog closes by itself; (d) the app closes by itself. No hang, nothing written to `Custom/`.
 result: skipped
-reason: "Rebuild after an edit finishes before a person can click Change..., so the Finishing strip (and its Cancel) never appears by hand; the waiting state is covered by the automated tests. Owner: skip 4"
+reason: "Deferred follow-up: rebuild after an edit finishes before a person can click Change..., so the Finishing strip (and its Cancel) never appears by hand; the waiting state is covered by the automated tests. Owner: skip 4; re-try with a slower real kicad-cli rebuild after the merge."
 
 ### 5. Wording that names kicad-cli and kicad_common.json (plain-language judgment, 12-REVIEW WR-04)
 setup: none beyond tests 2-4.
@@ -202,7 +202,14 @@ result: pass
 
 ## Deferred Follow-Ups
 
-[none - the startup-scan skip idea moved to test 21 / G-12-21 on 2026-11-04, owner chose to fix it in Phase 12]
+(the startup-scan skip idea moved to test 21 / G-12-21 on 2026-11-04, owner chose to fix it in Phase 12)
+
+- test: 3
+  idea: "KiCad-open question before the path-variable change (REV-05): re-test after the merge from the main checkout (not a worktree), changing CUSTOM_3DMODEL_DIR, with KiCad open; check Retry / Change anyway / Not now and that KiCad's other settings are kept."
+  deferred_at: 2026-11-11
+- test: 4
+  idea: "Window stays live during a real kicad-cli rebuild (REV-04): Finishing strip, slow note and Cancel with a real rebuild; too fast to catch by hand, covered by automated tests."
+  deferred_at: 2026-11-11
 
 ## Owner Decisions (2026-11-04, for the gap-closure plans)
 
@@ -218,8 +225,8 @@ total: 28
 passed: 14
 issues: 12
 pending: 0
-skipped: 1
-blocked: 1
+skipped: 2
+blocked: 0
 
 ## Gaps
 
