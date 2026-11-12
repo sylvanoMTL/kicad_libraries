@@ -159,6 +159,35 @@ def test_case_twin_plan_is_refused(tmp_path):
     assert existing.read_bytes() == b"old-step"
 
 
+def test_duplicate_write_plan_is_refused(tmp_path):
+    """Gap CR-01 (13-21): two write ops aimed at one path are refused before the first byte, whatever
+    planner bug produced the pair -- this is the structural backstop, never an owner-facing path."""
+    layout = RepoLayout.for_repo(tmp_path)
+    layout.models_dir.mkdir(parents=True, exist_ok=True)
+    old1 = layout.models_dir / "OLD1.step"
+    old2 = layout.models_dir / "OLD2.step"
+    old1.write_bytes(b"model-one")
+    old2.write_bytes(b"model-two")
+    target = layout.models_dir / "COLLIDE.step"
+
+    write_op1 = MigrationOp("write", target, "Custom/3DModels/COLLIDE.step", data=b"model-one", base_sha256=None)
+    delete_op1 = MigrationOp("delete", old1, "Custom/3DModels/OLD1.step", base_sha256=_sha(b"model-one"))
+    write_op2 = MigrationOp("write", target, "Custom/3DModels/COLLIDE.step", data=b"model-two", base_sha256=None)
+    delete_op2 = MigrationOp("delete", old2, "Custom/3DModels/OLD2.step", base_sha256=_sha(b"model-two"))
+    plan = _plan(layout, (write_op1, delete_op1, write_op2, delete_op2))
+
+    result = apply_migration(plan, backup_root=tmp_path / "backups")
+
+    assert result.ok is False
+    dup_issues = [i for i in result.issues if i.code == "migration.duplicate_write"]
+    assert len(dup_issues) == 1
+    assert "COLLIDE.step" in dup_issues[0].text
+    assert "nothing was written" in dup_issues[0].text
+    assert old1.read_bytes() == b"model-one"
+    assert old2.read_bytes() == b"model-two"
+    assert not target.exists()
+
+
 # -- the load gate --------------------------------------------------------------------------------
 
 
