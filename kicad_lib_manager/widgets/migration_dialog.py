@@ -19,7 +19,7 @@ from PySide6.QtGui import QAction, QDesktopServices, QFont, QGuiApplication, QKe
 from PySide6.QtWidgets import (
     QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel,
     QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPlainTextEdit, QPushButton, QRadioButton,
-    QScrollArea, QSplitter, QStackedWidget, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem,
+    QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTabWidget, QToolBar, QTreeWidget, QTreeWidgetItem,
     QVBoxLayout, QWidget,
 )
 
@@ -684,6 +684,10 @@ class MigrationDialog(QDialog):
         self._tree = QTreeWidget()
         self._tree.setColumnCount(2)
         self._tree.setHeaderLabels(["Part", "Status"])
+        # Part names must be readable: give the Part column real width, let Status take the rest.
+        self._tree.setColumnWidth(0, 280)
+        self._tree.header().setStretchLastSection(True)
+        self._tree.setMinimumWidth(420)
         self._tree.currentItemChanged.connect(self._on_tree_selection)
         splitter.addWidget(self._tree)
 
@@ -742,6 +746,9 @@ class MigrationDialog(QDialog):
 
         self._library_combo = QComboBox()
         self._library_combo.setEditable(True)
+        # Full library names (Atomic_Battery_Management) must be readable while picking.
+        self._library_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._library_combo.setMinimumContentsLength(32)
         self._library_combo.lineEdit().textEdited.connect(self._on_library_edited)
         form.addRow("Library", self._framed(self._library_combo, "library"))
         self._library_badge = QLabel()
@@ -831,6 +838,8 @@ class MigrationDialog(QDialog):
         box_lay.setContentsMargins(0, 0, 0, 0)
         self._official_combo = QComboBox()
         self._official_combo.setEditable(True)
+        self._official_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._official_combo.setMinimumContentsLength(32)
         self._official_combo.lineEdit().textEdited.connect(self._on_official_text_edited)
         self._official_combo.textActivated.connect(self._on_official_activated)
         box_lay.addWidget(self._official_combo)
@@ -1263,6 +1272,9 @@ class MigrationDialog(QDialog):
                     item.setToolTip(0, html.escape(description))
                     group_item.addChild(item)
             self._tree.expandAll()
+            self._tree.resizeColumnToContents(0)
+            if self._tree.columnWidth(0) < 280:
+                self._tree.setColumnWidth(0, 280)
         finally:
             self._tree.blockSignals(False)
 
