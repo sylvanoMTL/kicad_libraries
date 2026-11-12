@@ -6,10 +6,10 @@ current_phase: 13
 current_phase_name: Atomic Migration and KiCad Setup
 status: executing
 stopped_at: "Phase 13 gap-closure 13-21 executed and merged (21/21 plans); re-verification gaps_found (case-insensitive model-name clash at footprints.py:329, CR-01 reopened) — next: /gsd-plan-phase 13 --gaps"
-last_updated: "2026-11-12T11:38:45.926Z"
+last_updated: "2026-11-12T13:06:25.847Z"
 last_activity: 2026-11-12
-last_activity_desc: Phase 13 gap-closure wave executed; re-verification gaps_found
-state_head: 76499666f8e8bc6b45fe02c3dbd5dd93918cd8be
+last_activity_desc: Phase 13 gap-closure 13-22 merged; re-verification human_needed (5/5); UAT file written
+state_head: 741ba3ac5e860690ff5348468f38370b7a714091
 progress:
   total_phases: 6
   completed_phases: 5
