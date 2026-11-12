@@ -3,14 +3,14 @@ phase: 13
 review: 13-REVIEW.md
 titles: json
 findings:
+  - id: WR-01
+    severity: warning
+    disposition: open
+    title: "`migration.rename_would_overwrite` names only the write op's destination, not the rename's source"
   - id: CR-01
     severity: critical
     disposition: open
     title: "`_model_final_names`'s existing-model check is case-sensitive while the filesystem it protects is not — silent data loss"
-  - id: WR-01
-    severity: warning
-    disposition: open
-    title: "`migration.duplicate_write` can name the wrong colliding op when paths differ only by case"
   - id: IN-01
     severity: info
     disposition: open
@@ -21,16 +21,16 @@ findings:
     title: "`CommitPanel._mark_files` never marks a deleted commit row as \"also changed before this import\""
 open: 4
 total: 4
-recorded: 2026-11-12T10:17:25.568Z
+recorded: 2026-11-12T12:08:23.783Z
 ---
 
 # Phase 13: Code Review Disposition
 
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
-| CR-01 | critical | open | - |
 | WR-01 | warning | open | - |
-| IN-01 | info | open | - |
+| CR-01 | critical | open | - (not in the current review) |
+| IN-01 | info | open | - (not in the current review) |
 | WR-02 | warning | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
