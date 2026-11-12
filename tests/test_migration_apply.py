@@ -183,9 +183,46 @@ def test_duplicate_write_plan_is_refused(tmp_path):
     assert len(dup_issues) == 1
     assert "COLLIDE.step" in dup_issues[0].text
     assert "nothing was written" in dup_issues[0].text
+    # WR-01: the message names both colliding ops, not only the later one.
+    assert "OLD1.step" in dup_issues[0].text or "OLD2.step" in dup_issues[0].text
     assert old1.read_bytes() == b"model-one"
     assert old2.read_bytes() == b"model-two"
     assert not target.exists()
+
+
+def test_rename_overwrite_plan_is_refused(tmp_path):
+    """MIG-03 (13-22): a rename write op whose target would overwrite bytes no delete op removes is
+    refused before the first byte, whichever planner path produced it (gap CR-01's second round)."""
+    layout = RepoLayout.for_repo(tmp_path)
+    layout.models_dir.mkdir(parents=True, exist_ok=True)
+    taken = layout.models_dir / "TAKEN.STEP"
+    taken.write_bytes(b"unrelated")
+    old1 = layout.models_dir / "OLD1.step"
+    old1.write_bytes(b"renamed")
+
+    write_op = MigrationOp(
+        "write",
+        layout.models_dir / "taken.step",
+        "Custom/3DModels/taken.step",
+        data=b"renamed",
+        base_sha256=_sha(b"unrelated"),
+        source_rel="Custom/3DModels/OLD1.step",
+    )
+    delete_op = MigrationOp(
+        "delete", old1, "Custom/3DModels/OLD1.step", base_sha256=_sha(b"renamed")
+    )
+    plan = _plan(layout, (write_op, delete_op))
+
+    result = apply_migration(plan, backup_root=tmp_path / "backups")
+
+    assert result.ok is False
+    overwrite_issues = [i for i in result.issues if i.code == "migration.rename_would_overwrite"]
+    assert len(overwrite_issues) == 1
+    assert "Custom/3DModels/taken.step" in overwrite_issues[0].text
+    assert "nothing was written" in overwrite_issues[0].text
+    assert taken.read_bytes() == b"unrelated"
+    backups_dir = tmp_path / "backups" / "migrations"
+    assert not backups_dir.exists() or list(backups_dir.iterdir()) == []
 
 
 # -- the load gate --------------------------------------------------------------------------------
