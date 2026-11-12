@@ -312,7 +312,7 @@ Plans:
   4. One confirmed action sets up KiCad 10's chooser: it pins the `Atomic_` libraries, shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column. Like the path-variable sync, it shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout.
   5. The app shows and saves the old → new library name map with the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB). `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
 
-**Plans**: 21/21 plans executed (20 executed; 1 gap-closure plan pending: 13-21)
+**Plans**: 22 plans (21 executed; 1 gap-closure plan pending: 13-22)
 
 Plans:
 **Wave 1**
@@ -353,6 +353,7 @@ Plans:
 
 **Gap closure (verification CR-01)**
 - [x] 13-21-PLAN.md — Wave 5 (after 13-10, 13-13): a second claim on a 3D model file name within one run is a blocking strip line instead of a silent overwrite — growing claimed-name registry in the model-rename pass, the same check for an added model, duplicate-write refusal in the applier preflight, and an in-run footprint Overwrite refused (MIG-02, MIG-03, D-07, D-09, D-15)
+- [ ] 13-22-PLAN.md — Wave 6 (after 13-10, 13-13, 13-21): a model rename can no longer overwrite an untouched, unlinked model that differs only by letter case — the existing-model guard in the rename pass is casefolded, the model keeps its on-disk name with a non-blocking note, the regression tests run end to end through apply, and the applier refuses any rename landing on bytes it does not delete (MIG-02, MIG-03, D-09)
 
 **UI hint**: yes
 
@@ -368,7 +369,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 21/21 | Complete    | 2026-11-11 |
-| 13. Atomic Migration and KiCad Setup | v2.0 | 21/21 | In Progress | - |
+| 13. Atomic Migration and KiCad Setup | v2.0 | 21/22 | In Progress | - |
 
 ## Backlog
 
