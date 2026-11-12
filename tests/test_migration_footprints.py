@@ -730,6 +730,140 @@ def test_in_run_footprint_overwrite_is_refused(tmp_path):
     assert _has_op(outcome.ops, "delete", "Custom/Footprints/LibH.pretty/FPSHARED.kicad_mod")
 
 
+# -- Gap CR-01 round 2 (13-22): the existing-model guard is casefolded, not exact-string ---------
+
+
+def test_model_rename_colliding_by_case_with_an_unlinked_model_keeps_its_name(tmp_path):
+    _write_symbols(tmp_path, "LibM", [("PARTM", "LibM:FPM")])
+    _write_footprint(tmp_path, "LibM", "FPM", model=f"{MODEL_DIR_VAR}/OLD5.step")
+    _write_model(tmp_path, "OLD5.step")
+    _write_model(tmp_path, "TAKEN2.STEP")  # unlinked by any footprint
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibM", "PARTM")
+    choices = MigrationChoices(parts={key: PartChoice(model_name="taken2")})
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key: ""})
+
+    assert not any(op.rel.startswith("Custom/3DModels/") for op in outcome.ops)
+    assert outcome.model_renames == ()
+    kept_issues = [i for i in outcome.issues if i.code == "migration.model_kept_name"]
+    assert len(kept_issues) == 1
+    assert kept_issues[0].severity.value == "info"
+    assert not any(i.code == "migration.model_clash" for i in outcome.issues)
+
+    data = _write_op(outcome.ops, f"Custom/Footprints/{SHARED}.pretty/FPM.kicad_mod").data
+    assert _model_paths(data) == [f"{MODEL_DIR_VAR}/OLD5.step"]
+
+    leftover = _leftover(outcome, "Custom/3DModels/TAKEN2.STEP")
+    assert leftover.keep is True
+    assert not _has_op(outcome.ops, "delete", "Custom/3DModels/TAKEN2.STEP")
+
+
+def test_model_rename_onto_an_exact_existing_name_keeps_its_name(tmp_path):
+    _write_symbols(tmp_path, "LibM", [("PARTM", "LibM:FPM")])
+    _write_footprint(tmp_path, "LibM", "FPM", model=f"{MODEL_DIR_VAR}/OLD5.step")
+    _write_model(tmp_path, "OLD5.step")
+    _write_model(tmp_path, "TAKEN3.STEP")  # unlinked by any footprint, exact-name candidate
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibM", "PARTM")
+    choices = MigrationChoices(parts={key: PartChoice(model_name="TAKEN3")})
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key: ""})
+
+    assert not any(op.rel.startswith("Custom/3DModels/") for op in outcome.ops)
+    assert outcome.model_renames == ()
+    kept_issues = [i for i in outcome.issues if i.code == "migration.model_kept_name"]
+    assert len(kept_issues) == 1
+    assert kept_issues[0].severity.value == "info"
+    assert not any(i.code == "migration.model_clash" for i in outcome.issues)
+
+    data = _write_op(outcome.ops, f"Custom/Footprints/{SHARED}.pretty/FPM.kicad_mod").data
+    assert _model_paths(data) == [f"{MODEL_DIR_VAR}/OLD5.step"]
+
+    leftover = _leftover(outcome, "Custom/3DModels/TAKEN3.STEP")
+    assert leftover.keep is True
+    assert not _has_op(outcome.ops, "delete", "Custom/3DModels/TAKEN3.STEP")
+
+
+def test_a_rename_onto_a_model_that_is_itself_renamed_is_kept(tmp_path):
+    _write_symbols(tmp_path, "LibN", [("PARTN", "LibN:FPN")])
+    _write_symbols(tmp_path, "LibO2", [("PARTO2", "LibO2:FPO2")])
+    _write_footprint(tmp_path, "LibN", "FPN", model=f"{MODEL_DIR_VAR}/OLD6.step")
+    _write_footprint(tmp_path, "LibO2", "FPO2", model=f"{MODEL_DIR_VAR}/OLD7.STEP")
+    _write_model(tmp_path, "OLD6.step")
+    _write_model(tmp_path, "OLD7.STEP")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key_n, key_o2 = _key("LibN", "PARTN"), _key("LibO2", "PARTO2")
+    choices = MigrationChoices(
+        parts={
+            key_n: PartChoice(model_name="old7"),
+            key_o2: PartChoice(model_name="FINAL7"),
+        }
+    )
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key_n: "", key_o2: ""})
+
+    # The first group's candidate collides with OLD7.STEP, which is itself being renamed away;
+    # the guard still refuses the chain and keeps OLD6.step under its own name.
+    kept_issues = [i for i in outcome.issues if i.code == "migration.model_kept_name"]
+    assert len(kept_issues) == 1
+    assert not _has_op(outcome.ops, "write", "Custom/3DModels/old7.step")
+    data_n = _write_op(outcome.ops, f"Custom/Footprints/{SHARED}.pretty/FPN.kicad_mod").data
+    assert _model_paths(data_n) == [f"{MODEL_DIR_VAR}/OLD6.step"]
+
+    # The second group still renames. Its extension case follows OLD7.STEP's own suffix, as the
+    # existing single-group rename path already does (sanitize_filename keeps the input's case).
+    assert ("model", "OLD7.STEP", "FINAL7.STEP") in [(r.kind, r.old, r.new) for r in outcome.model_renames]
+    assert _has_op(outcome.ops, "write", "Custom/3DModels/FINAL7.STEP")
+
+
+def test_model_kept_name_note_is_plain_and_single(tmp_path):
+    _write_symbols(tmp_path, "LibM", [("PARTM", "LibM:FPM")])
+    _write_footprint(tmp_path, "LibM", "FPM", model=f"{MODEL_DIR_VAR}/OLD5.step")
+    _write_model(tmp_path, "OLD5.step")
+    _write_model(tmp_path, "TAKEN2.STEP")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibM", "PARTM")
+    choices = MigrationChoices(parts={key: PartChoice(model_name="taken2")})
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key: ""})
+
+    kept_issues = [i for i in outcome.issues if i.code == "migration.model_kept_name"]
+    assert len(kept_issues) == 1
+    text = kept_issues[0].text
+    assert "migration." not in text
+    assert "ki_" not in text
+    assert "${" not in text
+    assert "OLD5.step" in text and "taken2.step" in text
+
+
+def test_untouched_model_collision_raises_no_blocking_line(tmp_path):
+    _write_symbols(tmp_path, "LibM", [("PARTM", "LibM:FPM")])
+    _write_footprint(tmp_path, "LibM", "FPM", model=f"{MODEL_DIR_VAR}/OLD5.step")
+    _write_model(tmp_path, "OLD5.step")
+    _write_model(tmp_path, "TAKEN2.STEP")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibM", "PARTM")
+    choices = MigrationChoices(parts={key: PartChoice(model_name="taken2")})
+    tools = ToolContext(kicad_cli=Path("kicad-cli"), cli_runner=FakeCli())
+    ctx = prepare_context(inventory, tools, None, today="2026-11-12")
+    plan = build_migration_plan(inventory, choices, ctx)
+
+    assert not any(
+        i.severity.value == "error" and i.code.startswith("migration.model") for i in plan.issues
+    )
+
+    gate_ctx = end_state_context(plan, inventory, None)
+    outcome = check_plan(plan, inventory, gate_ctx)
+    assert not any("taken2" in line.text for line in outcome.lines)
+
+
 def test_different_footprint_clash_asks_still_works(tmp_path):
     """Unchanged regression anchor: a clash against a file already on disk keeps all three choices."""
     (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty").mkdir(parents=True, exist_ok=True)
