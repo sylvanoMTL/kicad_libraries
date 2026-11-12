@@ -1,4 +1,4 @@
----
+| IN-01 |  | fixed | 13-22 (confirmed fixed by 13-REVIEW.md, 2026-11-12) || CR-01 |  | fixed | 13-22 (confirmed fixed by 13-REVIEW.md, 2026-11-12) |---
 phase: 13
 review: 13-REVIEW.md
 titles: json
@@ -9,17 +9,17 @@ findings:
     title: "`migration.rename_would_overwrite` names only the write op's destination, not the rename's source"
   - id: CR-01
     severity: critical
-    disposition: open
+    disposition: fixed
     title: "`_model_final_names`'s existing-model check is case-sensitive while the filesystem it protects is not — silent data loss"
   - id: IN-01
     severity: info
-    disposition: open
+    disposition: fixed
     title: "No regression test exercises a model rename colliding with an untouched, unlinked model"
   - id: WR-02
     severity: warning
     disposition: open
     title: "`CommitPanel._mark_files` never marks a deleted commit row as \"also changed before this import\""
-open: 4
+open: 2
 total: 4
 recorded: 2026-11-12T12:08:23.783Z
 ---
