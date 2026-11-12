@@ -312,7 +312,7 @@ Plans:
   4. One confirmed action sets up KiCad 10's chooser: it pins the `Atomic_` libraries, shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column. Like the path-variable sync, it shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout.
   5. The app shows and saves the old → new library name map with the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB). `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
 
-**Plans**: 18/20 plans executed
+**Plans**: 20/20 plans executed
 
 Plans:
 **Wave 1**
@@ -346,10 +346,10 @@ Plans:
 - [x] 13-16-PLAN.md — Migration window: wrong-checkout refusal, Run, Result view, commit panel (MIG-01, MIG-03..05, D-24, D-26)
 
 **Wave 7** *(blocked on Wave 6 completion)*
-- [ ] 13-17-PLAN.md — Main window: Migrate menu action, post-Run rescan with Atomic_ libraries selected, Generate hand-off, guide page (MIG-02, MIG-04, D-13, D-24)
+- [x] 13-17-PLAN.md — Main window: Migrate menu action, post-Run rescan with Atomic_ libraries selected, Generate hand-off, guide page (MIG-02, MIG-04, D-13, D-24)
 
 **Wave 8** *(blocked on Wave 7 completion)*
-- [ ] 13-18-PLAN.md — CLAUDE.md, PROJECT.md, LIBRARY-NAMING.md, test notes, full-suite gate and the owner's live UAT from the main checkout (DOC-01, D-26)
+- [x] 13-18-PLAN.md — CLAUDE.md, PROJECT.md, LIBRARY-NAMING.md, test notes, full-suite gate and the owner's live UAT from the main checkout (DOC-01, D-26)
 
 **UI hint**: yes
 
@@ -365,7 +365,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 21/21 | Complete    | 2026-11-11 |
-| 13. Atomic Migration and KiCad Setup | v2.0 | 18/20 | In Progress | - |
+| 13. Atomic Migration and KiCad Setup | v2.0 | 20/20 | In Progress | - |
 
 ## Backlog
 
