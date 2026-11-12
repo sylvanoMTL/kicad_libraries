@@ -1,0 +1,108 @@
+---
+phase: "10"
+slug: "importer-on-the-atomic-scheme"
+# status lifecycle: draft (seeded by plan-phase) → validated (set by validate-phase §6)
+# audit-milestone §5.5 distinguishes NOT-VALIDATED (draft) from PARTIAL (validated + nyquist_compliant: false) (#2117)
+status: validated
+nyquist_compliant: true
+wave_0_complete: true
+created: "2026-10-26"
+---
+
+# Phase 10 — Validation Strategy
+
+> Per-phase validation contract for feedback sampling during execution.
+
+---
+
+## Test Infrastructure
+
+| Property | Value |
+|----------|-------|
+| **Framework** | pytest 9.1.1 with pytest-qt 4.5.0 (`qtbot`), offscreen Qt forced in `tests/conftest.py` |
+| **Config file** | `pyproject.toml` (`testpaths = ["tests"]`, `pythonpath = ["."]`, `addopts = "-ra --strict-markers"`, markers `wurth`, `local_kicad`, `kicad_cli`) |
+| **Quick run command** | `env/Scripts/python.exe -m pytest tests/<file>.py -q` (the test files named in the task) |
+| **Full suite command** | `env/Scripts/python.exe -m pytest` (`-m "not wurth"` for the per-wave run) |
+| **Estimated runtime** | seconds per task file; ~8 min `-m "not wurth"`; ~18 min full |
+
+---
+
+## Sampling Rate
+
+- **After every task commit:** Run the test files named in that task's `<automated>` command
+- **After every plan wave:** Run `env/Scripts/python.exe -m pytest -m "not wurth" -q`
+- **Before `/gsd-verify-work`:** Full suite must be green, with only the skips documented in `tests/README.md`
+- **Max feedback latency:** 60 seconds
+
+---
+
+## Per-Task Verification Map
+
+Task rows are added from the PLAN.md files once planning completes (and confirmed by `/gsd-validate-phase 10`). The requirement-level map from `10-RESEARCH.md` § Validation Architecture is the starting point:
+
+| Requirement | Behavior | Test Type | Automated Command | File Exists | Status |
+|-------------|----------|-----------|-------------------|-------------|--------|
+| LIB-04 | family prefixes, strict majority, excluded stems, own-before-stock, category map, ask, no manufacturer name | unit (synthetic stock dir) | `env/Scripts/python.exe -m pytest tests/test_suggest_atomic.py -q` | ✅ | ✅ green |
+| LIB-04 | CSD → `Atomic_Transistor_FET`, RS3 → `Atomic_Converter_DCDC_Isolated`, ATXK asks, USB → `Atomic_Connector` | real-sample (skips without KiCad 10 or the zip) | `env/Scripts/python.exe -m pytest tests/test_real_vendor_samples.py -q` | ✅ | ✅ green |
+| LIB-04 | every category-map target is an allowed stem; snapshot equals installed KiCad 10 stems | unit + `local_kicad` | `env/Scripts/python.exe -m pytest tests/test_stems.py -q` | ✅ | ✅ green |
+| LIB-05 | exact, case-corrected and refused names (`Transistor_FET`, `Atomic_TI`, v1 names, excluded stems); picker order and filter | unit + dialog | `env/Scripts/python.exe -m pytest tests/test_stems.py tests/test_import_dialog.py -q` | ✅ | ✅ green |
+| LIB-06 | footprint in `Atomic_Footprints`, no `.pretty` for a new symbol library, official link, D-19 identical/overwrite/rename, tables | plan/apply/e2e | `env/Scripts/python.exe -m pytest tests/test_install_plan.py tests/test_install_apply.py tests/test_install_e2e.py tests/test_table_add_entries.py -q` | ✅ | ✅ green |
+| LIB-06 | pad check warning, verify with an official link | unit | `env/Scripts/python.exe -m pytest tests/test_install_verify.py -q` | ✅ | ✅ green |
+| LIB-07 | incoming gate: one ERROR per rule, planned footprint/model seen, reasons with targets, live clear | plan + form + dialog | `env/Scripts/python.exe -m pytest tests/test_incoming_check.py tests/test_import_form.py tests/test_import_dialog.py -q` | ✅ | ✅ green |
+| FLD-01 | keyword sources, merge and de-duplication, junk dropped, MPN variants | unit | `env/Scripts/python.exe -m pytest tests/test_keywords.py -q` | ✅ | ✅ green |
+| FLD-03 | pitch, body, family, description and tags on the 5 real footprints + stock SOIC-8/Texas_DQK; `descr`/`tags` insertion on `footprint` and `module` roots | unit + `kicad_cli` | `env/Scripts/python.exe -m pytest tests/test_footprint_text.py -q` | ✅ | ✅ green |
+| LIB-04, LIB-05 | stems snapshot, verdict, sibling vote, category map | unit (synthetic stock dir) + `local_kicad` | `env/Scripts/python.exe -m pytest tests/test_siblings.py tests/test_categories.py tests/test_footprint_index.py -q` | ✅ | ✅ green |
+| LIB-06 | shared Atomic_Footprints reuse/rename/conflict, one footprint per part, official KiCad footprint (refusals, pad warnings, kicad-cli load) | plan/apply/dialog | `env/Scripts/python.exe -m pytest tests/test_shared_footprints.py tests/test_single_footprint.py tests/test_official_footprint.py -q` | ✅ | ✅ green |
+| LIB-07 | Value follows MPN, canonical Manufacturer, install gate per rule, clickable reasons with amber targets | plan + form + dialog | `env/Scripts/python.exe -m pytest tests/test_field_rules.py tests/test_install_gate.py tests/test_gate_reasons.py tests/test_atomic_targets.py -q` | ✅ | ✅ green |
+| FLD-01, FLD-03 | generated keywords, footprint description and tags written, edited, regenerated, loaded by kicad-cli | plan + dialog + `kicad_cli` | `env/Scripts/python.exe -m pytest tests/test_generated_text.py -q` | ✅ | ✅ green |
+| FLD-01, FLD-03 | CR-01 (10-26): an official footprint supplies the package family only when every top-score tie agrees; ambiguous codes (SOIC127P600X175-8N, LQFP48) and SOT-23-5 get none | unit + `local_kicad` | `env/Scripts/python.exe -m pytest tests/test_generated_text.py -q -k "family or lower_case or csd_sentence"` | ✅ | ✅ green |
+| FLD-01 | WR-02 (10-27): the English word "can" gives no CAN keyword; CAN phrases and all-caps CAN still do | unit + `build_plan` | `env/Scripts/python.exe -m pytest tests/test_keywords.py -q -k "can or spi"` | ✅ | ✅ green |
+| LIB-06 | WR-05 (10-28): a new symbol library adds an existing, unlisted Atomic_Footprints to fp-lib-table; a listed one stays byte-identical with no backup | GUI flow (`qtbot`) | `env/Scripts/python.exe -m pytest tests/test_main_window_import.py tests/test_table_add_entries.py -q` | ✅ | ✅ green |
+| FLD-01, FLD-03 | WR-06 / G-10-1 (10-29): a leading-letters-only tie supplies a family only from official footprints within one pad of the vendor footprint; 6-pad SON codes get no SON-8, a 48-pad LQFP48 now gets LQFP-48 (supersedes the LQFP48 case of the 10-26 row); full-code ties unfiltered | unit + `local_kicad` | `env/Scripts/python.exe -m pytest tests/test_generated_text.py tests/test_footprint_index.py tests/test_footprint_text.py -q` | ✅ | ✅ green |
+| LIB-07, LIB-05 | G-10-11 (10-30): a refused library name (empty, bare KiCad, v1, escaping) gives a blocked plan with no operations listing every library-independent reason plus the refusal; the strip lists the library reason first | plan + form + dialog | `env/Scripts/python.exe -m pytest tests/test_atomic_targets.py tests/test_install_plan.py tests/test_import_form.py tests/test_gate_reasons.py tests/test_atomic_dialog.py -q` | ✅ | ✅ green |
+| all | layering for every new module | static | `env/Scripts/python.exe -m pytest tests/test_importer_layering.py tests/test_layering.py -q` | ✅ | ✅ green |
+
+*Status: ⬜ pending · ✅ green · ❌ red · ⚠️ flaky*
+
+---
+
+## Wave 0 Requirements
+
+- [x] `tests/test_stems.py` — snapshot vs installed KiCad 10 (skips without), name verdict table, category-map targets
+- [x] `tests/test_suggest_atomic.py` and a synthetic stock KiCad dir builder (`tests/stockfixtures.py`: small `symbols/*.kicad_sym` and `footprints/*.pretty` trees) so no unit test depends on the installed KiCad
+- [x] `tests/test_incoming_check.py`, `tests/test_keywords.py`, `tests/test_footprint_text.py`
+- [x] Fixture migration: Atomic counterparts of `CURRENT_CUSTOM_SYMBOL_LIBS` / `CURRENT_CUSTOM_FOOTPRINT_LIBS` and an `Atomic_Footprints.pretty` in `write_custom_layout` (`tests/zipfixtures.py`)
+- [x] Every new importer module registered in `ALLOWED` of `tests/test_importer_layering.py` (owned by plan 10-01); `tests/test_layering.py` needs no edit, since no Phase 10 change adds a top-level `kicad_lib_manager` import (recorded per plan), and it runs as a guard
+- [x] `tests/test_naming_suggest.py` retargeted to the new API, keeping the `datasheet_host` / `registered_domain` / `is_aggregator_host` tests
+- [x] `tests/test_help_dialog.py` updated for the rewritten "Target library" and "Items" help text
+- [x] RECOM suggestion expectation retargeted: `PowerSupply_SubCategory_RECOM` → `Atomic_Converter_DCDC_Isolated` in `tests/test_real_vendor_samples.py` and `tests/test_samacsys_adapter.py` (owned by plan 10-15); the `tests/test_atomic_uat.py` scratch builder only needs a change if a plan alters what it builds
+
+---
+
+## Manual-Only Verifications
+
+| Behavior | Requirement | Why Manual | Test Instructions |
+|----------|-------------|------------|-------------------|
+| Library picker, suggestion tooltip, footprint destination toggle and official-footprint picker read correctly on the real samples | LIB-04, LIB-05, LIB-06 | Visual judgement on the owner's own downloads | Open each sample in `downloaded_examples/` in the import dialog against a scratch copy of `Custom/`; check the suggested library and its tooltip, type a refused name, switch the footprint destination, pick an official footprint |
+| Installed part loads in KiCad with the previewed keywords, footprint description and tags | FLD-01, FLD-03, LIB-07 | Needs KiCad's own Symbol and Footprint Editors | Install one sample into the scratch copy, open it in KiCad 10, compare Keywords, footprint Description and Tags with what the preview showed |
+
+---
+
+## Validation Sign-Off
+
+- [x] All tasks have `<automated>` verify or Wave 0 dependencies
+- [x] Sampling continuity: no 3 consecutive tasks without automated verify
+- [x] Wave 0 covers all MISSING references
+- [x] No watch-mode flags
+- [x] Feedback latency < 60s
+- [x] `nyquist_compliant: true` set in frontmatter
+
+**Approval:** approved 2026-10-27 (validate-phase: every requirement covered; full `-m "not wurth"` run 2920 passed, 4 documented skips). Re-approved 2026-10-28 after gap closure 10-26..10-28: every gap-closure task has an automated command, full `-m "not wurth"` run 2960 passed, 4 documented skips. Re-approved 2026-10-29 after gap closure 10-29..10-30: every gap-closure task has an automated command, full suite 9018 passed, 4 documented skips.
+
+## Validation Audit 2026-10-27
+
+| Metric | Count |
+|---|---|
+| Gaps found | 0 |
+| Resolved | 0 |
+| Escalated | 0 |

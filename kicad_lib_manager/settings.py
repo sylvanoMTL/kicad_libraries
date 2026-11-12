@@ -5,6 +5,8 @@ Linux:   ~/.config/KiCadExtLibManager/settings.ini
 macOS:   ~/Library/Preferences/KiCadExtLibManager/settings.ini
 """
 
+import hashlib
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QSettings
@@ -39,6 +41,52 @@ def load_kicad_fp_dir() -> Path | None:
 def save_kicad_fp_dir(path: Path) -> None:
     s = get_settings()
     s.setValue("kicad_fp_dir", str(path))
+
+
+# ── Scan cache ───────────────────────────────────────────────────────
+
+def scan_cache_file(repo_root: Path) -> Path:
+    """The saved scan of one repository folder: scan_cache/<hash>.json beside settings.ini, never in the repo."""
+    key = hashlib.sha256(os.path.normcase(str(Path(repo_root).resolve())).encode("utf-8")).hexdigest()[:16]
+    return Path(get_settings().fileName()).parent / "scan_cache" / f"{key}.json"
+
+
+# ── Migration draft ──────────────────────────────────────────────────
+
+def migration_draft_file(repo_root: Path) -> Path:
+    """The saved migration draft of one repository: migration_draft/<hash>.json beside settings.ini, never in the repo."""
+    key = hashlib.sha256(os.path.normcase(str(Path(repo_root).resolve())).encode("utf-8")).hexdigest()[:16]
+    return Path(get_settings().fileName()).parent / "migration_draft" / f"{key}.json"
+
+
+# ── Import folder ────────────────────────────────────────────────────
+
+def load_import_dir() -> Path | None:
+    """The folder the last import was picked from; the stored value is untrusted, so re-check it."""
+    s = get_settings()
+    val = s.value("import/last_dir", "")
+    if val:
+        p = Path(str(val))
+        if p.is_dir():
+            return p
+    return None
+
+
+def save_import_dir(path: Path) -> None:
+    s = get_settings()
+    s.setValue("import/last_dir", str(path))
+
+
+# ── User Guide ───────────────────────────────────────────────────────
+
+def load_help_topic() -> str | None:
+    """The page or section the owner last chose in the User Guide; anything but a non-empty text reads as None."""
+    val = get_settings().value("help/last_topic", "")
+    return val if isinstance(val, str) and val else None
+
+
+def save_help_topic(key: str) -> None:
+    get_settings().setValue("help/last_topic", key)
 
 
 # ── Destination folder history ────────────────────────────────────────

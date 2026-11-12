@@ -1,0 +1,573 @@
+"""The Phase 11 commit gate (GIT-06): which parts being committed break the atomic rule.
+
+Every repo is a throwaway superproject under tmp_path; the live Custom/ is never read or written. The
+gate is run with no KiCad folder, so the result never depends on the workstation's KiCad install.
+"""
+
+import dataclasses
+import inspect
+from pathlib import Path
+
+from customfixtures import atomic_lib, atomic_part, write_atomic_files
+from gitfixtures import GIT, GitRepos, commit_file, import_files, make_superproject, populate_custom, requires_git
+from installfixtures import vendor_footprint
+from zipfixtures import STEP_BYTES
+
+from kicad_lib_manager import changes
+from kicad_lib_manager.gitops import GitContext
+from kicad_lib_manager.importer import commit_gate
+from kicad_lib_manager.importer.commit_gate import CANCELLED, AtomicFailure, GateResult, run_gate
+from kicad_lib_manager.importer.plan import MODEL_DIR_VAR
+from kicad_lib_manager.models import STATUS_CHANGED, STATUS_NEW, Severity, SymbolEntry
+
+pytestmark = requires_git
+
+LIBRARY = "Atomic_Gate_Test"
+REL = f"Symbols/{LIBRARY}.kicad_sym"
+REPO_REL = f"Custom/{REL}"
+
+
+def _populate_atomic(custom: Path) -> None:
+    populate_custom(custom)
+    write_atomic_files(custom)
+
+
+def _repos(tmp_path: Path) -> GitRepos:
+    return make_superproject(tmp_path / "git", populate=_populate_atomic)
+
+
+def _ctx() -> GitContext:
+    return GitContext(Path(GIT))
+
+
+def test_gate_blocks_a_failing_new_part(tmp_path):
+    repos = _repos(tmp_path)
+    good = atomic_part("PASSING-1")
+    commit_file(repos, repos.custom, REL, atomic_lib((good,)), "Add the passing part")
+    bad = atomic_part("LIS3MDL", drop=("Datasheet",))
+    cplan = import_files(repos, {REL: atomic_lib((good, bad))}, library=LIBRARY, symbol="LIS3MDL")
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert [(f.library, f.rel_path, f.part, f.rule) for f in gate.blocking] == [
+        (LIBRARY, REPO_REL, "LIS3MDL", "datasheet")
+    ]
+    assert gate.refused is True
+    assert gate.old == ()
+
+
+def test_symbol_changes_matches_scan_marks(tmp_path):
+    repos = _repos(tmp_path)
+    ctx = _ctx()
+    first, second = atomic_part("AAA-1"), atomic_part("BBB-2")
+
+    # A file HEAD lacks: every symbol is new
+    path = repos.custom / REL
+    path.write_bytes(atomic_lib((first, second)))
+    loaded = changes._read_current(path)[0]
+    assert changes.symbol_changes(ctx, repos.custom, REL, loaded) == {"AAA-1": STATUS_NEW, "BBB-2": STATUS_NEW}
+
+    # HEAD's copy does not parse: every symbol counts as changed
+    commit_file(repos, repos.custom, REL, b"(kicad_symbol_lib (version", "Commit a broken library")
+    path.write_bytes(atomic_lib((first, second)))
+    loaded = changes._read_current(path)[0]
+    assert changes.symbol_changes(ctx, repos.custom, REL, loaded) == {
+        "AAA-1": STATUS_CHANGED,
+        "BBB-2": STATUS_CHANGED,
+    }
+
+    # A parsable HEAD: only the new or changed names, in file order; whitespace and line endings do not count
+    commit_file(repos, repos.custom, REL, atomic_lib((first, second)), "Commit both parts")
+    edited = atomic_part("AAA-1", replace={"Description": "A new description"})
+    added = atomic_part("CCC-3")
+    path.write_bytes(atomic_lib((edited, second, added), eol="\r\n"))
+    loaded = changes._read_current(path)[0]
+    assert changes.symbol_changes(ctx, repos.custom, REL, loaded) == {"AAA-1": STATUS_CHANGED, "CCC-3": STATUS_NEW}
+
+
+def _failure(library: str, part: str, rule: str, text: str) -> AtomicFailure:
+    return AtomicFailure(library, f"Custom/Symbols/{library}.kicad_sym", part, rule, text)
+
+
+def test_gate_old_failure_does_not_block(tmp_path):
+    repos = _repos(tmp_path)
+    failing = atomic_part("OLD-1", drop=("Datasheet",))
+    commit_file(repos, repos.custom, REL, atomic_lib((failing,)), "Add a part that already fails")
+    cplan = import_files(repos, {REL: atomic_lib((failing, atomic_part("NEW-Q")))}, library=LIBRARY)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.blocking == ()
+    assert gate.refused is False
+    assert [(f.part, f.rule) for f in gate.old] == [("OLD-1", "datasheet")]
+    assert [entry.name for _, _, entry in gate.entries] == ["OLD-1"]
+    assert commit_gate.old_notes(gate) == [f"{LIBRARY} also holds 1 part that already failed before this import"]
+
+
+def test_gate_blocks_a_failing_pre_import_edit(tmp_path):
+    repos = _repos(tmp_path)
+    commit_file(repos, repos.custom, REL, atomic_lib((atomic_part("EDIT-P"),)), "Add a passing part")
+    edited = atomic_part("EDIT-P", drop=("Datasheet",))
+    cplan = import_files(repos, {REL: atomic_lib((edited, atomic_part("NEW-Q")))}, library=LIBRARY)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert [(f.part, f.rule) for f in gate.blocking] == [("EDIT-P", "datasheet")]
+    assert gate.old == ()
+
+
+def test_gate_judges_derived_child_of_changed_parent(tmp_path):
+    repos = _repos(tmp_path)
+    child = atomic_part("CHILD-1", drop=("Datasheet",), extends="PARENT-1")
+    commit_file(
+        repos, repos.custom, REL, atomic_lib((atomic_part("PARENT-1"), child)), "Add a parent and a derived part"
+    )
+    parent = atomic_part("PARENT-1", drop=("Datasheet",))
+    cplan = import_files(repos, {REL: atomic_lib((parent, child))}, library=LIBRARY)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert sorted((f.part, f.rule) for f in gate.blocking) == [("CHILD-1", "datasheet"), ("PARENT-1", "datasheet")]
+    assert gate.old == ()
+
+
+def test_gate_refuses_unreadable_library(tmp_path):
+    repos = _repos(tmp_path)
+    cplan = import_files(repos, {REL: b"(kicad_symbol_lib (version"}, library=LIBRARY)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert len(gate.problems) == 1
+    assert gate.problems[0].startswith(f"{LIBRARY}: the library could not be checked")
+    assert gate.blocking == ()
+    assert gate.refused is True
+
+
+def test_gate_skips_non_atomic_library(tmp_path):
+    repos = _repos(tmp_path)
+    rel = "Symbols/Connector_Gate_Test.kicad_sym"
+    bad = atomic_part("LEGACY-NEW", drop=("Datasheet",))
+    cplan = import_files(repos, {rel: atomic_lib((bad,))}, library="Connector_Gate_Test")
+
+    assert run_gate(_ctx(), cplan, None) == GateResult()
+
+
+def test_gate_findings_never_block(tmp_path):
+    repos = _repos(tmp_path)
+    leftover = atomic_part("PRICED-1", extra=(("Price", "1.20"),))
+    cplan = import_files(repos, {REL: atomic_lib((leftover,))}, library=LIBRARY)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.blocking == ()
+    assert gate.refused is False
+
+
+def test_gate_cancelled(tmp_path):
+    repos = _repos(tmp_path)
+    cplan = import_files(repos, {REL: atomic_lib((atomic_part("ANY-1", drop=("Datasheet",)),))}, library=LIBRARY)
+
+    assert run_gate(_ctx(), cplan, None, cancelled=lambda: True) == GateResult(problems=(CANCELLED,))
+
+
+UNCHECKED_LINE = (
+    "Atomic_D / P3 was not checked against the committed footprint Atomic_Footprints:X "
+    '(footprint library "Atomic_Footprints" is defined more than once)'
+)
+
+
+def test_gate_texts():
+    one_part = GateResult(blocking=(_failure("Atomic_A", "P1", "datasheet", "no datasheet"),))
+    assert commit_gate.refusal_summary(one_part) == "1 part breaks the atomic rule"
+
+    gate = GateResult(
+        blocking=(
+            _failure("Atomic_A", "P1", "datasheet", "no datasheet"),
+            _failure("Atomic_A", "P1", "mpn", "no MPN"),
+            _failure("Atomic_B", "P2", "description", "no description"),
+        ),
+        old=(_failure("Atomic_B", "P9", "mpn", "no MPN"), _failure("Atomic_B", "P9", "datasheet", "no datasheet")),
+        problems=("Atomic_C: the library could not be checked (the file is damaged)",),
+        unchecked=(UNCHECKED_LINE,),
+    )
+    assert "notes" not in {f.name for f in dataclasses.fields(GateResult)}
+    assert commit_gate.refusal_summary(gate) == "2 parts break the atomic rule; 1 library could not be checked"
+    assert commit_gate.failure_lines(gate) == [
+        "Atomic_A / P1: no datasheet",
+        "Atomic_A / P1: no MPN",
+        "Atomic_B / P2: no description",
+        "Atomic_C: the library could not be checked (the file is damaged)",
+    ]
+    assert commit_gate.old_notes(gate) == [
+        "Atomic_B also holds 1 part that already failed before this import",
+        UNCHECKED_LINE,
+    ]
+    assert [(i.severity, i.code, i.text) for i in commit_gate.gate_issues(gate)] == [
+        (Severity.ERROR, "commit.atomic.datasheet", "Atomic_A / P1: no datasheet"),
+        (Severity.ERROR, "commit.atomic.mpn", "Atomic_A / P1: no MPN"),
+        (Severity.ERROR, "commit.atomic.description", "Atomic_B / P2: no description"),
+        (Severity.WARNING, "commit.atomic_old.mpn", "Atomic_B / P9: no MPN"),
+        (Severity.WARNING, "commit.atomic_old.datasheet", "Atomic_B / P9: no datasheet"),
+        (Severity.WARNING, "commit.atomic_unchecked", UNCHECKED_LINE),
+        (Severity.ERROR, "commit.atomic_unreadable", "Atomic_C: the library could not be checked (the file is damaged)"),
+    ]
+    # A part that was not checked never refuses the commit
+    only_unchecked = GateResult(unchecked=("x",))
+    assert only_unchecked.refused is False
+    assert commit_gate.refusal_summary(only_unchecked) == ""
+
+
+def test_move_introduced_lists_a_part_once():
+    rel = "Custom/Symbols/Atomic_A.kicad_sym"
+    old = [_failure("Atomic_A", "P", "mpn", "no MPN"), _failure("Atomic_A", "Q", "mpn", "no MPN")]
+    entries = [("Atomic_A", rel, SymbolEntry("P")), ("Atomic_A", rel, SymbolEntry("Q"))]
+
+    kept_old, kept_entries = commit_gate._move_introduced(old, entries, frozenset({(rel, "P")}))
+
+    assert [f.part for f in kept_old] == ["Q"]
+    assert [entry.name for _, _, entry in kept_entries] == ["Q"]
+    assert [f.part for f in old] == ["P", "Q"]  # the inputs are left alone
+
+
+def test_check_linked_symbols_has_nine_parameters():
+    assert len(inspect.signature(commit_gate._check_linked_symbols).parameters) == 9
+
+
+def test_gate_texts_for_clean_and_problem_only_results():
+    assert commit_gate.refusal_summary(GateResult()) == ""
+    assert commit_gate.refusal_summary(GateResult(old=(_failure("Atomic_A", "P1", "mpn", "no MPN"),))) == ""
+    assert commit_gate.old_notes(GateResult()) == []
+    assert commit_gate.refusal_summary(GateResult(problems=("a", "b"))) == "2 libraries could not be checked"
+    plural = GateResult(old=(_failure("Atomic_A", "P1", "mpn", "no MPN"), _failure("Atomic_A", "P2", "mpn", "no MPN")))
+    assert commit_gate.old_notes(plural) == ["Atomic_A also holds 2 parts that already failed before this import"]
+
+
+def test_scan_result_for_feeds_check_dialog(tmp_path):
+    repos = _repos(tmp_path)
+    cplan = import_files(
+        repos, {REL: atomic_lib((atomic_part("SHEET-1", drop=("Datasheet",)),))}, library=LIBRARY
+    )
+    gate = run_gate(_ctx(), cplan, None)
+
+    scan = commit_gate.scan_result_for(gate)
+
+    assert [(lib.nickname, lib.rel_path, lib.source, lib.atomic) for lib in scan.symbol_libs] == [
+        (LIBRARY, REPO_REL, "Custom", True)
+    ]
+    entries = scan.symbol_libs[0].symbols
+    assert [entry.name for entry in entries] == ["SHEET-1"]
+    violation = entries[0].violations[0]
+    assert violation.rule == "datasheet"
+    assert violation.fill is not None and violation.fill.kind == "fill_datasheet"
+    failure = gate.first_failure
+    assert (scan.symbol_libs[0].rel_path, entries[0].name) == (failure.rel_path, failure.part)
+
+
+# -- footprints and models a commit changes: the parts that link them (D-04) ------------------------------
+
+LINKED = "Atomic_Linked"
+LINKED_REL = f"Symbols/{LINKED}.kicad_sym"
+LINKED_REPO_REL = f"Custom/{LINKED_REL}"
+FOOTPRINT_DIR = "Footprints/Atomic_Footprints.pretty"
+SHARED = "Atomic_Footprints"
+SHARED_MODEL = f"{MODEL_DIR_VAR}/GENERIC-2PIN.step"
+
+
+def _fp_rel(name: str) -> str:
+    return f"{FOOTPRINT_DIR}/{name}.kicad_mod"
+
+
+def _populate_footprints(custom: Path) -> None:
+    """The scratch Custom/ with a shared footprint library and one model, and no part linking them."""
+    populate_custom(custom)
+    pretty = custom / FOOTPRINT_DIR
+    (custom / "3DModels" / "GENERIC-2PIN.step").write_bytes(STEP_BYTES)
+    (pretty / "GENERIC-2PIN.kicad_mod").write_bytes(vendor_footprint("GENERIC-2PIN", models=(SHARED_MODEL,)))
+    (pretty / "NO-MODEL.kicad_mod").write_bytes(vendor_footprint("NO-MODEL"))
+
+
+def _footprint_repos(tmp_path: Path) -> GitRepos:
+    return make_superproject(tmp_path / "git", populate=_populate_footprints)
+
+
+def _linked_part(name: str, footprint: str = "GENERIC-2PIN", **kwargs):
+    replace = {**kwargs.pop("replace", {}), "Footprint": f"{SHARED}:{footprint}"}
+    return atomic_part(name, replace=replace, **kwargs)
+
+
+def _commit_linked(repos: GitRepos, *parts) -> None:
+    commit_file(repos, repos.custom, LINKED_REL, atomic_lib(tuple(parts)), "Add the linked parts")
+
+
+def test_gate_blocks_footprint_overwrite_breaking_linked_part(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("P"))
+    cplan = import_files(repos, {_fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN")}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert [(f.library, f.rel_path, f.part, f.rule) for f in gate.blocking] == [
+        (LINKED, LINKED_REPO_REL, "P", "model_3d")
+    ]
+    assert gate.refused is True
+    assert gate.old == ()
+    assert [(library, rel_path, entry.name) for library, rel_path, entry in gate.entries] == [
+        (LINKED, LINKED_REPO_REL, "P")
+    ]
+
+
+def test_gate_footprint_without_linked_parts(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("P"))
+    cplan = import_files(repos, {_fp_rel("LONELY-FP"): vendor_footprint("LONELY-FP")}, library=SHARED)
+
+    assert run_gate(_ctx(), cplan, None) == GateResult()
+
+
+def test_gate_linked_failure_already_at_head_is_old(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("N", "NO-MODEL"))
+    cplan = import_files(
+        repos, {_fp_rel("NO-MODEL"): vendor_footprint("NO-MODEL", pads=("1", "2", "3"))}, library=SHARED
+    )
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.blocking == ()
+    assert gate.refused is False
+    assert [(f.library, f.part, f.rule) for f in gate.old] == [(LINKED, "N", "model_3d")]
+    assert commit_gate.old_notes(gate) == [f"{LINKED} also holds 1 part that already failed before this import"]
+
+
+def test_gate_linked_new_failure_beside_old_one(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("M", drop=("Datasheet",)))
+    cplan = import_files(repos, {_fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN")}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert [(f.part, f.rule) for f in gate.blocking] == [("M", "model_3d")]
+    assert [(f.part, f.rule) for f in gate.old] == [("M", "datasheet")]
+    assert [entry.name for _, _, entry in gate.entries] == ["M"]
+
+
+def test_gate_new_footprint_with_model_does_not_block(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("K", "NEW-FP"))
+    footprint = vendor_footprint("NEW-FP", models=(SHARED_MODEL,))
+    cplan = import_files(repos, {_fp_rel("NEW-FP"): footprint}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.blocking == ()
+    assert gate.refused is False
+
+
+def test_gate_new_footprint_without_model_blocks(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("K", "NEW-FP"))
+    cplan = import_files(repos, {_fp_rel("NEW-FP"): vendor_footprint("NEW-FP")}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert [(f.library, f.part, f.rule) for f in gate.blocking] == [(LINKED, "K", "model_3d")]
+    assert gate.refused is True
+
+
+def test_gate_committed_model_never_blocks_alone(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("Q", drop=("Datasheet",)))
+    cplan = import_files(repos, {"3DModels/GENERIC-2PIN.step": STEP_BYTES + b"\n"}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.blocking == ()
+    assert gate.refused is False
+    assert [(f.library, f.part, f.rule) for f in gate.old] == [(LINKED, "Q", "datasheet")]
+
+
+def _damaged_library(repos: GitRepos) -> None:
+    """An Atomic_ library present in HEAD (not in any plan's files) whose file does not parse."""
+    commit_file(repos, repos.custom, "Symbols/Atomic_Broken.kicad_sym", b"(kicad_symbol_lib (version", "Add a damaged library")
+
+
+def test_gate_unreadable_outside_library_refuses(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _damaged_library(repos)
+    cplan = import_files(repos, {_fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN")}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert len(gate.problems) == 1
+    line = gate.problems[0]
+    assert line.startswith(
+        "Atomic_Broken: the parts in this library could not be checked against the committed footprints and 3D models ("
+    )
+    assert line.endswith("). Fix the library file (check that it opens in KiCad), then click Check again.")
+    assert gate.blocking == ()
+    assert gate.refused is True
+    assert commit_gate.refusal_summary(gate) == "1 library could not be checked"
+    assert commit_gate.failure_lines(gate) == [line]
+    assert [(i.severity, i.code, i.text) for i in commit_gate.gate_issues(gate)] == [
+        (Severity.ERROR, "commit.atomic_unreadable", line)
+    ]
+
+
+def test_gate_unreadable_outside_library_ignored_without_linked_files(tmp_path):
+    repos = _repos(tmp_path)
+    _damaged_library(repos)
+    cplan = import_files(repos, {REL: atomic_lib((atomic_part("PASSING-1"),))}, library=LIBRARY)
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert gate.refused is False
+    assert gate.problems == ()
+
+
+def test_gate_unlistable_symbols_folder_refuses(tmp_path, monkeypatch):
+    repos = _footprint_repos(tmp_path)
+    cplan = import_files(repos, {_fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN")}, library=SHARED)
+    real_listdir = commit_gate.os.listdir
+
+    def failing(error):
+        def listdir(path="."):
+            if Path(path).name == "Symbols":
+                raise error
+            return real_listdir(path)
+
+        return listdir
+
+    monkeypatch.setattr(commit_gate.os, "listdir", failing(PermissionError(13, "Access is denied")))
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert len(gate.problems) == 1
+    assert gate.problems[0].startswith("Custom/Symbols: the symbol libraries could not be listed (")
+    assert "could not be checked against the committed footprints and 3D models" in gate.problems[0]
+    assert gate.refused is True
+    assert commit_gate.refusal_summary(gate) == "the symbol libraries could not be listed"
+
+    # A folder that does not exist leaves nothing to check
+    monkeypatch.setattr(commit_gate.os, "listdir", failing(FileNotFoundError(2, "No such file")))
+    assert run_gate(_ctx(), cplan, None) == GateResult()
+
+
+def test_gate_unresolved_link_to_committed_footprint_is_shown(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("P"))
+    kicad = tmp_path / "kicad" / "footprints"
+    (kicad / f"{SHARED}.pretty").mkdir(parents=True)  # the library name is now defined twice
+    footprint = vendor_footprint("GENERIC-2PIN", models=(SHARED_MODEL,), pads=("1", "2", "3"))
+    cplan = import_files(repos, {_fp_rel("GENERIC-2PIN"): footprint}, library=SHARED)
+
+    gate = run_gate(_ctx(), cplan, kicad)
+
+    line = (
+        f"{LINKED} / P was not checked against the committed footprint {SHARED}:GENERIC-2PIN "
+        f'(footprint library "{SHARED}" is defined more than once)'
+    )
+    assert gate.unchecked == (line,)
+    assert gate.blocking == () and gate.problems == ()
+    assert gate.refused is False
+    assert commit_gate.old_notes(gate)[-1] == line
+    assert [(i.severity, i.code, i.text) for i in commit_gate.gate_issues(gate)] == [
+        (Severity.WARNING, "commit.atomic_unchecked", line)
+    ]
+
+
+def test_gate_unresolved_link_elsewhere_adds_nothing(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    kicad_part = atomic_part("K", replace={"Footprint": "Package_TO_SOT_SMD:SOT-23-5"})  # not found: no KiCad folder
+    _commit_linked(repos, kicad_part, _linked_part("U", "MISSING-FP"))
+    footprint = vendor_footprint("GENERIC-2PIN", models=(SHARED_MODEL,), pads=("1", "2", "3"))
+    cplan = import_files(
+        repos,
+        {_fp_rel("GENERIC-2PIN"): footprint, "3DModels/GENERIC-2PIN.step": STEP_BYTES + b"\n"},
+        library=SHARED,
+    )
+
+    # A link that names no committed footprint reaches no committed file, so it adds neither a refusal nor a line
+    assert run_gate(_ctx(), cplan, None) == GateResult()
+
+
+def test_gate_unchanged_part_of_committed_library_broken_by_footprint_blocks_once(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    _commit_linked(repos, _linked_part("P"))
+    cplan = import_files(
+        repos,
+        {
+            LINKED_REL: atomic_lib((_linked_part("P"), _linked_part("R"))),
+            _fp_rel("GENERIC-2PIN"): vendor_footprint("GENERIC-2PIN"),
+        },
+        library=LINKED,
+    )
+
+    gate = run_gate(_ctx(), cplan, None)
+
+    assert sorted((f.part, f.rule) for f in gate.blocking) == [("P", "model_3d"), ("R", "model_3d")]
+    assert gate.old == ()
+    assert sorted(entry.name for _, _, entry in gate.entries) == ["P", "R"]
+
+
+# -- the footprints and models a committed part links, for Check again (D-10) ------------------------------
+
+NEWFP_MODEL = f"{MODEL_DIR_VAR}/NEWFP.step"
+
+
+def test_linked_custom_files_footprint_and_model(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    library = atomic_lib((_linked_part("NEW-P", "NEWFP"), _linked_part("OLD-P")))
+    cplan = import_files(
+        repos,
+        {LINKED_REL: library, _fp_rel("NEWFP"): vendor_footprint("NEWFP", models=(NEWFP_MODEL,))},
+        library=LINKED,
+    )
+    (repos.custom / "3DModels" / "NEWFP.step").write_bytes(STEP_BYTES)
+
+    found = commit_gate.linked_custom_files(_ctx(), cplan, None)
+
+    assert found == (
+        (_fp_rel("GENERIC-2PIN"), "footprint"),
+        (_fp_rel("NEWFP"), "footprint"),
+        ("3DModels/GENERIC-2PIN.step", "model"),
+        ("3DModels/NEWFP.step", "model"),
+    )
+
+
+def test_linked_custom_files_never_builds_a_path_from_model_text(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    (repos.custom / "Secret.step").write_bytes(STEP_BYTES)
+    (repos.custom / "3DModels" / "NEWFP.step").write_bytes(STEP_BYTES)
+    models = (
+        f"{MODEL_DIR_VAR}/../Secret.step",  # leaves 3DModels
+        f"{MODEL_DIR_VAR}/MISSING.step",  # not in the listing
+        f"{MODEL_DIR_VAR}/newfp.step",  # wrong case of a listed name
+        "${KIPRJMOD}/NEWFP.step",  # another variable
+    )
+    cplan = import_files(
+        repos,
+        {
+            LINKED_REL: atomic_lib((_linked_part("NEW-P", "NEWFP"),)),
+            _fp_rel("NEWFP"): vendor_footprint("NEWFP", models=models),
+        },
+        library=LINKED,
+    )
+
+    found = commit_gate.linked_custom_files(_ctx(), cplan, None)
+
+    assert found == ((_fp_rel("NEWFP"), "footprint"),)
+
+
+def test_linked_custom_files_committed_footprint_and_cancel(tmp_path):
+    repos = _footprint_repos(tmp_path)
+    (repos.custom / "3DModels" / "NEWFP.step").write_bytes(STEP_BYTES)
+    footprint_only = import_files(
+        repos, {_fp_rel("LONELY-FP"): vendor_footprint("LONELY-FP", models=(NEWFP_MODEL,))}, library=SHARED
+    )
+    with_symbol = import_files(repos, {LINKED_REL: atomic_lib((_linked_part("NEW-P"),))}, library=LINKED)
+
+    # A committed footprint is a link in itself, and so is the model it names
+    assert commit_gate.linked_custom_files(_ctx(), footprint_only, None) == (
+        (_fp_rel("LONELY-FP"), "footprint"),
+        ("3DModels/NEWFP.step", "model"),
+    )
+    assert commit_gate.linked_custom_files(_ctx(), with_symbol, None, cancelled=lambda: True) == ()

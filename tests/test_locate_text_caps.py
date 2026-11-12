@@ -1,0 +1,523 @@
+"""Text caps for untrusted symbol and footprint files (CR-01, reopened T-03-15, INTK-06, INTK-01, D-06).
+
+A hostile .kicad_sym or .kicad_mod can sit inside every zip limit (ratio, member size,
+total size) and still cost minutes of CPU and gigabytes of RAM in the pure-Python
+S-expression parser. locate therefore refuses to hand the parser more than
+MAX_KICAD_TEXT_BYTES of text and stops it past MAX_KICAD_TEXT_NODES nodes. Either way
+the file is skipped with a WARNING intake.unreadable_file and the rest of the package
+is still read. The hostile files are generated in memory or tmp_path; none is committed.
+"""
+
+import hashlib
+import os
+import random
+import sys
+import time
+import zipfile
+import zlib
+from pathlib import Path
+
+import pytest
+from zipfixtures import (
+    REPO_ROOT,
+    STEP_BYTES,
+    UL_FOOTPRINT_MEMBER,
+    UL_SYMBOL_MEMBER,
+    UL_ZIP,
+    footprint,
+    make_zip,
+    string_body,
+    symbol_lib,
+    traced_peak,
+)
+
+from kicad_lib_manager.importer import package as package_module
+from kicad_lib_manager.importer.adapters import base
+from kicad_lib_manager.importer.adapters.base import Detection, locate
+from kicad_lib_manager.importer.candidate import ImportCandidate
+from kicad_lib_manager.importer.detect import detect_candidate
+from kicad_lib_manager.importer.package import Package, PackageFile, open_package
+from kicad_lib_manager.kicad_files import LoadedFile, parse_bytes
+from kicad_lib_manager.models import Issue, Severity
+from kicad_lib_manager.sexpr import parse, unquote
+
+_TOKENS = [b"(a)", b"(b 1)", b"()", b"(c d)", b"(e (f))"]
+
+
+def _hostile_symbol(tokens: int, seed: int = 0) -> bytes:
+    """Dense balanced-token symbol text that deflates about 10:1 and holds about 2.6 nodes per token."""
+    body = b" ".join(random.Random(seed).choices(_TOKENS, k=tokens))
+    return b"(kicad_symbol_lib (version 20211014) " + body + b")"
+
+
+def _detect(tmp_path, members, name="pkg.zip"):
+    """Open a synthetic zip and return (refused, candidate, issues)."""
+    zip_path = make_zip(tmp_path / name, members)
+    with open_package(zip_path, REPO_ROOT) as package:
+        refused = package.refused
+        candidate, issues = detect_candidate(package)
+    return refused, candidate, issues
+
+
+def _codes(issues, code):
+    return [i for i in issues if i.code == code]
+
+
+def _inside_every_zip_limit(data: bytes) -> None:
+    assert len(data) < package_module.MAX_MEMBER_BYTES
+    assert len(data) // len(zlib.compress(data)) < package_module.MAX_RATIO
+
+
+# -- task 1: node ceiling, end to end --------------------------------------------
+
+
+def test_text_cap_constants():
+    assert package_module.MAX_KICAD_TEXT_NODES == 1_000_000
+    assert package_module.MAX_MEMBERS == 1000
+    assert package_module.MAX_MEMBER_BYTES == 100 * 1024 * 1024
+    assert package_module.MAX_TOTAL_BYTES == 250 * 1024 * 1024
+    assert package_module.MAX_RATIO == 200
+    assert package_module.RATIO_MIN_SIZE == 1024 * 1024
+
+
+def test_hostile_text_over_node_ceiling_is_skipped(tmp_path):
+    hostile = _hostile_symbol(700_000)
+    assert len(hostile) < 8 * 1024 * 1024  # under the byte cap, so only the node ceiling can stop it
+    _inside_every_zip_limit(hostile)
+    members = [("hostile.kicad_sym", hostile), ("good.kicad_mod", footprint("GOOD"))]
+    refused, candidate, issues = _detect(tmp_path, members)
+    assert refused is False
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert "hostile.kicad_sym" in skipped[0].text
+    assert "more than 1000000 nodes" in skipped[0].text
+    assert not [i for i in issues if i.severity is Severity.ERROR]
+    assert candidate is not None
+    assert [f.name for f in candidate.footprints] == ["GOOD"]
+
+
+# -- task 2: byte cap, read before the parser ------------------------------------
+
+
+def _folder_package(tmp_path: Path, files: dict[str, bytes]) -> Package:
+    """Write files under tmp_path/loose and describe them as a folder Package, as test_adapters does."""
+    folder = tmp_path / "loose"
+    folder.mkdir()
+    entries = []
+    for name, data in files.items():
+        path = folder / name
+        path.write_bytes(data)
+        kind = "symbol" if name.endswith(".kicad_sym") else "footprint" if name.endswith(".kicad_mod") else "model"
+        entries.append(PackageFile(name, path, kind, len(data), hashlib.sha256(data).hexdigest(), False))
+    return Package(source=folder, kind="folder", names=list(files), files=entries)
+
+
+def _spy_parse(monkeypatch) -> list[str]:
+    """Record every member name that reaches the parser."""
+    seen: list[str] = []
+    real = base.parse_bytes
+
+    def spy(data, name, **kwargs):
+        seen.append(name)
+        return real(data, name, **kwargs)
+
+    monkeypatch.setattr(base, "parse_bytes", spy)
+    return seen
+
+
+def test_hostile_text_over_byte_cap_never_parsed(tmp_path, monkeypatch):
+    big = _hostile_symbol(1_700_000)
+    assert package_module.MAX_KICAD_TEXT_BYTES < len(big) < package_module.MAX_MEMBER_BYTES
+    _inside_every_zip_limit(big)
+    real = base.parse_bytes
+
+    def spy(data, name, **kwargs):
+        if name == "big.kicad_sym":
+            pytest.fail("the over-cap member reached the parser")
+        return real(data, name, **kwargs)
+
+    monkeypatch.setattr(base, "parse_bytes", spy)
+    members = [("big.kicad_sym", big), ("good.kicad_mod", footprint("GOOD"))]
+    refused, candidate, issues = _detect(tmp_path, members)
+    assert refused is False
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert "big.kicad_sym" in skipped[0].text
+    assert "8388608" in skipped[0].text
+    assert [f.name for f in candidate.footprints] == ["GOOD"]
+
+
+def test_text_byte_cap_boundary(tmp_path, monkeypatch):
+    data = symbol_lib(("EDGE",))
+    fp = footprint("F")
+    assert len(fp) < len(data) - 1  # the footprint stays under every cap tried below
+    package = _folder_package(tmp_path, {"edge.kicad_sym": data, "f.kicad_mod": fp})
+    seen = _spy_parse(monkeypatch)
+    detection = Detection("Loose", 0.3)
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_BYTES", len(data))
+    candidate, issues = locate(package, detection)
+    assert [s.name for s in candidate.symbols] == ["EDGE"]
+    assert not _codes(issues, "intake.unreadable_file")
+
+    seen.clear()
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_BYTES", len(data) - 1)
+    candidate, issues = locate(package, detection)
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert "edge.kicad_sym" in skipped[0].text
+    assert candidate.symbols == ()
+    assert seen == ["f.kicad_mod"]  # the skipped symbol never reached the parser
+
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_BYTES", len(data) + 1)
+    candidate, issues = locate(package, detection)
+    assert [s.name for s in candidate.symbols] == ["EDGE"]
+
+
+def test_text_byte_cap_counts_raw_bytes(tmp_path, monkeypatch):
+    data = b"\xef\xbb\xbf" + symbol_lib(("OHM",), props={"Description": "10k" + chr(0x2126)})
+    assert len(data) > len(data.decode("utf-8-sig"))
+    fp = footprint("F")
+    assert len(fp) < len(data) - 1
+    package = _folder_package(tmp_path, {"ohm.kicad_sym": data, "f.kicad_mod": fp})
+    detection = Detection("Loose", 0.3)
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_BYTES", len(data))
+    candidate, _ = locate(package, detection)
+    assert [s.name for s in candidate.symbols] == ["OHM"]
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_BYTES", len(data) - 1)
+    candidate, issues = locate(package, detection)
+    assert candidate.symbols == ()
+    assert len(_codes(issues, "intake.unreadable_file")) == 1
+
+
+def test_text_cap_never_exceeds_member_cap(tmp_path, monkeypatch):
+    data = symbol_lib(("BIG",), props={"Description": "x" * 4000})
+    package = _folder_package(tmp_path, {"big.kicad_sym": data, "f.kicad_mod": footprint("F")})
+    monkeypatch.setattr(package_module, "MAX_MEMBER_BYTES", len(data) - 1)
+    assert package_module.MAX_MEMBER_BYTES < package_module.MAX_KICAD_TEXT_BYTES
+    candidate, issues = locate(package, Detection("Loose", 0.3))
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert f"larger than {len(data) - 1} bytes" in skipped[0].text
+    assert candidate.symbols == ()
+
+
+def test_zero_byte_text_file_is_not_a_cap_issue(tmp_path):
+    package = _folder_package(tmp_path, {"empty.kicad_sym": b"", "good.kicad_mod": footprint("GOOD")})
+    candidate, issues = locate(package, Detection("Loose", 0.3))
+    mismatches = _codes(issues, "intake.content_mismatch")
+    assert len(mismatches) == 1
+    assert mismatches[0].severity is Severity.WARNING
+    assert "empty.kicad_sym" in mismatches[0].text
+    assert not [i for i in issues if "larger than" in i.text]
+    assert candidate.symbols == ()
+
+
+def _snapshot(folder: Path) -> dict[str, tuple[int, str]]:
+    """{relative path: (size, sha256)} for every file and folder under folder."""
+    found = {}
+    for dirpath, dirnames, filenames in os.walk(folder):
+        for name in dirnames:
+            found[(Path(dirpath) / name).relative_to(folder).as_posix() + "/"] = (0, "")
+        for name in filenames:
+            path = Path(dirpath) / name
+            found[path.relative_to(folder).as_posix()] = (
+                path.stat().st_size,
+                hashlib.sha256(path.read_bytes()).hexdigest(),
+            )
+    return found
+
+
+def test_folder_text_over_cap_is_skipped(tmp_path, monkeypatch):
+    folder = tmp_path / "pick"
+    folder.mkdir()
+    sym = symbol_lib(("S",))
+    (folder / "sym.kicad_sym").write_bytes(sym)
+    (folder / "big.kicad_mod").write_bytes(footprint("BIG") + b"\n" * (len(sym) + 1))
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_BYTES", len(sym))
+    before = _snapshot(folder)
+    with open_package(folder, REPO_ROOT) as package:
+        assert package.refused is False
+        candidate, issues = detect_candidate(package)
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert "big.kicad_mod" in skipped[0].text
+    assert [s.name for s in candidate.symbols] == ["S"]
+    assert candidate.footprints == ()
+    assert _snapshot(folder) == before
+
+
+def test_models_skip_the_text_caps(tmp_path, monkeypatch):
+    sym = symbol_lib(("S",))
+    fp = footprint("F")
+    cap = max(len(sym), len(fp))
+    model = STEP_BYTES + b"\n" * (cap + 1)
+    assert len(model) > cap
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_BYTES", cap)
+    members = [("s.kicad_sym", sym), ("f.kicad_mod", fp), ("m.step", model)]
+    refused, candidate, issues = _detect(tmp_path, members)
+    assert refused is False
+    assert [m.filename for m in candidate.models] == ["m.step"]
+    assert [s.name for s in candidate.symbols] == ["S"]
+    assert [f.name for f in candidate.footprints] == ["F"]
+    assert not [i for i in issues if "m.step" in i.text]
+
+
+# -- task 3: node ceiling boundary, MemoryError guard, real files ------------------
+
+
+def _node_count(root) -> int:
+    """Count every list, atom and string below the root (the root itself is not counted)."""
+    total = 0
+    stack = list(root.children)
+    while stack:
+        node = stack.pop()
+        total += 1
+        stack.extend(node.children)
+    return total
+
+
+def test_node_ceiling_boundary_in_locate(tmp_path, monkeypatch):
+    data = symbol_lib(("EDGE",))
+    loaded = parse_bytes(data, "e")
+    assert isinstance(loaded, LoadedFile)
+    n = _node_count(loaded.root)
+    package = _folder_package(tmp_path, {"edge.kicad_sym": data, "f.kicad_mod": footprint("F")})
+    detection = Detection("Loose", 0.3)
+
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_NODES", n)
+    candidate, issues = locate(package, detection)
+    assert [s.name for s in candidate.symbols] == ["EDGE"]
+    assert not _codes(issues, "intake.unreadable_file")
+
+    # The small footprint has fewer nodes than the symbol file, so only the symbol is cut
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_NODES", n - 1)
+    candidate, issues = locate(package, detection)
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert f"more than {n - 1} nodes" in skipped[0].text
+    assert candidate.symbols == ()
+
+    monkeypatch.setattr(package_module, "MAX_KICAD_TEXT_NODES", n + 1)
+    candidate, _ = locate(package, detection)
+    assert [s.name for s in candidate.symbols] == ["EDGE"]
+
+
+def test_memory_error_is_a_warning(tmp_path, monkeypatch):
+    real = base.parse_bytes
+
+    def flaky(data, name, **kwargs):
+        if name == "a.kicad_sym":
+            raise MemoryError
+        return real(data, name, **kwargs)
+
+    monkeypatch.setattr(base, "parse_bytes", flaky)
+    members = [
+        ("a.kicad_sym", symbol_lib(("A",))),
+        ("b.kicad_sym", symbol_lib(("B",))),
+        ("f.kicad_mod", footprint("F")),
+    ]
+    refused, candidate, issues = _detect(tmp_path, members)
+    assert refused is False
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert "a.kicad_sym" in skipped[0].text
+    assert "not enough memory" in skipped[0].text
+    assert [s.name for s in candidate.symbols] == ["B"]
+    assert [f.name for f in candidate.footprints] == ["F"]
+
+
+def test_real_files_are_below_both_caps():
+    custom = REPO_ROOT / "Custom"
+    paths = []
+    if custom.is_dir():
+        paths = sorted(custom.rglob("*.kicad_sym")) + sorted(custom.rglob("*.kicad_mod"))
+    if not paths:
+        pytest.skip("Custom submodule not checked out (git submodule update --init Custom)")
+    named = [(p.name, p.read_bytes()) for p in paths]
+    with zipfile.ZipFile(UL_ZIP) as zf:
+        for member in (UL_SYMBOL_MEMBER, UL_FOOTPRINT_MEMBER):
+            named.append((member, zf.read(member)))
+    for name, data in named:
+        assert len(data) <= package_module.MAX_KICAD_TEXT_BYTES, name
+        loaded = parse_bytes(data, name, max_nodes=package_module.MAX_KICAD_TEXT_NODES)
+        assert isinstance(loaded, LoadedFile), f"{name}: {loaded}"
+
+
+# -- CR-03: one hostile quoted string at the byte cap ----------------------------------
+#
+# A single string is one node, so it passes the 8 MiB byte cap, the 200:1 ratio rule and the
+# node ceiling. The bound here is memory: at most 10 times sys.getsizeof of the decoded text.
+
+_SYMBOL_HEAD = (
+    '(kicad_symbol_lib (version 20211014) (generator "test")\n'
+    '  (symbol "P"\n'
+    '    (property "Reference" "U" (at 0 0 0))\n'
+    '    (property "'
+)
+_SYMBOL_TAIL = ' (at 0 0 0))\n  )\n)\n'
+_END_TO_END_SECONDS = 30  # catastrophic-regression bound only; memory is decided by traced_peak
+_MEMORY_FACTOR = 10
+
+
+def _string_symbol(
+    kind: str, total: int, *, as_name: bool = False, astral: bool = False, seed: int = 0
+) -> tuple[bytes, str]:
+    """Return a one-symbol file of exactly total bytes holding one raw hostile string, and that string.
+
+    The string is the value of property Description, or the name of a property whose value is "x".
+    It goes between the quotes without re-escaping, so symbol_lib (which doubles backslashes) is not used.
+    """
+    before = _SYMBOL_HEAD + ("" if as_name else 'Description" "')
+    after = ('" "x"' if as_name else '"') + _SYMBOL_TAIL
+    free = total - len(before) - len(after)  # the frame is ASCII, so bytes equal characters
+    if astral:
+        body = chr(0x1F600) + string_body(kind, free - 4, seed=seed)  # U+1F600 is 4 UTF-8 bytes
+    else:
+        body = string_body(kind, free, seed=seed)
+    data = (before + body + after).encode("utf-8")
+    assert len(data) == total
+    return data, body
+
+
+def _open_and_detect(path: Path) -> tuple[bool, ImportCandidate | None, list[Issue]]:
+    """Open a package and return (refused, candidate, issues); the zip is built before this is measured."""
+    with open_package(path, REPO_ROOT) as package:
+        refused = package.refused
+        candidate, issues = detect_candidate(package)
+    return refused, candidate, issues
+
+
+def _require_linear_tokenizer() -> None:
+    """Fail at once when the tokenizer is not linear on one long string, before any full-size input is built."""
+    text = '(d "' + string_body("plain", 64 * 1024) + '")'
+    _, peak = traced_peak(lambda: parse(text))
+    if peak > 3 * sys.getsizeof(text):
+        pytest.fail(
+            f"tokenizer is not linear on one long string: peak {peak} bytes for a {sys.getsizeof(text)} byte text"
+        )
+
+
+def _require_linear_unquote() -> None:
+    """Fail at once when unquote is not linear on one escape-dense token, before any full-size input is built."""
+    token = '"' + string_body("escape", 64 * 1024) + '"'
+    _, peak = traced_peak(lambda: unquote(token))
+    if peak > 6 * sys.getsizeof(token):
+        pytest.fail(f"unquote is not linear on one escape-dense token: peak {peak} bytes for a {sys.getsizeof(token)} byte token")
+
+
+def _measure(path: Path) -> tuple[tuple[bool, ImportCandidate | None, list[Issue]], int, float]:
+    """Return (open_and_detect result, tracemalloc peak, seconds) for one full-size call."""
+    t0 = time.perf_counter()
+    result, peak = traced_peak(lambda: _open_and_detect(path))
+    return result, peak, time.perf_counter() - t0
+
+
+def _assert_read_in_bounds(result, peak: int, seconds: float, data: bytes, *, description: str) -> None:
+    refused, candidate, issues = result
+    assert refused is False
+    assert not [i for i in issues if i.severity is Severity.ERROR]
+    assert not _codes(issues, "intake.unreadable_file")
+    assert candidate is not None
+    assert [s.name for s in candidate.symbols] == ["P"]
+    assert candidate.symbols[0].meta.description == description
+    assert [f.name for f in candidate.footprints] == ["GOOD"]
+    storage = sys.getsizeof(data.decode("utf-8"))
+    assert peak <= _MEMORY_FACTOR * storage, f"peak {peak} bytes for {storage} bytes of decoded text"
+    assert seconds < _END_TO_END_SECONDS
+
+
+def test_string_heavy_symbol_at_byte_cap_is_read_with_bounded_memory(tmp_path):
+    _require_linear_tokenizer()
+    data, body = _string_symbol("plain", package_module.MAX_KICAD_TEXT_BYTES)
+    assert len(data) == 8 * 1024 * 1024
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+
+
+@pytest.mark.parametrize("kind", ["escape", "mixed"])
+def test_string_heavy_escape_classes_at_byte_cap(tmp_path, kind):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol(kind, package_module.MAX_KICAD_TEXT_BYTES)
+    assert len(data) == 8 * 1024 * 1024
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    # Unknown escapes are kept verbatim, so the decoded Description equals the raw body
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+
+
+def test_string_heavy_property_name_at_byte_cap(tmp_path):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    # find_property unquotes every property name on each of the up to 16 part_meta lookups
+    data, _ = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES, as_name=True)
+    assert len(data) == 8 * 1024 * 1024
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description="")
+
+
+def test_string_heavy_folder_at_byte_cap(tmp_path):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES)
+    folder = tmp_path / "pick"
+    folder.mkdir()
+    (folder / "hostile.kicad_sym").write_bytes(data)
+    (folder / "good.kicad_mod").write_bytes(footprint("GOOD"))
+    before = _snapshot(folder)
+    result, peak, seconds = _measure(folder)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+    assert _snapshot(folder) == before
+
+
+def test_string_heavy_byte_cap_boundary(tmp_path, monkeypatch):
+    # (a) one byte over the cap is skipped with one WARNING and never reaches the parser
+    over, _ = _string_symbol("plain", package_module.MAX_KICAD_TEXT_BYTES + 1)
+    assert len(over) == package_module.MAX_KICAD_TEXT_BYTES + 1
+    zip_path = make_zip(tmp_path / "over.zip", [("big.kicad_sym", over), ("good.kicad_mod", footprint("GOOD"))])
+    seen = _spy_parse(monkeypatch)
+    refused, candidate, issues = _open_and_detect(zip_path)
+    assert refused is False
+    skipped = _codes(issues, "intake.unreadable_file")
+    assert len(skipped) == 1
+    assert skipped[0].severity is Severity.WARNING
+    assert "big.kicad_sym" in skipped[0].text
+    assert "8388608" in skipped[0].text
+    assert "big.kicad_sym" not in seen
+    assert candidate.symbols == ()
+    assert [f.name for f in candidate.footprints] == ["GOOD"]
+    monkeypatch.undo()
+
+    # (b) one byte under the cap is read, with the same memory bound as the cap itself
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES - 1)
+    assert len(data) == package_module.MAX_KICAD_TEXT_BYTES - 1
+    zip_path = make_zip(tmp_path / "under.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)
+
+
+def test_string_heavy_astral_text_bound_is_in_storage_bytes(tmp_path):
+    _require_linear_tokenizer()
+    _require_linear_unquote()
+    data, body = _string_symbol("escape", package_module.MAX_KICAD_TEXT_BYTES, astral=True)
+    assert len(data) == 8 * 1024 * 1024
+    # CPython stores text holding an astral character at 4 bytes per character, so raw bytes are not the yardstick
+    storage = sys.getsizeof(data.decode("utf-8"))
+    assert storage > 3 * len(data)
+    _inside_every_zip_limit(data)
+    zip_path = make_zip(tmp_path / "pkg.zip", [("hostile.kicad_sym", data), ("good.kicad_mod", footprint("GOOD"))])
+    result, peak, seconds = _measure(zip_path)
+    _assert_read_in_bounds(result, peak, seconds, data, description=body)

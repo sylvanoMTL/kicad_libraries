@@ -1,0 +1,168 @@
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QGuiApplication, QKeySequence
+from PySide6.QtWidgets import QAbstractItemView, QHeaderView, QTreeWidget, QTreeWidgetItem
+
+from ..importer.preview import PreviewRow, PreviewSection
+from . import theme
+
+_TONE_COLORS = {
+    "success": theme.SUCCESS,
+    "muted": theme.MUTED,
+    "warning": theme.AMBER,
+    "error": theme.ERROR,
+}
+_NEEDS_CHOICE = "Needs a choice"
+
+ITEM_SHARE = 0.55  # Item's share of the viewport, applied once when the tree is first shown at a real width
+MIN_COLUMN_WIDTH = 120  # px, the narrowest either column may be (header minimum section size and clamp margin)
+
+
+class PreviewTree(QTreeWidget):
+    """Sectioned tree of the plan preview: one Heading header per section, one child per row.
+
+    Item is user-resizable (drag the divider); Detail is the stretched last section: it fills the rest of the
+    tree and elides, the full text stays in its tooltip.
+    """
+
+    row_activated = Signal(object)  # PreviewRow of a non-header row, on double click or Enter
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setColumnCount(2)
+        self.setHeaderLabels(["Item", "Detail"])
+        header = self.header()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+        header.setStretchLastSection(True)
+        header.setMinimumSectionSize(MIN_COLUMN_WIDTH)
+        self.setAlternatingRowColors(True)
+        self.setRootIsDecorated(True)
+        self.setWordWrap(True)
+        self.setUniformRowHeights(False)
+        self.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.itemDoubleClicked.connect(self._on_double_clicked)
+        header.sectionResized.connect(self._on_section_resized)
+        self._sections: tuple[PreviewSection, ...] = ()
+        self._item_width_set = False
+
+    @property
+    def sections(self) -> tuple[PreviewSection, ...]:
+        return self._sections
+
+    # -- column widths -----------------------------------------------------------------------------
+
+    def _apply_initial_width(self) -> None:
+        # Set once, so a width the user dragged is never reset; render() never touches column widths
+        if self._item_width_set or not self.isVisible() or self.viewport().width() < 2 * MIN_COLUMN_WIDTH:
+            return
+        self.setColumnWidth(0, round(self.viewport().width() * ITEM_SHARE))
+        self._item_width_set = True
+
+    def _clamp_item_width(self) -> None:
+        # Detail keeps MIN_COLUMN_WIDTH: a narrower tree or a drag past that point shrinks Item instead
+        if not self._item_width_set:
+            return
+        limit = self.viewport().width() - MIN_COLUMN_WIDTH
+        if self.columnWidth(0) > limit:
+            self.setColumnWidth(0, max(limit, MIN_COLUMN_WIDTH))
+
+    def _on_section_resized(self, logical: int, _old: int, _new: int) -> None:
+        if logical == 0:
+            self._clamp_item_width()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._apply_initial_width()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._apply_initial_width()
+        self._clamp_item_width()
+
+    # -- rendering ---------------------------------------------------------------------------
+
+    def render(self, sections: tuple[PreviewSection, ...]) -> None:
+        """Replace the tree contents; section expand state and the vertical scroll position are kept (D-06)."""
+        self._sections = tuple(sections)
+        # Section headers keep their bare name in UserRole, so the state is keyed by name and not by the counted title
+        expanded = {
+            self.topLevelItem(i).data(0, Qt.ItemDataRole.UserRole): self.topLevelItem(i).isExpanded()
+            for i in range(self.topLevelItemCount())
+        }
+        bar = self.verticalScrollBar()
+        scroll = bar.value()
+        self.setUpdatesEnabled(False)
+        try:
+            self.clear()
+            heading = QFont(self.font())
+            heading.setPointSize(theme.HEADING_PT)
+            heading.setBold(True)
+            background = QBrush(QColor(theme.SURFACE_HEADER))
+            for section in self._sections:
+                header = QTreeWidgetItem([section.title])
+                header.setData(0, Qt.ItemDataRole.UserRole, section.name)
+                header.setFont(0, heading)
+                header.setBackground(0, background)
+                header.setBackground(1, background)
+                self.addTopLevelItem(header)
+                for row in section.rows:
+                    header.addChild(self._row_item(row))
+                header.setExpanded(expanded.get(section.name, True))
+            self.doItemsLayout()
+            bar.setValue(min(scroll, bar.maximum()))
+        finally:
+            self.setUpdatesEnabled(True)
+
+    def _row_item(self, row: PreviewRow) -> QTreeWidgetItem:
+        # Plain item text: QTreeWidgetItem never interprets markup
+        item = QTreeWidgetItem([row.text, row.detail])
+        item.setData(0, Qt.ItemDataRole.UserRole, row)
+        item.setToolTip(0, row.text)
+        item.setToolTip(1, row.detail)
+        color = _TONE_COLORS.get(row.tone)
+        needs_choice = row.detail == _NEEDS_CHOICE
+        if color is not None:
+            # The tone of a conflict row belongs to its choice, the item keeps the default colour
+            for column in ((1,) if needs_choice else (0, 1)):
+                item.setForeground(column, QBrush(QColor(color)))
+        if row.kind == "file" and row.glyph in ("+", "~"):
+            bold = QFont(self.font())
+            bold.setBold(True)
+            item.setFont(0, bold)
+            item.setFont(1, bold)
+        if needs_choice:
+            bold = QFont(self.font())
+            bold.setBold(True)
+            item.setFont(1, bold)
+        if row.kind == "rewrite":
+            item.setFont(1, QFont(theme.MONO_FAMILY, theme.MONO_PT))
+        return item
+
+    # -- activation and copy -------------------------------------------------------------------------
+
+    def _row_of(self, item: QTreeWidgetItem | None) -> PreviewRow | None:
+        if item is None or item.parent() is None:
+            return None
+        row = item.data(0, Qt.ItemDataRole.UserRole)
+        return row if isinstance(row, PreviewRow) else None
+
+    def _on_double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
+        row = self._row_of(item)
+        if row is not None:
+            self.row_activated.emit(row)
+
+    def keyPressEvent(self, event) -> None:
+        item = self.currentItem()
+        if event.matches(QKeySequence.StandardKey.Copy):
+            if item is not None:
+                QGuiApplication.clipboard().setText(f"{item.text(0)}\t{item.text(1)}")
+            event.accept()
+            return
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            row = self._row_of(item)
+            if row is not None:
+                self.row_activated.emit(row)
+                event.accept()
+                return
+        super().keyPressEvent(event)

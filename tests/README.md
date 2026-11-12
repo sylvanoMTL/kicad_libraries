@@ -1,0 +1,125 @@
+# Tests
+
+This folder holds the pytest suite for the KiCad Library Manager and its part importer.
+
+## How to run
+
+Run these from the repository root with the project's virtual environment.
+
+- Full suite: `.\env\Scripts\python.exe -m pytest`
+- Quick run, without the WurthElektronik stress corpus: `.\env\Scripts\python.exe -m pytest -m "not wurth"`
+- Only the tests that run the real kicad-cli 10 binary: `.\env\Scripts\python.exe -m pytest -m kicad_cli`
+- Only the WurthElektronik corpus: `.\env\Scripts\python.exe -m pytest -m wurth`
+
+The full suite takes about 18 minutes on the workstation. The quick run takes about 8 minutes.
+Bare `pytest` already prints the reason for every skip (`-ra` is set in `pyproject.toml`).
+
+## The rule: never touch the live Custom/
+
+The suite must never write to the live `Custom/` folder, and no test result may depend on which parts it holds.
+Adding or removing a real part in `Custom/` must not change a test result.
+
+- Tests that need a target library use one of two synthetic `Custom/` fixtures from `tests/conftest.py`, built by `tests/customfixtures.py`.
+  Both write into a temporary folder and never contain the Ultra Librarian sample part.
+  - `synthetic_custom` (`write_synthetic_custom` with the default `naming="v1"`) keeps today's v1 names.
+    It writes one library per format version (20211014, 20231120, 20241209, 20251024) and models the live tree for the scan tests.
+  - `atomic_custom` (`naming="atomic"`) holds the `Atomic_` install targets, with their footprints in one `Atomic_Footprints.pretty`.
+    The install and importer tests use it.
+- Every test that names a footprint location goes through `footprint_library_for` in `tests/zipfixtures.py`, so the name of the shared footprint library lives in one place.
+- Do not copy real libraries into fixtures.
+  The one exception is the opt-in atomic UAT builder (`tests/test_atomic_uat.py`): it reads the live `Custom/` only to make a scratch copy outside the repository and never writes it, and it does not run unless `KICAD_ATOMIC_UAT_DIR` is set.
+  The other opt-in builder (`KICAD_IMPORT_UAT_DIR`) does not read the live `Custom/` at all.
+- A session guard in `tests/conftest.py` fails the run if the live `Custom/` changes while the suite runs, and names the paths.
+  If you edit `Custom/` by hand during a run, run the suite again.
+
+## Expected skips
+
+Each row is one condition that makes tests skip. `pytest -rs` prints the message in the second column.
+
+| Condition | Message printed by `pytest -rs` | Why | How to enable |
+| --- | --- | --- | --- |
+| No kicad-cli 10 | `kicad-cli not found (these tests need KiCad 10)`, `could not run kicad-cli version at <exe>: <detail>`, or `needs kicad-cli 10, found <version> at <exe>` | The real-binary tests pin KiCad 10 (format 20251024, generator 10.0) and skip on any other major version. | Install KiCad 10. The newest install is used. |
+| Symlinks not permitted | `symlinks not permitted here: [WinError 1314] A required privilege is not held by the client: ...` | Creating a symbolic link needs a privilege that a normal Windows account does not have. | Turn on Windows Developer Mode, or run the tests from an elevated shell. |
+| No WurthElektronik submodule | `WurthElektronik submodule not checked out (git submodule update --init WurthElektronik/KiCad-Library)` | The stress and round-trip corpus reads the Wurth library. | `git submodule update --init WurthElektronik/KiCad-Library` |
+| `KICAD_IMPORT_UAT_DIR` unset | `set KICAD_IMPORT_UAT_DIR to build the manual UAT scratch install` | This test builds a scratch install for the owner to open in KiCad 10. It is not an automated check. | Set `KICAD_IMPORT_UAT_DIR` to a folder outside the repository, then run `tests/test_install_e2e.py::test_uat_scratch_install -s` and open the result in KiCad 10. |
+| `KICAD_ATOMIC_UAT_DIR` unset | `set KICAD_ATOMIC_UAT_DIR to build the atomic-check UAT scratch repo` | This test builds a scratch copy of the repo with Atomic_ libraries for the owner to open in the app. It is not an automated check. | Set `KICAD_ATOMIC_UAT_DIR` to a folder outside the repository, run `tests/test_atomic_uat.py::test_uat_atomic_scratch -s`, then start the command it prints. |
+| `local_kicad` | `no KiCad user config tables found` | These tests read the user's real KiCad library tables, read-only, and have nothing to read on a machine without them. | They run when the tables exist. Deselect them with `-m "not local_kicad"`. |
+| Case-sensitive folder cannot be made | `could not make a case-sensitive folder: <reason>` | `tests/test_case_sensitive_install.py` proves case-twin rollback and overwrite on a real case-sensitive folder (VER-02). | On Windows 11, `fsutil file setCaseSensitiveInfo` works without admin rights on an NTFS volume; on macOS use a case-sensitive APFS volume. |
+
+On the workstation the expected skips are exactly four: the two symlink skips (`tests/test_model_source.py` and `tests/test_package_folder.py`), the `KICAD_IMPORT_UAT_DIR` skip and the `KICAD_ATOMIC_UAT_DIR` skip.
+Anything else that is skipped there is a finding.
+
+## Other conditional skips
+
+These skip only on a machine that lacks something. None of them skip on the workstation.
+
+- Custom submodule not checked out: `Custom submodule not checked out (git submodule update --init Custom)`.
+  Used by the read-only live health checks below.
+- Case-sensitive volume: `case-sensitive volume` (`tests/test_commit_plan.py`).
+- Directory links unavailable: `directory links are not available here` (`tests/test_install_apply.py`).
+- Junctions unavailable: `junctions are a Windows feature` and `could not create a junction here` (`tests/test_package_folder.py`).
+- Git not on PATH: `git is not on PATH` (`tests/gitfixtures.py`, `tests/test_fixtures.py`, `tests/test_package_zip.py`).
+- Windows PowerShell missing: `Windows PowerShell not found (the paste-safety test runs the generated command in it)` (`tests/test_commit_step.py`).
+  It runs on the workstation.
+- A zipfile feature missing: `this Python's zipfile has no <name>` (`tests/test_package_zip.py`).
+- Licence-restricted vendor samples absent: `downloaded_examples/<file> not present (licence-restricted <vendor> sample, kept local)`
+  (`tests/test_real_vendor_samples.py`, `tests/test_vendorfixtures.py`, `tests/test_categories.py`, `tests/test_footprint_text.py`, `tests/test_atomic_targets.py`, `tests/test_gate_reasons.py`).
+  Only `ul_CSD85301Q2.zip` is committed.
+  The others are kept local: the SnapEDA, SamacSys and SnapEDA 3D model downloads, and the Ultra Librarian sample `ul_ATXK-H14-D-32-768KHZ-E50-T3.zip`.
+  `ul_ATXK-H14-D-32-768KHZ-E50-T3.zip` is used by `tests/test_real_vendor_samples.py`, `tests/test_atomic_targets.py` and `tests/test_gate_reasons.py` (each prints `downloaded_examples/ul_ATXK-H14-D-32-768KHZ-E50-T3.zip not present`) and by `tests/test_footprint_text.py`.
+  `tests/test_suggest_atomic.py` prints `the licence-restricted Ultra Librarian sample is not present` when `ul_CSD85301Q2.zip` is missing.
+- No KiCad stock symbols folder: `no KiCad install with a stock symbols folder`
+  (`tests/test_footprint_text.py`, `tests/test_install_verify.py`, `tests/test_official_footprint.py`, `tests/test_siblings.py`, `tests/test_stems.py`).
+- Installed KiCad is not version 10: `installed KiCad is not version 10` (`tests/test_stems.py`, `tests/test_siblings.py`).
+  `tests/test_real_vendor_samples.py` prints `no KiCad 10 install with a stock symbols folder` for the same two conditions together.
+- No KiCad footprints folder: `no KiCad install with a footprints folder` (`tests/test_footprint_index.py`, `tests/test_generated_text.py`).
+- `tomllib` missing on Python 3.10: `tests/test_manifests.py` skips through `importorskip`.
+- Windows-only behaviour on another platform:
+  `held-open handles block os.replace only on win32`, `case is only ignored on Windows`,
+  `replacing a case twin leaves one entry only on NTFS (research spike S7)`.
+- Importer package not present: `kicad_lib_manager/importer not present yet ...` (`tests/test_importer_layering.py`).
+
+## Migration tests (Phase 13)
+
+Every migration test builds its own `Custom/` under `tmp_path` from `tests/migrationfixtures.py`
+(a rich synthetic v1 tree, never the live repo's `Custom/`), and its git repos with
+`tests/gitfixtures.py` (throwaway repos, never the live Custom submodule or parent repo).
+
+- `tests/test_migration_full.py`, `tests/test_migration_commit.py`,
+  `tests/test_migration_precheck.py` and `tests/test_commit_deletions.py` need a real git
+  binary (`requires_git`) to exercise the tag, commit and precheck paths against a throwaway
+  repo; they skip with `git is not on PATH` where git is unavailable.
+- `tests/test_migration_families.py::test_real_kicad_loads_derived_library` is marked
+  `@pytest.mark.kicad_cli` and skips with the same reason as the "No kicad-cli 10" row above
+  (`kicad-cli not found (these tests need KiCad 10)`, or the version-mismatch variant) when
+  KiCad 10's command-line tool is absent.
+
+## Read-only live health checks
+
+A few tests read the live `Custom/` on purpose (decision D-04). They never write to it.
+They fail when a live part breaks a rule, so a red result there is a finding about the live data, not a test bug.
+
+- `test_kicad_files.py::test_live_custom_symbols`
+- `test_naming_sanitize.py::test_sanitize_live_custom_names_unchanged`
+- `test_scanner_issues.py::test_live_custom_model_findings_are_zero`
+- the `custom/...` cases of the round-trip corpus in `test_roundtrip_corpus.py`
+- `test_edits.py`, which reads `Connector_USB_GCT.kicad_sym`. After the owner's live Phase 13
+  migration this library no longer exists (it is re-filed into `Atomic_Connector`), so the
+  file-missing check (`CUSTOM_SYMBOL.exists()`) skips the test with the same message as the
+  submodule-not-checked-out case, `Custom submodule not checked out (git submodule update
+  --init Custom)` -- the submodule is still checked out, only that one file is gone. The other
+  live checks above keep reading whichever `Atomic_` libraries the migrated `Custom/` now
+  holds.
+
+## WurthElektronik corpus timing
+
+The `wurth` tests read the pinned submodule commit `2e6e51b1bd78f89b31c358214642ba7e795872e0`.
+Measured on 2026-10-25 on the workstation (Windows 11, CPython 3.14):
+
+- Files in the corpus: 6034.
+- Parsing every file once (`test_wurth_corpus_parse_budget`): 69.5 s, about 0.012 s per file.
+- Whole `-m wurth` run: about 8 min 45 s.
+
+The parse budget is `max(60 s, 0.05 s x number of files)` (`_WURTH_PARSE_BUDGET_PER_FILE` in `tests/test_roundtrip_corpus.py`).
+For this corpus the budget is about 302 s.
+The earlier fixed 60 s limit was too tight for 6034 files.

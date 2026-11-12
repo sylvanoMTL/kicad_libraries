@@ -1,0 +1,134 @@
+"""D-13: an explicitly cleared field installs as an empty value, and MPN cannot be cleared (Phase 5).
+
+Value cannot be cleared either: it has no option at all, because it always follows the MPN (D-22).
+"""
+
+import dataclasses
+
+import pytest
+from customfixtures import BATTERY_CHARGER
+from installfixtures import UL_DESCRIPTION
+from zipfixtures import footprint_library_for, write_custom_layout
+
+from kicad_lib_manager.importer.layout import RepoLayout
+from kicad_lib_manager.importer.plan import InstallOptions
+from kicad_lib_manager.importer.planner import build_plan
+from kicad_lib_manager.kicad_files import find_property, find_symbol, parse_bytes
+from kicad_lib_manager.models import Severity
+
+UL_LIBRARY = BATTERY_CHARGER
+
+
+@pytest.fixture
+def ul_layout(tmp_path):
+    """A synthetic Custom/ holding the UL target pair, so these tests never depend on the Custom submodule."""
+    write_custom_layout(tmp_path, [UL_LIBRARY], [footprint_library_for(UL_LIBRARY)])
+    return RepoLayout.for_repo(tmp_path)
+
+
+def _chosen_symbol(plan):
+    sym_op = next(op for op in plan.ops if op.kind == "symbol_lib")
+    return find_symbol(parse_bytes(sym_op.data, "lib").root, plan.symbol_name)
+
+
+def _prop(plan, name):
+    found = find_property(_chosen_symbol(plan).node, name)
+    return None if found is None else found.value
+
+
+def _errors(plan):
+    return [i for i in plan.issues if i.severity is Severity.ERROR]
+
+
+# -- InstallOptions.cleared ------------------------------------------------------
+
+
+def test_cleared_options_store_empty():
+    cleared = frozenset({"datasheet"})
+    for blank in ("", "   ", None):
+        assert InstallOptions(library="X", datasheet=blank, cleared=cleared).datasheet == ""
+    assert InstallOptions(library="X", datasheet="https://a", cleared=cleared).datasheet == "https://a"
+    # A field not named in cleared keeps the WR-05 rule
+    assert InstallOptions(library="X", description="", cleared=cleared).description is None
+    options = InstallOptions(library="X", manufacturer="", cleared=frozenset({"manufacturer"}))
+    again = dataclasses.replace(options, description="D")
+    assert again.manufacturer == ""
+    assert again.cleared == frozenset({"manufacturer"})
+    assert again.description == "D"
+    with pytest.raises(ValueError, match="footprint"):
+        InstallOptions(library="X", cleared=frozenset({"footprint"}))
+
+
+# -- planner: cleared fields on the UL sample ------------------------------------
+
+
+def test_cleared_datasheet_writes_empty_property(ul_layout, ul_package):
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, cleared=frozenset({"datasheet"})), ul_layout)
+    # The Datasheet is written empty as asked, and the atomic gate then refuses the part for it (D-21)
+    assert [i.code for i in _errors(plan)] == ["install.atomic.datasheet"]
+    assert plan.blocked
+    assert _prop(plan, "Datasheet") == ""
+    assert _prop(plan, "Value") == "CSD85301Q2"
+    assert _prop(plan, "MPN") == "CSD85301Q2"
+    assert _prop(plan, "Manufacturer") == "Texas Instruments"
+    assert plan.model_file == "CSD85301Q2.stp"
+
+
+def test_cleared_manufacturer_skips_inference(ul_layout, ul_package):
+    _, candidate = ul_package
+    unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION), ul_layout)
+    assert _prop(unset, "Manufacturer") == "Texas Instruments"
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, cleared=frozenset({"manufacturer"})), ul_layout)
+    # Nothing is inferred; the empty Manufacturer is then refused by the atomic gate (D-21)
+    assert [i.code for i in _errors(plan)] == ["install.atomic.manufacturer"]
+    assert plan.blocked
+    assert _prop(plan, "Manufacturer") == ""
+    sym_op = next(op for op in plan.ops if op.kind == "symbol_lib")
+    assert b'"Texas Instruments"' not in sym_op.data
+
+
+def test_cleared_description_creates_empty_property(ul_layout, ul_package):
+    _, candidate = ul_package
+    unset = build_plan(candidate, InstallOptions(library=UL_LIBRARY), ul_layout)
+    assert _prop(unset, "ki_description") is None and _prop(unset, "Description") is None
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({"description"})), ul_layout)
+    # The empty Description is written as asked, and the atomic gate then refuses the part for it (D-21)
+    assert [i.code for i in _errors(plan)] == ["install.atomic.description"]
+    assert plan.blocked
+    assert [_prop(plan, "ki_description"), _prop(plan, "Description")].count("") == 1
+
+
+def test_cleared_mpn_refused_with_its_text(ul_layout, ul_package):
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({"mpn"})), ul_layout)
+    assert plan.blocked and not plan.ops
+    text = "MPN cannot be empty: it names the 3D model file; enter a part number"
+    assert [(i.code, i.text) for i in _errors(plan)] == [("install.empty_required", text)]
+
+
+def test_value_cannot_be_cleared_or_set(ul_layout, ul_package):
+    """There is no Value option (D-22): naming it is a programming error, and Value stays the MPN."""
+    with pytest.raises(ValueError, match="value"):
+        InstallOptions(library=UL_LIBRARY, cleared=frozenset({"value"}))
+    with pytest.raises(TypeError):
+        InstallOptions(library=UL_LIBRARY, value="")  # type: ignore[call-arg]
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description=UL_DESCRIPTION, mpn="NEW-MPN"), ul_layout)
+    assert not plan.blocked, plan.issues
+    assert _prop(plan, "Value") == _prop(plan, "MPN") == "NEW-MPN"
+
+
+def test_cleared_mpn_refused(ul_layout, ul_package):
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, cleared=frozenset({"mpn"})), ul_layout)
+    assert plan.blocked and not plan.ops
+    assert [i.code for i in _errors(plan)] == ["install.empty_required"]
+    assert plan.model_file is None
+
+
+def test_override_text_written_exactly(ul_layout, ul_package):
+    _, candidate = ul_package
+    plan = build_plan(candidate, InstallOptions(library=UL_LIBRARY, description="Dual N-Channel  FET "), ul_layout)
+    assert not plan.blocked, plan.issues
+    assert "Dual N-Channel  FET " in [_prop(plan, "ki_description"), _prop(plan, "Description")]

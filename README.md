@@ -11,7 +11,7 @@ Kicad_Libraries/
 │   └── Footprints/
 ├── WurthElektronik/
 │   └── KiCad-Library/            ← Wurth open-source library (submodule)
-├── generate_lib_tables.py        ← Script to generate KiCad library tables
+├── kicad_lib_manager.py          ← Library Manager GUI (generates the library tables)
 ├── sym-lib-table                 ← Generated symbol library table
 └── fp-lib-table                  ← Generated footprint library table
 ```
@@ -32,11 +32,11 @@ git submodule update --init --recursive
 
 ### 2. Generate library tables
 
-```bash
-python generate_lib_tables.py
+```powershell
+.\env\Scripts\python.exe kicad_lib_manager.py
 ```
 
-This scans the repo for all `.kicad_sym` files and `.pretty` directories and generates `sym-lib-table` and `fp-lib-table` using the `${KICAD_LIB_GITHUB}` environment variable for portable paths.
+Select the libraries you want and press **Generate Tables** (Ctrl+G). The GUI scans the repo for all `.kicad_sym` files and `.pretty` directories and generates `sym-lib-table` and `fp-lib-table` using the `${KICAD_LIB_GITHUB}` environment variable for portable paths.
 
 ### 3. Configure KiCad
 
@@ -67,10 +67,9 @@ Copy the generated files to your KiCad config directory:
 
 ```bash
 git submodule add <repo-url> <VendorName>/<LibName>
-python generate_lib_tables.py
 ```
 
-Then re-import the updated tables into KiCad.
+Then rescan in the GUI (Ctrl+Shift+R) and press **Generate Tables**, and re-import the updated tables into KiCad.
 
 ## Updating submodules
 

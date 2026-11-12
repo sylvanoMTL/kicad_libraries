@@ -1,0 +1,4 @@
+(footprint "FIX_NO_EOL"
+  (layer "F.Cu")
+  (model "${CUSTOM_3DMODEL_DIR}/FIX_NO_EOL.step")
+)

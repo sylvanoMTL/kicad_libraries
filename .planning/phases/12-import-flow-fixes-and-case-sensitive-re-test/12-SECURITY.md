@@ -1,0 +1,181 @@
+---
+phase: "12"
+slug: "import-flow-fixes-and-case-sensitive-re-test"
+status: verified
+# threats_open = count of OPEN threats at or above workflow.security_block_on severity (the blocking gate)
+threats_open: 0
+asvs_level: 1
+created: "2026-11-01"
+---
+
+# Phase 12 — Security
+
+> Per-phase security contract: threat register, accepted risks, and audit trail.
+
+---
+
+## Trust Boundaries
+
+| Boundary | Description | Data Crossing |
+|----------|-------------|---------------|
+| vendor package -> Custom/ files | incoming file names and bytes cross into the owner's library folders | file names, file bytes (owner library content) |
+| test process -> OS (fsutil) | the tests run a System32 tool to change a folder flag | fixed arguments on a fresh tmp folder |
+| library tables on disk -> table step | the owner's sym-lib-table and fp-lib-table may hold hand entries and stale entries | table entries (nickname, URI) |
+| table step -> KiCad | KiCad loads whatever the tables point at | library URIs |
+| Destination box / backup folder box -> filesystem | user-typed text becomes a folder the app reads and writes | folder paths |
+| app -> KiCad global settings (kicad_common.json) | the app writes a file KiCad also writes | two path variables; the rest of the owner's KiCad settings |
+| user leave/close requests -> running workers | Change..., open, Cancel, Close, X and Escape arrive while kicad-cli, git or file reads may run | UI events |
+| worker threads -> GUI thread | build, one-off, open and process-list results arrive as queued signals | worker results |
+| dialog lifetime -> QThread lifetime | the dialog owns its workers; destroying it under a running thread crashes the process | object lifetime |
+| user -> import dialog (start-page Cancel) | a Cancel click ends the import session; no new input is parsed (12-13) | UI event |
+| OS screen geometry -> import dialog / User Guide | the free area of the screen decides the window size and position; trusted platform data (12-13, 12-14) | screen rectangle |
+| static help text -> menu and rendered page | menu labels and anchors are derived from the guide's own static text; no user, vendor or path value enters it (12-14) | heading text, anchor names |
+| package issue texts -> start page list | rows stay plain QListWidgetItem text; only the start window size follows their count (12-15) | issue texts |
+| saved scan file -> scan_cache.decode_result | untrusted JSON read back at startup; the new skipped_sources / models_unchecked fields cross here (12-16) | saved scan fields |
+| package source files -> code signature | the scan's own modules, found through the import graph, decide whether a saved scan is still valid (12-16) | module source bytes |
+| GUI thread -> scan worker thread | the Skip click becomes a request the worker reads per file (12-17) | source name |
+| main window -> import window / User Guide | the import window gets a callable, never the main window object; the guide is a parentless window that takes input beside window-modal dialogs by design (12-18, 12-20) | UI events |
+| settings.ini -> HelpDialog | the remembered guide place is read back at every no-topic open; the file is user-editable (12-19) | topic key |
+
+Plans 12-02 and 12-08 add no new boundary (static stylesheets, Help text and a planning document).
+
+---
+
+## Threat Register
+
+| Threat ID | Category | Component | Severity | Disposition | Mitigation | Status |
+|-----------|----------|-----------|----------|-------------|------------|--------|
+| T-12-01 | Tampering | planner overwrite of a case twin | medium | mitigate | Overwrite decision uses `spec.identity_of(hit)` (planner.py); `test_overwrite_model_twin_keeps_disk_spelling`, `test_overwrite_footprint_twin_keeps_disk_spelling` pass on a real case-sensitive folder | closed |
+| T-12-02 | Tampering | rollback over a twin | medium | mitigate | `applier._drop_twin` unchanged; `test_rollback_removes_hand_built_twin` passes on a real listing | closed |
+| T-12-03 | Elevation of privilege | fsutil call in tests/casefixtures.py | low | mitigate | Absolute System32 path, `timeout=30`, no `shell=True`, fresh folder under tmp_path, failure skips with a stated reason | closed |
+| T-12-04 | Spoofing | Help page rich text | low | accept | Fixed strings built from constants; see Accepted Risks Log | closed |
+| T-12-05 | Tampering | `_add_entry` repoint | high | mitigate | Only `_MANAGED_MARKER` entries with a gone target are repointed, after a backup; `test_live_managed_entry_warns_and_keeps_table`, `test_hand_entry_is_never_edited_even_when_stale` | closed |
+| T-12-06 | Tampering | URI written by a repoint | medium | mitigate | New URI built from the planned `rel_path` and passed through `sexpr.quote` (table_generator.py); only the URI token is edited | closed |
+| T-12-07 | Repudiation | silent table change | low | mitigate | Every repoint logs `table.backed_up` and `table.entry_updated` and sets the Result row (table_generator.py, main_window.py) | closed |
+| T-12-08 | Tampering | `_finish_post_install`, `_on_generate` | high | mitigate | `MainWindow._dest_path()` returns None for blank text and every caller stops before any table read or write; tests run under `monkeypatch.chdir` to an empty folder | closed |
+| T-12-09 | Tampering | `BackupDialog` restore | medium | mitigate | `BackupDialog._folder()` returns None for blank text; `test_blank_folder_cannot_restore` | closed |
+| T-12-10 | Denial of service | GUI thread during Change/open | high | mitigate | Actions deferred through Finishing (`_reap` / `_try_finish`); `test_change_never_waits_unbounded` | closed |
+| T-12-11 | Tampering | package closed under a running build | high | mitigate | Change/open run only when no build runs; `test_change_waits_for_build_without_blocking` | closed |
+| T-12-12 | Tampering | one-off build reading the library while Install writes it | high | mitigate | A running one-off counts as updating (Install disabled) and jobs are held during install; `test_install_disabled_while_oneoff_runs`, `test_oneoff_held_during_install_runs_after_failure` | closed |
+| T-12-13 | Denial of service | worker object lifetime | medium | mitigate | Workers are never `deleteLater`'d (the only `deleteLater` calls remove widgets); `_reap` keeps a bounded `wait(2000)` | closed |
+| T-12-14 | Tampering | `sync_kicad_path_vars` lost update | high | mitigate | Re-read after the confirm, merge only the two variables, `_only_vars_changed` on the fresh content, backup, atomic replace; `test_confirmed_write_keeps_settings_saved_meanwhile` | closed |
+| T-12-15 | Elevation of privilege | write without consent | high | mitigate | RETRY and DECLINE return before any backup; a changed list asks again; `test_retry_answer_writes_nothing`, `test_changed_list_asks_again` | closed |
+| T-12-16 | Denial of service | `tasklist` on the GUI thread | medium | mitigate | KiCad check runs on a `TaskWorker`, one at a time; close defers; `test_post_install_check_runs_off_gui_thread`, `test_close_waits_for_check_without_blocking` | closed |
+| T-12-17 | Tampering | malformed JSON on the re-read | medium | mitigate | `_read_config` returns the existing bad-JSON / bad-shape errors and nothing is written; `test_bad_json_on_reread_aborts` | closed |
+| T-12-18 | Denial of service | GUI thread at close | high | mitigate | `done` / `closeEvent` defer through Finishing; no unbounded `.wait()` remains in import_dialog.py (grep count 0) | closed |
+| T-12-19 | Denial of service | dialog destroyed under a live QThread | high | mitigate | `_finish_close` runs only when no close-relevant worker runs; the main window ignores its own close until the dialog finishes; conftest joins threads at teardown | closed |
+| T-12-20 | Tampering | package closed under a reader | high | mitigate | `_discard_package` runs inside `_shutdown`, only with no running worker; `test_close_finishes_after_build_and_closes_package` | closed |
+| T-12-21 | Repudiation | probe cancelled by a cancelled close | low | mitigate | Probe restarts on Cancel; superseded results dropped by the generation check; `test_cancelled_close_reprobes` | closed |
+| T-12-22 | Repudiation | review dispositions | low | mitigate | 05-REVIEW-DISPOSITION.md marks WR-01/02/03/05/06 fixed, each naming its Phase 12 plan and behaviour | closed |
+| T-12-23 | Tampering | `ImportDialog._cancel_btn` during an install | medium | mitigate | Cancel is wired to `reject()`; `done()` returns early while `is_installing()` or `is_committing()`; `_sync_cancel_button()` greys it out then; `test_cancel_button_disabled_while_installing` | closed |
+| T-12-24 | Denial of service | Cancel while a build or worker runs | low | mitigate | Cancel takes the same `done()` → `_enter_finishing("close", …)` path as the window X, no GUI-thread join; `test_cancel_button_during_build_enters_finishing` | closed |
+| T-12-25 | Repudiation | log and issue messages after rewording | low | mitigate | Reworded texts keep issue codes, severities and the matched phrases "Could not", "not found", "timed out after"; existing code/severity assertions in test_kicad_config, test_kicad_cli, test_install_plan, test_install_apply pass unchanged (full suite at 60df383) | closed |
+| T-12-26 | Tampering | `sync_kicad_path_vars` write path | low | mitigate | 12-10 Task 1 changes string literals only; read, compare, backup and atomic replace unchanged; whole tests/test_kicad_config.py passes | closed |
+| T-12-27 | Repudiation | `tests/test_plain_names.py` passing on an empty scan | low | mitigate | Guard asserts `len(files) > _SCAN_AT_LEAST` and that at least one allowed bare name was seen (tests/test_plain_names.py L41, L61) | closed |
+| T-12-28 | Tampering | `sync_kicad_path_vars` backup location | low | mitigate | Search tokens include ".json", so the `"kicad_common" / config_dir.name` backup segment (library_scanner.py L347) is not matched and stays unchanged | closed |
+| T-12-29 | Tampering | `ImportDialog._on_help` during an install or commit | medium | mitigate | `_on_help` returns while closing and otherwise only creates or shows HelpDialog with `show()`; no `done`, `reject`, install or git call, no import state read (import_dialog.py L547-561); `test_help_works_while_installing`, `test_help_works_while_committing` | closed |
+| T-12-30 | Denial of service | Help opened while a close waits in Finishing | low | mitigate | Guide shown with `show()`, never `exec()`, so no nested event loop; `_shutdown` takes and closes `_help_dialog`; `test_help_works_while_finishing_and_closes_with_the_dialog` | closed |
+| T-12-31 | Information disclosure | HelpDialog pages | low | accept | Static text from constants; 12-12 adds only static sentences; see Accepted Risks Log | closed |
+| T-12-32 | Tampering | `ImportDialog._start_cancel_btn` while a package is read | medium | mitigate | Button wired to `reject()` (import_dialog.py L774); `done()` enters Finishing while `_busy_for("close")` lists any running worker, and `_discard_package` runs only in `_shutdown` from `_finish_close`; `test_start_page_cancel_while_reading_waits_then_closes` | closed |
+| T-12-33 | Denial of service | import window placed partly off screen (Install Part / Cancel unreachable) | medium | mitigate | `fit_window` (import_dialog.py L174) bounds the size by `screen_area` less the frame allowance via `_fit_size` and moves a visible frame inside with `_place_inside`; `_fit_to_screen` calls it on first show; `test_window_fits_the_screen` (100%, 200%, owner screen), `test_start_page_opens_small`, `test_fit_size_and_place_inside` | closed |
+| T-12-34 | Repudiation | conftest default screen area hiding the real screen code | low | mitigate | `real_screen_area` captured at module import, before the autouse patch; `test_screen_area_reads_the_widget_screen` compares it with `dialog.screen().availableGeometry()` | closed |
+| T-12-35 | Tampering | `render_page` anchors built from heading text | low | mitigate | `section_anchor` (help_dialog.py L515) keeps only a-z, 0-9 and hyphens, ends trimmed; menu rows are plain `QTreeWidgetItem([entry.text])`; `test_every_page_heading_is_in_the_menu_under_its_page` asserts `re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", anchor)` | closed |
+| T-12-36 | Information disclosure | HelpDialog pages (numbers and anchors) | low | accept | Static text from constants; 12-14 adds only numbers and anchors; see Accepted Risks Log | closed |
+| T-12-37 | Denial of service | User Guide window partly off screen at 200% (Close hidden) | low | mitigate | `HelpDialog.showEvent` calls the shared `fit_window(self, self.size())` (help_dialog.py L602-605); `test_help_window_fits_the_screen` (Help and F1, 100% and 200%), `test_help_dialog_fits_the_screen` | closed |
+| T-12-38 | Denial of service | start window sized to its content pushing Cancel off screen when issues show at 200% | low | mitigate | Every start size goes through `fit_window` (import_dialog.py L175); `_show_start_issues` / `_hide_issue_box` refit via `_fit_to_screen(self._start_size())` (L1581-1585); `test_start_issues_refit_the_window`, `test_start_page_is_as_tall_as_its_content` | closed |
+| T-12-39 | Repudiation | skipped scan reused at startup as if complete | medium | mitigate | `skipped_sources` / `models_unchecked` saved and decoded (scan_cache.py L432-445); reuse note names the skipped sources (L591-594); `models_skipped_issue` builds the skip line (library_scanner.py L621); `test_reuse_note_names_the_skipped_sources`, `test_skipped_scan_round_trips`, `test_library_rescan_keeps_the_skip_line` | closed |
+| T-12-40 | Tampering | narrowed code signature missing a module that changes scan results | medium | mitigate | `_scan_code_files` walks the real import graph with `ast` (scan_cache.py L220-222); `_code_signature_of` returns "" (never fresh) on OSError/SyntaxError/UnicodeDecodeError/ValueError (L245-253); `test_code_signature_follows_scan_code_edits` | closed |
+| T-12-41 | Tampering | odd skipped_sources values in an edited saved scan | low | mitigate | `decode_result` passes them through `_list` / `_text`, which raise on any other type, giving "The saved scan could not be read" and a full scan (scan_cache.py L269-289, L508); parametrized rejection test in tests/test_scan_cache.py | closed |
+| T-12-42 | Denial of service | skip dropping libraries so Generate Tables removes managed entries | high | mitigate | Skip only filters 3D path lines (`check_model_paths`, library_scanner.py L556-615); `scan_all` docstring and code keep finders and links ("A skip never drops a library or a footprint link", L680); `test_skip_keeps_every_library_and_link` | closed |
+| T-12-43 | Tampering | skip request shared between GUI thread and worker | low | mitigate | `request_skip` / `_skip_requested` read and write the set only under `self._skip_lock = threading.Lock()` (main_window.py L90-99); `test_loading_dialog_skips_the_source_being_checked` | closed |
+| T-12-44 | Denial of service | skipped scan dropping libraries so Generate removes WurthElektronik entries | high | mitigate | Same skip scope as T-12-42; `test_generate_after_a_skip_removes_no_entry` runs the real `scan_all` with a skip and checks both WurthElektronik entries stay and no line says "removed" | closed |
+| T-12-45 | Repudiation | reused skipped scan logged as "No warnings." | medium | mitigate | No-warnings line reads "No warnings in the checks that ran." when `result.skipped_sources` is set (main_window.py L648-649); skip line built from `ScanResult.skipped_sources` only; `test_skipped_scan_is_saved_and_the_next_start_says_so`, `test_a_skip_click_after_the_check_ended_logs_no_skip` | closed |
+| T-12-46 | Elevation of privilege | main window acting during an import because the guide changed modality | medium | mitigate | Import dialog stays window-modal over the main window; the guide is a parentless `HelpDialog()` (main_window.py L1352) reached only through the `show_guide` callable (L1045); `test_guide_takes_clicks_beside_the_import_window_and_its_dialogs`, `test_import_dialog_opens_window_modal` | closed |
+| T-12-47 | Denial of service | visible parentless guide keeping the app alive after the main window closes | low | mitigate | `closeEvent` closes `self._guide` only after every refusal branch has returned (main_window.py L1421-1422); `test_closing_the_main_window_closes_the_guide`, `test_a_refused_close_keeps_the_guide` | closed |
+| T-12-48 | Tampering | KiCad settings confirm dialogs answered while the guide has focus | low | accept | Questions stay window-modal for the main window with default No / Retry and escape Not now (main_window.py L1136-1190); the guide holds only static help; see Accepted Risks Log | closed |
+| T-12-49 | Tampering | edited or stale "help/last_topic" value | low | mitigate | `load_help_topic` returns only a non-empty str (settings.py L74-77); `show_topic` only compares the key with known menu items and returns False otherwise (help_dialog.py L640-658), never formatting it into HTML or a path; `test_help_topic_settings_round_trip`, `test_stale_saved_places_fall_back` | closed |
+| T-12-50 | Tampering | tests writing the owner's real settings.ini while browsing the guide | medium | mitigate | Autouse `_isolated_settings(tmp_path)` in tests/test_help_dialog.py (L40-48) points QSettings under tmp_path and asserts the settings file lies there | closed |
+| T-12-51 | Tampering | `_show_current_heading` driven by an edited or stale saved key | low | mitigate | The helper looks the current item up in `self._entries` and passes only a known outline entry's `anchor` to `scrollToAnchor` (help_dialog.py L712-721); the saved text never reaches HTML or a path; `test_stale_saved_places_fall_back`, `test_reopened_guide_brings_the_section_heading_back` | closed |
+| T-12-52 | Denial of service | menu event filter (held-button tracking) leaving the menu waiting | low | mitigate | `eventFilter` always ends with `return super().eventFilter(...)` and consumes nothing (L675-695); the hold ends on the left release, a key press on the menu (L688-693), `hideEvent` (L666-672) and the live `QGuiApplication.mouseButtons()` check in `_on_topic_selected` (L790-794); `test_held_press_on_a_page_row_selects_that_row`, `test_only_a_left_press_holds_the_menu`, `test_keyboard_move_after_a_lost_release_still_folds` | closed |
+| T-12-53 | Information disclosure | debug tracer and probe scripts (call stacks, settings paths) | low | mitigate | Tracer kept untracked at `.claude/debug/guide_trace.py` (git-ignored `.claude/`); `git ls-files -- '*guide_trace*'` prints nothing and `git check-ignore -q .claude/debug/guide_trace.py` exits 0 (checked 2026-11-11 after merge) | closed |
+| T-12-54 | Tampering | `shows_asked_topic()` condition in `MainWindow.show_guide` | low | mitigate | In-memory flag only: main_window.py L1368 adds the condition and has no `load_help_topic` call; help_dialog.py keeps one `save_help_topic(` call (the owner move); `test_asked_topic_lasts_until_the_owner_moves`, `test_main_window_help_on_a_visible_guide_only_raises`, `test_an_explicit_topic_wins_and_is_not_remembered` | closed |
+| T-12-SC | Tampering | npm/pip/cargo installs (12-13 .. 12-21) | low | accept | Neither plan installs or upgrades a package; see Accepted Risks Log | closed |
+
+*Status: open · closed · open — below high threshold (non-blocking)*
+*Severity: critical > high > medium > low — only open threats at or above workflow.security_block_on count toward threats_open*
+*Disposition: mitigate (implementation required) · accept (documented risk) · transfer (third-party)*
+
+Observation outside the register (no new threat): `MainWindow` still joins the scan worker with an unbounded `.wait()` in `_finish_scan` (runs after the scan's own finish signal) and in `closeEvent`. Both predate Phase 12; plan 12-07 left the close-time join out of scope.
+
+---
+
+## Accepted Risks Log
+
+| Risk ID | Threat Ref | Rationale | Accepted By | Date |
+|---------|------------|-----------|-------------|------|
+| AR-12-01 | T-12-04 | The Help stylesheet and pages are fixed strings built from theme constants; no user or vendor text reaches the Help rich text, so there is nothing to spoof. | plan 12-02 threat model (owner-approved plan) | 2026-11-01 |
+| AR-12-02 | T-12-31 | The Help pages are static text built from constants; plan 12-12 adds only static sentences naming the toolbar Help and F1, and no vendor, user or path value is formatted into them. | plan 12-12 threat model (owner-approved plan) | 2026-11-03 |
+| AR-12-03 | T-12-36 | The Help pages stay static text built from constants; plan 12-14 adds only rendered menu numbers and anchors derived from that static text, and no vendor, user or path value is formatted into them. | plan 12-14 threat model (owner-approved plan) | 2026-11-04 |
+| AR-12-04 | T-12-SC | Plans 12-13 to 12-21 install and upgrade no package (12-16's `ast` is stdlib), so there is no new supply-chain surface. | plans 12-13 .. 12-21 threat models (owner-approved plans) | 2026-11-04 |
+| AR-12-05 | T-12-48 | The main window's KiCad-settings questions stay window-modal with their safe defaults (No / Retry, escape Not now); the User Guide beside them holds only static help text and has no action that can answer them. | plan 12-20 threat model (owner-approved plan) | 2026-11-04 |
+
+*Accepted risks do not resurface in future audit runs.*
+
+---
+
+## Security Audit Trail
+
+| Audit Date | Threats Total | Closed | Open | Run By |
+|------------|---------------|--------|------|--------|
+| 2026-11-01 | 22 | 22 | 0 | secure-phase (L1 grep evidence, orchestrator) |
+
+---
+
+## Sign-Off
+
+- [x] All threats have a disposition (mitigate / accept / transfer)
+- [x] Accepted risks documented in Accepted Risks Log
+- [x] `threats_open: 0` confirmed
+- [x] `status: verified` set in frontmatter
+
+**Approval:** verified 2026-11-01; re-verified 2026-11-02 after gap plans 12-09..12-11 (28 threats, all closed); re-verified 2026-11-03 after gap plan 12-12 (31 threats, all closed); re-verified 2026-11-04 after gap plans 12-13 and 12-14 (38 threats, all closed); re-verified 2026-11-04 after gap plans 12-15..12-20 (51 threats, all closed)
+
+## Security Audit 2026-11-02
+
+| Metric | Count |
+|---|---|
+| Threats found | 28 |
+| Closed | 28 |
+| Open | 0 |
+
+## Security Audit 2026-11-03
+
+| Metric | Count |
+|---|---|
+| Threats found | 31 |
+| Closed | 31 |
+| Open | 0 |
+
+## Security Audit 2026-11-04
+
+| Metric | Count |
+|---|---|
+| Threats found | 38 |
+| Closed | 38 |
+| Open | 0 |
+
+## Security Audit 2026-11-04
+
+| Metric | Count |
+|---|---|
+| Threats found | 51 |
+| Closed | 51 |
+| Open | 0 |
+
+## Security Audit 2026-11-11
+
+| Metric | Count |
+|---|---|
+| Threats found | 55 |
+| Closed | 55 |
+| Open | 0 |

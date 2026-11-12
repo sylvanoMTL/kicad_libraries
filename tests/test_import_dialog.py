@@ -1,0 +1,6367 @@
+"""Import dialog tracer (plan 05-01): UL zip in, real plan previewed, that plan installed.
+
+The dialog runs on real TaskWorker threads. The core functions are the real ones unless a
+test swaps one for a gated fake (dataclasses.replace on ImportCore) to hold a worker open.
+Everything is written into tmp_path copies; QSettings is redirected like test_main_window.
+"""
+
+import html
+import threading
+import time
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from PySide6.QtCore import QSettings
+from PySide6.QtTest import QTest
+from installfixtures import ATOMIC_PROPS, UL_DESCRIPTION
+from zipfixtures import footprint_library_for
+
+from kicad_lib_manager import settings
+from kicad_lib_manager.importer.package import open_package as real_open_package
+from kicad_lib_manager.importer.plan import InstallResult, ToolContext
+from kicad_lib_manager.importer.applier import apply_plan as real_apply_plan
+from kicad_lib_manager.importer.planner import build_plan as real_build_plan
+from kicad_lib_manager.importer.preview import file_counts, preview_sections
+from kicad_lib_manager.importer.layout import list_symbol_libs as real_list_symbol_libs
+from kicad_lib_manager.importer.suggest import suggest_library as real_suggest_library
+from kicad_lib_manager.widgets.import_dialog import ImportCore, ImportDialog
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+UL_ZIP = REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip"
+LIB = "Atomic_Battery_Management"
+FP_LIB = footprint_library_for(LIB)
+# New-library targets: Atomic_ names that no layout of this file holds
+NEW_A, NEW_B, NEW_C = "Atomic_Sensor_Temperature", "Atomic_Sensor_Pressure", "Atomic_Sensor_Humidity"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_settings(tmp_path):
+    QSettings.setPath(
+        QSettings.Format.IniFormat,
+        QSettings.Scope.UserScope,
+        str(tmp_path / "qsettings"),
+    )
+    file_name = Path(settings.get_settings().fileName()).resolve()
+    assert tmp_path.resolve() in file_name.parents
+
+
+@pytest.fixture
+def gates():
+    """Events a test hands to gated fakes; all are released at teardown so no worker outlives a test."""
+    held: list[threading.Event] = []
+    yield held
+    for gate in held:
+        gate.set()
+
+
+def core_with(**changes) -> ImportCore:
+    # kicad_running is faked: the real one lists the machine's processes
+    fields = {
+        "detect_tools": lambda kicad_fp_dir: ToolContext(),
+        "kicad_running": lambda: [],
+        "probe_commit": no_git_probe,
+        "run_commit": no_git_commit,
+        **changes,
+    }
+    return replace(ImportCore(), **fields)
+
+
+@pytest.fixture
+def make_dialog(qtbot, atomic_custom, tmp_path, gates):
+    def make(core: ImportCore | None = None, open_now: bool = True, show: bool = False) -> ImportDialog:
+        dialog = ImportDialog(
+            atomic_custom.repo_root,
+            atomic_custom,
+            core=core or core_with(),
+            backup_root=tmp_path / "backups",
+        )
+        qtbot.addWidget(dialog)
+        if show:
+            dialog.show()
+        if open_now:
+            dialog.open_path(UL_ZIP)
+        return dialog
+
+    return make
+
+
+def wait_plan(qtbot, dialog: ImportDialog, timeout: int = 30000) -> None:
+    qtbot.waitUntil(
+        lambda: dialog._plan is not None
+        and dialog._building is None
+        and dialog._queued is None
+        and not dialog._dirty,
+        timeout=timeout,
+    )
+
+
+def type_description(dialog: ImportDialog, text: str = UL_DESCRIPTION) -> None:
+    """Type the Description like the owner: key presses into the field, so it counts as edited."""
+    edit = dialog._field_edits["description"]
+    edit.setFocus()
+    edit.selectAll()
+    QTest.keyClicks(edit, text)
+
+
+def fill_description(qtbot, dialog: ImportDialog) -> None:
+    """Type the Description into a planned dialog whose field is empty, then wait for the plan that follows."""
+    if dialog._field_edits["description"].text() == "":
+        type_description(dialog)
+        wait_current(qtbot, dialog)
+
+
+def set_library(dialog: ImportDialog, name: str, activate: bool = True, fill: bool = True) -> None:
+    """Pick the library; with fill, also type UL_DESCRIPTION into an empty Description (the UL sample has none).
+
+    fill=False leaves the field alone, for the tests whose subject is a missing Description.
+    """
+    dialog._library_combo.setEditText(name)
+    if activate:
+        dialog._library_combo.textActivated.emit(name)
+    if fill and dialog._field_edits["description"].text() == "":
+        type_description(dialog)
+
+
+def files_rows(dialog: ImportDialog) -> tuple[str, list[str]]:
+    top = dialog._preview.topLevelItem(0)
+    return top.text(0), [top.child(i).text(0) for i in range(top.childCount())]
+
+
+def test_tracer_ul_import_end_to_end(qtbot, make_dialog, atomic_custom):
+    dialog = make_dialog()
+    assert not dialog._install_btn.isEnabled()
+    wait_plan(qtbot, dialog)
+    set_library(dialog, LIB)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+    title, rows = files_rows(dialog)
+    assert title == "Files (3)"
+    assert rows == [
+        "+ Custom/3DModels/CSD85301Q2.stp",
+        f"+ Custom/Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod",
+        f"~ Custom/Symbols/{LIB}.kicad_sym",
+    ]
+    assert dialog._strip.text().startswith("✓ Ready to install: 2 new, 1 modified, 0 unchanged files")
+
+    with qtbot.waitSignal(dialog.installed, timeout=60000) as blocker:
+        dialog._install_btn.click()
+    result, plan = blocker.args
+    assert result.ok
+    assert plan is dialog._plan
+    assert dialog._stack.currentWidget() is dialog._result_page
+    assert dialog._result_view._banner.text() == f"✓ Installed CSD85301Q2 into {LIB}"
+    assert dialog.result is result
+    files = dialog._result_view._files_list
+    listed = [files.item(i).text() for i in range(files.count())]
+    assert "Custom/3DModels/CSD85301Q2.stp" in listed
+    pretty = atomic_custom.footprints_dir / f"{FP_LIB}.pretty"
+    assert (pretty / "DQK0006B.kicad_mod").is_file()
+    assert (atomic_custom.models_dir / "CSD85301Q2.stp").is_file()
+
+
+def test_tracer_nothing_written_before_install(qtbot, make_dialog, atomic_custom, snapshot):
+    before = snapshot(atomic_custom.repo_root)
+    dialog = make_dialog()
+    wait_plan(qtbot, dialog)
+    assert snapshot(atomic_custom.repo_root) == before
+    for name in (NEW_A, NEW_B):
+        set_library(dialog, name)
+        qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+        assert dialog._plan.library == name
+    assert snapshot(atomic_custom.repo_root) == before
+
+
+def test_supersede_discards_stale_result(qtbot, make_dialog, gates):
+    calls: list[str] = []
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        gate = threading.Event()
+        gates.append(gate)
+        calls.append(options.library)
+        assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(build_plan=gated_build))
+    qtbot.waitUntil(lambda: len(calls) == 1, timeout=30000)
+    first = calls[0]
+    for name in (NEW_A, NEW_B, NEW_C):
+        set_library(dialog, name, activate=False, fill=False)
+        dialog._request_rebuild()
+    gates[0].set()
+    qtbot.waitUntil(lambda: len(calls) == 2, timeout=30000)
+    # the stale first result was dropped: nothing rendered, nothing installable
+    assert dialog._plan is None
+    assert dialog._preview.topLevelItemCount() == 0
+    assert not dialog._install_btn.isEnabled()
+    gates[1].set()
+    wait_plan(qtbot, dialog)
+    assert calls == [first, NEW_C]
+    assert dialog._plan.library == NEW_C
+    # the part needs its Description to be installable: type it now that the builds are done
+    type_description(dialog)
+    qtbot.waitUntil(lambda: len(calls) == 3, timeout=30000)
+    gates[2].set()
+    wait_plan(qtbot, dialog)
+    assert dialog._install_btn.isEnabled()
+
+
+def test_install_uses_latest_plan_object(qtbot, make_dialog):
+    recorded = []
+
+    def recording_apply(plan, *, backup_root=None, progress=None):
+        recorded.append(plan)
+        return real_apply_plan(plan, backup_root=backup_root, progress=progress)
+
+    dialog = make_dialog(core_with(apply_plan=recording_apply))
+    wait_plan(qtbot, dialog)
+    for name in (NEW_A, NEW_B):
+        set_library(dialog, name)
+        wait_plan(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    with qtbot.waitSignal(dialog.installed, timeout=60000):
+        dialog._install_btn.click()
+    assert len(recorded) == 1
+    assert recorded[0] is dialog._plan
+    assert recorded[0].library == NEW_B
+
+
+def _good_suggestion(meta, **kwargs):
+    return replace(real_suggest_library(meta, **kwargs), name=LIB)
+
+
+def test_rebuild_failure_keeps_tree_and_logs(qtbot, make_dialog):
+    count = {"n": 0}
+
+    def flaky_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if count["n"] == 3:  # builds 1 and 2 are the plan and the one after the Description is typed
+            raise RuntimeError("boom")
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(build_plan=flaky_build, suggest_library=_good_suggestion), open_now=False)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    dialog.open_path(UL_ZIP)
+    wait_plan(qtbot, dialog)
+    type_description(dialog)
+    wait_plan(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    first_rows = files_rows(dialog)
+    assert first_rows[0] == "Files (3)"
+
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: count["n"] == 3 and dialog._building is None, timeout=30000)
+    assert files_rows(dialog) == first_rows
+    assert not dialog._install_btn.isEnabled()
+    assert any(i.text.startswith("Import step failed: RuntimeError: boom") for i in logged)
+
+    # the next edit retries the build and recovers
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+
+def test_close_finishes_after_build_and_closes_package(qtbot, make_dialog, gates):
+    events: list[str] = []
+    count = {"n": 0}
+
+    def open_recording(path, repo_root, progress=None):
+        package = real_open_package(path, repo_root, progress)
+        original = package.close
+
+        def close():
+            events.append("close")
+            original()
+
+        package.close = close
+        return package
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if count["n"] == 2:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+            events.append("build_end")
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(open_package=open_recording, build_plan=gated_build), show=True)
+    wait_plan(qtbot, dialog)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    dialog.reject()  # returns at once: the build is still gated
+    assert not gates[0].is_set()
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+    assert events == []
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert events == ["build_end", "close"]
+    assert QGuiApplication.overrideCursor() is None
+
+
+def test_close_refused_while_installing(qtbot, make_dialog, gates):
+    started = threading.Event()
+
+    def gated_apply(plan, *, backup_root=None, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return real_apply_plan(plan, backup_root=backup_root, progress=progress)
+
+    dialog = make_dialog(core_with(apply_plan=gated_apply), show=True)
+    wait_plan(qtbot, dialog)
+    set_library(dialog, LIB)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+
+    dialog.reject()
+    dialog.close()
+    assert dialog.isVisible()
+    assert dialog.is_installing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=30000)
+    dialog.reject()
+    assert not dialog.isVisible()
+
+
+def test_core_calls_run_off_the_gui_thread(qtbot, make_dialog, tmp_path):
+    main = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def spy(name, fn):
+        def wrapper(*args, **kwargs):
+            seen[name] = threading.get_ident()
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    import kicad_lib_manager.importer.detect as detect
+    from kicad_lib_manager.importer.layout import list_symbol_libs
+    from kicad_lib_manager.importer.siblings import own_index, stock_index
+    from stockfixtures import write_stock_sample
+
+    stock_symbols, _ = write_stock_sample(tmp_path / "stock")
+    core = core_with(
+        open_package=spy("open_package", real_open_package),
+        detect_candidate=spy("detect_candidate", detect.detect_candidate),
+        detect_tools=lambda kicad_fp_dir: ToolContext(kicad_symbols_dir=stock_symbols),
+        build_plan=spy("build_plan", real_build_plan),
+        apply_plan=spy("apply_plan", real_apply_plan),
+        list_symbol_libs=spy("list_symbol_libs", list_symbol_libs),
+        own_index=spy("own_index", own_index),
+        stock_index=spy("stock_index", stock_index),
+        suggest_library=spy("suggest_library", real_suggest_library),
+    )
+    dialog = make_dialog(core)
+    wait_plan(qtbot, dialog)
+    set_library(dialog, LIB)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    with qtbot.waitSignal(dialog.installed, timeout=60000):
+        dialog._install_btn.click()
+    assert set(seen) == {
+        "open_package", "detect_candidate", "build_plan", "apply_plan",
+        "list_symbol_libs", "own_index", "stock_index", "suggest_library",
+    }
+    assert all(ident != main for ident in seen.values())
+
+
+def test_noop_plan_disables_install(qtbot, make_dialog):
+    first = make_dialog()
+    wait_plan(qtbot, first)
+    set_library(first, LIB)
+    qtbot.waitUntil(lambda: first._install_btn.isEnabled(), timeout=30000)
+    with qtbot.waitSignal(first.installed, timeout=60000):
+        first._install_btn.click()
+    first.accept()
+
+    second = make_dialog()
+    wait_plan(qtbot, second)
+    set_library(second, LIB)
+    wait_plan(qtbot, second)
+    qtbot.waitUntil(lambda: second._strip.text().startswith("Nothing to install"), timeout=30000)
+    assert second._strip.text() == f"Nothing to install: this part is already in {LIB}."
+    assert not second._install_btn.isEnabled()
+
+
+def test_refused_package_stays_on_start_and_logs(qtbot, make_dialog, tmp_path):
+    bogus = tmp_path / "not_a_package.txt"
+    bogus.write_text("x", encoding="utf-8")
+    dialog = make_dialog(open_now=False)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    dialog.open_path(bogus)
+    qtbot.waitUntil(lambda: bool(logged), timeout=30000)
+    assert dialog._stack.currentWidget() is dialog._start_page
+    assert dialog._issue_box.isHidden() is False
+    assert any("not a .zip file" in row for row in issue_rows(dialog))
+    assert dialog._plan is None
+
+
+def test_preview_sections_follow_plan_ops(ul_package, atomic_custom):
+    from kicad_lib_manager.importer.plan import InstallOptions
+
+    package, candidate = ul_package
+    options = InstallOptions(
+        library=LIB,
+        symbol=candidate.symbols[0].name,
+        footprint=candidate.footprints[0].name,
+        model=candidate.models[0].filename,
+    )
+    plan = real_build_plan(candidate, options, atomic_custom)
+    files = preview_sections(plan, candidate, options)[0]  # plan 05-06 added the other sections after Files
+    assert files.title == "Files (3)"
+    assert [r.text for r in files.rows] == [
+        "+ Custom/3DModels/CSD85301Q2.stp",
+        f"+ Custom/Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod",
+        f"~ Custom/Symbols/{LIB}.kicad_sym",
+    ]
+    assert files.rows[0].detail.startswith("new, ") and files.rows[0].detail.endswith(" KiB")
+    assert [r.detail for r in files.rows[1:]] == ["new", "modified"]
+    assert [r.op_index for r in files.rows] == [0, 1, 2]
+    counts = file_counts(plan, candidate, options)
+    assert (counts.new, counts.modified, counts.unchanged) == (2, 1, 0)
+
+    fresh = real_build_plan(candidate, replace(options, library=NEW_A), atomic_custom)
+    fresh_files = preview_sections(fresh, candidate, options)[0]
+    # A new symbol library comes alone: the shared footprint folder exists, so no folder row is listed
+    assert not [r.text for r in fresh_files.rows if r.text.endswith(".pretty/")]
+    assert fresh_files.rows[-1].text == f"+ Custom/Symbols/{NEW_A}.kicad_sym"
+    assert file_counts(fresh, candidate, options).new == 3
+
+
+# -- Start page (plan 05-05): these tests use a synthetic Custom/ layout and fake core calls, so
+# they run without the Custom submodule ---------------------------------------------------------
+
+import os  # noqa: E402
+
+from kicad_lib_manager.importer.layout import RepoLayout  # noqa: E402
+from kicad_lib_manager.importer.package import Package  # noqa: E402
+from kicad_lib_manager.models import Issue, Severity  # noqa: E402
+
+
+@pytest.fixture
+def start_layout(tmp_path):
+    from zipfixtures import CURRENT_CUSTOM_FOOTPRINT_LIBS, CURRENT_CUSTOM_SYMBOL_LIBS, write_custom_layout
+
+    repo = write_custom_layout(tmp_path / "repo", CURRENT_CUSTOM_SYMBOL_LIBS, CURRENT_CUSTOM_FOOTPRINT_LIBS)
+    return RepoLayout.for_repo(repo)
+
+
+@pytest.fixture
+def downloads(tmp_path):
+    folder = tmp_path / "Downloads"
+    folder.mkdir()
+    return folder
+
+
+def _zip_at(folder: Path, name: str, age_seconds: float) -> Path:
+    path = folder / name
+    path.write_bytes(b"PK")
+    when = time.time() - age_seconds
+    os.utime(path, (when, when))
+    return path
+
+
+def fake_package(path: Path, issues=()) -> Package:
+    return Package(source=Path(path), kind="zip", issues=list(issues))
+
+
+@pytest.fixture
+def make_start_dialog(qtbot, start_layout, downloads, gates):
+    def make(show: bool = True, **changes) -> ImportDialog:
+        fields = {
+            "detect_tools": lambda kicad_fp_dir: ToolContext(),
+            "downloads_dir": lambda: downloads,
+            **changes,
+        }
+        core = replace(ImportCore(), **fields)
+        dialog = ImportDialog(start_layout.repo_root, start_layout, core=core)
+        qtbot.addWidget(dialog)
+        if show:
+            dialog.show()
+        return dialog
+
+    return make
+
+
+def wait_offer(qtbot, dialog: ImportDialog) -> None:
+    qtbot.waitUntil(lambda: dialog._offer_label.isVisible(), timeout=10000)
+
+
+def test_start_page_offers_newest_zip(qtbot, make_start_dialog, downloads):
+    _zip_at(downloads, "older.zip", 7200)
+    newer = _zip_at(downloads, "newer.zip", 5)
+    dialog = make_start_dialog()
+    wait_offer(qtbot, dialog)
+    # full_text: the offscreen test platform has no fonts, so the shown text may be elided
+    assert dialog._offer_label.full_text() == "Newest in Downloads: newer.zip (just now)"
+    assert dialog._offer_label.toolTip() == str(newer)
+    assert dialog._offer_open_btn.isVisible()
+    assert dialog._offer_open_btn.isEnabled()
+
+
+def test_start_page_no_zip_message(qtbot, make_start_dialog, downloads):
+    (downloads / "notes.txt").write_text("x", encoding="utf-8")
+    dialog = make_start_dialog()
+    wait_offer(qtbot, dialog)
+    assert dialog._offer_label.text() == "No .zip files found in your Downloads folder."
+    assert not dialog._offer_open_btn.isVisible()
+
+
+def test_start_page_no_downloads_folder(qtbot, make_start_dialog):
+    dialog = make_start_dialog(downloads_dir=lambda: None)
+    wait_offer(qtbot, dialog)
+    assert dialog._offer_label.text() == "Downloads folder not found."
+    assert not dialog._offer_open_btn.isVisible()
+
+
+def test_start_page_never_auto_opens(qtbot, make_start_dialog, downloads):
+    offered = _zip_at(downloads, "part.zip", 30)
+    calls: list[Path] = []
+
+    def recording_open(path, repo_root, progress=None):
+        calls.append(Path(path))
+        return fake_package(path)
+
+    dialog = make_start_dialog(open_package=recording_open, detect_candidate=lambda package: (None, []))
+    wait_offer(qtbot, dialog)
+    qtbot.wait(150)
+    assert calls == []
+
+    dialog._offer_open_btn.click()
+    qtbot.waitUntil(lambda: len(calls) == 1, timeout=10000)
+    assert calls == [offered]
+
+
+def test_start_page_layout_and_focus(qtbot, make_start_dialog):
+    dialog = make_start_dialog()
+    assert dialog._start_heading.text() == "Choose a part package"
+    assert dialog._start_heading.font().pointSize() == 10
+    assert dialog._start_heading.font().bold()
+    assert dialog._start_body.text() == (
+        "Open a .zip from Ultra Librarian, SnapEDA or SamacSys, or a folder of KiCad files. "
+        "Nothing is written until you click Install Part."
+    )
+    assert dialog._start_column.maximumWidth() == 560
+    assert dialog.focusWidget() is dialog._browse_btn
+
+
+def test_start_page_offer_elides_long_name_and_keeps_full_path(qtbot, make_start_dialog, downloads):
+    long_name = "ul_" + "very_long_component_name_" * 8 + "end.zip"
+    path = _zip_at(downloads, long_name, 3 * 86400)
+    dialog = make_start_dialog()
+    wait_offer(qtbot, dialog)
+    shown = dialog._offer_label.text()
+    assert dialog._offer_label.full_text() == f"Newest in Downloads: {long_name} (3 days ago)"
+    assert shown != dialog._offer_label.full_text()
+    assert shown.startswith("Newest in Downloads: ul")
+    assert shown.endswith(" (3 days ago)")
+    assert "…" in shown
+    assert dialog._offer_label.toolTip() == str(path)
+
+
+# -- Browse, refused or empty packages, package header (plan 05-05 task 2) -----------------------
+
+from kicad_lib_manager.widgets import import_dialog as import_dialog_module  # noqa: E402
+from kicad_lib_manager.widgets.theme import AMBER, ERROR  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+
+
+def issue_rows(dialog: ImportDialog) -> list[str]:
+    return [dialog._issue_list.item(i).text() for i in range(dialog._issue_list.count())]
+
+
+def wait_issue_box(qtbot, dialog: ImportDialog) -> None:
+    qtbot.waitUntil(lambda: dialog._issue_box.isVisible(), timeout=30000)
+
+
+def nothing_found_core(issues=(), **changes) -> dict:
+    """Core fields for a package that opens fine but yields no candidate."""
+    return {
+        "open_package": lambda path, repo_root, progress=None: fake_package(path, issues),
+        "detect_candidate": lambda package: (None, []),
+        **changes,
+    }
+
+
+def test_start_page_browse_uses_last_dir(qtbot, make_start_dialog, downloads, tmp_path, monkeypatch):
+    opened: list[Path] = []
+
+    def recording_open(path, repo_root, progress=None):
+        opened.append(Path(path))
+        return fake_package(path)
+
+    dialog = make_start_dialog(open_package=recording_open, detect_candidate=lambda package: (None, []))
+    saved = tmp_path / "saved"
+    saved.mkdir()
+    settings.save_import_dir(saved)
+    picked = tmp_path / "picked"
+    picked.mkdir()
+    zip_path = picked / "p.zip"
+    zip_path.write_bytes(b"PK")
+    folder_path = picked / "loose_files"
+    folder_path.mkdir()
+    starts: list[str] = []
+
+    def fake_open_file(parent, caption, directory, file_filter):
+        starts.append(directory)
+        return str(zip_path), ""
+
+    def fake_open_dir(parent, caption, directory):
+        starts.append(directory)
+        return str(folder_path)
+
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getOpenFileName", staticmethod(fake_open_file))
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getExistingDirectory", staticmethod(fake_open_dir))
+
+    def idle():
+        return dialog._open_worker is None and dialog._browse_btn.isEnabled()
+
+    dialog._browse_btn.click()
+    qtbot.waitUntil(lambda: opened == [zip_path] and idle(), timeout=30000)
+    assert starts == [str(saved)]
+    assert settings.load_import_dir() == picked
+
+    # nothing saved: the dialog starts in the Downloads folder
+    settings.get_settings().remove("import/last_dir")
+    dialog._browse_btn.click()
+    qtbot.waitUntil(lambda: len(opened) == 2 and idle(), timeout=30000)
+    assert starts[-1] == str(downloads)
+
+    # Browse folder... saves the picked folder's parent and opens the folder
+    settings.get_settings().remove("import/last_dir")
+    dialog._browse_folder_btn.click()
+    qtbot.waitUntil(lambda: len(opened) == 3 and idle(), timeout=30000)
+    assert opened[-1] == folder_path
+    assert settings.load_import_dir() == picked
+
+
+def test_start_page_browse_falls_back_to_home(qtbot, make_start_dialog, monkeypatch):
+    dialog = make_start_dialog(downloads_dir=lambda: None, **nothing_found_core())
+    starts: list[str] = []
+
+    def fake_open_file(parent, caption, directory, file_filter):
+        starts.append(directory)
+        return "", ""
+
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getOpenFileName", staticmethod(fake_open_file))
+    dialog._browse_btn.click()
+    assert starts == [str(Path.home())]
+    assert dialog._open_worker is None  # cancelling opens nothing
+
+
+def test_start_page_refused_zip_lists_issues(qtbot, make_start_dialog, tmp_path):
+    from zipfixtures import LEGACY_DCM_BYTES, LEGACY_LIB_BYTES, LEGACY_MOD_BYTES, make_zip
+
+    legacy = make_zip(
+        tmp_path / "kicad5_only.zip",
+        [("part.lib", LEGACY_LIB_BYTES), ("part.dcm", LEGACY_DCM_BYTES), ("part.mod", LEGACY_MOD_BYTES)],
+    )
+    packages: list[Package] = []
+
+    def capturing_open(path, repo_root, progress=None):
+        package = real_open_package(path, repo_root, progress)
+        packages.append(package)
+        return package
+
+    dialog = make_start_dialog(open_package=capturing_open)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    dialog.open_path(legacy)
+    wait_issue_box(qtbot, dialog)
+
+    assert dialog._stack.currentWidget() is dialog._start_page
+    assert dialog._issue_heading.text() == "This package can't be imported"
+    rows = issue_rows(dialog)
+    assert rows and all(row.startswith("✖ ") for row in rows)
+    assert any("re-download as KiCad v6+" in row for row in rows)
+    assert dialog._issue_closing.text() == "Pick another file."
+    assert [f"✖ {i.text}" for i in logged if i.severity is Severity.ERROR] == rows
+    assert dialog._issue_list.item(0).foreground().color().name().lower() == ERROR.lower()
+    assert dialog._package is None
+    assert packages and packages[0].staging_dir is None  # the package was closed
+
+
+def test_nothing_found_shows_package_warnings(qtbot, make_start_dialog):
+    warning = Issue(Severity.WARNING, "intake.test_warning", "Skipped 2 unreadable files")
+    dialog = make_start_dialog(**nothing_found_core([warning]))
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["⚠ Skipped 2 unreadable files"]
+    assert dialog._issue_list.item(0).foreground().color().name().lower() == AMBER.lower()
+    assert dialog._issue_closing.text() == (
+        "Check that you downloaded the KiCad format, then pick another file."
+    )
+    assert logged == [warning]
+
+
+def test_nothing_found_merges_package_and_detection_issues_once(qtbot, make_start_dialog):
+    shared = Issue(Severity.WARNING, "intake.shared", "Shared note")
+    detect_only = Issue(Severity.WARNING, "intake.detect", "Detection note")
+    dialog = make_start_dialog(
+        **nothing_found_core([shared], detect_candidate=lambda package: (None, [shared, detect_only]))
+    )
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["⚠ Shared note", "⚠ Detection note"]
+    assert logged == [shared, detect_only]
+
+
+def test_nothing_found_no_issues_message(qtbot, make_start_dialog):
+    dialog = make_start_dialog(**nothing_found_core())
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["No KiCad symbol or footprint was found in this package."]
+    assert dialog._issue_closing.text() == (
+        "Check that you downloaded the KiCad format, then pick another file."
+    )
+
+
+def test_issue_text_is_plain(qtbot, make_start_dialog):
+    markup = Issue(Severity.WARNING, "intake.markup", "<b>bold</b> <a href='http://x'>link</a>")
+    dialog = make_start_dialog(**nothing_found_core([markup]))
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["⚠ <b>bold</b> <a href='http://x'>link</a>"]
+    assert dialog._issue_closing.textFormat() == Qt.TextFormat.PlainText
+
+
+def test_start_page_list_hidden_and_cleared(qtbot, make_start_dialog, gates):
+    calls = {"n": 0}
+    warning = Issue(Severity.WARNING, "intake.test_warning", "First package warning")
+
+    def open_second_gated(path, repo_root, progress=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return fake_package(path, [warning])
+        gate = threading.Event()
+        gates.append(gate)
+        progress("Reading member 3 of 9", 3, 9)
+        assert gate.wait(30)
+        return fake_package(path)
+
+    dialog = make_start_dialog(
+        open_package=open_second_gated, detect_candidate=lambda package: (None, [])
+    )
+    assert not dialog._issue_box.isVisible()  # hidden before any package is read
+    dialog.open_path(Path("first.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert issue_rows(dialog) == ["⚠ First package warning"]
+
+    dialog.open_path(Path("second.zip"))
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    qtbot.waitUntil(lambda: dialog._reading_label.text() == "Reading member 3 of 9", timeout=30000)
+    assert not dialog._issue_box.isVisible()
+    assert dialog._issue_list.count() == 0
+    assert dialog._reading_box.isVisible()
+    assert not dialog._offer_row.isVisible()
+    assert not dialog._browse_btn.isEnabled()
+    assert not dialog._browse_folder_btn.isEnabled()
+    gates[0].set()
+    wait_issue_box(qtbot, dialog)
+    assert dialog._browse_btn.isEnabled()
+    assert not dialog._reading_box.isVisible()
+
+
+def test_issue_list_caps_height_and_wraps(qtbot, make_start_dialog):
+    many = [Issue(Severity.WARNING, f"intake.w{i}", f"Warning number {i} " + "word " * 40) for i in range(20)]
+    dialog = make_start_dialog(**nothing_found_core(many))
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert dialog._issue_list.count() == 20
+    assert dialog._issue_list.maximumHeight() == 160
+    assert dialog._issue_list.wordWrap()
+    assert dialog._issue_list.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+
+
+def test_change_returns_to_start_and_closes_package(qtbot, make_start_dialog):
+    closed: list[str] = []
+
+    def recording_open(path, repo_root, progress=None):
+        package = real_open_package(path, repo_root, progress)
+        original = package.close
+
+        def close():
+            closed.append("close")
+            original()
+
+        package.close = close
+        return package
+
+    dialog = make_start_dialog(open_package=recording_open)
+    dialog.open_path(UL_ZIP)
+    wait_plan(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert dialog._vendor_label.text() == "Ultra Librarian"
+    assert dialog.windowTitle() == "Import Part - ul_CSD85301Q2.zip"
+    assert closed == []
+
+    dialog._change_btn.click()
+    assert dialog._stack.currentWidget() is dialog._start_page
+    assert dialog.windowTitle() == "Import Part"
+    assert dialog._building is None and dialog._queued is None
+    assert dialog._plan is None and dialog._candidate is None
+    assert closed == ["close"]
+    assert dialog._browse_btn.isEnabled()
+    assert not dialog._issue_box.isVisible()
+
+
+@pytest.mark.parametrize(
+    ("vendor", "label"),
+    [
+        ("UltraLibrarian", "Ultra Librarian"),
+        ("Loose", "Loose files"),
+        ("Unknown", "Unknown vendor"),
+        ("SnapEDA", "SnapEDA"),
+        ("SamacSys", "SamacSys"),
+        ("Odd", "Odd"),
+    ],
+)
+def test_vendor_labels(vendor, label):
+    assert import_dialog_module.vendor_label(vendor) == label
+
+
+# -- Item picker (plan 05-07 task 1): synthetic Custom layout and synthetic zips, so these run without
+# the Custom submodule ----------------------------------------------------------------------------
+
+from kicad_lib_manager.importer.candidate import ImportCandidate  # noqa: E402
+from kicad_lib_manager.importer.plan import InstallOptions  # noqa: E402
+from kicad_lib_manager.widgets.theme import MUTED  # noqa: E402
+
+
+@pytest.fixture
+def item_layout(tmp_path):
+    from zipfixtures import (
+        CURRENT_ATOMIC_SYMBOL_LIBS,
+        CURRENT_CUSTOM_FOOTPRINT_LIBS,
+        CURRENT_CUSTOM_SYMBOL_LIBS,
+        write_custom_layout,
+    )
+
+    # the Atomic_ install targets (every library a test below names) beside the v1 mirror of the live tree;
+    # the motion sensor has a symbol library and no footprint library, as its v1 twin has
+    atomic = (*CURRENT_ATOMIC_SYMBOL_LIBS, "Atomic_Connector_Audio", "Atomic_Sensor_Energy", "Atomic_Power_Supervisor")
+    atomic_footprints = [footprint_library_for(name) for name in atomic if name != "Atomic_Sensor_Motion"]
+    repo = write_custom_layout(
+        tmp_path / "item_repo",
+        (*CURRENT_CUSTOM_SYMBOL_LIBS, *atomic),
+        (*CURRENT_CUSTOM_FOOTPRINT_LIBS, *atomic_footprints),
+    )
+    return RepoLayout.for_repo(repo)
+
+
+@pytest.fixture
+def recorded():
+    """Every InstallOptions the dialog handed to build_plan, in call order."""
+    return []
+
+
+def recording_build(recorded: list, inner=None):
+    def build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        recorded.append(options)
+        return (inner or real_build_plan)(candidate, options, layout, tools, **kwargs)
+
+    return build
+
+
+@pytest.fixture
+def make_item_dialog(qtbot, item_layout, gates, recorded):
+    def make(package: Path = UL_ZIP, show: bool = False, **changes) -> ImportDialog:
+        fields = {
+            "detect_tools": lambda kicad_fp_dir: ToolContext(),
+            "downloads_dir": lambda: None,
+            "build_plan": recording_build(recorded),
+            "kicad_running": lambda: [],
+            "probe_commit": no_git_probe,
+            "run_commit": no_git_commit,
+            **changes,
+        }
+        dialog = ImportDialog(item_layout.repo_root, item_layout, core=replace(ImportCore(), **fields))
+        qtbot.addWidget(dialog)
+        if show:
+            dialog.show()
+        dialog.open_path(package)
+        return dialog
+
+    return make
+
+
+def wait_current(qtbot, dialog: ImportDialog, timeout: int = 30000) -> None:
+    """Wait until the newest request has been built and accepted and nothing is pending."""
+    qtbot.waitUntil(
+        lambda: dialog._plan is not None
+        and dialog._plan_gen == dialog._gen
+        and dialog._building is None
+        and dialog._queued is None
+        and not dialog._dirty,
+        timeout=timeout,
+    )
+
+
+def multi_zip(tmp_path: Path, *, symbols=("S1", "S2"), footprints=("F1", "F2", "F3"), models=("a.step", "b.step")) -> Path:
+    from zipfixtures import STEP_BYTES, footprint, make_zip, symbol_lib
+
+    members = [("part.kicad_sym", symbol_lib(symbols, props=ATOMIC_PROPS))]
+    members += [(f"{name}.kicad_mod", footprint(name)) for name in footprints]
+    members += [(name, STEP_BYTES) for name in models]
+    return make_zip(tmp_path / "multi.zip", members)
+
+
+def assert_vendor_choices(options: InstallOptions, candidate: ImportCandidate) -> None:
+    """IN-04: the UI passes vendor item names or nothing, never a blank choice."""
+    assert options.symbol is None or options.symbol in {s.name for s in candidate.symbols}
+    assert options.model is None or options.model in {m.filename for m in candidate.models}
+    assert options.footprint is None or options.footprint in {f.name for f in candidate.footprints}
+    assert "" not in (options.symbol, options.model, options.footprint)
+
+
+def test_picker_several_items_build_options(qtbot, make_item_dialog, recorded, tmp_path):
+    dialog = make_item_dialog(multi_zip(tmp_path), show=True)
+    wait_current(qtbot, dialog)
+    first = recorded[-1]
+    assert first.symbol == "S1"
+    assert first.footprint == "F1"
+    assert first.model == "a.step"
+    assert first.no_model is False
+
+    # a combo for the symbols, a single-choice combo for the footprints, a combo ending in "No model" for the models
+    assert dialog._symbol_combo is not None and dialog._symbol_combo.count() == 2
+    assert dialog._fp_combo is not None and dialog._fp_combo.count() == 3
+    assert dialog._model_combo is not None and dialog._model_combo.count() == 3
+    assert dialog._model_combo.itemText(2) == "No model"
+
+    dialog._symbol_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].symbol == "S2"
+
+    dialog._model_combo.setCurrentIndex(2)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].no_model is True and recorded[-1].model is None
+    dialog._model_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].model == "b.step" and recorded[-1].no_model is False
+
+    # choosing F3 makes it the one footprint; the plan names the others as not used
+    dialog._fp_combo.setCurrentIndex(2)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].footprint == "F3"
+    assert dialog._fp_name_edit.text() == "F3"
+
+    # choosing F2 afterwards replaces the choice, it never adds to it
+    dialog._fp_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].footprint == "F2"
+
+
+def test_picker_footprint_combo_lists_every_footprint_of_a_long_package(qtbot, make_item_dialog, tmp_path):
+    names = tuple(f"F{n}" for n in range(1, 9))
+    dialog = make_item_dialog(multi_zip(tmp_path, footprints=names), show=True)
+    wait_current(qtbot, dialog)
+    combo = dialog._fp_combo
+    assert [combo.itemText(i) for i in range(combo.count())] == list(names)
+    assert combo.itemData(7) == "F8"
+
+
+def test_picker_single_items_are_labels(qtbot, make_item_dialog, recorded):
+    dialog = make_item_dialog()
+    wait_current(qtbot, dialog)
+    candidate = dialog._candidate
+    assert dialog._symbol_combo is None and dialog._fp_combo is None and dialog._model_combo is None
+    assert dialog._symbol_label.full_text() == candidate.symbols[0].name
+    assert dialog._fp_label.full_text() == "DQK0006B"
+    assert dialog._model_label.full_text() == candidate.models[0].filename
+    first = recorded[-1]
+    assert first.symbol == candidate.symbols[0].name
+    assert first.footprint == "DQK0006B"
+    assert first.model == candidate.models[0].filename
+    assert dialog._extends_note.isHidden()
+
+
+def test_picker_labels_elide_with_full_name_tooltip(qtbot, make_item_dialog, tmp_path):
+    long_name = "L" * 60
+    dialog = make_item_dialog(
+        multi_zip(tmp_path, symbols=(long_name,), footprints=("FP",), models=("m.step",)), show=True
+    )
+    wait_current(qtbot, dialog)
+    assert dialog._symbol_label.full_text() == long_name
+    assert dialog._symbol_label.toolTip() == long_name
+
+
+def test_picker_no_model_and_no_footprint_labels(qtbot, make_item_dialog, recorded, tmp_path):
+    from zipfixtures import footprint, make_zip, symbol_lib
+
+    no_model = make_zip(
+        tmp_path / "no_model.zip",
+        [("part.kicad_sym", symbol_lib(("S1",), props=ATOMIC_PROPS)), ("FP.kicad_mod", footprint("FP"))],
+    )
+    dialog = make_item_dialog(no_model)
+    wait_current(qtbot, dialog)
+    assert dialog._model_label.full_text() == "No 3D model in this package"
+    assert AMBER.lower() in dialog._model_label.styleSheet().lower()
+    assert recorded[-1].model is None and recorded[-1].no_model is False
+    assert "intake.no_model" in [i.code for i in dialog._plan.issues]  # the package-level WARNING
+
+    no_footprint = make_zip(
+        tmp_path / "no_footprint.zip", [("part.kicad_sym", symbol_lib(("S1",), props=ATOMIC_PROPS))]
+    )
+    second = make_item_dialog(no_footprint)
+    wait_current(qtbot, second)
+    assert second._fp_label.full_text() == "No footprint in this package"
+    assert AMBER.lower() in second._fp_label.styleSheet().lower()
+    assert recorded[-1].footprint is None
+
+
+def test_picker_extends_note(qtbot, make_item_dialog, tmp_path):
+    from installfixtures import extends_pair, vendor_footprint
+    from zipfixtures import make_zip
+
+    zip_path = make_zip(
+        tmp_path / "extends.zip",
+        [("pair.kicad_sym", extends_pair("PARENT_X", "CHILD_Y")), ("FP.kicad_mod", vendor_footprint("FP"))],
+    )
+    dialog = make_item_dialog(zip_path, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    names = [dialog._symbol_combo.itemText(i) for i in range(dialog._symbol_combo.count())]
+    assert names == ["PARENT_X", "CHILD_Y"]
+    assert dialog._extends_note.isHidden()  # a parent has no parent of its own
+
+    dialog._symbol_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    assert dialog._plan.symbol_names == ("PARENT_X", "CHILD_Y")
+    assert not dialog._extends_note.isHidden()
+    assert dialog._extends_note.text() == "extends parent PARENT_X is included automatically"
+
+    dialog._symbol_combo.setCurrentIndex(0)
+    wait_current(qtbot, dialog)
+    assert dialog._extends_note.isHidden()
+
+
+def test_picker_never_passes_blank(qtbot, make_item_dialog, recorded, tmp_path):
+    dialog = make_item_dialog(multi_zip(tmp_path))
+    wait_current(qtbot, dialog)
+    dialog._symbol_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    dialog._model_combo.setCurrentIndex(2)
+    wait_current(qtbot, dialog)
+    dialog._fp_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    dialog._fp_combo.setCurrentIndex(2)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].footprint == "F3"
+    assert len(recorded) >= 5
+    for options in recorded:
+        assert_vendor_choices(options, dialog._candidate)
+
+    single = make_item_dialog()
+    wait_current(qtbot, single)
+    assert_vendor_choices(recorded[-1], single._candidate)
+
+
+def test_left_pane_disabled_until_first_plan(qtbot, make_item_dialog, gates):
+    started = threading.Event()
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_item_dialog(build_plan=gated_build)
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    assert not dialog._left_scroll.isEnabled()
+    assert dialog._preview_stack.currentWidget() is dialog._building_page
+    assert not dialog._install_btn.isEnabled()
+    gates[0].set()
+    wait_current(qtbot, dialog)
+    assert dialog._left_scroll.isEnabled()
+    assert dialog._preview_stack.currentWidget() is dialog._preview
+
+
+# -- Footprint name and the five fields (plan 05-07 task 2) ----------------------------------------
+
+import dataclasses  # noqa: E402
+
+from PySide6.QtCore import QPoint  # noqa: E402
+from PySide6.QtWidgets import QToolButton, QWidget  # noqa: E402
+
+FIELD_KEYS = ("value", "datasheet", "description", "manufacturer", "mpn")
+UL_DEFAULTS = {
+    "value": "CSD85301Q2",
+    "datasheet": "https://www.ti.com/lit/gpn/csd85301q2",
+    "description": "",
+    "manufacturer": "Texas Instruments",
+    "mpn": "CSD85301Q2",
+}
+
+
+def type_text(qtbot, edit, text: str) -> None:
+    """Type like a user: select everything, then key presses, so textEdited fires (not setText)."""
+    edit.setFocus()
+    edit.selectAll()
+    if text == "":
+        qtbot.keyClick(edit, Qt.Key.Key_Backspace)
+    else:
+        qtbot.keyClicks(edit, text)
+
+
+def ul_dialog(make_item_dialog, qtbot, fill: bool = True, **changes) -> ImportDialog:
+    """The UL sample open and planned; with fill, its Description is typed (the sample has none)."""
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, **changes)
+    wait_current(qtbot, dialog)
+    if fill:
+        fill_description(qtbot, dialog)
+    return dialog
+
+
+def test_footprint_name_default_and_vendor_hint(qtbot, make_item_dialog, tmp_path):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    assert dialog._fp_name_edit.text() == "DQK0006B"
+    assert dialog._fp_name_hint.isHidden()  # the vendor name is already clean
+    assert not dialog._fp_name_restore.isEnabled()
+    assert dialog._fp_name_edit.accessibleName() == "Footprint name"
+
+    from zipfixtures import footprint, make_zip, symbol_lib
+
+    odd = make_zip(
+        tmp_path / "odd.zip",
+        [("part.kicad_sym", symbol_lib(("S1",), props=ATOMIC_PROPS)), ("FP_1.kicad_mod", footprint("FP/1"))],
+    )
+    second = make_item_dialog(odd, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, second)
+    assert second._fp_name_edit.text() == "FP_1"
+    assert not second._fp_name_hint.isHidden()
+    assert second._fp_name_hint.text() == "Vendor name: FP/1"
+    assert MUTED.lower() in second._fp_name_hint.styleSheet().lower()
+
+
+def test_footprint_name_edit_and_restore(qtbot, make_item_dialog, recorded):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._fp_name_edit, "MYFP")
+    assert dialog._dirty and not dialog._install_btn.isEnabled()
+    assert dialog._strip.text() == "Updating preview..."
+    wait_current(qtbot, dialog)
+    assert dict(recorded[-1].footprint_names) == {"DQK0006B": "MYFP"}
+    assert dialog._fp_name_restore.isEnabled()
+    dialog._fp_name_restore.click()
+    assert dialog._fp_name_edit.text() == "DQK0006B"
+    assert not dialog._fp_name_restore.isEnabled()
+    wait_current(qtbot, dialog)
+    assert dict(recorded[-1].footprint_names) == {}
+
+
+def test_footprint_field_follows_library_and_name(qtbot, make_item_dialog, recorded, gates):
+    state = {"gate": None}
+
+    def maybe_gated(candidate, options, layout, tools=ToolContext(), **kwargs):
+        gate = state["gate"]
+        if gate is not None:
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, build_plan=recording_build(recorded, maybe_gated))
+    wait_current(qtbot, dialog)
+    # the suggested library still holds a placeholder, so the plan is refused and nothing is linked
+    assert dialog._fp_field.text() == "(none)"
+    assert dialog._fp_field.isReadOnly()
+
+    set_library(dialog, LIB)
+    wait_current(qtbot, dialog)
+    assert dialog._fp_field.text() == f"{FP_LIB}:DQK0006B"
+    assert MUTED.lower() not in dialog._fp_field.styleSheet().lower()
+    assert dialog._install_btn.isEnabled()
+
+    state["gate"] = gate = threading.Event()
+    gates.append(gate)
+    type_text(qtbot, dialog._fp_name_edit, "DQK/0006B")
+    assert not dialog._install_btn.isEnabled()
+    qtbot.waitUntil(lambda: dialog._building is not None, timeout=30000)
+    # the rebuild is running: the field keeps the previous plan's value and Install stays off
+    assert dialog._fp_field.text() == f"{FP_LIB}:DQK0006B"
+    assert not dialog._install_btn.isEnabled()
+    gate.set()
+    wait_current(qtbot, dialog)
+    assert dialog._plan.footprint_names == ("DQK_0006B",)
+    assert dialog._fp_field.text() == f"{FP_LIB}:DQK_0006B"
+    assert dialog._fp_name_edit.text() == "DQK/0006B"  # the box keeps what was typed
+
+    set_library(dialog, "Atomic_Sensor_Motion")
+    wait_current(qtbot, dialog)
+    assert dialog._fp_field.text() == f"{footprint_library_for('Atomic_Sensor_Motion')}:DQK_0006B"
+
+
+def test_footprint_field_none_when_unlinked(qtbot, make_item_dialog):
+    def unlinked(candidate, options, layout, tools=ToolContext(), **kwargs):
+        plan = real_build_plan(candidate, options, layout, tools, **kwargs)
+        return dataclasses.replace(plan, linked_footprint=None)
+
+    dialog = ul_dialog(make_item_dialog, qtbot, build_plan=unlinked)
+    assert dialog._plan.linked_footprint is None
+    assert dialog._fp_field.text() == "(none)"
+    assert MUTED.lower() in dialog._fp_field.styleSheet().lower()
+
+
+def test_empty_footprint_name_blocks(qtbot, make_item_dialog, recorded):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    assert dialog._install_btn.isEnabled()
+    type_text(qtbot, dialog._fp_name_edit, "")
+    wait_current(qtbot, dialog)
+    assert dict(recorded[-1].footprint_names) == {"DQK0006B": ""}
+    assert dialog._plan.blocked
+    assert "install.invalid_name" in [i.code for i in dialog._plan.issues]
+    assert not dialog._install_btn.isEnabled()
+    assert dialog._fp_field.text() == "(none)"
+
+
+def test_fields_start_with_what_the_plan_writes(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot, fill=False)  # the sample's own Description is empty
+    assert {name: dialog._field_edits[name].text() for name in FIELD_KEYS} == UL_DEFAULTS
+    assert dialog._symbol_name_label.full_text() == "CSD85301Q2"
+    for name in FIELD_KEYS:
+        assert not dialog._field_restore[name].isEnabled()
+    assert dialog._defaults.manufacturer == "Texas Instruments"
+
+
+def test_fields_symbol_label_shows_rename(qtbot, make_item_dialog, tmp_path):
+    from zipfixtures import footprint, make_zip, symbol_lib
+
+    zip_path = make_zip(
+        tmp_path / "renamed.zip",
+        [("part.kicad_sym", symbol_lib(("PART/1",), props=ATOMIC_PROPS)), ("FP.kicad_mod", footprint("FP"))],
+    )
+    dialog = make_item_dialog(zip_path, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    assert dialog._symbol_name_label.full_text() == "PART/1 → PART_1"
+    # Value is the MPN, which stays the vendor name when the symbol is renamed (D-22)
+    assert dialog._field_edits["value"].text() == dialog._field_edits["mpn"].text() == "PART/1"
+
+
+REQUIRED_HINTS = {
+    "datasheet": "Required - enter a Datasheet link",
+    "description": "Required - type a Description",
+    "manufacturer": "Required - enter the Manufacturer",
+}
+
+
+def test_required_field_hints_match_the_atomic_strip(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    for name, hint in REQUIRED_HINTS.items():
+        placeholder = dialog._field_edits[name].placeholderText()
+        assert placeholder == hint
+        assert "blank" not in placeholder.casefold()
+    for name in ("value", "mpn"):
+        assert dialog._field_edits[name].placeholderText() == ""
+
+    # the hint says the same thing as the reason that blocks Install Part
+    type_text(qtbot, dialog._field_edits["description"], "")
+    wait_current(qtbot, dialog)
+    assert not dialog._install_btn.isEnabled()
+    assert "Type a Description" in strip_links(dialog)
+    assert dialog._field_edits["description"].placeholderText().casefold().endswith("type a description")
+
+
+def test_fields_clear_and_restore(qtbot, make_item_dialog, recorded):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    datasheet = dialog._field_edits["datasheet"]
+    assert datasheet.placeholderText() == "Required - enter a Datasheet link"
+    assert not dialog._field_restore["datasheet"].isEnabled()
+
+    type_text(qtbot, datasheet, "")
+    assert dialog._dirty and not dialog._install_btn.isEnabled()
+    wait_current(qtbot, dialog)
+    assert recorded[-1].datasheet == "" and "datasheet" in recorded[-1].cleared
+    # a blank Datasheet is written as asked, and the atomic gate keeps Install off until it is filled or restored
+    assert [i.code for i in dialog._plan.issues if i.severity is Severity.ERROR] == ["install.atomic.datasheet"]
+    assert not dialog._install_btn.isEnabled()
+    assert dialog._field_restore["datasheet"].isEnabled()
+    assert dialog._field_restore["datasheet"].toolTip() == f"Restore default: {UL_DEFAULTS['datasheet']}"
+
+    dialog._field_restore["datasheet"].click()
+    assert datasheet.text() == UL_DEFAULTS["datasheet"]
+    assert not dialog._field_restore["datasheet"].isEnabled()
+    wait_current(qtbot, dialog)
+    assert recorded[-1].datasheet is None and recorded[-1].cleared == frozenset()
+
+    # an emptied field whose default is already empty passes nothing
+    type_text(qtbot, dialog._field_edits["description"], "x")
+    wait_current(qtbot, dialog)
+    assert recorded[-1].description == "x"
+    type_text(qtbot, dialog._field_edits["description"], "")
+    wait_current(qtbot, dialog)
+    assert recorded[-1].description is None and "description" not in recorded[-1].cleared
+    # the part has no Description now, so the gate keeps Install off until one is typed again
+    assert not dialog._install_btn.isEnabled()
+    type_text(qtbot, dialog._field_edits["description"], UL_DESCRIPTION)
+    wait_current(qtbot, dialog)
+    assert recorded[-1].description == UL_DESCRIPTION
+
+    # Value is read-only and follows the MPN: emptying the MPN empties Value, the plan carries
+    # install.empty_required and Install stays off; restoring the MPN brings both back
+    assert dialog._field_edits["value"].isReadOnly()
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    assert dialog._field_edits["value"].text() == ""
+    wait_current(qtbot, dialog)
+    assert dialog._plan.blocked
+    assert "install.empty_required" in [i.code for i in dialog._plan.issues]
+    assert not dialog._install_btn.isEnabled()
+    dialog._field_restore["mpn"].click()
+    wait_current(qtbot, dialog)
+    assert dialog._install_btn.isEnabled()
+    assert dialog._field_edits["value"].text() == UL_DEFAULTS["mpn"]
+    assert not dialog._field_restore["value"].isEnabled()
+
+    for name, hint in REQUIRED_HINTS.items():
+        assert dialog._field_edits[name].placeholderText() == hint
+    for name in ("value", "mpn"):
+        assert dialog._field_edits[name].placeholderText() == ""
+
+
+def test_fields_reset_on_symbol_change_kept_on_library_change(qtbot, make_item_dialog, tmp_path):
+    dialog = make_item_dialog(multi_zip(tmp_path), show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    assert dialog._field_edits["value"].text() == "S1"
+    type_text(qtbot, dialog._field_edits["manufacturer"], "Acme")
+    wait_current(qtbot, dialog)
+    assert dialog._edited == {"manufacturer"}
+
+    set_library(dialog, "Atomic_Sensor_Motion")
+    wait_current(qtbot, dialog)
+    assert dialog._field_edits["manufacturer"].text() == "Acme"  # a library change keeps every edit
+    assert dialog._edited == {"manufacturer"}
+
+    dialog._symbol_combo.setCurrentIndex(1)
+    wait_current(qtbot, dialog)
+    assert dialog._edited == set()
+    assert dialog._field_edits["manufacturer"].text() != "Acme"
+    assert dialog._field_edits["manufacturer"].text() == dialog._defaults.manufacturer
+    assert dialog._field_edits["value"].text() == "S2"
+
+    # the footprint name resets when the linked footprint changes
+    type_text(qtbot, dialog._fp_name_edit, "MYFP")
+    wait_current(qtbot, dialog)
+    assert dialog._fp_name_edit.text() == "MYFP"
+    dialog._fp_combo.setCurrentIndex(1)  # F1 was linked, F2 is now
+    wait_current(qtbot, dialog)
+    assert dialog._linked_fp == "F2"
+    assert dialog._fp_name_edit.text() == "F2"
+    assert dialog._fp_name_edited is False
+    assert dialog._fp_field.text().endswith(":F2")
+
+
+def test_edit_state_cleared_by_change(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["datasheet"], "x")
+    assert dialog._debounce.isActive() and dialog._dirty
+    dialog._change_btn.click()
+    assert not dialog._debounce.isActive()
+    assert not dialog._dirty
+    assert dialog._edited == set() and dialog._fp_name_edited is False
+    assert dialog._linked_fp is None and dialog._plan is None
+    assert dialog._fp_field.text() == ""
+
+
+def test_debounce_single_rebuild(qtbot, make_item_dialog, recorded, tmp_path):
+    dialog = make_item_dialog(multi_zip(tmp_path), show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    before = len(recorded)
+    datasheet = dialog._field_edits["datasheet"]
+    datasheet.setFocus()
+    datasheet.selectAll()
+    qtbot.keyClicks(datasheet, "abc")  # three textEdited events within a few milliseconds
+    assert dialog._dirty and dialog._debounce.isActive()
+    assert dialog._debounce.interval() == 300
+    assert len(recorded) == before  # nothing built yet
+    assert not dialog._install_btn.isEnabled()
+    qtbot.waitUntil(lambda: len(recorded) == before + 1, timeout=30000)
+    assert recorded[-1].datasheet == "abc"
+    wait_current(qtbot, dialog)
+    qtbot.wait(450)
+    assert len(recorded) == before + 1  # one rebuild for three keystrokes
+
+    # a combo change during a pending debounce stops the timer and rebuilds at once, with the typed text
+    type_text(qtbot, dialog._field_edits["mpn"], "ZZ9")
+    assert dialog._debounce.isActive()
+    dialog._model_combo.setCurrentIndex(1)
+    assert not dialog._debounce.isActive() and not dialog._dirty
+    qtbot.waitUntil(lambda: len(recorded) == before + 2, timeout=30000)
+    assert recorded[-1].mpn == "ZZ9" and recorded[-1].model == "b.step"
+    wait_current(qtbot, dialog)
+    qtbot.wait(450)
+    assert len(recorded) == before + 2
+
+
+def test_restore_buttons_accessible(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    assert isinstance(dialog._fp_name_restore, QToolButton)
+    assert dialog._fp_name_restore.accessibleName() == "Restore default footprint name"
+    assert (dialog._fp_name_restore.width(), dialog._fp_name_restore.height()) == (24, 24)
+    labels = {"value": "Value", "datasheet": "Datasheet", "description": "Description", "manufacturer": "Manufacturer", "mpn": "MPN"}
+    for name, label in labels.items():
+        button = dialog._field_restore[name]
+        assert isinstance(button, QToolButton)
+        assert (button.width(), button.height()) == (24, 24)
+        assert button.accessibleName() == f"Restore default {label}"
+        assert dialog._field_edits[name].accessibleName() == label
+    assert dialog._field_edits["mpn"].toolTip() == "MPN names the 3D model file"
+    assert dialog._fp_field.accessibleName() == "Footprint"
+
+
+def test_fields_long_text_geometry(qtbot, make_item_dialog, tmp_path):
+    """Backstop (UI E5/E7 long-text): a 60-character name and a 120-character Description fit the left pane."""
+    long_name = "L" * 60
+    package = multi_zip(
+        tmp_path,
+        symbols=(long_name, "S2"),
+        footprints=(long_name + "a", "F2"),
+        models=(long_name + ".step", "b.step"),
+    )
+    dialog = make_item_dialog(package, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    resize_and_wait(qtbot, dialog, 900, 600)
+    type_text(qtbot, dialog._field_edits["description"], "D" * 120)
+    qtbot.wait(50)
+    scroll = dialog._left_scroll
+    viewport = scroll.viewport()
+    left = scroll.widget()
+    assert not scroll.horizontalScrollBar().isVisible()
+    assert left.width() <= viewport.width()
+    for widget in left.findChildren(QWidget):
+        if widget.isVisible():
+            right = widget.mapTo(left, QPoint(widget.width(), 0)).x()
+            assert right <= viewport.width(), (widget, right, viewport.width())
+    # a line edit never overlaps its restore button
+    for name, edit in dialog._field_edits.items():
+        assert edit.mapTo(left, QPoint(edit.width(), 0)).x() <= dialog._field_restore[name].mapTo(left, QPoint(0, 0)).x()
+    assert dialog._field_edits["description"].text() == "D" * 120
+
+
+def test_footprint_field_and_filters_follow_the_chosen_footprint(qtbot, make_item_dialog, tmp_path):
+    """Edge PREV-03: the field and ki_fp_filters name only the chosen footprint (D-14)."""
+    from kicad_lib_manager.kicad_files import find_property, find_symbol, parse_bytes
+
+    dialog = make_item_dialog(multi_zip(tmp_path), show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+
+    def filters() -> str:
+        op = next(op for op in dialog._plan.ops if op.kind == "symbol_lib")
+        symbol = find_symbol(parse_bytes(op.data, "lib").root, dialog._plan.symbol_name)
+        return find_property(symbol.node, "ki_fp_filters").value
+
+    assert dialog._fp_field.text() == f"{FP_LIB}:F1"
+    assert filters() == "F1"
+    dialog._fp_combo.setCurrentIndex(2)
+    wait_current(qtbot, dialog)
+    assert dialog._fp_field.text() == f"{FP_LIB}:F3"
+    assert filters() == "F3"
+
+
+def test_emptied_mpn_blocks_install(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    wait_current(qtbot, dialog)
+    assert "install.empty_required" in [i.code for i in dialog._plan.issues]
+    assert not dialog._install_btn.isEnabled()
+    dialog._field_restore["mpn"].click()
+    wait_current(qtbot, dialog)
+    assert dialog._install_btn.isEnabled()
+
+
+# -- plan 05-09 Task 1 and plan 10-15 Task 2: the library picker, its badge, note and tooltip -----------
+
+from PySide6.QtWidgets import QProgressBar  # noqa: E402
+
+from kicad_lib_manager.importer import form  # noqa: E402
+from kicad_lib_manager.importer.stems import ATOMIC_PREFIX, allowed_stems  # noqa: E402
+from kicad_lib_manager.importer.suggest import suggestion_text  # noqa: E402
+from kicad_lib_manager.widgets.theme import SUCCESS  # noqa: E402
+
+NEW_BADGE = "new - creates .kicad_sym"
+ASK_HINT = "Pick a library, or type Atomic_ and a KiCad library name"
+
+
+def combo_items(dialog: ImportDialog) -> list[str]:
+    """The library combo's entries, a separator shown as '---'."""
+    combo = dialog._library_combo
+    return [
+        "---" if combo.itemData(i, Qt.ItemDataRole.AccessibleDescriptionRole) == "separator" else combo.itemText(i)
+        for i in range(combo.count())
+    ]
+
+
+def completions(dialog: ImportDialog, prefix: str) -> list[str]:
+    """What the library completer offers for a typed prefix."""
+    completer = dialog._library_combo.completer()
+    completer.setCompletionPrefix(prefix)
+    names = []
+    for row in range(completer.completionCount()):
+        completer.setCurrentRow(row)
+        names.append(completer.currentCompletion())
+    return names
+
+
+def test_library_combo_lists_the_owners_atomic_libraries_then_every_other_allowed_name(qtbot, make_item_dialog, item_layout):
+    from zipfixtures import symbol_lib
+
+    reads = {"n": 0}
+    # a hand-made Atomic_ library the rule refuses must stay out of the picker
+    (item_layout.symbols_dir / "Atomic_MyStuff.kicad_sym").write_bytes(symbol_lib(("Atomic_MyStuff",)))
+
+    def read_libraries(layout):
+        reads["n"] += 1
+        return real_list_symbol_libs(layout)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, list_symbol_libs=read_libraries)
+    wait_current(qtbot, dialog)
+    items = combo_items(dialog)
+    divider = items.index("---")
+    on_disk = sorted(
+        (p.stem for p in item_layout.symbols_dir.glob("Atomic_*.kicad_sym") if p.stem != "Atomic_MyStuff"),
+        key=str.casefold,
+    )
+    assert items[:divider] == on_disk
+    assert on_disk  # the layout does hold Atomic_ libraries, so the first group is not vacuous
+    others = sorted((ATOMIC_PREFIX + s for s in allowed_stems() if ATOMIC_PREFIX + s not in on_disk), key=str.casefold)
+    assert items[divider + 1 :] == others
+    assert items.count("---") == 1
+    for absent in ("IC_Battery_Charger_TI", "Atomic_MyStuff", "Atomic_Footprints"):
+        assert absent not in items
+    assert reads["n"] == 1
+
+    # the list is read again each time a package is opened
+    dialog._on_change()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    assert reads["n"] == 2
+
+
+def test_typing_filters_the_library_list_by_substring_ignoring_case(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True)
+    wait_current(qtbot, dialog)
+    expected = {"Atomic_Driver_FET", "Atomic_Transistor_FET", "Atomic_Transistor_FET_Other"}
+    assert set(completions(dialog, "fet")) == expected
+    assert set(completions(dialog, "FET")) == expected
+    assert completions(dialog, "no such library") == []
+
+    type_text(qtbot, dialog._library_combo.lineEdit(), "transistor_fet")
+    assert dialog._library_combo.completer().completionPrefix() == "transistor_fet"
+    assert set(completions(dialog, "transistor_fet")) == {"Atomic_Transistor_FET", "Atomic_Transistor_FET_Other"}
+
+
+def test_a_pick_from_the_completer_sets_the_text_and_rebuilds_at_once(qtbot, make_item_dialog, recorded):
+    dialog = make_item_dialog(UL_ZIP, show=True)
+    wait_current(qtbot, dialog)
+    before = len(recorded)
+    type_text(qtbot, dialog._library_combo.lineEdit(), "energy")  # a pending typing timer
+    assert dialog._debounce.isActive()
+    dialog._library_combo.setEditText("Atomic_Sensor_Energy")
+    dialog._library_combo.completer().activated[str].emit("Atomic_Sensor_Energy")
+    assert not dialog._debounce.isActive() and not dialog._dirty
+    qtbot.waitUntil(lambda: len(recorded) > before, timeout=30000)
+    assert recorded[-1].library == "Atomic_Sensor_Energy"
+    wait_current(qtbot, dialog)
+
+
+def test_library_typing_debounced_pick_immediate(qtbot, make_item_dialog, recorded):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    edit = dialog._library_combo.lineEdit()
+    before = len(recorded)
+
+    type_text(qtbot, edit, "Atomic_Sensor_Current")  # several textEdited events within a few milliseconds
+    assert dialog._dirty and dialog._debounce.isActive()
+    assert len(recorded) == before
+    assert not dialog._install_btn.isEnabled()
+    qtbot.waitUntil(lambda: len(recorded) == before + 1, timeout=30000)
+    assert recorded[-1].library == "Atomic_Sensor_Current"
+    wait_current(qtbot, dialog)
+    qtbot.wait(450)
+    assert len(recorded) == before + 1  # one rebuild for the whole word
+
+    # picking from the list builds at once and cancels a pending timer
+    type_text(qtbot, edit, "X")
+    assert dialog._debounce.isActive()
+    dialog._library_combo.setEditText(LIB)
+    dialog._library_combo.textActivated.emit(LIB)
+    assert not dialog._debounce.isActive() and not dialog._dirty
+    qtbot.waitUntil(lambda: len(recorded) == before + 2, timeout=30000)
+    assert recorded[-1].library == LIB
+    wait_current(qtbot, dialog)
+    qtbot.wait(450)
+    assert len(recorded) == before + 2
+
+
+def test_a_name_differing_only_by_case_is_corrected_when_editing_finishes(qtbot, make_item_dialog, recorded):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    edit = dialog._library_combo.lineEdit()
+    type_text(qtbot, edit, "atomic_transistor_fet")
+    assert dialog._library_note.isHidden()
+    assert edit.text() == "atomic_transistor_fet"  # the typed text stays while the owner is typing
+
+    edit.editingFinished.emit()
+    assert edit.text() == "Atomic_Transistor_FET"
+    assert not dialog._library_note.isHidden()
+    assert dialog._library_note.text() == "Spelling corrected to Atomic_Transistor_FET"
+    assert dialog._library_note.textFormat() == Qt.TextFormat.PlainText
+    qtbot.waitUntil(lambda: recorded[-1].library == "Atomic_Transistor_FET", timeout=30000)
+    wait_current(qtbot, dialog)
+    assert dialog._plan.library == "Atomic_Transistor_FET"
+    assert dialog._library_badge.text() == "existing"
+
+    # the note goes at the next keystroke
+    type_text(qtbot, edit, "X")
+    assert dialog._library_note.isHidden()
+
+
+def test_a_name_that_is_already_right_or_wrong_in_other_ways_gets_no_correction(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    edit = dialog._library_combo.lineEdit()
+    for text in ("Atomic_Transistor_FET", "Transistor_FET", "IC_New_TI", ""):
+        type_text(qtbot, edit, text)
+        edit.editingFinished.emit()
+        assert edit.text() == text
+        assert dialog._library_note.isHidden()
+
+
+def test_a_pick_with_the_wrong_case_is_corrected_too(qtbot, make_item_dialog, recorded):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    dialog._library_combo.setEditText("ATOMIC_DIODE")
+    dialog._library_combo.textActivated.emit("ATOMIC_DIODE")
+    assert dialog._library_combo.currentText() == "Atomic_Diode"
+    assert dialog._library_note.text() == "Spelling corrected to Atomic_Diode"
+    qtbot.waitUntil(lambda: recorded[-1].library == "Atomic_Diode", timeout=30000)
+    wait_current(qtbot, dialog)
+
+
+def _asks(meta, **kwargs):
+    return replace(real_suggest_library(meta, **kwargs), name="", source="ask", reason="", alternatives=())
+
+
+def test_nothing_placing_the_part_leaves_the_library_empty_and_blocks_install(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_asks)
+    wait_current(qtbot, dialog)
+    assert dialog._library_combo.currentText() == ""
+    assert dialog._library_combo.lineEdit().placeholderText() == ASK_HINT
+    assert dialog._library_combo.toolTip() == ""
+    assert dialog._library_badge.isHidden()
+    assert not dialog._install_btn.isEnabled()
+    assert [r.target for r in dialog._strip_reasons if r.text == "Pick or type a library name"] == ["library"]
+    assert frame_blocked(dialog, "library")
+
+
+def test_library_badge_reads_existing_new_or_nothing(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    edit = dialog._library_combo.lineEdit()
+    assert dialog._library_badge.text() == "existing"  # the suggested Atomic_Battery_Management is on disk
+    assert SUCCESS in dialog._library_badge.styleSheet()
+    type_text(qtbot, edit, "Atomic_Sensor_Temperature")  # allowed, not on disk: new, and only a .kicad_sym
+    assert dialog._library_badge.text() == NEW_BADGE
+    type_text(qtbot, edit, "Atomic_Battery_Management")
+    assert dialog._library_badge.text() == "existing"  # follows the keystrokes at once, before any rebuild
+    for refused in ("IC_Battery_Charger_TI", "atomic_battery_management", "Atomic_MyStuff", ""):
+        type_text(qtbot, edit, refused)  # a v1 name, a case twin, a hand-made name, nothing
+        assert dialog._library_badge.isHidden(), refused
+
+
+def test_library_tooltip_holds_the_escaped_reason_only_for_the_suggested_name(qtbot, make_item_dialog):
+    reason = "Suggested from 2 similar parts in your <b>Atomic_Diode</b> & more"
+
+    def with_markup(meta, **kwargs):
+        return replace(real_suggest_library(meta, **kwargs), name=LIB, source="own", reason=reason)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=with_markup)
+    wait_current(qtbot, dialog)
+    tip = dialog._library_combo.toolTip()
+    assert tip == "<p>" + html.escape(suggestion_text(dialog._suggestion)) + "</p>"
+    assert "&lt;b&gt;Atomic_Diode&lt;/b&gt;" in tip and "&amp;" in tip
+    assert "<b>" not in tip
+    type_text(qtbot, dialog._library_combo.lineEdit(), "Atomic_Diode")
+    assert dialog._library_combo.toolTip() == ""
+    dialog._library_combo.setEditText(LIB)
+    assert dialog._library_combo.toolTip() == tip
+
+
+def test_the_v1_token_line_and_hint_are_gone(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True)
+    wait_current(qtbot, dialog)
+    assert not hasattr(dialog, "_token_line") and not hasattr(dialog, "_token_hint")
+    assert not hasattr(form, "library_tokens")
+
+
+def test_updating_label_and_busy_strip(qtbot, make_item_dialog, gates):
+    """Edge E9/loading: Updating... at once, the busy strip only after 150 ms, both gone with the result."""
+    state = {"n": 0}
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        state["n"] += 1
+        if state["n"] >= 3:  # ul_dialog builds twice: the plan, then the one after the Description is typed
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = ul_dialog(make_item_dialog, qtbot, build_plan=gated_build)
+    assert dialog._updating_label.isHidden() and dialog._busy_bar.isHidden()
+    assert isinstance(dialog._busy_bar, QProgressBar) and dialog._busy_bar.maximumHeight() == 4
+    first_tree = files_rows(dialog)
+
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert dialog._updating_label.isVisible()
+    assert dialog._updating_label.text() == "Updating..."
+    assert AMBER.lower() in dialog._updating_label.styleSheet().lower()
+    assert dialog._busy_bar.isHidden()  # not before 150 ms
+    assert files_rows(dialog) == first_tree  # the previous tree stays
+    qtbot.wait(250)
+    assert dialog._busy_bar.isVisible()
+    gates[0].set()
+    wait_current(qtbot, dialog)
+    assert dialog._updating_label.isHidden() and dialog._busy_bar.isHidden()
+
+    # a quick text edit shows the label from the first keystroke
+    type_text(qtbot, dialog._fp_name_edit, "Q")
+    assert dialog._updating_label.isVisible()
+    qtbot.waitUntil(lambda: len(gates) == 2, timeout=30000)
+    gates[1].set()
+    wait_current(qtbot, dialog)
+    assert dialog._updating_label.isHidden() and dialog._busy_bar.isHidden()
+
+
+def test_library_long_name_geometry(qtbot, make_item_dialog):
+    """Backstop (UI E6/long-text): a 60-character library name keeps the badge inside the pane."""
+    long_stem = ("Averylongtokenabc_" * 3 + "Zlast")[:53]
+    long_name = ATOMIC_PREFIX + long_stem
+    assert len(long_name) == 60 and not long_name.endswith("_")
+    dialog = make_item_dialog(
+        UL_ZIP, show=True, suggest_library=_good_suggestion,
+        detect_tools=lambda kicad_fp_dir: ToolContext(allowed_stems=allowed_stems([long_stem])),
+    )
+    wait_current(qtbot, dialog)
+    resize_and_wait(qtbot, dialog, 900, 600)
+    type_text(qtbot, dialog._library_combo.lineEdit(), long_name)
+    qtbot.wait(50)
+    scroll = dialog._left_scroll
+    viewport = scroll.viewport()
+    left = scroll.widget()
+    assert not scroll.horizontalScrollBar().isVisible()
+    assert left.width() <= viewport.width()
+    for widget in (dialog._library_combo, dialog._library_badge):
+        if widget.isVisible():
+            right = widget.mapTo(left, QPoint(widget.width(), 0)).x()
+            assert right <= viewport.width(), (widget, right, viewport.width())
+    assert dialog._library_badge.isVisible()
+    assert dialog._library_badge.text() == NEW_BADGE
+
+
+# -- plan 05-09 Task 2: the clickable blocking-reason strip, amber frames, ready and no-op lines ----
+
+import html as html_module  # noqa: E402
+import re  # noqa: E402
+
+from PySide6.QtWidgets import QApplication, QPushButton  # noqa: E402
+
+from kicad_lib_manager.importer.stems import name_verdict  # noqa: E402
+from kicad_lib_manager.widgets.theme import AMBER_TINT, LINK, SP_SM  # noqa: E402
+
+# A v1 name is refused by the name rule, with this reason
+V1_NAME_REASON = name_verdict("IC_SubCategory_TI").reason
+
+
+def strip_links(dialog: ImportDialog) -> dict[str, str]:
+    """reason text (unescaped) -> href, read from the strip's rich text."""
+    found = re.findall(r'<a href="([^"]*)"[^>]*>(.*?)</a>', dialog._strip.text())
+    return {html_module.unescape(text): href for href, text in found}
+
+
+def frame_blocked(dialog: ImportDialog, key: str) -> bool:
+    return bool(dialog._field_frames[key].property("blocked"))
+
+
+def with_issues(*issues):
+    """A build_plan fake that adds ERROR Issues to the real plan."""
+
+    def build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        plan = real_build_plan(candidate, options, layout, tools, **kwargs)
+        return replace(plan, issues=(*plan.issues, *issues))
+
+    return build
+
+
+def test_refused_suggestion_blocks_install(qtbot, make_item_dialog):
+    """D-05, D-08: with no KiCad and no category the UL sample opens with an empty library and Install blocked until a name is picked."""
+    dialog = make_item_dialog(UL_ZIP, show=True)
+    wait_current(qtbot, dialog)
+    assert dialog._suggestion.source == "ask"
+    assert dialog._library_combo.currentText() == ""
+    assert not dialog._install_btn.isEnabled()
+    assert "Pick or type a library name" in strip_links(dialog)
+    assert dialog._strip.text().startswith("⚠ Install is blocked: ")
+    assert frame_blocked(dialog, "library")
+    # the planner's own refusal is not repeated as a second reason
+    assert not any(text.startswith("Error:") for text in strip_links(dialog))
+
+    set_library(dialog, LIB)
+    wait_current(qtbot, dialog)
+    assert dialog._strip.text() == "✓ Ready to install: 2 new, 1 modified, 0 unchanged files"
+    assert dialog._install_btn.isEnabled()
+    assert not frame_blocked(dialog, "library")
+
+
+def test_empty_library_name_blocks(qtbot, make_item_dialog):
+    """UI E6/empty: an empty name shows the amber frame and 'Pick or type a library name'."""
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._library_combo.lineEdit(), "")
+    assert frame_blocked(dialog, "library")  # from the first keystroke, while the rebuild waits
+    wait_current(qtbot, dialog)
+    assert "Pick or type a library name" in strip_links(dialog)
+    assert not any(text.startswith("Error:") for text in strip_links(dialog))
+    assert frame_blocked(dialog, "library")
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_case_twin_and_invalid_name_show_the_plan_issue(qtbot, make_item_dialog, item_layout):
+    """UI E6/error: an allowed name with a case twin on disk shows the plan's Issue; a refused name shows the name rule's reason."""
+    from zipfixtures import symbol_lib
+
+    (item_layout.symbols_dir / "atomic_audio.kicad_sym").write_bytes(symbol_lib(("atomic_audio",)))
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._library_combo.lineEdit(), "Atomic_Audio")
+    wait_current(qtbot, dialog)
+    codes = [i.code for i in dialog._plan.issues]
+    assert "install.library_case_clash" in codes
+    errors = [text for text in strip_links(dialog) if text.startswith("Error:")]
+    assert len(errors) == 1 and "letter case" in errors[0]
+    assert frame_blocked(dialog, "library")
+    assert not dialog._install_btn.isEnabled()
+    assert any("letter case" in dialog._preview.topLevelItem(i).child(j).text(0)
+               for i in range(dialog._preview.topLevelItemCount())
+               for j in range(dialog._preview.topLevelItem(i).childCount()))
+
+    type_text(qtbot, dialog._library_combo.lineEdit(), "IC New TI")
+    wait_current(qtbot, dialog)
+    assert "install.invalid_library" in [i.code for i in dialog._plan.issues]
+    links = strip_links(dialog)
+    assert name_verdict("IC New TI").reason in links
+    # the planner's own refusal says the same thing and is not listed a second time
+    assert not any(text.startswith("Error:") for text in links)
+    assert frame_blocked(dialog, "library")
+
+
+def test_strip_link_focuses_field(qtbot, make_item_dialog):
+    """UI E7/error: the reason is a link; activating it puts the cursor in the field."""
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    wait_current(qtbot, dialog)
+    # Value follows the MPN and is read-only, so only the MPN frame is ever blocked and only the MPN is a reason
+    assert frame_blocked(dialog, "mpn") and not frame_blocked(dialog, "value")
+    links = strip_links(dialog)
+    assert "MPN is empty - it names the 3D model file" in links and "Value is empty" not in links
+    dialog._library_combo.setFocus()
+    dialog._strip.linkActivated.emit(links["MPN is empty - it names the 3D model file"])
+    assert dialog.focusWidget() is dialog._field_edits["mpn"]
+    # a restored field unblocks its frame
+    dialog._field_restore["mpn"].click()
+    wait_current(qtbot, dialog)
+    assert not frame_blocked(dialog, "value") and not frame_blocked(dialog, "mpn")
+    assert dialog._install_btn.isEnabled()
+
+
+def test_strip_link_focuses_library_and_the_footprint_choice_never_blocks(qtbot, make_item_dialog, tmp_path):
+    dialog = make_item_dialog(multi_zip(tmp_path), show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    # the footprint combo always holds a choice, so it adds no reason and no amber frame
+    assert "Select at least one footprint" not in strip_links(dialog)
+    assert not frame_blocked(dialog, "footprints")
+    assert dialog._install_btn.isEnabled()
+
+    set_library(dialog, "IC_SubCategory_TI")
+    wait_current(qtbot, dialog)
+    dialog._fp_name_edit.setFocus()
+    dialog._strip.linkActivated.emit(strip_links(dialog)[V1_NAME_REASON])
+    assert dialog.focusWidget() is dialog._library_combo  # its line edit takes the cursor through the focus proxy
+
+
+def test_strip_link_ignores_unknown_href(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    dialog._library_combo.setFocus()
+    for href in ("reason:99", "reason:x", "http://evil.example/", "reason:-1", ""):
+        dialog._strip.linkActivated.emit(href)  # nothing is opened, nothing breaks
+    assert dialog.focusWidget() is dialog._library_combo
+
+
+def test_strip_escapes_markup(qtbot, make_item_dialog):
+    """T-05-27: every interpolated string is escaped and only internal reason: links exist."""
+    evil = Issue(Severity.ERROR, "install.test_markup", "<b>x</b><a href='http://evil.example/'>y</a>")
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(evil))
+    wait_current(qtbot, dialog)
+    text = dialog._strip.text()
+    assert "&lt;b&gt;x&lt;/b&gt;" in text
+    assert "<b>" not in text and "<a href='http" not in text and 'href="http' not in text
+    hrefs = re.findall(r'href="([^"]*)"', text)
+    assert hrefs and all(h.startswith("reason:") for h in hrefs)
+    assert dialog._strip.openExternalLinks() is False
+    assert LINK in text  # the links are LINK-coloured
+
+
+def test_strip_look(qtbot, make_item_dialog):
+    """The blocked strip: AMBER_TINT, 8 px padding, rich text, a leading warning and ' · ' between reasons."""
+    one = Issue(Severity.ERROR, "install.test_a", "First problem")
+    two = Issue(Severity.ERROR, "install.test_b", "Second problem")
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(one, two))
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)  # so the two issues above are the only reasons
+    strip = dialog._strip
+    assert strip.textFormat() == Qt.TextFormat.RichText and strip.wordWrap()
+    assert AMBER_TINT.lower() in strip.styleSheet().lower()
+    margins = strip.contentsMargins()
+    assert (margins.left(), margins.top(), margins.right(), margins.bottom()) == (SP_SM, SP_SM, SP_SM, SP_SM)
+    assert strip.text().startswith("⚠ Install is blocked: ")
+    assert list(strip_links(dialog)) == ["Error: First problem", "Error: Second problem"]
+    assert " · " in strip.text()
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_strip_caps_three_lines_with_tooltip(qtbot, make_item_dialog):
+    """UI E11/overflow and long-text: at most 3 lines, the tooltip lists every reason."""
+    issues = [Issue(Severity.ERROR, f"install.test_{n}", f"Reason number {n} " + "with a rather long explanation " * 4) for n in range(10)]
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(*issues))
+    wait_current(qtbot, dialog)
+    resize_and_wait(qtbot, dialog, 900, 600)
+    strip = dialog._strip
+    limit = 3 * strip.fontMetrics().lineSpacing() + 2 * SP_SM
+    assert strip.maximumHeight() <= limit + 2
+    assert strip.height() <= strip.maximumHeight()
+    tooltip = strip.toolTip()
+    for n in range(10):
+        assert f"Reason number {n} " in tooltip
+    assert import_dialog_module.STRIP_LINK_HINT in tooltip
+
+
+def _tooltip_plain_text(tooltip: str) -> str:
+    from PySide6.QtGui import QTextDocument
+
+    document = QTextDocument()
+    document.setHtml(tooltip)
+    return document.toPlainText()
+
+
+def test_strip_tooltip_says_reasons_are_links(qtbot, make_item_dialog):
+    """G-07-8: a single reason's tooltip is rich text and ends with the click hint."""
+    from PySide6.QtGui import Qt as GuiQt
+
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    wait_current(qtbot, dialog)
+    assert list(strip_links(dialog)) == ["MPN is empty - it names the 3D model file"]
+    tooltip = dialog._strip.toolTip()
+    hint = import_dialog_module.STRIP_LINK_HINT
+    assert hint in tooltip
+    assert GuiQt.mightBeRichText(tooltip)
+    plain = _tooltip_plain_text(tooltip)
+    assert "MPN is empty - it names the 3D model file" in plain and hint in plain
+
+
+def test_strip_tooltip_single_reason_decodes_entities(qtbot, make_item_dialog):
+    """G-07-8 / T-07-39: one escaped reason shows as itself in the tooltip, and nothing is left unescaped."""
+    from PySide6.QtGui import Qt as GuiQt
+
+    odd = Issue(Severity.ERROR, "install.test_amp", "Tom & Jerry's <part>")
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=with_issues(odd))
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)  # so the issue above is the only reason
+    assert list(strip_links(dialog)) == ["Error: Tom & Jerry's <part>"]
+    tooltip = dialog._strip.toolTip()
+    assert "&amp;" in tooltip and "&lt;part&gt;" in tooltip and "<part>" not in tooltip
+    assert GuiQt.mightBeRichText(tooltip)
+    plain = _tooltip_plain_text(tooltip)
+    assert "Error: Tom & Jerry's <part>" in plain
+    assert import_dialog_module.STRIP_LINK_HINT in plain
+
+
+def test_strip_tooltip_style_scoped_to_strip(qtbot, make_item_dialog):
+    """G-07-8: every strip stylesheet is one QLabel#installStrip rule, so it cannot tint the strip's tooltip.
+
+    Only the stylesheet text is checked; the tooltip colour itself is a manual check (UAT test 8).
+    """
+    scoped = r"QLabel#installStrip \{ [^{}]+ \}"
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    wait_current(qtbot, dialog)
+    strip = dialog._strip
+    assert strip.objectName() == "installStrip"
+    assert re.fullmatch(scoped, strip.styleSheet())
+    assert AMBER_TINT.lower() in strip.styleSheet().lower()
+
+    type_text(qtbot, dialog._field_edits["mpn"], "CSD85301Q2-B")
+    wait_current(qtbot, dialog)
+    assert strip.text().startswith("✓ Ready to install")
+    assert re.fullmatch(scoped, strip.styleSheet())
+    assert SUCCESS in strip.styleSheet()
+
+
+def test_ready_line_and_install_enabled(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    counts = file_counts(dialog._plan, dialog._candidate, dialog._plan_options)
+    assert dialog._strip.text() == (
+        f"✓ Ready to install: {counts.new} new, {counts.modified} modified, {counts.unchanged} unchanged files"
+    )
+    assert SUCCESS in dialog._strip.styleSheet()
+    assert dialog._strip.textFormat() == Qt.TextFormat.PlainText
+    assert dialog._install_btn.isEnabled()
+    assert all(not frame.property("blocked") for frame in dialog._field_frames.values())
+
+
+def test_noop_strip(qtbot, make_item_dialog):
+    """A plan with nothing to write reads 'Nothing to install' in MUTED and keeps Install off."""
+
+    def noop_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        return replace(real_build_plan(candidate, options, layout, tools, **kwargs), ops=())
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, build_plan=noop_build)
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
+    assert dialog._plan.is_noop
+    assert dialog._strip.text() == f"Nothing to install: this part is already in {LIB}."
+    assert MUTED.lower() in dialog._strip.styleSheet().lower()
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_updating_reason_replaces_the_others(qtbot, make_item_dialog, gates):
+    """UI E11/loading: while a rebuild is pending the single reason 'Updating preview...' stands alone."""
+    state = {"n": 0}
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        state["n"] += 1
+        if state["n"] >= 4:  # builds 1 and 2 are ul_dialog's, 3 is the emptied MPN
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = ul_dialog(make_item_dialog, qtbot, build_plan=gated_build)
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    wait_current(qtbot, dialog)
+    assert "MPN is empty - it names the 3D model file" in strip_links(dialog)
+    assert frame_blocked(dialog, "mpn")
+    type_text(qtbot, dialog._field_edits["mpn"], "X1")  # a rebuild starts and is held
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert dialog._strip.text() == "Updating preview..."
+    assert not dialog._install_btn.isEnabled()
+    assert strip_links(dialog) == {}
+    assert not frame_blocked(dialog, "mpn")  # the frame follows the live text
+    gates[0].set()
+    wait_current(qtbot, dialog)
+    assert "MPN is empty - it names the 3D model file" not in strip_links(dialog)
+
+
+def test_build_failure_reason_and_retry(qtbot, make_item_dialog):
+    """UI E9/error: the previous tree stays, the strip says why, the next edit retries."""
+    count = {"n": 0}
+
+    def flaky_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if count["n"] == 3:  # builds 1 and 2 are ul_dialog's (the plan, then the typed Description)
+            raise RuntimeError("boom")
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = ul_dialog(make_item_dialog, qtbot, build_plan=flaky_build)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    first_tree = files_rows(dialog)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: count["n"] == 3 and dialog._building is None, timeout=30000)
+    assert files_rows(dialog) == first_tree
+    assert "Error: Preview could not be built - see the log" in strip_links(dialog)
+    assert not dialog._install_btn.isEnabled()
+    assert dialog._updating_label.isHidden()
+    assert any(i.text.startswith("Import step failed: RuntimeError: boom") for i in logged)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    assert dialog._strip.text().startswith("✓ Ready to install")
+
+
+def test_field_frames_reserve_their_border(qtbot, make_item_dialog):
+    """The frame always holds its 2 px border, so turning the amber highlight on does not move anything."""
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    frame = dialog._field_frames["mpn"]
+    assert frame.objectName() == "fieldFrame"
+    assert "2px solid transparent" in frame.styleSheet()
+    assert dialog._field_edits["mpn"].parentWidget() is frame
+    assert dialog._library_combo.parentWidget() is dialog._field_frames["library"]
+    assert dialog._fp_name_edit.parentWidget() is dialog._field_frames["footprint_name"]
+    before = (frame.geometry(), dialog._field_edits["mpn"].geometry())
+    type_text(qtbot, dialog._field_edits["mpn"], "")
+    assert frame_blocked(dialog, "mpn")
+    qtbot.wait(20)
+    assert (frame.geometry(), dialog._field_edits["mpn"].geometry()) == before
+
+
+def test_ctrl_return_and_no_default_buttons(qtbot, make_item_dialog):
+    """T-05-29: Enter in a line edit never installs; Ctrl+Return installs only when Install is enabled."""
+    applied = []
+
+    def recording_apply(plan, *, backup_root=None, progress=None):
+        applied.append(plan)
+        return real_apply_plan(plan, backup_root=backup_root, progress=progress)
+
+    dialog = ul_dialog(make_item_dialog, qtbot, apply_plan=recording_apply)
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    for button in dialog.findChildren(QPushButton):
+        assert not button.autoDefault() and not button.isDefault(), button.text()
+    assert dialog._install_btn.isEnabled()
+
+    qtbot.keyClick(dialog._field_edits["value"], Qt.Key.Key_Return)
+    qtbot.keyClick(dialog._library_combo.lineEdit(), Qt.Key.Key_Return)
+    qtbot.wait(100)
+    assert applied == [] and dialog._stack.currentWidget() is dialog._edit_page
+
+    # not enabled (a rebuild is pending): Ctrl+Return does nothing
+    type_text(qtbot, dialog._field_edits["datasheet"], "https://www.ti.com/lit/ds/csd85301q2.pdf")
+    assert not dialog._install_btn.isEnabled()
+    qtbot.keyClick(dialog, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    qtbot.wait(100)
+    assert applied == []
+
+    wait_current(qtbot, dialog)
+    assert dialog._install_btn.isEnabled()
+    with qtbot.waitSignal(dialog.installed, timeout=60000):
+        qtbot.keyClick(dialog, Qt.Key.Key_Return, Qt.KeyboardModifier.ControlModifier)
+    assert len(applied) == 1 and applied[0] is dialog._plan
+
+
+def test_ctrl_return_shortcut_is_registered(qtbot, make_item_dialog):
+    from PySide6.QtGui import QKeySequence, QShortcut
+
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    keys = [s.key().toString() for s in dialog.findChildren(QShortcut)]
+    assert QKeySequence("Ctrl+Return").toString() in keys
+
+
+def test_one_build_at_a_time(qtbot, make_item_dialog, gates):
+    """Edge PREV-06/concurrency: edits during a running build queue; two builds never overlap."""
+    running = {"now": 0, "max": 0, "calls": 0}
+    lock = threading.Lock()
+
+    def counting_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        with lock:
+            running["now"] += 1
+            running["calls"] += 1
+            running["max"] = max(running["max"], running["now"])
+        try:
+            if running["calls"] == 3:  # builds 1 and 2 are ul_dialog's (the plan, then the typed Description)
+                gate = threading.Event()
+                gates.append(gate)
+                assert gate.wait(30)
+            return real_build_plan(candidate, options, layout, tools, **kwargs)
+        finally:
+            with lock:
+                running["now"] -= 1
+
+    dialog = ul_dialog(make_item_dialog, qtbot, build_plan=counting_build)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    for name in (NEW_A, NEW_B, NEW_C):
+        set_library(dialog, name)
+    gates[0].set()
+    wait_current(qtbot, dialog)
+    assert running["max"] == 1
+    assert dialog._plan.library == NEW_C
+
+
+# -- plan 05-10 Task 1: one conflict row per conflict (PREV-05, D-12, D-14a) --------------------------
+
+from PySide6.QtGui import QAction  # noqa: E402
+
+from kicad_lib_manager.importer.plan import Conflict, Resolution  # noqa: E402
+from kicad_lib_manager.widgets.theme import ACCENT  # noqa: E402
+
+OTHER_LIB = "Atomic_Sensor_Energy"
+SYMBOL_KEY = f"symbol:{LIB}:CSD85301Q2"
+FP_KEY = f"footprint:{FP_LIB}:dqk0006b"
+MODEL_KEY = "model:csd85301q2.stp"
+NEEDS_CHOICE = "Needs a choice"
+
+
+def write_clashes(layout, *, symbol=False, footprint=True, model=True, lower_fp=False, library=LIB) -> None:
+    """Put items that differ from the UL sample's into the target, so each becomes a conflict."""
+    from zipfixtures import STEP_BYTES, symbol_lib
+    from zipfixtures import footprint as fp_bytes
+
+    if footprint:
+        name = "dqk0006b.kicad_mod" if lower_fp else "DQK0006B.kicad_mod"
+        # the existing footprint links a model that is in Custom/3DModels, so keeping it still leaves an atomic part (D-21)
+        (layout.models_dir / "other.step").write_bytes(STEP_BYTES)
+        existing = fp_bytes("DQK0006B", model="${CUSTOM_3DMODEL_DIR}/other.step")
+        (layout.footprints_dir / f"{footprint_library_for(library)}.pretty" / name).write_bytes(existing)
+    if model:
+        (layout.models_dir / "CSD85301Q2.stp").write_bytes(STEP_BYTES + b"\n")
+    if symbol:
+        (layout.symbols_dir / f"{library}.kicad_sym").write_bytes(symbol_lib((library, "CSD85301Q2")))
+
+
+def clash_dialog(make_item_dialog, qtbot, item_layout, core=None, **kinds) -> ImportDialog:
+    write_clashes(item_layout, **kinds)
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, **(core or {}))
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
+    return dialog
+
+
+def toggles(row) -> list[bool]:
+    return [b.isChecked() for b in (row._overwrite_btn, row._rename_btn, row._skip_btn)]
+
+
+def test_conflict_rows_no_bulk_and_none_selected(qtbot, make_item_dialog, item_layout, recorded):
+    """T-05-30: one row per conflict, nothing pre-selected, no bulk control, Install blocked."""
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout)
+    assert set(dialog._conflict_rows) == {FP_KEY, MODEL_KEY}
+    assert dialog._conflicts_box.isVisible()
+    for row in dialog._conflict_rows.values():
+        assert toggles(row) == [False, False, False]
+        assert row._needs_label.text() == NEEDS_CHOICE and row._needs_label.isVisible()
+        assert row.property("resolved") is False
+        assert row.current_resolution() is None
+    assert dialog._resolutions == {}
+    assert recorded[-1].resolutions == {}
+    texts = [b.text() for b in dialog.findChildren(QPushButton)] + [a.text() for a in dialog.findChildren(QAction)]
+    assert [t for t in texts if "all" in t.lower() and t != "Install Part"] == []
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_conflict_choice_rebuilds_and_resolves(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout)
+    fp_row = dialog._conflict_rows[FP_KEY]
+    before = len(recorded)
+    fp_row._skip_btn.click()
+    wait_current(qtbot, dialog)
+    assert len(recorded) == before + 1
+    assert recorded[-1].resolutions == {FP_KEY: Resolution("skip")}
+    assert toggles(fp_row) == [False, False, True]
+    assert fp_row.property("resolved") is True
+    assert fp_row._hint_label.text() == "Skip - keep the existing footprint and link it"
+    assert not fp_row._needs_label.isVisible()
+    # clicking the checked button again changes nothing
+    fp_row._skip_btn.click()
+    qtbot.wait(100)
+    assert len(recorded) == before + 1 and toggles(fp_row) == [False, False, True]
+    # a kept footprint does not link the incoming model, so that conflict leaves the plan
+    assert set(dialog._conflict_rows) == {FP_KEY}
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    assert dialog._strip.text().startswith("✓ Ready to install")
+    # Overwrite brings the model conflict back, unresolved
+    fp_row._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    assert set(dialog._conflict_rows) == {FP_KEY, MODEL_KEY}
+    assert not dialog._install_btn.isEnabled()
+    model_row = dialog._conflict_rows[MODEL_KEY]
+    assert model_row.current_resolution() is None
+    model_row._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    assert dialog._strip.text().startswith("✓ Ready to install")
+    assert recorded[-1].resolutions == {FP_KEY: Resolution("overwrite"), MODEL_KEY: Resolution("overwrite")}
+
+
+def test_conflict_rename_field_and_empty_reason(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    row = dialog._conflict_rows[FP_KEY]
+    assert not row._rename_edit.isVisible()
+    row._rename_btn.click()
+    wait_current(qtbot, dialog)
+    suggested = dialog._plan.conflicts[0].suggested_name
+    assert suggested == "DQK0006B_CSD85301Q2"
+    assert row._rename_edit.isVisible() and row._rename_edit.text() == suggested
+    assert row._rename_edit.minimumWidth() >= 160
+    assert row._hint_label.text() == f"Rename - install as {suggested} and leave the existing footprint untouched"
+    assert recorded[-1].resolutions == {FP_KEY: Resolution("rename", suggested)}
+
+    type_text(qtbot, row._rename_edit, "")
+    assert not dialog._install_btn.isEnabled()
+    wait_current(qtbot, dialog)
+    assert list(strip_links(dialog)) == ["Enter a new name for footprint DQK0006B"]
+    assert frame_blocked(dialog, f"rename:{FP_KEY}")
+    assert recorded[-1].resolutions[FP_KEY] == Resolution("rename", "")
+    dialog._on_reason_link("reason:0")
+    assert dialog.focusWidget() is row._rename_edit
+
+    type_text(qtbot, row._rename_edit, "FP_X")
+    wait_current(qtbot, dialog)
+    assert recorded[-1].resolutions[FP_KEY] == Resolution("rename", "FP_X")
+    renames = next(s for s in dialog._preview.sections if s.name == "Renames")
+    assert "DQK0006B → FP_X" in [r.text for r in renames.rows]
+    assert not frame_blocked(dialog, f"rename:{FP_KEY}")
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+
+def test_conflict_choice_carried_by_key(qtbot, make_item_dialog, item_layout):
+    """T-05-31 / D-14a: a choice is carried by the item key; the shared footprint folder makes the footprint one item for every symbol library."""
+    write_clashes(item_layout, model=False, library=OTHER_LIB)
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    row = dialog._conflict_rows[FP_KEY]
+    row._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    # an unrelated edit keeps the same key, so the choice stays
+    type_text(qtbot, dialog._field_edits["description"], "Edited")
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows[FP_KEY] is row
+    assert row.current_resolution() == Resolution("overwrite")
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+    # another symbol library installs into the same shared footprint folder: the footprint is the same item, so its choice stays
+    other_key = f"footprint:{footprint_library_for(OTHER_LIB)}:dqk0006b"
+    assert other_key == FP_KEY
+    set_library(dialog, OTHER_LIB)
+    wait_current(qtbot, dialog)
+    assert set(dialog._conflict_rows) == {FP_KEY}
+    assert dialog._resolutions == {FP_KEY: Resolution("overwrite")}
+    assert dialog._conflict_rows[FP_KEY].current_resolution() == Resolution("overwrite")
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+    # coming back keeps the same choice
+    set_library(dialog, LIB)
+    wait_current(qtbot, dialog)
+    row = dialog._conflict_rows[FP_KEY]
+    assert row.current_resolution() == Resolution("overwrite")
+
+    # a free footprint name removes the row and its choice
+    type_text(qtbot, dialog._fp_name_edit, "OTHER_FP")
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows == {} and dialog._resolutions == {}
+    assert not dialog._conflicts_box.isVisible()
+    assert f"conflict:{FP_KEY}" not in dialog._reason_targets
+    assert f"rename:{FP_KEY}" not in dialog._reason_targets and f"rename:{FP_KEY}" not in dialog._field_frames
+    dialog._fp_name_restore.click()
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows[FP_KEY].current_resolution() is None
+    assert dialog._conflicts_box.isVisible()
+
+
+def test_conflict_rows_update_in_place(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    row = dialog._conflict_rows[FP_KEY]
+    row._rename_btn.click()
+    wait_current(qtbot, dialog)
+    edit = row._rename_edit
+    type_text(qtbot, edit, "Abc_1X")
+    qtbot.keyClick(edit, Qt.Key.Key_Home)
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows[FP_KEY] is row
+    assert row._rename_edit is edit and edit.text() == "Abc_1X"
+    assert dialog.focusWidget() is edit
+    assert edit.cursorPosition() == 0
+
+
+def test_conflict_case_twin_row(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False, lower_fp=True)
+    row = dialog._conflict_rows[FP_KEY]
+    assert "only by letter case" in row._title_label.toolTip()
+    assert row._kind_label.text() == "footprint"
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_identical_existing_item_has_no_row(qtbot, make_item_dialog, item_layout):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows == {}
+    op = next(op for op in dialog._plan.ops if op.kind == "footprint")
+    op.path.write_bytes(op.data)
+    dialog._request_rebuild()
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows == {} and not dialog._conflicts_box.isVisible()
+
+
+def test_conflict_rows_order(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, symbol=True)
+    keys = [c.key for c in dialog._plan.conflicts]
+    assert keys == [SYMBOL_KEY, FP_KEY, MODEL_KEY]
+    layout = dialog._conflicts_layout
+    assert [layout.itemAt(i).widget() for i in range(layout.count())] == [dialog._conflict_rows[k] for k in keys]
+    prefix = "Choose Overwrite, Rename or Skip for "
+    assert list(strip_links(dialog)) == [
+        prefix + "symbol CSD85301Q2",
+        prefix + "footprint DQK0006B",
+        prefix + "3D model CSD85301Q2.stp",
+    ]
+
+
+def test_conflict_row_overwrite_style_and_hint(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, footprint=False)
+    row = dialog._conflict_rows[MODEL_KEY]
+    row._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    assert row._overwrite_btn.isChecked()
+    assert ERROR in row._overwrite_btn.styleSheet()
+    assert ACCENT in row._rename_btn.styleSheet() and ACCENT in row._skip_btn.styleSheet()
+    assert row._hint_label.text() == "Overwrite - replace the existing 3D model with the incoming one (a backup is kept)"
+    assert ERROR in row._hint_label.styleSheet()
+    row._skip_btn.click()
+    assert MUTED in row._hint_label.styleSheet()
+    assert row._hint_label.text() == "Skip - keep the existing 3D model and link it"
+    assert toggles(row) == [False, False, True]
+
+
+def test_conflict_section_hidden_without_conflicts(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    assert dialog._conflict_rows == {}
+    assert not dialog._conflicts_box.isVisible()
+
+
+def test_conflict_row_exclusive_toggles_and_line_one(qtbot):
+    from kicad_lib_manager.widgets.conflict_row import ConflictRow
+
+    long_name, long_existing = "N" * 80, "where " * 40
+    conflict = Conflict("footprint:L:n", "footprint", long_name, long_existing, suggested_name="N_2")
+    row = ConflictRow(conflict)
+    qtbot.addWidget(row)
+    events = []
+    row.choice_changed.connect(lambda key, res: events.append((key, res)))
+    row.resize(420, 120)
+    row.show()
+    full = f"{long_name} — {long_existing}"
+    assert row._title_label.toolTip() == full
+    assert row._title_label.text() != full and "…" in row._title_label.text()
+    assert row._rename_edit.minimumWidth() >= 160
+    row._overwrite_btn.click()
+    row._rename_btn.click()
+    assert toggles(row) == [False, True, False]
+    row._rename_btn.click()  # again: stays checked, no event
+    assert toggles(row) == [False, True, False]
+    assert [res for _, res in events] == [Resolution("overwrite"), Resolution("rename", "N_2")]
+    row.set_resolution(Resolution("skip"))
+    assert toggles(row) == [False, False, True] and len(events) == 2  # programmatic: no signal
+    row.set_resolution(None)
+    assert toggles(row) == [False, False, False] and row.current_resolution() is None
+
+
+def test_conflicts_overflow_geometry(qtbot, make_item_dialog, item_layout, tmp_path):
+    """Backstop (UI E8/overflow): 2 conflicts beside a 6-footprint choice at 900x600 scroll vertically only."""
+    from zipfixtures import STEP_BYTES, make_zip, symbol_lib
+    from zipfixtures import footprint as fp_bytes
+
+    members = [("part.kicad_sym", symbol_lib(("S1",), props=ATOMIC_PROPS))]
+    members += [(f"F{i}.kicad_mod", fp_bytes(f"F{i}")) for i in range(1, 7)]
+    members += [("a.step", STEP_BYTES)]
+    package = make_zip(tmp_path / "six.zip", members)
+    # one footprint is installed (D-14), so the footprint and the model are the two conflicts
+    (item_layout.footprints_dir / f"{FP_LIB}.pretty" / "F1.kicad_mod").write_bytes(fp_bytes("F1", model="other.step"))
+    (item_layout.models_dir / "S1.step").write_bytes(STEP_BYTES + b"\n")
+    dialog = make_item_dialog(package, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    resize_and_wait(qtbot, dialog, 900, 600)
+    assert len(dialog._conflict_rows) == 2
+    rows = [dialog._conflicts_layout.itemAt(i).widget() for i in range(2)]
+    rows[0]._rename_btn.click()
+    wait_current(qtbot, dialog)
+    type_text(qtbot, rows[0]._rename_edit, "R" * 60)
+    qtbot.wait(50)
+    scroll = dialog._left_scroll
+    viewport = scroll.viewport()
+    left = scroll.widget()
+    assert scroll.verticalScrollBar().maximum() > 0
+    assert not scroll.horizontalScrollBar().isVisible()
+    assert left.width() <= viewport.width()
+    for widget in dialog._conflicts_box.findChildren(QWidget):
+        if widget.isVisible():
+            right = widget.mapTo(left, QPoint(widget.width(), 0)).x()
+            assert right <= viewport.width(), (widget, right, viewport.width())
+    assert rows[0]._rename_edit.text() == "R" * 60
+    for above, below in zip(rows, rows[1:]):
+        assert below.y() - (above.y() + above.height()) == 8
+
+
+# -- plan 05-10 Task 2: the content view from file rows and conflicts (D-08, Pitfall 2) ---------------
+
+from kicad_lib_manager.importer.content import op_content as real_op_content  # noqa: E402
+from kicad_lib_manager.importer.content import unchanged_content as real_unchanged_content  # noqa: E402
+from kicad_lib_manager.widgets.content_view import ContentViewDialog  # noqa: E402
+
+FP_PATH = f"Custom/Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod"
+
+
+def preview_row(dialog: ImportDialog, section: str, ends_with: str):
+    rows = next(s for s in dialog._preview.sections if s.name == section).rows
+    return next(r for r in rows if r.text.endswith(ends_with))
+
+
+def open_views(dialog: ImportDialog) -> list:
+    return dialog.findChildren(ContentViewDialog)
+
+
+def wait_view(qtbot, dialog: ImportDialog) -> ContentViewDialog:
+    qtbot.waitUntil(lambda: bool(open_views(dialog)), timeout=30000)
+    return open_views(dialog)[-1]
+
+
+def view_lines(view: ContentViewDialog) -> list[str]:
+    return view._text.toPlainText().splitlines()
+
+
+def test_content_view_new_footprint_row(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "DQK0006B.kicad_mod"))
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == f"{FP_PATH} - new file"
+    assert view._content.kind == "text"
+    text = view._text.toPlainText()
+    assert "(footprint" in text and "DQK0006B" in text
+
+
+def test_content_view_modified_library_diff(qtbot, make_item_dialog):
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", f"{LIB}.kicad_sym"))
+    view = wait_view(qtbot, dialog)
+    assert view._content.kind == "diff"
+    assert view.windowTitle().endswith(" - changes")
+    assert any(line.startswith("+") and "CSD85301Q2" in line for line in view_lines(view))
+
+
+def test_content_view_model_row_hash_on_worker(qtbot, make_item_dialog):
+    main = threading.get_ident()
+    seen: list[int] = []
+
+    def spy(op, repo_root, *, conflict=False):
+        seen.append(threading.get_ident())
+        return real_op_content(op, repo_root, conflict=conflict)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, op_content=spy)
+    wait_current(qtbot, dialog)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "CSD85301Q2.stp"))
+    view = wait_view(qtbot, dialog)
+    text = view._text.toPlainText()
+    assert "Size: " in text and "SHA-256: " in text
+    assert view._content.kind == "binary"
+    assert len(seen) == 1 and seen[0] != main
+
+
+def test_content_view_unchanged_row(qtbot, make_item_dialog):
+    main = threading.get_ident()
+    seen: list[int] = []
+
+    def spy(path, repo_root):
+        seen.append(threading.get_ident())
+        return real_unchanged_content(path, repo_root)
+
+    dialog = make_item_dialog(UL_ZIP, show=True, suggest_library=_good_suggestion, unchanged_content=spy)
+    wait_current(qtbot, dialog)
+    # put the planned files on disk, so the next plan has nothing left to write
+    for op in dialog._plan.ops:
+        op.path.write_bytes(op.source.path.read_bytes() if op.kind == "model" else op.data)
+    dialog._request_rebuild()
+    wait_current(qtbot, dialog)
+    assert dialog._plan.is_noop
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "DQK0006B.kicad_mod"))
+    view = wait_view(qtbot, dialog)
+    assert view._content.kind == "unchanged"
+    assert view._text.toPlainText() == "This file is unchanged by the install."
+    assert len(seen) == 1 and seen[0] != main
+
+
+def test_conflict_view_unresolved_uses_one_off_build(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    plan, gen, before = dialog._plan, dialog._gen, len(recorded)
+    row = dialog._conflict_rows[FP_KEY]
+    qtbot.mouseDClick(row, Qt.MouseButton.LeftButton, pos=QPoint(6, 6))
+    view = wait_view(qtbot, dialog)
+    assert len(recorded) == before + 1
+    assert recorded[-1].resolutions == {FP_KEY: Resolution("overwrite")}
+    assert view.windowTitle() == f"{FP_PATH} - existing vs incoming"
+    lines = view_lines(view)
+    assert any(line.startswith("-") and not line.startswith("---") for line in lines)
+    assert any(line.startswith("+") and not line.startswith("+++") for line in lines)
+    # the one-off plan never replaces the plan on screen
+    assert dialog._plan is plan and dialog._gen == gen
+    assert dialog._conflict_rows[FP_KEY].current_resolution() is None
+    assert not dialog._install_btn.isEnabled()
+
+
+def test_conflict_view_resolved_overwrite_no_extra_build(qtbot, make_item_dialog, item_layout, recorded):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    dialog._conflict_rows[FP_KEY]._overwrite_btn.click()
+    wait_current(qtbot, dialog)
+    before = len(recorded)
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    view = wait_view(qtbot, dialog)
+    assert len(recorded) == before
+    assert view.windowTitle().endswith(" - existing vs incoming")
+    assert view._content.kind == "diff"
+
+
+def test_conflict_view_from_preview_section(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, model=False)
+    row = next(r for s in dialog._preview.sections if s.name == "Conflicts" for r in s.rows)
+    assert row.kind == "conflict" and row.key == FP_KEY
+    dialog._preview.row_activated.emit(row)
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == f"{FP_PATH} - existing vs incoming"
+    assert view._content.kind == "diff"
+
+
+def test_conflict_view_model_and_symbol(qtbot, make_item_dialog, item_layout):
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, symbol=True, footprint=False)
+    dialog._conflict_rows[MODEL_KEY].activated.emit(MODEL_KEY)
+    model_view = wait_view(qtbot, dialog)
+    assert model_view.windowTitle() == "Custom/3DModels/CSD85301Q2.stp - existing vs incoming"
+    assert "Existing" in model_view._text.toPlainText() and "Planned" in model_view._text.toPlainText()
+    model_view.close()
+    qtbot.waitUntil(lambda: not open_views(dialog), timeout=5000)
+    dialog._conflict_rows[SYMBOL_KEY].activated.emit(SYMBOL_KEY)
+    symbol_view = wait_view(qtbot, dialog)
+    assert symbol_view.windowTitle() == f"Custom/Symbols/{LIB}.kicad_sym - existing vs incoming"
+    assert symbol_view._content.kind == "diff"
+
+
+def test_conflict_view_refused_one_off_shows_the_error(qtbot, make_item_dialog, item_layout):
+    def refusing(candidate, options, layout, tools=ToolContext(), **kwargs):
+        plan = real_build_plan(candidate, options, layout, tools, **kwargs)
+        if options.resolutions.get(FP_KEY) == Resolution("overwrite"):
+            return replace(plan, ops=(), issues=(Issue(Severity.ERROR, "install.test", "The incoming item is refused"),))
+        return plan
+
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, core={"build_plan": refusing}, model=False)
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    view = wait_view(qtbot, dialog)
+    assert view._content.kind == "error"
+    assert view._text.toPlainText() == "The incoming item is refused"
+
+
+def test_builds_never_overlap(qtbot, make_item_dialog, item_layout, gates):
+    running = {"now": 0, "max": 0, "calls": 0}
+    lock = threading.Lock()
+
+    def counting_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        with lock:
+            running["now"] += 1
+            running["calls"] += 1
+            running["max"] = max(running["max"], running["now"])
+            gated = running["calls"] == 3  # builds 1 and 2 are clash_dialog's (the plan, then the typed Description)
+        try:
+            if gated:
+                gate = threading.Event()
+                gates.append(gate)
+                assert gate.wait(30)
+            return real_build_plan(candidate, options, layout, tools, **kwargs)
+        finally:
+            with lock:
+                running["now"] -= 1
+
+    dialog = clash_dialog(make_item_dialog, qtbot, item_layout, core={"build_plan": counting_build}, model=False)
+    assert running["calls"] == 2
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    qtbot.wait(150)
+    assert running["calls"] == 3 and not open_views(dialog)  # the one-off waits for the running build
+    gates[0].set()
+    wait_view(qtbot, dialog)
+    assert running["calls"] == 4
+    assert running["max"] == 1
+
+
+# -- plan 05-11 Task 1: install progress, locked inputs, failure banner (D-10, D-15) ---------------------
+
+from PySide6.QtCore import QSize  # noqa: E402
+from PySide6.QtTest import QTest  # noqa: E402
+
+from kicad_lib_manager.widgets.theme import ERROR_TINT  # noqa: E402
+
+CLOSING_RETRY = "Fix the problem and click Install Part again."
+TITLE_RESTORED = "Install failed. Every file was restored."
+TITLE_NOT_RESTORED = "Install failed and some files could not be restored."
+
+
+@pytest.fixture
+def make_install_dialog(qtbot, item_layout, gates, recorded, tmp_path):
+    """A shown dialog on a synthetic Custom layout with the UL sample planned; backups go to tmp_path."""
+
+    def make(package: Path = UL_ZIP, **changes) -> ImportDialog:
+        fields = {
+            "detect_tools": lambda kicad_fp_dir: ToolContext(),
+            "downloads_dir": lambda: None,
+            "build_plan": recording_build(recorded),
+            "suggest_library": _good_suggestion,
+            "kicad_running": lambda: [],
+            "probe_commit": no_git_probe,
+            "run_commit": no_git_commit,
+            **changes,
+        }
+        dialog = ImportDialog(
+            item_layout.repo_root, item_layout, core=replace(ImportCore(), **fields), backup_root=tmp_path / "backups"
+        )
+        qtbot.addWidget(dialog)
+        dialog.show()
+        dialog.open_path(package)
+        wait_current(qtbot, dialog)
+        fill_description(qtbot, dialog)
+        return dialog
+
+    return make
+
+
+def failing_apply(*issues, backup_dir=None):
+    """An apply_plan fake that reports a rolled-back install with these issues."""
+
+    def apply(plan, *, backup_root=None, progress=None):
+        return InstallResult(
+            ok=False, library=plan.library, new_library=False, touched=(), issues=tuple(issues), backup_dir=backup_dir
+        )
+
+    return apply
+
+
+def blocking_apply(gates, steps=(), started=None):
+    """An apply_plan fake that emits the given progress steps, then waits for a gate and installs for real."""
+
+    def apply(plan, *, backup_root=None, progress=None):
+        for step in steps:
+            progress(*step)
+        gate = threading.Event()
+        gates.append(gate)
+        if started is not None:
+            started.set()
+        assert gate.wait(30)
+        return real_apply_plan(plan, backup_root=backup_root, progress=progress)
+
+    return apply
+
+
+def stale(text: str = "X appeared") -> Issue:
+    return Issue(Severity.ERROR, "install.stale_plan", text)
+
+
+def banner_lines(dialog: ImportDialog) -> list[str]:
+    return dialog._failure_body.toPlainText().splitlines()
+
+
+def test_install_progress_and_lock(qtbot, make_install_dialog, gates):
+    steps = [("Writing a", 0, 4), ("Writing b", 1, 4)]
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, steps))
+    assert dialog._install_btn.isEnabled()
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._install_step.full_text() == "Writing b", timeout=30000)
+
+    assert dialog.is_installing()
+    assert dialog._install_bar.value() == 25
+    assert (dialog._install_bar.minimum(), dialog._install_bar.maximum()) == (0, 100)
+    assert dialog._install_bar.minimumSize() == QSize(240, 16) == dialog._install_bar.maximumSize()
+    assert dialog._install_btn.text() == "Installing..."
+    assert not dialog._install_btn.isEnabled()
+    assert not dialog._left_scroll.isEnabled()
+    assert not dialog._change_btn.isEnabled()
+    assert not dialog._header_row.isEnabled()
+    assert dialog._preview.isEnabled()  # the tree stays scrollable and its rows can be opened
+    assert dialog._install_row.isVisible() and not dialog._strip.isVisible()
+    assert MUTED.lower() in dialog._install_step.styleSheet().lower()
+    # An install cannot be cancelled: the Edit page's Cancel is greyed out and the Finishing strip's is hidden
+    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Cancel" and b.isVisible() and b.isEnabled()]
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    assert dialog._install_bar.value() == 100  # apply_plan's index never reaches total
+
+
+def test_install_rows_can_be_opened_while_installing(qtbot, make_install_dialog, gates):
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog.is_installing() and bool(gates), timeout=30000)
+    dialog._preview.row_activated.emit(preview_row(dialog, "Files", "DQK0006B.kicad_mod"))
+    wait_view(qtbot, dialog)
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+
+
+def test_install_close_esc_reject_ignored(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+
+    dialog.close()
+    dialog.reject()
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert dialog.isVisible()
+    assert dialog.is_installing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None and not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=60000)
+    assert dialog.isVisible()
+    dialog.close()
+    assert not dialog.isVisible()
+
+
+def test_install_failure_banner_and_rebuild(qtbot, make_install_dialog, recorded):
+    dialog = make_install_dialog(apply_plan=failing_apply(stale("X appeared")))
+    builds = len(recorded)
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._edit_page.layout().itemAt(0).widget() is dialog._failure_banner  # above the package row
+    assert dialog._failure_title.text() == TITLE_RESTORED
+    assert banner_lines(dialog) == ["X appeared", CLOSING_RETRY]
+    banner_style = dialog._failure_banner.styleSheet().lower()
+    assert ERROR_TINT.lower() in banner_style and f"2px solid {ERROR}".lower() in banner_style
+    assert ERROR.lower() in dialog._failure_title.styleSheet().lower()
+    assert dialog._failure_title.font().bold() and dialog._failure_title.font().pointSize() == 12
+    wait_current(qtbot, dialog)
+    assert len(recorded) == builds + 1  # the plan was rebuilt at once, so a retry cannot hit the stale-plan guard
+    assert dialog._left_scroll.isEnabled() and dialog._header_row.isEnabled() and dialog._change_btn.isEnabled()
+    assert dialog._install_btn.text() == "Install Part" and dialog._install_btn.isEnabled()
+    assert dialog._strip.isVisible() and not dialog._install_row.isVisible()
+    assert dialog.result is None
+
+
+def test_install_failure_restore_failed_variant(qtbot, make_install_dialog, tmp_path):
+    kept = tmp_path / "bk"
+    restore = Issue(Severity.ERROR, "install.rollback_failed", "Foo.kicad_sym could not be restored (denied)")
+    dialog = make_install_dialog(apply_plan=failing_apply(stale("Y changed"), restore, backup_dir=kept))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    assert dialog._failure_title.text() == TITLE_NOT_RESTORED
+    assert banner_lines(dialog) == [
+        "Y changed", "Foo.kicad_sym could not be restored (denied)", f"The original files are in {kept}.",
+    ]
+    wait_current(qtbot, dialog)
+
+
+def test_install_failure_without_backup_dir_keeps_retry_line(qtbot, make_install_dialog):
+    restore = Issue(Severity.ERROR, "install.rollback_failed", "a.stp could not be removed (denied)")
+    dialog = make_install_dialog(apply_plan=failing_apply(restore))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    assert dialog._failure_title.text() == TITLE_NOT_RESTORED
+    assert banner_lines(dialog)[-1] == CLOSING_RETRY
+    wait_current(qtbot, dialog)
+
+
+# -- Cancel beside Install Part (plan 12-09, G-12-6) ---------------------------------------
+
+
+def custom_snapshot(layout) -> dict[str, bytes]:
+    """Every file under the Custom folder, by relative path, with its bytes."""
+    return {
+        path.relative_to(layout.custom_dir).as_posix(): path.read_bytes()
+        for path in sorted(layout.custom_dir.rglob("*"))
+        if path.is_file()
+    }
+
+
+def edit_bottom_row(dialog: ImportDialog):
+    """The layout of the Edit page that holds Install Part."""
+    page_layout = dialog._edit_page.layout()
+    for index in range(page_layout.count()):
+        row = page_layout.itemAt(index).layout()
+        if row is not None and row.indexOf(dialog._install_btn) != -1:
+            return row
+    raise AssertionError("no bottom row holds Install Part")
+
+
+def test_cancel_button_closes_without_installing(qtbot, make_install_dialog, item_layout):
+    dialog = make_install_dialog()
+    cancel = dialog._cancel_btn
+    assert cancel.text() == "Cancel"
+    assert cancel.toolTip() == "Close without installing. Nothing is written."
+    row = edit_bottom_row(dialog)
+    assert row.indexOf(cancel) == row.indexOf(dialog._install_btn) + 1
+    assert cancel.mapTo(dialog, QPoint(0, 0)).x() > dialog._install_btn.mapTo(dialog, QPoint(0, 0)).x()
+    assert not cancel.isDefault() and not cancel.autoDefault()
+    assert not dialog._install_btn.isDefault() and not dialog._install_btn.autoDefault()
+    assert cancel.isEnabled()
+
+    before = custom_snapshot(item_layout)
+    cancel.click()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert dialog.result is None
+    assert not dialog.is_installing()
+    assert custom_snapshot(item_layout) == before
+
+
+def test_cancel_button_disabled_while_installing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+    assert dialog._cancel_btn.isEnabled()
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+
+    assert not dialog._cancel_btn.isEnabled()
+    dialog._cancel_btn.click()  # a click on a greyed-out button does nothing
+    assert dialog.isVisible() and dialog.is_installing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    qtbot.waitUntil(lambda: not dialog.is_installing(), timeout=30000)
+
+
+def test_cancel_button_enabled_again_after_failed_install(qtbot, make_install_dialog):
+    dialog = make_install_dialog(apply_plan=failing_apply(stale("X appeared")))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    wait_current(qtbot, dialog)
+    assert not dialog.is_installing()
+    assert dialog._cancel_btn.isEnabled()
+
+
+def test_change_button_says_it_picks_another_package(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    button = dialog._change_btn
+    assert button.text() == import_dialog_module.CHANGE_PACKAGE_TEXT == "Choose another package..."
+    assert button.toolTip() == (
+        "Close this package and pick another package. Your edits to it are dropped; nothing has been written."
+    )
+    assert "another package" in button.toolTip() and "nothing has been written" in button.toolTip()
+    assert not [b for b in dialog.findChildren(QPushButton) if b.text() == "Change..."]
+    # it is still the header button that returns to the Start page
+    button.click()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._start_page, timeout=30000)
+
+
+def test_cancel_button_during_build_enters_finishing(qtbot, make_dialog, gates):
+    count = {"n": 0}
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if count["n"] == 2:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(build_plan=gated_build), show=True)
+    wait_plan(qtbot, dialog)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert dialog._cancel_btn.isEnabled()
+    dialog._cancel_btn.click()  # returns at once: the build is still gated, exactly as the window's X does
+    assert not gates[0].is_set()
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert QGuiApplication.overrideCursor() is None
+
+
+def test_install_failure_ignores_non_error_issues(qtbot, make_install_dialog):
+    warn = Issue(Severity.WARNING, "verify.name_elsewhere", "a warning")
+    dialog = make_install_dialog(apply_plan=failing_apply(warn, stale("only this")))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    assert banner_lines(dialog) == ["only this", CLOSING_RETRY]
+    wait_current(qtbot, dialog)
+
+
+def test_install_worker_exception_shows_banner(qtbot, make_install_dialog, recorded):
+    def boom(plan, *, backup_root=None, progress=None):
+        raise RuntimeError("worker died")
+
+    dialog = make_install_dialog(apply_plan=boom)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    builds = len(recorded)
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    assert dialog._failure_title.text() == "Install failed."
+    assert "Import step failed: RuntimeError: worker died" in banner_lines(dialog)
+    assert any(i.text.startswith("Import step failed: RuntimeError: worker died") for i in logged)
+    wait_current(qtbot, dialog)
+    assert len(recorded) == builds + 1
+    assert dialog._install_btn.isEnabled()
+
+
+def test_failure_banner_dismiss_and_cap(qtbot, make_install_dialog, gates):
+    reasons = [stale(f"Reason number {n} " + "wrapping words " * 6) for n in range(10)]
+    calls = {"n": 0}
+    second = blocking_apply(gates)
+
+    def apply(plan, *, backup_root=None, progress=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return failing_apply(*reasons)(plan)
+        return second(plan, backup_root=backup_root, progress=progress)
+
+    dialog = make_install_dialog(apply_plan=apply)
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    wait_current(qtbot, dialog)
+
+    body = dialog._failure_body
+    assert body.isReadOnly()
+    margins = 2 * body.frameWidth() + 2 * int(body.document().documentMargin())
+    limit = 6 * body.fontMetrics().lineSpacing() + margins + 2
+    qtbot.waitUntil(lambda: body.verticalScrollBar().maximum() > 0, timeout=5000)  # more than 6 lines: it scrolls
+    assert body.height() <= limit
+    assert len(banner_lines(dialog)) == 11
+
+    dismiss = dialog._failure_banner.findChild(QToolButton)
+    assert dismiss.accessibleName() == "Dismiss failure message"
+    assert dismiss.text() == "✕"
+    dismiss.click()
+    assert not dialog._failure_banner.isVisible()
+
+    # a failure shown again is dismissed by the next Install click
+    dialog._show_failure([stale("again")], None)
+    assert dialog._failure_banner.isVisible()
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog.is_installing() and bool(gates), timeout=30000)
+    assert not dialog._failure_banner.isVisible()
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+
+
+def test_progress_stall_holds_value(qtbot, make_install_dialog, gates):
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, [("Writing a", 0, 4), ("Writing b", 2, 4)]))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._install_step.full_text() == "Writing b", timeout=30000)
+    qtbot.wait(300)
+    assert dialog._install_bar.value() == 50
+    assert dialog._install_step.full_text() == "Writing b"
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+
+
+# -- plan 05-11 Task 2: the Result view, KiCad notice, status rows and the Phase 6 slot (D-15 to D-18) ----
+
+import ast  # noqa: E402
+import subprocess  # noqa: E402
+import types  # noqa: E402
+
+from PySide6.QtCore import QUrl  # noqa: E402
+from PySide6.QtGui import QDesktopServices  # noqa: E402
+
+from kicad_lib_manager.widgets.import_result import ImportResultView  # noqa: E402
+from kicad_lib_manager.widgets.theme import MONO_FAMILY  # noqa: E402
+
+KICAD_NOTICE = f"KiCad is running. Reopen KiCad's Symbol and Footprint editors to see {LIB}."
+PACKAGE_ROOT = REPO_ROOT / "kicad_lib_manager"
+UL_REL = [
+    "Custom/3DModels/CSD85301Q2.stp",
+    f"Custom/Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod",
+    f"Custom/Symbols/{LIB}.kicad_sym",
+]
+
+
+def install_ul(qtbot, dialog: ImportDialog) -> InstallResult:
+    """Click Install and wait for the Result view."""
+    with qtbot.waitSignal(dialog.installed, timeout=60000) as blocker:
+        dialog._install_btn.click()
+    return blocker.args[0]
+
+
+def finish_workers(qtbot, dialog: ImportDialog) -> None:
+    """Wait until every worker thread ended and its queued result signal was delivered."""
+    qtbot.waitUntil(lambda: not any(w.isRunning() for w in dialog._workers), timeout=30000)
+    qtbot.wait(50)
+
+
+def fake_result(tmp_path: Path, issues=(), touched=2, backup=True) -> InstallResult:
+    paths = tuple(tmp_path / "Custom" / "Symbols" / f"f{n}.kicad_sym" for n in range(touched))
+    return InstallResult(
+        ok=True, library=LIB, new_library=False, touched=paths, issues=tuple(issues),
+        backup_dir=(tmp_path / "bk") if backup else None,
+    )
+
+
+def result_view(qtbot, tmp_path: Path, **kwargs) -> tuple[ImportResultView, InstallResult]:
+    view = ImportResultView()
+    qtbot.addWidget(view)
+    result = fake_result(tmp_path, **kwargs)
+    plan = types.SimpleNamespace(symbol_name="CSD85301Q2", library=LIB)
+    view.show_result(result, plan, tmp_path)
+    return view, result
+
+
+def warning_lines(view: ImportResultView) -> list[str]:
+    return [label.text() for label in view._warning_labels]
+
+
+def test_result_view_success_ul(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    result = install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    view = dialog._result_view
+
+    assert dialog._stack.currentWidget() is view is dialog._result_page
+    assert view._banner.text() == f"✓ Installed CSD85301Q2 into {LIB}"
+    assert view._banner.font().bold() and view._banner.font().pointSize() == 12
+    assert SUCCESS.lower() in view._banner.styleSheet().lower()
+    assert view._files_heading.text() == "Files written (3)"
+    shown = [view._files_list.item(i).text() for i in range(view._files_list.count())]
+    assert sorted(shown) == UL_REL
+    assert result.backup_dir is not None  # the .kicad_sym was modified
+    assert view._backup_row.isVisible()
+    assert view._backup_label.full_text() == f"Backup folder: {result.backup_dir}"
+    assert view._backup_label.font().family() == MONO_FAMILY
+    assert view._backup_label.textInteractionFlags() & Qt.TextInteractionFlag.TextSelectableByMouse
+    assert not view._kicad_notice.isVisible()
+    slot = view.findChild(QWidget, "commitSlot")
+    assert slot is view.commit_slot and slot.isVisible() and slot.maximumHeight() > 0  # Phase 6: the commit panel
+    assert dialog.result is result
+    assert dialog.result_plan is dialog._plan
+    assert view.close_button.isDefault() and dialog.focusWidget() is view.close_button
+    assert not dialog._install_btn.isDefault()
+
+
+def test_result_view_warnings_and_none(qtbot, tmp_path):
+    warn = Issue(Severity.WARNING, "verify.pin_pad_mismatch", "Pin 3 has no pad")
+    info = Issue(Severity.INFO, "install.nothing_to_do", "Nothing to do for the model")
+    boom = Issue(Severity.ERROR, "verify.name_elsewhere", "Name is also used in Wurth")
+    ok = Issue(Severity.SUCCESS, "table.entries_added", "Added")
+    view, _ = result_view(qtbot, tmp_path, issues=(info, warn, boom, ok))
+    assert warning_lines(view) == ["⚠ Pin 3 has no pad", "✖ Name is also used in Wurth"]
+    assert AMBER.lower() in view._warning_labels[0].styleSheet().lower()
+    assert ERROR.lower() in view._warning_labels[1].styleSheet().lower()
+    assert all(label.wordWrap() and label.textFormat() == Qt.TextFormat.PlainText for label in view._warning_labels)
+    assert view._warnings_heading.text() == "Warnings"
+
+    view, _ = result_view(qtbot, tmp_path, issues=(info,))
+    assert warning_lines(view) == ["No warnings."]
+    assert MUTED.lower() in view._warning_labels[0].styleSheet().lower()
+
+    view, _ = result_view(qtbot, tmp_path)
+    assert warning_lines(view) == ["No warnings."]
+
+
+def test_result_view_warnings_are_plain_text(qtbot, tmp_path):
+    hostile = Issue(Severity.WARNING, "verify.name_elsewhere", "<b>bold</b> & <a href='x'>link</a>")
+    view, _ = result_view(qtbot, tmp_path, issues=(hostile,))
+    assert warning_lines(view) == ["⚠ <b>bold</b> & <a href='x'>link</a>"]
+    assert view._warning_labels[0].textFormat() == Qt.TextFormat.PlainText
+
+
+def test_result_view_show_result_twice_replaces_content(qtbot, tmp_path):
+    view, _ = result_view(qtbot, tmp_path, issues=(Issue(Severity.WARNING, "a.b", "one"),))
+    view.show_result(fake_result(tmp_path, touched=1), types.SimpleNamespace(symbol_name="S", library=LIB), tmp_path)
+    assert warning_lines(view) == ["No warnings."]
+    assert view._files_list.count() == 1 and view._files_heading.text() == "Files written (1)"
+
+
+def test_kicad_running_notice(qtbot, make_install_dialog):
+    seen = {}
+
+    def running():
+        seen["thread"] = threading.get_ident()
+        return ["eeschema"]
+
+    dialog = make_install_dialog(kicad_running=running)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    install_ul(qtbot, dialog)
+    view = dialog._result_view
+    qtbot.waitUntil(lambda: view._kicad_notice.isVisible(), timeout=30000)
+    assert view._kicad_notice.text() == f"⚠ {KICAD_NOTICE}"
+    assert view._kicad_notice.textFormat() == Qt.TextFormat.PlainText
+    assert AMBER_TINT.lower() in view._kicad_notice.styleSheet().lower()
+    assert seen["thread"] != threading.get_ident()
+    notices = [i for i in logged if i.code == "import.kicad_running"]
+    assert [(i.severity, i.text) for i in notices] == [(Severity.WARNING, KICAD_NOTICE)]
+
+
+def test_kicad_running_empty_or_failing_shows_nothing(qtbot, make_install_dialog):
+    called = threading.Event()
+
+    def empty():
+        called.set()
+        return []
+
+    dialog = make_install_dialog(kicad_running=empty)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    install_ul(qtbot, dialog)
+    assert called.wait(30)
+    finish_workers(qtbot, dialog)
+    assert not dialog._result_view._kicad_notice.isVisible()
+    assert [i for i in logged if i.code.startswith("import.")] == []
+
+
+def test_kicad_running_failure_shows_nothing_and_logs_nothing(qtbot, make_install_dialog):
+    called = threading.Event()
+
+    def broken():
+        called.set()
+        raise OSError("tasklist is gone")
+
+    dialog = make_install_dialog(kicad_running=broken)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    install_ul(qtbot, dialog)
+    assert called.wait(30)
+    finish_workers(qtbot, dialog)
+    assert not dialog._result_view._kicad_notice.isVisible()
+    assert [i for i in logged if i.code.startswith("import.")] == []
+
+
+def test_post_install_status_rows(qtbot, tmp_path):
+    view, _ = result_view(qtbot, tmp_path)
+    assert view.status_text("library_list").startswith("Library list")
+    assert view.status_text("tables").startswith("Library tables")
+    assert view._status_labels["generate_hint"].isHidden()
+
+    view.set_status("library_list", "Rescanning...", Severity.INFO)
+    view.set_status("tables", "Added X to sym-lib-table and fp-lib-table", Severity.SUCCESS)
+    assert view.status_text("library_list") == "Library list: Rescanning..."
+    assert view.status_text("tables") == "Library tables: Added X to sym-lib-table and fp-lib-table"
+    assert SUCCESS.lower() in view._status_labels["tables"].styleSheet().lower()
+    view.set_status("library_list", "Rescan failed - see the log", Severity.ERROR)
+    assert ERROR.lower() in view._status_labels["library_list"].styleSheet().lower()
+    view.set_status("library_list", "Updated", Severity.WARNING)
+    assert AMBER.lower() in view._status_labels["library_list"].styleSheet().lower()
+    view.set_status("generate_hint", "⚠ X is not in the library tables. Press Generate Tables to add it.", Severity.WARNING)
+    assert not view._status_labels["generate_hint"].isHidden()
+    assert view.status_text("generate_hint") == "⚠ X is not in the library tables. Press Generate Tables to add it."
+    assert all(label.textFormat() == Qt.TextFormat.PlainText for label in view._status_labels.values())
+
+
+def test_dialog_forwards_post_install_status(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    dialog.set_post_install_status("tables", "Updating...", Severity.INFO)
+    assert dialog._result_view.status_text("tables") == "Library tables: Updating..."
+
+
+def test_result_backup_hidden_without_backup_dir(qtbot, tmp_path):
+    view, _ = result_view(qtbot, tmp_path, backup=False)
+    view.show()
+    assert view._backup_row.isHidden()
+    assert not view.open_folder_button.isVisible()
+
+
+def test_open_folder_only_backup_dir(qtbot, make_install_dialog, monkeypatch):
+    opened = []
+    monkeypatch.setattr(QDesktopServices, "openUrl", staticmethod(lambda url: opened.append(url) or True))
+    dialog = make_install_dialog()
+    result = install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    view = dialog._result_view
+    assert view.open_folder_button.text() == "Open folder"
+
+    view.open_folder_button.click()
+    assert opened == [QUrl.fromLocalFile(str(result.backup_dir))]
+
+    # a written file opens in the read-only content view, never in the operating system
+    row = next(i for i in range(view._files_list.count()) if view._files_list.item(i).text().endswith(".kicad_mod"))
+    item = view._files_list.item(row)
+    # Enter and a double click both end in the list's activated signal; the offscreen platform sends no
+    # synthetic double click, so the key is used here
+    view._files_list.setCurrentItem(item)
+    view._files_list.setFocus()
+    QTest.keyClick(view._files_list, Qt.Key.Key_Return)
+    shown = wait_view(qtbot, dialog)
+    assert shown.windowTitle() == f"{item.text()} - written"
+    assert "(footprint" in shown._text.toPlainText()
+    assert opened == [QUrl.fromLocalFile(str(result.backup_dir))]
+    assert dialog.isVisible() and not dialog._closing  # Enter on a row must not reach the Close button
+
+
+def test_result_files_list_caps_and_elides(qtbot, tmp_path):
+    view, _ = result_view(qtbot, tmp_path, touched=12)
+    view.resize(500, 700)
+    view.show()
+    qtbot.waitExposed(view)
+    files = view._files_list
+    row = files.sizeHintForRow(0)
+    assert files.height() == files.maximumHeight() == files.minimumHeight() == 8 * row + 2 * files.frameWidth()
+    assert files.verticalScrollBar().maximum() > 0
+    assert files.textElideMode() == Qt.TextElideMode.ElideMiddle
+    assert files.editTriggers() == files.EditTrigger.NoEditTriggers
+    assert [files.item(i).toolTip() for i in (0, 11)] == [files.item(0).text(), files.item(11).text()]
+    assert files.item(0).text() == "Custom/Symbols/f0.kicad_sym"
+
+    few, _ = result_view(qtbot, tmp_path, touched=3)
+    few.show()
+    assert few._files_list.height() == 3 * row + 2 * few._files_list.frameWidth()
+
+
+def test_backup_path_elides_with_tooltip(qtbot, tmp_path):
+    view, result = result_view(qtbot, tmp_path)
+    view._backup_label.set_full_text("Backup folder: " + "x" * 400)
+    view.resize(500, 600)
+    view.show()
+    qtbot.waitExposed(view)
+    assert "…" in view._backup_label.text()
+    assert view._backup_label.toolTip() == "Backup folder: " + "x" * 400
+
+
+def test_file_activated_signal_carries_absolute_path(qtbot, tmp_path):
+    view, result = result_view(qtbot, tmp_path)
+    view.show()
+    qtbot.waitExposed(view)
+    with qtbot.waitSignal(view.file_activated, timeout=2000) as blocker:
+        view._files_list.itemActivated.emit(view._files_list.item(1))
+    assert blocker.args == [result.touched[1]]
+
+
+def source_imports(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(a.name.split(".")[0] for a in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def test_import_flow_modules_do_not_import_subprocess():
+    modules = (
+        "widgets/import_dialog.py", "widgets/import_result.py", "widgets/conflict_row.py",
+        "importer/preview.py", "importer/form.py", "importer/content.py", "importer/downloads.py",
+        "widgets/commit_panel.py", "importer/commit_plan.py", "importer/commit_step.py",
+    )
+    for module in modules:
+        assert "subprocess" not in source_imports(PACKAGE_ROOT / module), module
+
+
+def test_import_flow_never_runs_git(qtbot, make_install_dialog, monkeypatch):
+    calls = []
+    real_run, real_popen = subprocess.run, subprocess.Popen
+
+    def run(args, *a, **kw):
+        calls.append(args)
+        return real_run(args, *a, **kw)
+
+    class Popen(real_popen):
+        def __init__(self, args, *a, **kw):
+            calls.append(args)
+            super().__init__(args, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "Popen", Popen)
+    dialog = make_install_dialog()
+    install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    names = [Path(str(a[0] if isinstance(a, (list, tuple)) else a).split()[0]).name.lower() for a in calls]
+    assert not [n for n in names if "git" in n], names
+
+
+# -- Phase 6 commit step (plan 06-01): the Result view's commit panel --------------------------
+
+from datetime import date  # noqa: E402
+
+from gitfixtures import make_superproject, remote_refs, requires_git  # noqa: E402
+
+
+def no_git_probe(cplan, **kwargs):
+    """A probe_commit fake: the commit step is unavailable, so no test but the tracer starts git."""
+    from kicad_lib_manager.importer.commit_step import CommitProbe
+
+    return CommitProbe(state="unavailable", reason="git is not used by this test")
+
+
+def no_git_commit(*args, **kwargs):
+    """A run_commit fake that fails loudly if a test clicks Commit without meaning to."""
+    from kicad_lib_manager.importer.commit_step import CommitOutcome
+
+    issue = Issue(Severity.ERROR, "commit.step_failed", "run_commit must not run in this test")
+    return CommitOutcome(issues=(issue,))
+
+
+def commit_panel_of(dialog: ImportDialog):
+    from kicad_lib_manager.widgets.commit_panel import CommitPanel
+
+    return dialog._result_view.commit_slot.findChildren(CommitPanel)
+
+
+def panel_files(panel) -> list[str]:
+    return [panel._files_list.item(i).text() for i in range(panel._files_list.count())]
+
+
+CUSTOM_REL = sorted(path.removeprefix("Custom/") for path in UL_REL)
+
+
+@requires_git
+def test_tracer_commit_end_to_end(qtbot, tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    core = replace(
+        ImportCore(),
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        downloads_dir=lambda: None,
+        suggest_library=_good_suggestion,
+        kicad_running=lambda: [],
+    )
+    dialog = ImportDialog(
+        repos.parent, RepoLayout.for_repo(repos.parent), core=core, backup_root=tmp_path / "backups"
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
+    install_ul(qtbot, dialog)
+
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert panel_files(panel) == UL_REL
+    lines = panel.message().splitlines()
+    assert lines[0] == f"Add CSD85301Q2 to {LIB}"
+    assert "Import-Vendor: Ultra Librarian" in lines
+    assert "Import-Package: ul_CSD85301Q2.zip" in lines
+    assert f"Import-Date: {date.today().isoformat()}" in lines
+    assert panel._parent_check.isChecked()
+    assert panel._parent_check.text() == "Also commit the Custom ref in the parent repo (main)"
+
+    refs = remote_refs(repos)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=60000)
+
+    in_custom = repos.git(repos.custom, "show", "--name-only", "--format=", "HEAD").split()
+    assert sorted(in_custom) == CUSTOM_REL
+    assert repos.git(repos.custom, "status", "--porcelain").strip() == ""
+    assert repos.git(repos.parent, "show", "--name-only", "--format=", "HEAD").split() == ["Custom"]
+    gitlink = repos.git(repos.parent, "ls-tree", "HEAD", "Custom").split()[2]
+    assert gitlink == repos.git(repos.custom, "rev-parse", "HEAD").strip()
+    assert remote_refs(repos) == refs
+    assert "Not pushed — Custom is 1 commit ahead of origin/main (as last fetched)" in panel.outcome_lines()
+    trailers = repos.git(repos.custom, "log", "-1", "--format=%(trailers:only,unfold)").split("\n")
+    assert [t for t in trailers if t] == [
+        "Import-Vendor: Ultra Librarian",
+        "Import-Package: ul_CSD85301Q2.zip",
+        f"Import-Date: {date.today().isoformat()}",
+    ]
+
+
+def test_commit_slot_holds_panel_after_install(qtbot, make_install_dialog):
+    dialog = make_install_dialog(probe_commit=no_git_probe, run_commit=no_git_commit)
+    install_ul(qtbot, dialog)
+    finish_workers(qtbot, dialog)
+    view = dialog._result_view
+    slot = view.findChild(QWidget, "commitSlot")
+
+    assert slot is view.commit_slot and slot.isVisible() and slot.maximumHeight() > 0
+    (panel,) = commit_panel_of(dialog)
+    assert panel.state() == "unavailable"
+    assert panel_files(panel) == UL_REL
+
+
+def test_commit_close_refused_while_git_runs(qtbot, make_install_dialog, gates):
+    from kicad_lib_manager.importer.commit_step import CommitOutcome, CommitProbe
+
+    started = threading.Event()
+
+    def ready_probe(cplan, **kwargs):
+        return CommitProbe(state="ready", branch="main", parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main")
+
+    def blocking_commit(cplan, message, bump, **kwargs):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        done = Issue(Severity.SUCCESS, "commit.custom_done", "Committed abc1234 on main in Custom")
+        return CommitOutcome(custom_commit="abc1234", custom_branch="main", issues=(done,))
+
+    dialog = make_install_dialog(probe_commit=ready_probe, run_commit=blocking_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
+    assert panel.state() == "committing"
+
+    dialog.reject()
+    dialog.close()
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert dialog.isVisible()
+    assert dialog.is_committing()
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    assert panel.state() == "done"
+    dialog._result_view.close_button.click()
+    assert not dialog.isVisible()
+
+
+def test_no_commit_step_after_failed_or_empty_install(qtbot, make_install_dialog):
+    dialog = make_install_dialog(
+        apply_plan=failing_apply(stale()), probe_commit=no_git_probe, run_commit=no_git_commit
+    )
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: dialog._failure_banner.isVisible(), timeout=30000)
+    slot = dialog._result_view.commit_slot
+    assert slot.isHidden() and slot.maximumHeight() == 0
+    assert commit_panel_of(dialog) == []
+    wait_current(qtbot, dialog)
+
+    def empty_apply(plan, *, backup_root=None, progress=None):
+        return InstallResult(ok=True, library=plan.library, new_library=False, touched=(), issues=())
+
+    other = make_install_dialog(apply_plan=empty_apply, probe_commit=no_git_probe, run_commit=no_git_commit)
+    other._install_btn.click()
+    qtbot.waitUntil(lambda: other.result is not None, timeout=30000)
+    slot = other._result_view.commit_slot
+    assert other._stack.currentWidget() is other._result_view
+    assert slot.isHidden() and slot.maximumHeight() == 0
+    assert commit_panel_of(other) == []
+
+
+# -- Phase 6 plan 06-08 Task 1: the dialog drives the whole commit step ---------------------------------
+
+from PySide6.QtWidgets import QMessageBox, QScrollArea  # noqa: E402
+
+from kicad_lib_manager.importer.commit_step import CommitOutcome, CommitProbe, SwitchOutcome  # noqa: E402
+from kicad_lib_manager.importer.content import ContentText  # noqa: E402
+
+D02_TEXT = "Not committed — commit manually: the imported files stay as uncommitted changes in Custom."
+
+
+def fake_ready_probe(branch: str = "main", **fields):
+    """A probe_commit fake that reports a ready Custom on `branch` and a ready parent."""
+
+    def probe(cplan, **kwargs):
+        return CommitProbe(
+            state="ready", branch=branch, not_main=branch != "main",
+            parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main", **fields,
+        )
+
+    return probe
+
+
+def fake_committed(text: str = "Committed abc1234 on main in Custom") -> CommitOutcome:
+    done = Issue(Severity.SUCCESS, "commit.custom_done", text)
+    return CommitOutcome(custom_commit="abc1234", custom_branch="main", issues=(done,))
+
+
+def watch_logged(dialog: ImportDialog) -> list:
+    """Every Issue the dialog sends to the log, in order."""
+    logged: list = []
+    dialog.issues_logged.connect(lambda issues: logged.extend(issues))
+    return logged
+
+
+def logged_codes(logged: list, code: str) -> list:
+    return [issue for issue in logged if issue.code == code]
+
+
+def gated(gates, started: threading.Event, make_value):
+    """A fake that signals `started`, waits for a gate from the gates fixture, then returns make_value()."""
+
+    def run(*args, **kwargs):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return make_value()
+
+    return run
+
+
+def test_commit_switch_flow(qtbot, make_install_dialog, gates):
+    probes: list[int] = []
+    started = threading.Event()
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        if len(probes) == 1:
+            return CommitProbe(
+                state="offer_switch", reason="Custom is on a detached HEAD at abc1234.", head="abc1234" + "0" * 33,
+                parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main",
+            )
+        return fake_ready_probe()(cplan)
+
+    switched = SwitchOutcome(ok=True, issues=(Issue(Severity.SUCCESS, "commit.switched", "Switched Custom to main"),))
+    dialog = make_install_dialog(probe_commit=probe, switch_to_main=gated(gates, started, lambda: switched))
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "offer_switch", timeout=30000)
+
+    panel._switch_button.click()
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+    assert panel.state() == "switching"
+    assert dialog.is_committing()
+    assert not dialog._result_view.close_button.isEnabled()
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    assert len(probes) == 2
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert [i.text for i in logged_codes(logged, "commit.switched")] == ["Switched Custom to main"]
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    assert dialog._result_view.close_button.isEnabled()
+
+
+def test_commit_switch_failure_shows_reason(qtbot, make_install_dialog):
+    probes: list[int] = []
+    commits: list[int] = []
+    reason = "git refused to switch Custom to main; nothing was committed\nerror: Your local changes would be overwritten"
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return CommitProbe(
+            state="offer_switch", reason="Custom is on a detached HEAD at abc1234.", head="abc1234" + "0" * 33,
+            parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main",
+        )
+
+    def refuse(cplan, **kwargs):
+        return SwitchOutcome(ok=False, issues=(Issue(Severity.ERROR, "commit.switch_failed", reason),), output="error")
+
+    def count_commit(*args, **kwargs):
+        commits.append(1)
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=probe, switch_to_main=refuse, run_commit=count_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "offer_switch", timeout=30000)
+    panel._switch_button.click()
+    qtbot.waitUntil(lambda: bool(panel.outcome_lines()), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+
+    assert panel.state() == "offer_switch"
+    assert panel.outcome_lines()[0] == "✖ git refused to switch Custom to main; nothing was committed"
+    assert len(probes) == 1
+    assert commits == []
+    assert not panel.committed()
+
+
+def test_commit_unavailable_logged_once(qtbot, make_install_dialog):
+    issue = Issue(Severity.WARNING, "commit.unavailable", "Commit unavailable: git was not found on PATH")
+
+    def probe(cplan, **kwargs):
+        return CommitProbe(state="unavailable", reason="git was not found on PATH", issues=(issue,))
+
+    dialog = make_install_dialog(probe_commit=probe)
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "unavailable", timeout=30000)
+    finish_workers(qtbot, dialog)
+
+    found = logged_codes(logged, "commit.unavailable")
+    assert [(i.severity, i.text) for i in found] == [(Severity.WARNING, "Commit unavailable: git was not found on PATH")]
+    view = dialog._result_view
+    assert view._banner.text() == f"✓ Installed CSD85301Q2 into {LIB}"
+    assert view._files_heading.text() == "Files written (3)"
+    assert logged_codes(logged, "commit.not_committed") == []  # nothing closed yet
+
+
+def test_commit_close_button_disabled_while_git_runs(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    calls: list[int] = []
+    release = gated(gates, started, fake_committed)
+
+    def counting_commit(*args, **kwargs):
+        calls.append(1)
+        return release()
+
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(), run_commit=counting_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    assert dialog._result_view.close_button.isEnabled()
+
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
+    close_button = dialog._result_view.close_button
+    assert not close_button.isEnabled()
+    assert not dialog._cancel_btn.isEnabled()
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    dialog.reject()
+    dialog.close()
+    assert dialog.isVisible()
+    panel.commit_requested.emit("a second message", True)  # a second request while git runs is dropped
+    qtbot.wait(100)
+    assert calls == [1]
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    assert close_button.isEnabled()
+    close_button.click()
+    assert not dialog.isVisible()
+
+
+def test_commit_passes_expected_branch(qtbot, make_install_dialog):
+    seen: list[tuple] = []
+
+    def record(cplan, message, bump, *, expected_branch=None, progress=None, git=None, kicad_fp_dir=None):
+        seen.append((message, bump, expected_branch))
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=fake_ready_probe("feature/x"), run_commit=record)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel._message.setPlainText("My own message")
+    panel._parent_check.setChecked(False)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
+    assert seen == [("My own message", False, "feature/x")]
+
+
+def test_commit_step_texts_shown(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    block = gated(gates, started, fake_committed)
+
+    def stepping(cplan, message, bump, *, expected_branch=None, progress=None, git=None, kicad_fp_dir=None):
+        progress("Committing in Custom...", 0, 2)
+        return block()
+
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(), run_commit=stepping)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+    qtbot.waitUntil(lambda: panel._step.text() == "Committing in Custom...", timeout=30000)
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+
+
+# -- Phase 11 plan 11-09 Task 1: the probe never locks Close, and it can be cancelled (IN-02) ----------
+
+
+def cancellable_probe(started: threading.Event, saw_cancel: threading.Event):
+    """A probe_commit fake that runs until cancelled() turns True, then reports an unavailable commit step."""
+
+    def probe(cplan, *, cancelled=None, **kwargs):
+        started.set()
+        deadline = time.monotonic() + 30
+        while time.monotonic() < deadline:
+            if cancelled is not None and cancelled():
+                saw_cancel.set()
+                break
+            time.sleep(0.01)
+        return CommitProbe(state="unavailable", reason="cancelled")
+
+    return probe
+
+
+def test_close_during_probe_cancels_and_closes(qtbot, make_install_dialog):
+    started, saw_cancel = threading.Event(), threading.Event()
+    dialog = make_install_dialog(probe_commit=cancellable_probe(started, saw_cancel))
+    install_ul(qtbot, dialog)
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+
+    assert dialog.is_probing()
+    assert not dialog.is_committing()
+    assert dialog._result_view.close_button.isEnabled()
+
+    began = time.monotonic()
+    dialog.close()
+    assert time.monotonic() - began < 5
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=5000)
+    assert saw_cancel.is_set()
+    assert not any(w.isRunning() for w in dialog._workers)
+
+
+@pytest.mark.parametrize("how", ["esc", "reject", "button"])
+def test_close_button_enabled_while_probing(qtbot, make_install_dialog, how):
+    started, saw_cancel = threading.Event(), threading.Event()
+    dialog = make_install_dialog(probe_commit=cancellable_probe(started, saw_cancel))
+    install_ul(qtbot, dialog)
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+    assert dialog.is_probing()
+    assert dialog._result_view.close_button.isEnabled()
+    if how == "esc":
+        QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    elif how == "reject":
+        dialog.reject()
+    else:
+        dialog._result_view.close_button.click()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=5000)
+    assert saw_cancel.is_set()
+
+
+def test_stale_probe_result_is_dropped(qtbot, make_install_dialog, gates):
+    calls: list[int] = []
+    first_started = threading.Event()
+
+    def probe(cplan, *, cancelled=None, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            gate = threading.Event()
+            gates.append(gate)
+            first_started.set()
+            assert gate.wait(30)
+            return fake_ready_probe("feature/old")(cplan)
+        return fake_ready_probe("main")(cplan)
+
+    dialog = make_install_dialog(probe_commit=probe)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: first_started.is_set(), timeout=30000)
+    assert panel.state() == "probing"
+
+    dialog._start_probe(reprobe=True)  # a newer probe supersedes the one that waits on its gate
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    assert panel._branch_label.text() == "Custom branch: main"
+
+    gates[0].set()  # the superseded probe finishes last
+    finish_workers(qtbot, dialog)
+    assert panel.state() == "ready"
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert dialog._commit_probe.branch == "main"
+    assert not dialog.is_probing()
+
+
+# -- Phase 11 plan 11-09 Task 2: re-probe after a refusal, primary Install Part (REV-10, D-11, D-19) -----
+
+
+def test_refusal_reprobes_and_keeps_input(qtbot, make_install_dialog):
+    probes: list[int] = []
+    seen: list[tuple] = []
+    refusal = Issue(Severity.ERROR, "commit.branch_changed", "Custom switched from main to feature/x; nothing was committed")
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe("main" if len(probes) == 1 else "feature/x")(cplan)
+
+    def run(cplan, message, bump, **kwargs):
+        seen.append((message, bump, kwargs.get("expected_branch")))
+        if len(seen) == 1:
+            return CommitOutcome(issues=(refusal,))
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=run)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel._message.setPlainText("My own message")
+    panel._parent_check.setChecked(False)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready", timeout=30000)
+    assert panel._branch_label.text() == "Custom branch: feature/x (not main)"
+    assert panel.outcome_lines()[0] == f"✖ {refusal.text}"
+    assert panel.message() == "My own message"
+    assert not panel._parent_check.isChecked()
+    assert not panel.committed()
+    assert not dialog.is_probing()
+
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
+    assert seen == [("My own message", False, "main"), ("My own message", False, "feature/x")]
+    assert len(probes) == 2  # a committed outcome is not followed by another probe
+
+
+def test_refusal_reprobe_replaced_by_own_refusal(qtbot, make_install_dialog):
+    probes: list[int] = []
+    old = Issue(Severity.ERROR, "commit.branch_changed", "Custom switched from main to feature/x; nothing was committed")
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        if len(probes) == 1:
+            return fake_ready_probe()(cplan)
+        return CommitProbe(state="refused", reason="Custom is behind origin/main")
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=lambda *a, **k: CommitOutcome(issues=(old,)))
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: panel.state() == "refused", timeout=30000)
+    assert panel._strip.text() == "⚠ Commit refused: Custom is behind origin/main"
+    assert not [line for line in panel.outcome_lines() if old.text in line]
+
+
+def test_parent_only_failure_reprobes_in_dialog(qtbot, make_install_dialog):
+    probes: list[int] = []
+    manual = "git -C 'C:/x' commit -m 'Update Custom' -- 'Custom'"
+    label = "Finish it by hand. In PowerShell:"
+    failure = Issue(
+        Severity.ERROR, "commit.parent_failed",
+        f"The parent commit failed (git exit 1).\nhook says: no\nfix the footer first\n{label} {manual}",
+    )
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe()(cplan)
+
+    outcome = CommitOutcome(
+        parent_only=True, parent_commit=None, output="hook says: no\nfix the footer first",
+        manual_command=manual, manual_label=label, issues=(failure,),
+    )
+    dialog = make_install_dialog(probe_commit=probe, run_commit=lambda *a, **k: outcome)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready" and not dialog.is_probing(), timeout=30000)
+    assert panel.outcome_lines()[0] == "✖ The parent commit failed (git exit 1)."
+    assert panel._output.toPlainText().splitlines() == ["hook says: no", "fix the footer first"]
+    assert not panel._output.isHidden()
+    assert panel._manual_label.text() == f"{label} {manual}"
+    assert not panel._manual_label.isHidden()
+    assert not panel.committed()
+
+
+def test_hook_rejection_output_survives_reprobe_in_dialog(qtbot, make_install_dialog):
+    probes: list[int] = []
+    seen: list[int] = []
+    rejected = Issue(
+        Severity.ERROR, "commit.custom_failed",
+        "Commit in Custom failed (git exit 1); nothing was committed\nhook says: no\nfix the footer first",
+    )
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe()(cplan)
+
+    def run(cplan, message, bump, **kwargs):
+        seen.append(1)
+        if len(seen) == 1:
+            return CommitOutcome(output="hook says: no\nfix the footer first", issues=(rejected,))
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=run)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready" and not dialog.is_probing(), timeout=30000)
+    assert panel.outcome_lines()[0] == "✖ Commit in Custom failed (git exit 1); nothing was committed"
+    assert panel._output.toPlainText().splitlines() == ["hook says: no", "fix the footer first"]
+    assert not panel._output.isHidden()
+    assert panel._manual_label.isHidden()
+
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
+    assert panel._output.isHidden()
+    assert panel.outcome_lines() == [f"✓ {fake_committed().issues[0].text}"]
+
+
+def test_switch_reprobe_keeps_message(qtbot, make_install_dialog):
+    probes: list[int] = []
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        if len(probes) == 1:
+            return CommitProbe(
+                state="offer_switch", reason="Custom is on a detached HEAD at abc1234.", head="abc1234" + "0" * 33,
+                parent_dir=cplan.repo_root, parent_ok=True, parent_branch="main",
+            )
+        return fake_ready_probe()(cplan)
+
+    switched = SwitchOutcome(ok=True, issues=(Issue(Severity.SUCCESS, "commit.switched", "Switched Custom to main"),))
+    dialog = make_install_dialog(probe_commit=probe, switch_to_main=lambda *a, **k: switched)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "offer_switch", timeout=30000)
+    panel._message.setPlainText("Typed before the switch")
+    panel._switch_button.click()
+
+    qtbot.waitUntil(lambda: len(probes) == 2 and panel.state() == "ready", timeout=30000)
+    assert panel.message() == "Typed before the switch"
+
+
+def test_install_button_primary(qtbot, make_install_dialog):
+    from kicad_lib_manager.widgets.theme import PRIMARY_BUTTON_QSS
+
+    dialog = make_install_dialog()
+    assert dialog._install_btn.styleSheet() == PRIMARY_BUTTON_QSS
+
+
+def forbid_message_boxes(monkeypatch):
+    def refuse(*args, **kwargs):
+        pytest.fail("a message box was opened")
+
+    for name in ("exec", "exec_", "question", "warning", "information", "critical", "open", "show"):
+        monkeypatch.setattr(QMessageBox, name, refuse, raising=False)
+
+
+def test_commit_not_committed_logged_on_close(qtbot, make_install_dialog, monkeypatch):
+    forbid_message_boxes(monkeypatch)
+    dialog = make_install_dialog(probe_commit=fake_ready_probe())
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    assert logged_codes(logged, "commit.not_committed") == []
+
+    dialog.close()
+    dialog.reject()  # a second close path must not log it a second time
+    assert not dialog.isVisible()
+    found = logged_codes(logged, "commit.not_committed")
+    assert [(i.severity, i.text) for i in found] == [(Severity.WARNING, D02_TEXT)]
+
+
+def test_commit_not_logged_after_a_commit(qtbot, make_install_dialog, monkeypatch):
+    forbid_message_boxes(monkeypatch)
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(), run_commit=lambda *a, **k: fake_committed())
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done" and not dialog.is_committing(), timeout=30000)
+
+    dialog._result_view.close_button.click()
+    assert not dialog.isVisible()
+    assert logged_codes(logged, "commit.not_committed") == []
+
+
+def test_parent_only_or_all_identical_not_logged_as_not_committed(qtbot, make_install_dialog, monkeypatch):
+    forbid_message_boxes(monkeypatch)
+    # Custom already holds every planned file: nothing is left uncommitted, so closing logs nothing (D-14)
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(all_identical=True))
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    assert not panel.committed()
+    dialog.close()
+    assert not dialog.isVisible()
+    assert logged_codes(logged, "commit.not_committed") == []
+
+
+def test_parent_only_bump_not_logged_and_not_reprobed(qtbot, make_install_dialog, monkeypatch):
+    forbid_message_boxes(monkeypatch)
+    probes: list[int] = []
+    bump = CommitOutcome(
+        parent_only=True, parent_commit="def5678",
+        issues=(Issue(Severity.SUCCESS, "commit.parent_done", "Committed def5678 on main in the parent repo"),),
+    )
+
+    def probe(cplan, **kwargs):
+        probes.append(1)
+        return fake_ready_probe(all_identical=True, head="b" * 40, gitlink_old="a" * 40)(cplan)
+
+    dialog = make_install_dialog(probe_commit=probe, run_commit=lambda *a, **k: bump)
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done" and not dialog.is_committing(), timeout=30000)
+    finish_workers(qtbot, dialog)
+    assert probes == [1]  # the parent commit counts as the commit: no second probe follows
+
+    dialog._result_view.close_button.click()
+    assert not dialog.isVisible()
+    assert logged_codes(logged, "commit.not_committed") == []
+
+
+def test_changed_file_opens_changed_diff(qtbot, make_install_dialog):
+    sym_rel = f"Symbols/{LIB}.kicad_sym"
+    fp_rel = f"Footprints/{FP_LIB}.pretty/DQK0006B.kicad_mod"
+    seen: list[tuple[str, str, int]] = []
+
+    def changed(cplan, path, **kwargs):
+        seen.append(("changed", path, threading.get_ident()))
+        return ContentText(title=f"{path} - as installed vs now", header="", body="-a\n+b", kind="diff")
+
+    def before_import(cplan, path, **kwargs):
+        seen.append(("before", path, threading.get_ident()))
+        return ContentText(title=f"{path} - HEAD vs before this import", header="", body="-a\n+b", kind="diff")
+
+    probe = fake_ready_probe(stale=(f"Custom/{sym_rel}",), dirty_before=frozenset({fp_rel}))
+    dialog = make_install_dialog(probe_commit=probe, changed_diff=changed, pre_import_diff=before_import)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    files = panel._files_list
+
+    def row_of(rel):
+        return next(files.item(i) for i in range(files.count()) if files.item(i).data(Qt.ItemDataRole.UserRole) == rel)
+
+    files.itemActivated.emit(row_of(sym_rel))
+    view = wait_view(qtbot, dialog)
+    assert [(kind, path) for kind, path, _ in seen] == [("changed", sym_rel)]
+    assert seen[0][2] != threading.get_ident()
+    assert view.windowTitle() == f"{sym_rel} - as installed vs now"
+    view.close()
+
+    # the amber file from before the import still opens the D-09 view
+    files.itemActivated.emit(row_of(fp_rel))
+    qtbot.waitUntil(lambda: len(seen) == 2, timeout=30000)
+    assert seen[1][:2] == ("before", fp_rel)
+
+    # a file Check again marked changed or added takes the same route
+    model_rel = "3DModels/CSD85301Q2.stp"
+    cplan = dialog._commit_plan
+    marked = replace(next(f for f in cplan.files if f.rel == model_rel), note="added")
+    dialog._commit_plan = replace(cplan, files=tuple(marked if f.rel == model_rel else f for f in cplan.files))
+    dialog._on_commit_file_activated(model_rel)
+    qtbot.waitUntil(lambda: len(seen) == 3, timeout=30000)
+    assert seen[2][:2] == ("changed", model_rel)
+
+
+def test_changed_and_dirty_file_opens_both_views(qtbot, make_install_dialog):
+    sym_rel = f"Symbols/{LIB}.kicad_sym"
+    seen: list[tuple[str, str, int]] = []
+
+    def changed(cplan, path, **kwargs):
+        seen.append(("changed", path, threading.get_ident()))
+        return ContentText(title=f"{path} - as installed vs now", header=path, body="-a\n+b", kind="diff")
+
+    def before_import(cplan, path, **kwargs):
+        seen.append(("before", path, threading.get_ident()))
+        return ContentText(title=f"{path} - HEAD vs before this import", header=path, body="-x\n+y", kind="diff")
+
+    probe = fake_ready_probe(stale=(f"Custom/{sym_rel}",), dirty_before=frozenset({sym_rel}))
+    dialog = make_install_dialog(probe_commit=probe, changed_diff=changed, pre_import_diff=before_import)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    files = panel._files_list
+    item = next(files.item(i) for i in range(files.count()) if files.item(i).data(Qt.ItemDataRole.UserRole) == sym_rel)
+    assert item.text() == f"⚠ Custom/{sym_rel} (changed since install; also changed before this import)"
+    files.itemActivated.emit(item)
+
+    view = wait_view(qtbot, dialog)
+    assert len(dialog._content_views) == 1
+    assert [(kind, path) for kind, path, _ in seen] == [("changed", sym_rel), ("before", sym_rel)]
+    assert seen[0][2] == seen[1][2] != threading.get_ident()
+    assert view.windowTitle() == f"{sym_rel} - changed since install and before this import"
+    text = view._text.toPlainText()
+    assert text.index("-a\n+b") < text.index("-x\n+y")
+
+
+def test_no_commit_step_for_noop_plan(qtbot, make_install_dialog, tmp_path):
+    dialog = make_install_dialog()
+    dialog._start_commit_step(types.SimpleNamespace(is_noop=True), fake_result(tmp_path))
+    assert dialog._commit_panel is None
+    assert commit_panel_of(dialog) == []
+    assert dialog._result_view.commit_slot.isHidden()
+    assert not dialog.is_committing()
+
+
+def test_dirty_file_double_click_opens_diff(qtbot, make_install_dialog):
+    rel = f"Symbols/{LIB}.kicad_sym"
+    title = f"Custom/{rel} - HEAD vs before this import"
+    main_thread = threading.get_ident()
+    seen: list[tuple] = []
+
+    def diff(cplan, path, **kwargs):
+        seen.append((path, threading.get_ident()))
+        return ContentText(title=title, header="", body="-old\n+new", kind="diff")
+
+    dialog = make_install_dialog(probe_commit=fake_ready_probe(dirty_before=frozenset({rel})), pre_import_diff=diff)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    files = panel._files_list
+    item = next(files.item(i) for i in range(files.count()) if files.item(i).data(Qt.ItemDataRole.UserRole) == rel)
+    files.itemActivated.emit(item)
+
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == title
+    assert [path for path, _ in seen] == [rel]
+    assert seen[0][1] != main_thread
+
+
+@requires_git
+def test_git_state_changes_only_after_click(qtbot, tmp_path, monkeypatch):
+    repos = make_superproject(tmp_path / "git")
+    before_install: list[list] = []
+    before_click: list[list] = []
+    after_click: list[list] = []
+    state = {"installed": False, "clicked": False}
+    real_run = subprocess.run
+
+    def run(args, *a, **kw):
+        argv = [str(part) for part in args] if isinstance(args, (list, tuple)) else [str(args)]
+        if "git" in Path(argv[0]).name.lower():
+            bucket = after_click if state["clicked"] else before_click if state["installed"] else before_install
+            bucket.append(argv)
+        return real_run(args, *a, **kw)
+
+    def apply_then_flag(plan, *, backup_root=None, progress=None):
+        result = real_apply_plan(plan, backup_root=backup_root, progress=progress)
+        state["installed"] = True  # git may only start after this point
+        return result
+
+    monkeypatch.setattr(subprocess, "run", run)
+    core = replace(
+        ImportCore(),
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        downloads_dir=lambda: None,
+        suggest_library=_good_suggestion,
+        kicad_running=lambda: [],
+        apply_plan=apply_then_flag,
+    )
+    dialog = ImportDialog(
+        repos.parent, RepoLayout.for_repo(repos.parent), core=core, backup_root=tmp_path / "backups"
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+
+    read_only = {
+        "--version", "rev-parse", "symbolic-ref", "status", "merge-base", "rev-list", "log", "ls-tree",
+        "cat-file", "var", "ls-files",
+    }
+    assert before_install == []
+    assert before_click, "the probe should have run git"
+    assert {argv[6] for argv in before_click} <= read_only
+    assert after_click == []
+
+    state["clicked"] = True
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=60000)
+    subcommands = {argv[6] for argv in after_click}
+    assert {"add", "commit"} <= subcommands
+    assert not [argv for argv in before_click + after_click if "push" in argv]
+
+
+def test_result_view_scrolls_at_minimum_size(qtbot, make_install_dialog):
+    earlier = tuple((f"abc{n:04d}", f"Earlier Custom commit number {n}") for n in range(10))
+    probe = fake_ready_probe(gitlink_old="485d530" + "0" * 33, earlier=earlier)
+    dialog = make_install_dialog(probe_commit=probe)
+    dialog.resize(900, 600)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    dialog.resize(900, 600)
+    qtbot.wait(100)
+
+    view = dialog._result_view
+    (scroll,) = view.findChildren(QScrollArea)
+    assert scroll.horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    assert scroll.widgetResizable()
+    body = scroll.widget()
+    assert body.width() <= scroll.viewport().width()
+    assert body.minimumSizeHint().width() <= scroll.viewport().width()
+    assert body.height() > scroll.viewport().height()
+    assert scroll.verticalScrollBar().maximum() > 0
+    assert view.close_button.isVisible()
+    assert not scroll.isAncestorOf(view.close_button)
+    assert scroll.isAncestorOf(view.commit_slot)
+
+
+# -- Phase 6 plan 06-08 Task 2: WR-04, no worker reads dialog state and no package opens under a job -----
+
+
+@pytest.mark.parametrize("job", ["commit", "install"])
+def test_open_path_refused_while_busy(qtbot, make_install_dialog, gates, job):
+    started = threading.Event()
+    if job == "commit":
+        dialog = make_install_dialog(probe_commit=fake_ready_probe(), run_commit=gated(gates, started, fake_committed))
+        install_ul(qtbot, dialog)
+        (panel,) = commit_panel_of(dialog)
+        qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+        qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+        panel.commit_button.click()
+        qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
+        page = dialog._result_page
+    else:
+        dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+        dialog._install_btn.click()
+        qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+        page = dialog._edit_page
+
+    dialog.open_path(UL_ZIP)  # a new package must not open under a running job
+    assert dialog._open_worker is None
+    assert dialog._stack.currentWidget() is page
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=60000)
+
+
+def test_install_worker_uses_captured_plan(qtbot, make_install_dialog, gates, monkeypatch):
+    main_thread = threading.get_ident()
+    off_thread_reads: list[str] = []
+
+    def get_plan(self):
+        if threading.get_ident() != main_thread:
+            off_thread_reads.append(threading.current_thread().name)
+        return self.__dict__.get("_plan_slot")
+
+    def set_plan(self, value):
+        self.__dict__["_plan_slot"] = value
+
+    monkeypatch.setattr(ImportDialog, "_plan", property(get_plan, set_plan), raising=False)
+    seen: list = []
+    started = threading.Event()
+
+    def apply(plan, *, backup_root=None, progress=None):
+        seen.append(plan)
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return real_apply_plan(plan, backup_root=backup_root, progress=progress)
+
+    dialog = make_install_dialog(apply_plan=apply)
+    rendered = dialog._plan
+    assert rendered is not None
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+    dialog._plan = None  # the GUI may change its own state while the worker runs
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+
+    assert len(seen) == 1 and seen[0] is rendered
+    assert off_thread_reads == []
+
+
+# -- Add 3D model... (plan 07-07, G-07-2): a separately downloaded SnapEDA model joins an open import -----
+
+
+def test_add_model_tracer_snapeda_end_to_end(qtbot, make_item_dialog, item_layout, recorded, tmp_path, monkeypatch):
+    from vendorfixtures import (
+        SNAPEDA_FOOTPRINT,
+        SNAPEDA_MODEL_STEM,
+        SNAPEDA_MODEL_ZIP_NAME,
+        SNAPEDA_MPN,
+        SNAPEDA_SYMBOL,
+        snapeda_model_zip,
+        snapeda_zip,
+    )
+    from zipfixtures import STEP_BYTES
+
+    from kicad_lib_manager.importer.plan import MODEL_DIR_VAR
+    from kicad_lib_manager.kicad_files import find_models, footprint_name, load
+
+    dialog = make_item_dialog(snapeda_zip(tmp_path / "src" / f"{SNAPEDA_SYMBOL}.zip"), show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    assert dialog._model_label.full_text() == "No 3D model in this package"
+    assert dialog._add_model_btn.text() == "Add 3D model..."
+
+    model_zip = snapeda_model_zip(tmp_path / "dl" / SNAPEDA_MODEL_ZIP_NAME)
+    filters: list[str] = []
+
+    def fake_open_file(parent, caption, directory, file_filter):
+        filters.append(file_filter)
+        return str(model_zip), ""
+
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getOpenFileName", staticmethod(fake_open_file))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(lambda: dialog._model_worker is None and len(dialog._candidate.models) == 1, timeout=30000)
+    wait_current(qtbot, dialog)
+
+    filename = f"{SNAPEDA_MODEL_STEM}.stp"
+    assert dialog._model_label.full_text() == filename
+    assert recorded[-1].model == filename
+    assert dialog._plan.model_file == f"{SNAPEDA_MPN}.stp"
+    codes = [i.code for i in dialog._plan.issues]
+    assert "intake.model_attached" in codes
+    assert "intake.no_model" not in codes and "install.atomic.model_3d" not in codes
+    _title, rows = files_rows(dialog)
+    assert any(row.endswith(f"{SNAPEDA_MPN}.stp") for row in rows), rows
+    for suffix in ("*.step", "*.stp", "*.wrl", "*.zip"):
+        assert suffix in filters[-1]
+
+    set_library(dialog, "Atomic_Connector")
+    # the SnapEDA download has no Datasheet: type one, as the owner would, so the part passes the atomic rule (D-21)
+    type_text(qtbot, dialog._field_edits["datasheet"], ATOMIC_PROPS["Datasheet"])
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    staging = dialog._model_packages[-1].staging_dir
+    assert staging is not None and staging.is_dir()
+    with qtbot.waitSignal(dialog.installed, timeout=60000):
+        dialog._install_btn.click()
+    assert dialog.result.ok
+    assert (item_layout.models_dir / f"{SNAPEDA_MPN}.stp").read_bytes() == STEP_BYTES
+    installed = item_layout.footprints_dir / f"{footprint_library_for('Atomic_Connector')}.pretty" / f"{SNAPEDA_FOOTPRINT}.kicad_mod"
+    loaded = load(installed)
+    ref = footprint_name(loaded.root)
+    assert ref is not None
+    assert [m.path for m in find_models(ref.node)] == [f"{MODEL_DIR_VAR}/{SNAPEDA_MPN}.stp"]
+
+    qtbot.waitUntil(lambda: not dialog.is_committing() and not dialog.is_probing(), timeout=30000)
+    dialog.reject()
+    assert not staging.exists()
+
+
+# -- Add 3D model... from every row state (plan 07-08, G-07-2) ------------------------------------------
+
+
+def pick_model(monkeypatch, *paths) -> None:
+    """Make the file dialog return these paths in order."""
+    queue = list(paths)
+
+    def fake_open_file(parent, caption, directory, file_filter):
+        return str(queue.pop(0)), ""
+
+    monkeypatch.setattr(import_dialog_module.QFileDialog, "getOpenFileName", staticmethod(fake_open_file))
+
+
+def attach_model(qtbot, dialog: ImportDialog, monkeypatch, path: Path) -> None:
+    """Click Add 3D model..., pick path, wait for the worker and for the plan that follows."""
+    pick_model(monkeypatch, path)
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    wait_current(qtbot, dialog)
+
+
+def bare_model(folder: Path, name: str, data: bytes | None = None) -> Path:
+    from zipfixtures import STEP_BYTES
+
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / name
+    path.write_bytes(STEP_BYTES if data is None else data)
+    return path
+
+
+def model_names(dialog: ImportDialog) -> list[str]:
+    combo = dialog._model_combo
+    return [combo.itemText(i) for i in range(combo.count())]
+
+
+def test_add_model_button_on_every_row_state(qtbot, make_item_dialog, tmp_path):
+    one = ul_dialog(make_item_dialog, qtbot)
+    assert one._model_label is not None and one._model_combo is None
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    several = make_item_dialog(multi_zip(tmp_path / "a"), show=True)
+    wait_current(qtbot, several)
+    assert several._model_combo is not None and model_names(several)[-1] == "No model"
+    none = make_item_dialog(multi_zip(tmp_path / "b", models=()), show=True)
+    wait_current(qtbot, none)
+    assert none._model_label is not None and none._model_label.full_text() == "No 3D model in this package"
+    for dialog in (one, several, none):
+        assert dialog._add_model_btn is not None
+        assert dialog._add_model_btn.isEnabled()
+        assert dialog._add_model_btn.text() == import_dialog_module.ADD_MODEL_TEXT
+
+
+def test_add_model_to_part_with_model_selects_it(qtbot, make_item_dialog, recorded, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    before = len(recorded)
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "other.stp"))
+    assert dialog._model_combo is not None
+    assert model_names(dialog) == ["DLV0006A.stp", "other.stp", "No model"]
+    assert dialog._model_combo.currentIndex() == 1
+    assert recorded[-1].model == "other.stp"
+    assert len(recorded) == before + 1  # exactly one rebuild for the attach
+    assert dialog._plan.model_file == "CSD85301Q2.stp"
+    assert dialog._model_note.isHidden()
+
+    # a third model joins the combo and is selected in turn
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl2", "third.step", b"ISO-10303-21;\nthird\n"))
+    assert model_names(dialog) == ["DLV0006A.stp", "other.stp", "third.step", "No model"]
+    assert dialog._model_combo.currentIndex() == 2
+    assert recorded[-1].model == "third.step"
+
+
+def test_add_model_clash_listed_with_suffix(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from zipfixtures import STEP_BYTES
+
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    clash = bare_model(tmp_path / "dl", "dlv0006a.STP", STEP_BYTES.replace(b"test", b"nope"))
+    attach_model(qtbot, dialog, monkeypatch, clash)
+    assert "dlv0006a_2.STP" in model_names(dialog)
+    assert dialog._model_combo.currentText() == "dlv0006a_2.STP"
+
+
+def test_add_model_keeps_edits(qtbot, make_item_dialog, recorded, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    type_text(qtbot, dialog._field_edits["manufacturer"], "MyMaker")
+    type_text(qtbot, dialog._field_edits["description"], "My description")
+    type_text(qtbot, dialog._fp_name_edit, "MYFP")
+    type_text(qtbot, dialog._library_combo.lineEdit(), "Typed_Lib_X")
+    wait_current(qtbot, dialog)
+    texts = {
+        "manufacturer": dialog._field_edits["manufacturer"].text(),
+        "description": dialog._field_edits["description"].text(),
+        "fp_name": dialog._fp_name_edit.text(),
+        "library": dialog._library_combo.currentText(),
+    }
+    assert texts["library"] == "Typed_Lib_X"
+    edited, fp_edited, resolutions = set(dialog._edited), dialog._fp_name_edited, dict(dialog._resolutions)
+    assert fp_edited and {"manufacturer", "description"} <= edited
+
+    calls: list[str] = []
+    for name in ("_populate_items", "_reload_symbol_defaults", "_clear_items", "_clear_form", "_reset_fp_name"):
+        original = getattr(dialog, name)
+
+        def counting(*args, _original=original, _name=name, **kwargs):
+            calls.append(_name)
+            return _original(*args, **kwargs)
+
+        setattr(dialog, name, counting)
+
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "other.stp"))
+    assert calls == []
+    assert dialog._field_edits["manufacturer"].text() == texts["manufacturer"]
+    assert dialog._field_edits["description"].text() == texts["description"]
+    assert dialog._fp_name_edit.text() == texts["fp_name"]
+    assert dialog._library_combo.currentText() == texts["library"]
+    assert dialog._edited == edited
+    assert dialog._fp_name_edited is fp_edited
+    assert dialog._resolutions == resolutions
+    last = recorded[-1]
+    assert last.manufacturer == "MyMaker" and last.description == "My description"
+    assert dict(last.footprint_names) == {"DQK0006B": "MYFP"}
+    assert last.library == "Typed_Lib_X"
+    assert last.model == "other.stp"
+
+
+def test_add_model_rejection_blocks_install(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    """G-07-5 tracer: an unusable bare model file is a red error that blocks Install until Remove."""
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    assert dialog._install_btn.isEnabled()
+    candidate, gen = dialog._candidate, dialog._gen
+    text = "dummy_CAD_FILE.step holds no usable 3D model"
+
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "dummy_CAD_FILE.step", b""))
+    assert dialog._candidate is candidate and dialog._model_packages == []
+    assert dialog._gen == gen
+    note = dialog._model_note
+    assert note.isVisible() and note.textFormat() == Qt.TextFormat.PlainText
+    assert ERROR.lower() in note.styleSheet().lower()
+    assert note.text() == text
+    links = strip_links(dialog)
+    assert f"Error: {text}" in links
+    assert not dialog._install_btn.isEnabled()
+    rejection = dialog._model_rejection
+    assert rejection is not None and rejection.source == "dummy_CAD_FILE.step"
+    assert rejection.issue.code == "intake.no_model_in_source"
+    remove = dialog._remove_model_btn
+    assert remove.isVisible() and remove.isEnabled()
+    assert remove.text() == import_dialog_module.REMOVE_MODEL_TEXT
+    assert dialog._add_model_btn.isEnabled()
+    dialog._strip.linkActivated.emit(links[f"Error: {text}"])
+    assert dialog.focusWidget() is remove
+
+    remove.click()
+    assert note.isHidden() and remove.isHidden()
+    assert not any(reason.startswith("Error:") for reason in strip_links(dialog))
+    assert dialog._model_rejection is None
+    # Moving the focus off the editable library combo re-activates it, which rebuilds the plan once
+    wait_current(qtbot, dialog)
+    assert dialog._install_btn.isEnabled()
+    assert dialog._strip.text().startswith("✓ Ready to install")
+
+
+def test_add_model_refusal_shows_note(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from zipfixtures import make_zip
+
+    opened: list = []
+
+    def open_recording(path, repo_root, progress=None):
+        package = import_dialog_module.open_model_source(path, repo_root, progress)
+        opened.append((package, package.staging_dir))
+        return package
+
+    dialog = make_item_dialog(
+        multi_zip(tmp_path, symbols=("S1",), footprints=("F1",), models=()), show=True, open_model_source=open_recording
+    )
+    wait_current(qtbot, dialog)
+    candidate = dialog._candidate
+    logged: list = []
+    dialog.issues_logged.connect(logged.append)
+    assert dialog._model_note.isHidden()
+
+    def assert_refused(source: Path) -> str:
+        attach_model(qtbot, dialog, monkeypatch, source)
+        assert dialog._candidate is candidate
+        assert dialog._model_label.full_text() == "No 3D model in this package"
+        assert dialog._model_combo is None and dialog._model_packages == []
+        note = dialog._model_note
+        assert note.isVisible()
+        assert note.textFormat() == Qt.TextFormat.PlainText
+        assert ERROR.lower() in note.styleSheet().lower()
+        errors = [i for i in logged[-1] if i.severity is Severity.ERROR]
+        assert errors and "intake.no_model_in_source" in {i.code for i in errors}
+        assert note.text() == errors[0].text
+        # G-07-5: the rejection blocks Install and is listed in the strip
+        assert strip_links(dialog).get(f"Error: {note.text()}", "").startswith("reason:")
+        assert not dialog._install_btn.isEnabled()
+        assert dialog._model_rejection is not None
+        return note.text()
+
+    # a zip with no model at all: refused at intake
+    assert_refused(make_zip(tmp_path / "notes.zip", [("readme.txt", b"hello")]))
+    # a renamed non-STEP file in a zip: staged, then refused by the magic check; the staging folder goes
+    first = assert_refused(make_zip(tmp_path / "fake.zip", [("fake.stp", b"this is not a STEP file")]))
+    package, staging = opened[-1]
+    assert staging is not None and not staging.exists() and package.staging_dir is None
+    # a bare renamed file
+    second = assert_refused(bare_model(tmp_path / "dl", "fake.stp", b"not a step file either"))
+    assert "fake.stp" in second and first != second
+
+
+def test_add_model_note_is_plain_text(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from kicad_lib_manager.importer.package import Package
+
+    hostile = "Refused <b>x</b>.stp &amp; <i>y</i>"
+
+    def refusing(path, repo_root, progress=None):
+        package = Package(Path(path), "file")
+        package.issues.append(Issue(Severity.ERROR, "intake.unsupported", hostile))
+        return package
+
+    dialog = make_item_dialog(
+        multi_zip(tmp_path, symbols=("S1",), footprints=("F1",), models=()), show=True, open_model_source=refusing
+    )
+    wait_current(qtbot, dialog)
+    attach_model(qtbot, dialog, monkeypatch, tmp_path / "anything.stp")
+    note = dialog._model_note
+    assert note.isVisible() and note.textFormat() == Qt.TextFormat.PlainText
+    assert note.text() == hostile
+    assert note.wordWrap()
+    # the strip shows the same text escaped, never as markup (T-05-27, T-07-34)
+    assert "&lt;b&gt;x&lt;/b&gt;" in dialog._strip.text()
+    assert "<b>x</b>" not in dialog._strip.text()
+
+
+def test_add_model_duplicate_is_noted(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = make_item_dialog(
+        multi_zip(tmp_path, symbols=("S1",), footprints=("F1",), models=()), show=True
+    )
+    wait_current(qtbot, dialog)
+    model = bare_model(tmp_path / "dl", "same.stp")
+    attach_model(qtbot, dialog, monkeypatch, model)
+    assert len(dialog._candidate.models) == 1
+    assert dialog._model_label.full_text() == "same.stp"
+    candidate, gen = dialog._candidate, dialog._gen
+
+    attach_model(qtbot, dialog, monkeypatch, model)
+    note = dialog._model_note
+    assert note.isVisible() and "already listed" in note.text()
+    assert MUTED.lower() in note.styleSheet().lower()
+    assert dialog._candidate is candidate and len(dialog._candidate.models) == 1
+    assert dialog._gen == gen
+
+
+# -- Add 3D model... is busy-safe and every model package lives as long as it must (plan 07-08) ---------
+
+
+def model_zip(folder: Path, name: str = "model.zip", member: str = "extra.stp") -> Path:
+    from zipfixtures import STEP_BYTES, make_zip
+
+    folder.mkdir(parents=True, exist_ok=True)
+    return make_zip(folder / name, [(member, STEP_BYTES)])
+
+
+def gated_model_source(gates, started=None, events=None, packages=None):
+    """An open_model_source fake that waits for a gate, opens the real package and spies on its close."""
+
+    def open_source(path, repo_root, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        if started is not None:
+            started.set()
+        assert gate.wait(30)
+        package = import_dialog_module.open_model_source(path, repo_root, progress)
+        original = package.close
+        package.staging_at_open = package.staging_dir
+        if packages is not None:
+            packages.append(package)
+
+        def close():
+            if events is not None:
+                events.append("close")
+            original()
+
+        package.close = close
+        return package
+
+    return open_source
+
+
+def test_add_model_blocks_install_while_reading(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    from kicad_lib_manager.importer.form import UPDATING_REASON
+
+    started = threading.Event()
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=gated_model_source(gates, started))
+    assert dialog._install_btn.isEnabled()
+    pick_model(monkeypatch, model_zip(tmp_path / "dl"))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    assert not dialog._add_model_btn.isEnabled()
+    assert not dialog._install_btn.isEnabled()
+    assert dialog._strip.text() == UPDATING_REASON
+    assert dialog._model_note.isVisible() and dialog._model_note.text().startswith("Reading ")
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    wait_current(qtbot, dialog)
+    assert dialog._add_model_btn.isEnabled()
+    assert dialog._model_note.isHidden()
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    assert dialog._plan.model_file == "CSD85301Q2.stp"
+
+
+def test_add_model_result_after_change_is_dropped(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    started = threading.Event()
+    events: list[str] = []
+    packages: list = []
+    dialog = ul_dialog(
+        make_item_dialog, qtbot, open_model_source=gated_model_source(gates, started, events, packages)
+    )
+    pick_model(monkeypatch, model_zip(tmp_path / "dl"))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    dialog._change_btn.click()
+    assert dialog._stack.currentWidget() is dialog._start_page
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    assert events == ["close"]
+    staging = packages[0].staging_at_open
+    assert staging is not None and not staging.exists()
+    assert dialog._model_packages == []
+    assert dialog._candidate is None
+    assert dialog._stack.currentWidget() is dialog._start_page
+
+
+def test_add_model_close_while_reading_closes_package(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    started = threading.Event()
+    events: list[str] = []
+    packages: list = []
+    dialog = ul_dialog(
+        make_item_dialog, qtbot, open_model_source=gated_model_source(gates, started, events, packages)
+    )
+    pick_model(monkeypatch, model_zip(tmp_path / "dl"))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    dialog.reject()  # returns at once: the model read is still gated
+    assert dialog.is_finishing()
+    assert events == []  # the package is closed only after the read has stopped
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    qtbot.wait(100)  # a queued result must not close the package a second time
+    assert events == ["close"]
+    assert dialog._model_packages == []
+    staging = packages[0].staging_at_open
+    assert staging is not None and not staging.exists()
+
+
+def test_add_model_package_open_until_install_ends(qtbot, make_install_dialog, gates, tmp_path, monkeypatch):
+    events: list[str] = []
+    packages: list = []
+    seen: dict = {}
+    started = threading.Event()
+
+    def apply(plan, *, backup_root=None, progress=None):
+        sources = [op.source.path for op in plan.ops if op.source is not None]
+        seen["exist"] = [path.exists() for path in sources]
+        seen["sources"] = sources
+        events.append("apply_start")
+        started.set()
+        result = real_apply_plan(plan, backup_root=backup_root, progress=progress)
+        events.append("apply_end")
+        return result
+
+    def open_source(path, repo_root, progress=None):
+        package = import_dialog_module.open_model_source(path, repo_root, progress)
+        original = package.close
+
+        def close():
+            events.append("close")
+            original()
+
+        package.close = close
+        packages.append(package)
+        return package
+
+    dialog = make_install_dialog(apply_plan=apply, open_model_source=open_source)
+    attach_model(qtbot, dialog, monkeypatch, model_zip(tmp_path / "dl"))
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    staging = packages[0].staging_dir
+    assert staging is not None and staging.is_dir()
+    with qtbot.waitSignal(dialog.installed, timeout=60000):
+        dialog._install_btn.click()
+    assert seen["exist"] and all(seen["exist"])
+    assert any(staging in path.parents for path in seen["sources"])  # the install read the model package
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=30000)
+    assert staging.is_dir() and "close" not in events  # still open after apply_plan returned
+
+    dialog.reject()
+    assert not staging.exists()
+    assert events.index("apply_end") < events.index("close")
+    assert events.count("close") == 1
+
+
+def test_add_model_change_closes_model_package(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    attach_model(qtbot, dialog, monkeypatch, model_zip(tmp_path / "dl"))
+    assert len(dialog._model_packages) == 1
+    staging = dialog._model_packages[0].staging_dir
+    assert staging is not None and staging.is_dir()
+    dialog._change_btn.click()
+    assert not staging.exists()
+    assert dialog._model_packages == []
+
+
+def test_add_model_disabled_while_installing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+    assert dialog._add_model_btn.isEnabled()
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    assert not dialog._add_model_btn.isEnabled()
+    assert dialog._model_busy()
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    qtbot.waitUntil(lambda: not dialog.is_installing() and not dialog.is_committing() and not dialog.is_probing(), timeout=30000)
+
+
+def test_add_model_runs_off_gui_thread(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from kicad_lib_manager.importer.adapters.base import attach_models as real_attach_models
+
+    main = threading.get_ident()
+    seen: dict[str, int] = {}
+
+    def spy(name, fn):
+        def wrapper(*args, **kwargs):
+            seen[name] = threading.get_ident()
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    dialog = ul_dialog(
+        make_item_dialog,
+        qtbot,
+        open_model_source=spy("open_model_source", import_dialog_module.open_model_source),
+        attach_models=spy("attach_models", real_attach_models),
+    )
+    attach_model(qtbot, dialog, monkeypatch, model_zip(tmp_path / "dl"))
+    assert set(seen) == {"open_model_source", "attach_models"}
+    assert all(ident != main for ident in seen.values())
+
+
+def test_add_model_worker_failure_logged(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    def broken(path, repo_root, progress=None):
+        raise RuntimeError("disk on fire")
+
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=broken)
+    candidate = dialog._candidate
+    logged: list = []
+    dialog.issues_logged.connect(logged.append)
+    attach_model(qtbot, dialog, monkeypatch, tmp_path / "anything.stp")
+    assert [i.code for i in logged[-1]] == ["import.step_failed"]
+    assert logged[-1][0].severity is Severity.ERROR
+    note = dialog._model_note
+    assert note.isVisible() and "disk on fire" in note.text()
+    assert ERROR.lower() in note.styleSheet().lower()
+    # G-07-5: a failed read is held as a rejected source and blocks Install like any other
+    # the worker reports "RuntimeError: disk on fire"; the reason carries the logged Issue text unchanged
+    assert f"Error: {logged[-1][0].text}" in strip_links(dialog)
+    assert logged[-1][0].text == "Import step failed: RuntimeError: disk on fire"
+    assert not dialog._install_btn.isEnabled()
+    remove = dialog._remove_model_btn
+    assert remove.isVisible() and remove.isEnabled()
+    assert dialog._add_model_btn.isEnabled()
+    assert dialog._candidate is candidate
+
+    remove.click()
+    wait_current(qtbot, dialog)
+    assert dialog._model_rejection is None
+    assert dialog._install_btn.isEnabled()
+
+
+def test_add_model_partly_bad_zip_rejected(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    from zipfixtures import STEP_BYTES, make_zip
+
+    opened: list = []
+
+    def open_recording(path, repo_root, progress=None):
+        package = import_dialog_module.open_model_source(path, repo_root, progress)
+        opened.append((package, package.staging_dir))
+        return package
+
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=open_recording)
+    candidate = dialog._candidate
+    (tmp_path / "dl").mkdir()
+    source = make_zip(tmp_path / "dl" / "two.zip", [("good.stp", STEP_BYTES), ("bad.step", b"MZ not a model")])
+    attach_model(qtbot, dialog, monkeypatch, source)
+    assert dialog._candidate is candidate
+    assert dialog._model_label.full_text() == "DLV0006A.stp" and dialog._model_combo is None
+    assert dialog._model_packages == []
+    note = dialog._model_note
+    assert note.isVisible() and "bad.step" in note.text()
+    assert ERROR.lower() in note.styleSheet().lower()
+    assert any(reason.startswith("Error:") and "bad.step" in reason for reason in strip_links(dialog))
+    assert not dialog._install_btn.isEnabled()
+    package, staging = opened[-1]
+    assert staging is not None and not staging.exists() and package.staging_dir is None
+
+
+def test_add_model_success_clears_rejection(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "dummy.step", b""))
+    assert dialog._model_rejection is not None and not dialog._install_btn.isEnabled()
+
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl2", "other.stp"))
+    assert dialog._model_rejection is None
+    assert dialog._model_note.isHidden() and dialog._remove_model_btn.isHidden()
+    assert dialog._model_combo is not None and dialog._model_combo.currentText() == "other.stp"
+    assert not any(reason.startswith("Error:") for reason in strip_links(dialog))
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+
+def test_add_model_duplicate_keeps_rejection(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = make_item_dialog(multi_zip(tmp_path, symbols=("S1",), footprints=("F1",), models=()), show=True)
+    wait_current(qtbot, dialog)
+    same = bare_model(tmp_path / "dl", "same.stp")
+    attach_model(qtbot, dialog, monkeypatch, same)
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl2", "dummy.step", b""))
+    rejection = dialog._model_rejection
+    assert rejection is not None
+    logged: list = []
+    dialog.issues_logged.connect(logged.append)
+
+    attach_model(qtbot, dialog, monkeypatch, same)
+    assert any(i.code == "intake.model_already_present" and i.severity is Severity.INFO for i in logged[-1])
+    assert dialog._model_rejection is rejection
+    note = dialog._model_note
+    assert note.isVisible() and note.text() == rejection.issue.text
+    assert ERROR.lower() in note.styleSheet().lower()
+    assert dialog._remove_model_btn.isVisible()
+    assert f"Error: {rejection.issue.text}" in strip_links(dialog)
+
+
+def test_add_model_rejection_reset_by_change(qtbot, make_item_dialog, tmp_path, monkeypatch):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    attach_model(qtbot, dialog, monkeypatch, bare_model(tmp_path / "dl", "dummy.step", b""))
+    assert dialog._model_rejection is not None
+
+    dialog._change_btn.click()
+    assert dialog._model_rejection is None
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)  # opening again starts the fields over
+    assert dialog._remove_model_btn.isHidden()
+    assert not any(reason.startswith("Error:") for reason in strip_links(dialog))
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+
+def test_add_model_stale_failure_does_not_block(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    started = threading.Event()
+
+    def failing_after_gate(path, repo_root, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        raise RuntimeError("late failure")
+
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=failing_after_gate)
+    logged: list = []
+    dialog.issues_logged.connect(logged.append)
+    pick_model(monkeypatch, tmp_path / "anything.stp")
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    dialog._change_btn.click()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)  # opening again starts the fields over
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    wait_current(qtbot, dialog)
+    assert [i.code for i in logged[-1]] == ["import.step_failed"]  # logged, nothing more
+    assert dialog._model_rejection is None
+    assert dialog._model_note.isHidden() and dialog._remove_model_btn.isHidden()
+    assert not any(reason.startswith("Error:") for reason in strip_links(dialog))
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+
+
+def test_add_model_remove_disabled_while_reading(qtbot, make_item_dialog, gates, tmp_path, monkeypatch):
+    from kicad_lib_manager.importer.form import UPDATING_REASON
+
+    started = threading.Event()
+    dialog = ul_dialog(make_item_dialog, qtbot, open_model_source=gated_model_source(gates, started))
+    pick_model(monkeypatch, bare_model(tmp_path / "dl", "dummy.step", b""))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_rejection is not None, timeout=30000)
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+
+    started.clear()
+    pick_model(monkeypatch, model_zip(tmp_path / "dl2"))
+    dialog._add_model_btn.click()
+    qtbot.waitUntil(started.is_set, timeout=30000)
+    assert dialog._remove_model_btn.isVisible()
+    assert not dialog._remove_model_btn.isEnabled() and not dialog._add_model_btn.isEnabled()
+    assert dialog._strip.text() == UPDATING_REASON
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: dialog._model_worker is None, timeout=30000)
+    wait_current(qtbot, dialog)
+    assert dialog._model_rejection is None
+    assert dialog._remove_model_btn.isHidden()
+    assert dialog._add_model_btn.isEnabled()
+
+
+# -- Preview columns (plan 07-11, G-07-7): Item is draggable, Detail fills the rest and elides ---------------
+
+
+def test_preview_columns_fit_at_900_and_1400(qtbot, make_item_dialog, tmp_path):
+    from PySide6.QtWidgets import QHeaderView
+    from vendorfixtures import SNAPEDA_SYMBOL, snapeda_zip
+
+    from kicad_lib_manager.widgets.preview_tree import MIN_COLUMN_WIDTH
+
+    dialog = make_item_dialog(snapeda_zip(tmp_path / "src" / f"{SNAPEDA_SYMBOL}.zip"), show=True, suggest_library=_good_suggestion)
+    wait_current(qtbot, dialog)
+    assert "Field changes" in [s.name for s in dialog._preview.sections]
+    tree = dialog._preview
+    assert tree.header().sectionResizeMode(0) == QHeaderView.ResizeMode.Interactive
+    assert tree.header().stretchLastSection()
+
+    for width in (900, 1400):
+        dialog.resize(width, 720)
+        qtbot.waitUntil(lambda: dialog.width() == width)
+        qtbot.wait(50)
+        viewport = tree.viewport().width()
+        if width == 900:
+            # The UAT precondition: the Field changes Detail text is wider than the viewport
+            assert tree.sizeHintForColumn(1) > viewport
+        assert tree.columnWidth(0) >= MIN_COLUMN_WIDTH, (width, tree.columnWidth(0))
+        assert tree.columnWidth(1) >= MIN_COLUMN_WIDTH, (width, tree.columnWidth(1))
+        assert tree.columnWidth(0) + tree.columnWidth(1) <= viewport + 1, (width, viewport)
+
+
+def drag_divider(header, dx):
+    """Press on the Item|Detail divider, move by dx and release, like a user drag."""
+    y = header.height() // 2
+    x = header.sectionViewportPosition(0) + header.sectionSize(0) - 1
+    viewport = header.viewport()
+    no_modifier = Qt.KeyboardModifier.NoModifier
+    QTest.mousePress(viewport, Qt.MouseButton.LeftButton, no_modifier, QPoint(x, y))
+    QTest.mouseMove(viewport, QPoint(x + dx, y))
+    QTest.mouseRelease(viewport, Qt.MouseButton.LeftButton, no_modifier, QPoint(x + dx, y))
+
+
+def test_preview_column_drag_survives_rebuild(qtbot, make_item_dialog):
+    dialog = ul_dialog(make_item_dialog, qtbot)
+    tree = dialog._preview
+    before = tree.columnWidth(0)
+    drag_divider(tree.header(), -60)
+    dragged = tree.columnWidth(0)
+    assert abs(dragged - (before - 60)) <= 2, (before, dragged)
+
+    gen = dialog._gen
+    dialog._request_rebuild()
+    wait_current(qtbot, dialog)
+    assert dialog._gen > gen
+    assert tree.columnWidth(0) == dragged
+
+    type_text(qtbot, dialog._field_edits["manufacturer"], "Changed maker")
+    wait_current(qtbot, dialog)
+    assert tree.columnWidth(0) == dragged
+
+    detail = tree.columnWidth(1)
+    dialog.resize(1400, 720)
+    qtbot.waitUntil(lambda: dialog.width() == 1400)
+    qtbot.wait(50)
+    assert tree.columnWidth(0) == dragged
+    assert tree.columnWidth(1) > detail
+
+
+# -- Phase 11 plan 11-11: the gate's recovery path inside the import dialog (GIT-06, D-07, D-08) -------
+
+from kicad_lib_manager import kicad_files  # noqa: E402
+from kicad_lib_manager.importer.commit_gate import AtomicFailure, GateResult  # noqa: E402
+from kicad_lib_manager.models import SymbolEntry, Violation  # noqa: E402
+from kicad_lib_manager.sexpr import apply_edits  # noqa: E402
+from kicad_lib_manager.widgets.atomic_check_dialog import AtomicCheckDialog  # noqa: E402
+
+PART = "CSD85301Q2"
+SYM_REL = f"Custom/Symbols/{LIB}.kicad_sym"
+
+
+def blank_datasheet(data: bytes) -> bytes:
+    """The library bytes with the part's Datasheet value emptied: a KiCad-style edit of one property."""
+    loaded = kicad_files.parse_bytes(data, "lib.kicad_sym")
+    assert not isinstance(loaded, Issue)
+    ref = kicad_files.find_symbol(loaded.root, PART)
+    prop = kicad_files.find_property(ref.node, "Datasheet")
+    assert prop is not None and prop.value.strip() not in ("", "~")
+    return apply_edits(loaded.source.text, [kicad_files.set_property_edit(prop, "")]).encode("utf-8")
+
+
+def wait_idle_state(qtbot, dialog: ImportDialog, panel, state: str) -> None:
+    qtbot.waitUntil(lambda: panel.state() == state and not dialog.is_probing(), timeout=60000)
+
+
+@requires_git
+def test_gate_refusal_and_recovery_end_to_end(qtbot, tmp_path):
+    repos = make_superproject(tmp_path / "git")
+    core = replace(
+        ImportCore(),
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        downloads_dir=lambda: None,
+        suggest_library=_good_suggestion,
+        kicad_running=lambda: [],
+    )
+    dialog = ImportDialog(
+        repos.parent, RepoLayout.for_repo(repos.parent), core=core, backup_root=tmp_path / "backups",
+        atomic_backup_root=tmp_path / "atomic_backups",
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "ready")
+
+    # a KiCad-style edit after the install empties the Datasheet of the installed part
+    lib_path = repos.custom / "Symbols" / f"{LIB}.kicad_sym"
+    installed = lib_path.read_bytes()
+    lib_path.write_bytes(blank_datasheet(installed))
+    refs = remote_refs(repos)
+    head_before = repos.git(repos.custom, "rev-parse", "HEAD")
+
+    # the click is refused (the file changed after the install) and the panel asks for a fresh check
+    panel.commit_button.click()
+    wait_idle_state(qtbot, dialog, panel, "gated")
+    assert panel._probe.stale
+    assert repos.git(repos.custom, "rev-parse", "HEAD") == head_before
+
+    # Check again takes the file as it is now and the gate names the part and the rule
+    panel._check_again_button.click()
+    qtbot.waitUntil(lambda: panel._probe is not None and not panel._probe.stale and not dialog.is_probing(), timeout=60000)
+    assert panel.state() == "gated"
+    assert panel._strip.text() == "⚠ Commit refused: 1 part breaks the atomic rule."
+    assert panel._gate_lines.text().startswith(f"{LIB} / {PART}: ")
+    assert repos.git(repos.custom, "rev-parse", "HEAD") == head_before  # Check again never commits
+
+    # Open Check Atomic Parts… opens the Phase 9 dialog over this one, on that part
+    panel._open_check_button.click()
+    check = dialog._atomic_dialog
+    assert isinstance(check, AtomicCheckDialog)
+    assert check._focus == (SYM_REL, PART)
+    assert check.parent() is dialog
+    check.reject()
+    qtbot.waitUntil(lambda: dialog._atomic_dialog is None, timeout=10000)
+
+    # the user fixes the file, then Check again: the part passes and the library reads as changed
+    lib_path.write_bytes(installed)
+    panel._check_again_button.click()
+    wait_idle_state(qtbot, dialog, panel, "ready")
+    assert f"⚠ {SYM_REL} (changed since install)" in panel_files(panel)
+    assert repos.git(repos.custom, "rev-parse", "HEAD") == head_before
+
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=60000)
+    committed = repos.git(repos.custom, "show", f"HEAD:Symbols/{LIB}.kicad_sym")
+    assert committed.encode("utf-8").replace(b"\r\n", b"\n") == installed.replace(b"\r\n", b"\n")
+    assert repos.git(repos.custom, "status", "--porcelain").strip() == ""
+    assert remote_refs(repos) == refs
+
+
+def gate_with_two_failures() -> GateResult:
+    rel = "Custom/Symbols/Atomic_A.kicad_sym"
+    rule = Violation("datasheet", "no datasheet")
+    return GateResult(
+        blocking=(
+            AtomicFailure("Atomic_A", rel, "P1", "datasheet", "no datasheet"),
+            AtomicFailure("Atomic_A", rel, "P2", "datasheet", "no datasheet"),
+        ),
+        entries=(
+            ("Atomic_A", rel, SymbolEntry("P1", violations=[rule])),
+            ("Atomic_A", rel, SymbolEntry("P2", violations=[rule])),
+        ),
+    )
+
+
+def gated_fake_probe(cplan, **kwargs):
+    return CommitProbe(
+        state="gated", reason="2 parts break the atomic rule.", branch="main", parent_dir=cplan.repo_root,
+        parent_ok=True, parent_branch="main", gate=gate_with_two_failures(),
+    )
+
+
+def test_open_check_dialog_focuses_first_failure(qtbot, make_install_dialog):
+    dialog = make_install_dialog(probe_commit=gated_fake_probe)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    panel._open_check_button.click()
+    check = dialog._atomic_dialog
+    assert isinstance(check, AtomicCheckDialog)
+    assert check._focus == ("Custom/Symbols/Atomic_A.kicad_sym", "P1")
+    assert check._problems.topLevelItemCount() == 2
+
+    panel._open_check_button.click()  # a second click raises the same dialog
+    assert dialog._atomic_dialog is check
+    assert dialog.findChildren(AtomicCheckDialog) == [check]
+
+    check.reject()
+    qtbot.waitUntil(lambda: dialog._atomic_dialog is None, timeout=10000)
+
+
+def test_close_rejects_open_check_dialog(qtbot, make_install_dialog):
+    dialog = make_install_dialog(probe_commit=gated_fake_probe)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+    panel._open_check_button.click()
+    check = dialog._atomic_dialog
+    assert check is not None and check.isVisible()
+
+    dialog.close()  # the gated probe is cancelled and ends; the close completes by itself
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert not check.isVisible()
+    assert dialog._atomic_dialog is None
+
+
+def test_check_again_in_dialog_never_commits(qtbot, make_install_dialog):
+    rechecks: list[dict] = []
+    commits: list[int] = []
+
+    def recheck(cplan, **kwargs):
+        rechecks.append(kwargs)
+        return cplan, fake_ready_probe()(cplan)
+
+    def count_commit(*args, **kwargs):
+        commits.append(1)
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=gated_fake_probe, recheck_commit=recheck, run_commit=count_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    panel._check_again_button.click()
+    wait_idle_state(qtbot, dialog, panel, "ready")
+    assert len(rechecks) == 1 and callable(rechecks[0]["cancelled"])
+    assert commits == []  # the re-check leaves the commit to its own click
+    assert not dialog.is_committing()
+
+
+def test_fixes_applied_reemitted_and_rechecked(qtbot, make_install_dialog):
+    rechecks: list[dict] = []
+    commits: list[int] = []
+
+    def recheck(cplan, **kwargs):
+        rechecks.append(kwargs)
+        return cplan, fake_ready_probe()(cplan)
+
+    def count_commit(*args, **kwargs):
+        commits.append(1)
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=gated_fake_probe, recheck_commit=recheck, run_commit=count_commit)
+    emitted: list = []
+    dialog.atomic_fixes_applied.connect(lambda issues: emitted.append(issues))
+    logged = watch_logged(dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    panel._open_check_button.click()
+    check = dialog._atomic_dialog
+    assert isinstance(check, AtomicCheckDialog)
+    issue = Issue(Severity.SUCCESS, "atomic.fixed", "Fixed 1 part")
+    check.applied.emit([issue])
+
+    assert emitted == [[issue]]
+    assert issue not in logged  # the main window logs applied fixes, so the dialog does not log them twice
+    wait_idle_state(qtbot, dialog, panel, "ready")
+    assert len(rechecks) == 1
+    assert commits == []  # applying fixes leaves the commit to its own click
+    assert not dialog.is_committing()
+
+    check.reject()
+    qtbot.waitUntil(lambda: dialog._atomic_dialog is None, timeout=10000)
+
+
+def test_check_again_supersedes_running_probe(qtbot, make_install_dialog, gates):
+    calls: list[int] = []
+    rechecks: list[int] = []
+    commits: list[int] = []
+    second_started = threading.Event()
+    seen_cancel: list = []
+
+    def probe(cplan, *, cancelled=None, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            return gated_fake_probe(cplan)
+        seen_cancel.append(cancelled)
+        gate = threading.Event()
+        gates.append(gate)
+        second_started.set()
+        assert gate.wait(30)
+        return fake_ready_probe("feature/old")(cplan)
+
+    def recheck(cplan, **kwargs):
+        rechecks.append(1)
+        return cplan, fake_ready_probe("main")(cplan)
+
+    def count_commit(*args, **kwargs):
+        commits.append(1)
+        return fake_committed()
+
+    dialog = make_install_dialog(probe_commit=probe, recheck_commit=recheck, run_commit=count_commit)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    dialog._start_probe(reprobe=True)  # a probe that waits on its gate
+    qtbot.waitUntil(lambda: second_started.is_set(), timeout=30000)
+    assert dialog.is_probing()
+
+    dialog._on_atomic_fixes_applied([Issue(Severity.SUCCESS, "atomic.fixed", "Fixed 1 part")])
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    assert rechecks == [1]
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert seen_cancel[0]()  # the older probe was told to stop
+
+    gates[0].set()  # the superseded probe finishes last and is dropped
+    finish_workers(qtbot, dialog)
+    assert panel.state() == "ready"
+    assert panel._branch_label.text() == "Custom branch: main"
+    assert dialog._commit_probe.branch == "main"
+    assert not dialog.is_probing()
+    assert commits == []
+
+
+def test_check_again_refused_while_committing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    rechecks: list[int] = []
+
+    def recheck(cplan, **kwargs):
+        rechecks.append(1)
+        return cplan, fake_ready_probe()(cplan)
+
+    dialog = make_install_dialog(
+        probe_commit=fake_ready_probe(), recheck_commit=recheck, run_commit=gated(gates, started, fake_committed)
+    )
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set(), timeout=30000)
+
+    dialog._on_check_again()
+    assert rechecks == []
+    assert dialog.is_committing()
+    assert not dialog.is_probing()
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: panel.state() == "done" and not dialog.is_committing(), timeout=30000)
+    assert rechecks == []
+
+
+def test_kicad_folder_reaches_probe_recheck_and_commit(qtbot, item_layout, recorded, tmp_path):
+    seen: dict[str, Path | None] = {}
+    fp_dir = tmp_path / "kicad_footprints"
+
+    def probe(cplan, *, kicad_fp_dir=None, **kwargs):
+        seen["probe"] = kicad_fp_dir
+        return gated_fake_probe(cplan)
+
+    def recheck(cplan, *, kicad_fp_dir=None, **kwargs):
+        seen["recheck"] = kicad_fp_dir
+        return cplan, fake_ready_probe()(cplan)
+
+    def commit(cplan, message, bump, *, kicad_fp_dir=None, **kwargs):
+        seen["commit"] = kicad_fp_dir
+        return fake_committed()
+
+    core = replace(
+        ImportCore(),
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        downloads_dir=lambda: None,
+        build_plan=recording_build(recorded),
+        suggest_library=_good_suggestion,
+        kicad_running=lambda: [],
+        probe_commit=probe,
+        recheck_commit=recheck,
+        run_commit=commit,
+    )
+    dialog = ImportDialog(
+        item_layout.repo_root, item_layout, core=core, kicad_fp_dir=fp_dir, backup_root=tmp_path / "backups"
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.open_path(UL_ZIP)
+    wait_current(qtbot, dialog)
+    fill_description(qtbot, dialog)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    wait_idle_state(qtbot, dialog, panel, "gated")
+
+    panel._check_again_button.click()
+    wait_idle_state(qtbot, dialog, panel, "ready")
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: panel.state() == "done", timeout=30000)
+    assert seen == {"probe": fp_dir, "recheck": fp_dir, "commit": fp_dir}
+
+
+# -- Phase 12 plan 12-05: Finishing instead of a GUI-thread wait (D-06, D-07, REV-03, REV-04) --------------------
+
+from PySide6.QtCore import QTimer  # noqa: E402
+from PySide6.QtGui import QGuiApplication  # noqa: E402
+
+from kicad_lib_manager.widgets.import_dialog import FINISHING_TEXT, SLOW_CLI_TEXT, TaskWorker  # noqa: E402
+
+
+def finishing_dialog(qtbot, make_dialog, gates, events: list, builds: list | None = None) -> ImportDialog:
+    """A shown, planned dialog whose second build_plan call is gated, and whose package records its close.
+
+    The gate is registered once that build runs: after dialog._request_rebuild() and qtbot.waitUntil on
+    len(gates) == 1 the build is held open. builds (when given) gets one entry per build_plan call.
+    """
+    count = {"n": 0}
+
+    def open_recording(path, repo_root, progress=None):
+        package = real_open_package(path, repo_root, progress)
+        original = package.close
+
+        def close():
+            events.append("close")
+            original()
+
+        package.close = close
+        return package
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if builds is not None:
+            builds.append(options)
+        if count["n"] == 2:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+            events.append("build_end")
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(open_package=open_recording, build_plan=gated_build), show=True)
+    wait_plan(qtbot, dialog)
+    return dialog
+
+
+def hold_a_build(qtbot, dialog: ImportDialog, gates) -> None:
+    """Start the gated rebuild and wait until it is held open."""
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+
+
+def wait_on_start_page(qtbot, dialog: ImportDialog) -> None:
+    qtbot.waitUntil(
+        lambda: dialog._stack.currentWidget() is dialog._start_page and not dialog.is_finishing(), timeout=30000
+    )
+
+
+def test_change_waits_for_build_without_blocking(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    assert QGuiApplication.overrideCursor() is None
+
+    dialog._on_change()  # returns at once: the build is still gated
+    assert not gates[0].is_set()
+    assert dialog.is_finishing()
+    assert dialog._finish_strip.isVisible()
+    assert dialog._finish_label.text() == FINISHING_TEXT
+    assert not dialog._stack.isEnabled()
+    assert QGuiApplication.overrideCursor() is not None
+    assert events == []
+
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+    assert events == ["build_end", "close"]
+    assert QGuiApplication.overrideCursor() is None
+    assert dialog._stack.isEnabled()
+    assert not dialog._finish_strip.isVisible()
+
+
+def test_change_never_waits_unbounded(qtbot, make_dialog, gates, monkeypatch):
+    waits: list[tuple] = []
+    original = TaskWorker.wait
+
+    def recording_wait(self, *args):
+        waits.append(args)
+        return original(self, *args)
+
+    monkeypatch.setattr(TaskWorker, "wait", recording_wait)
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+    seen = list(waits)
+    assert seen  # the reaper joined at least the finished builds
+    assert all(len(args) == 1 and args[0] <= 2000 for args in seen)
+
+
+def test_open_during_build_opens_after_it_ends(qtbot, make_dialog, gates, tmp_path):
+    import shutil
+
+    second = tmp_path / "second.zip"
+    shutil.copy(UL_ZIP, second)
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    hold_a_build(qtbot, dialog, gates)
+
+    dialog.open_path(second)  # returns at once: the build is still gated
+    assert not gates[0].is_set()
+    assert dialog.is_finishing()
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert events == []
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog._package_label.text() == "Package: second.zip", timeout=30000)
+    assert not dialog.is_finishing()
+    assert events[:2] == ["build_end", "close"]  # the first package closed only after the build ended
+
+
+def test_finishing_cancel_restores_the_dialog(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    assert dialog.is_finishing()
+
+    dialog._finish_cancel.click()
+    assert not dialog.is_finishing()
+    assert not dialog._finish_strip.isVisible()
+    assert dialog._stack.isEnabled()
+    assert QGuiApplication.overrideCursor() is None
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog._building is None, timeout=30000)
+    qtbot.wait(150)  # the dropped Change must not run when the build ends
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert events == ["build_end"]
+
+
+def test_finishing_shows_slow_note(qtbot, make_dialog, gates, monkeypatch):
+    monkeypatch.setattr(import_dialog_module, "_SLOW_NOTE_MS", 20)
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    assert not dialog._finish_slow.isVisible()
+    qtbot.waitUntil(dialog._finish_slow.isVisible, timeout=5000)
+    assert dialog._finish_slow.text() == SLOW_CLI_TEXT
+
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+    assert not dialog._finish_slow.isVisible()
+
+
+def test_finishing_keeps_the_event_loop_running(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    fired: list[int] = []
+    QTimer.singleShot(10, lambda: fired.append(1))
+    qtbot.waitUntil(lambda: bool(fired), timeout=5000)
+    assert not gates[0].is_set()  # the timer ran while the build was still held
+    assert dialog.is_finishing()
+
+    gates[0].set()
+    wait_on_start_page(qtbot, dialog)
+
+
+def test_no_build_starts_while_finishing(qtbot, make_dialog, gates):
+    events: list[str] = []
+    builds: list = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events, builds)
+    hold_a_build(qtbot, dialog, gates)
+    held = len(builds)
+    dialog._on_change()
+
+    dialog._request_rebuild()
+    qtbot.wait(150)
+    assert len(builds) == held  # nothing started while Finishing
+    assert dialog._queued is not None
+
+    dialog._finish_cancel.click()
+    gates[0].set()
+    qtbot.waitUntil(lambda: len(builds) == held + 1, timeout=30000)  # the queued rebuild runs after Cancel
+    wait_plan(qtbot, dialog)
+
+
+# -- REV-03: a conflict view's one-off build and Install never overlap (D-08) ------------------------------
+
+
+def counting_oneoff_build(gates, calls: dict, gate_oneoff: bool = False):
+    """A build_plan fake that counts its calls; with gate_oneoff, the Overwrite one-off for the footprint is held."""
+
+    def build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        calls["n"] += 1
+        if gate_oneoff and options.resolutions.get(FP_KEY) == Resolution("overwrite"):
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    return build
+
+
+def skip_clash_dialog(qtbot, make_install_dialog, item_layout, **changes) -> ImportDialog:
+    """A planned dialog whose footprint clash is set to Skip, so Install is enabled."""
+    write_clashes(item_layout, model=False)
+    dialog = make_install_dialog(**changes)
+    dialog._conflict_rows[FP_KEY]._skip_btn.click()
+    wait_current(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)
+    return dialog
+
+
+def gated_failing_apply(gates, started):
+    failing = failing_apply(Issue(Severity.ERROR, "install.test", "The install broke"))
+
+    def apply(plan, *, backup_root=None, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return failing(plan, backup_root=backup_root, progress=progress)
+
+    return apply
+
+
+def test_install_disabled_while_oneoff_runs(qtbot, make_install_dialog, item_layout, gates):
+    calls = {"n": 0}
+    dialog = skip_clash_dialog(
+        qtbot, make_install_dialog, item_layout, build_plan=counting_oneoff_build(gates, calls, gate_oneoff=True)
+    )
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog._install_btn.isEnabled()
+    assert dialog._updating_label.isVisible()
+
+    gates[0].set()
+    wait_view(qtbot, dialog)
+    qtbot.waitUntil(lambda: dialog._install_btn.isEnabled(), timeout=30000)  # back by itself, no other action
+    assert not dialog._updating_label.isVisible()
+
+
+def test_oneoff_held_during_install_runs_after_failure(qtbot, make_install_dialog, item_layout, gates):
+    calls = {"n": 0}
+    started = threading.Event()
+    dialog = skip_clash_dialog(
+        qtbot,
+        make_install_dialog,
+        item_layout,
+        build_plan=counting_oneoff_build(gates, calls),
+        apply_plan=gated_failing_apply(gates, started),
+    )
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    before = calls["n"]
+
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    qtbot.wait(150)
+    assert calls["n"] == before  # held: no build reads the files while the install writes them
+    assert len(dialog._oneoff_jobs) == 1
+
+    gates[-1].set()  # the install fails
+    view = wait_view(qtbot, dialog)
+    assert view.windowTitle() == f"{FP_PATH} - existing vs incoming"
+    assert calls["n"] > before
+
+
+def test_oneoff_held_during_install_dropped_after_success(qtbot, make_install_dialog, item_layout, gates):
+    calls = {"n": 0}
+    started = threading.Event()
+    dialog = skip_clash_dialog(
+        qtbot,
+        make_install_dialog,
+        item_layout,
+        build_plan=counting_oneoff_build(gates, calls),
+        apply_plan=blocking_apply(gates, started=started),
+    )
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    before = calls["n"]
+
+    dialog._conflict_rows[FP_KEY].activated.emit(FP_KEY)
+    dialog._request_rebuild()  # a rebuild asked for during the install is held too
+    qtbot.wait(150)
+    assert calls["n"] == before
+    assert len(dialog._oneoff_jobs) == 1 and dialog._queued is not None
+
+    gates[-1].set()  # the install succeeds
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    finish_workers(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._result_page
+    assert calls["n"] == before  # neither the one-off nor the rebuild ran
+    assert dialog._oneoff_jobs == []
+    assert dialog._queued is None
+    assert not open_views(dialog)
+
+
+# -- Phase 12 plan 12-07: closing through Finishing (D-06, D-07, REV-04) ---------------------------------------
+
+
+def test_escape_does_nothing_while_finishing(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog.reject()
+    assert dialog.is_finishing()
+
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    assert dialog.is_finishing()
+    assert dialog.isVisible()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert events == ["build_end", "close"]
+
+
+def test_x_upgrades_pending_change_to_close(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    hold_a_build(qtbot, dialog, gates)
+    dialog._on_change()
+    assert dialog._pending_kind == "change"
+
+    dialog.close()  # the window X: the close wins over the pending Change...
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+    assert dialog._pending_kind == "close"
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert dialog._stack.currentWidget() is dialog._edit_page  # the Change never ran
+    assert events == ["build_end", "close"]
+
+
+def test_cancel_close_keeps_dialog_open(qtbot, make_dialog, gates):
+    events: list[str] = []
+    dialog = finishing_dialog(qtbot, make_dialog, gates, events)
+    cancelled: list[int] = []
+    dialog.leave_cancelled.connect(lambda: cancelled.append(1))
+    hold_a_build(qtbot, dialog, gates)
+    dialog.reject()
+    assert dialog.is_finishing()
+
+    dialog._finish_cancel.click()
+    assert cancelled == [1]
+    assert not dialog.is_finishing()
+    assert dialog.isVisible()
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._package_label.text() == "Package: ul_CSD85301Q2.zip"
+    assert dialog._stack.isEnabled()
+    assert QGuiApplication.overrideCursor() is None
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog._building is None, timeout=30000)
+    qtbot.wait(150)  # the dropped close must not run when the build ends
+    assert dialog.isVisible()
+    assert events == ["build_end"]
+
+
+def test_close_while_kicad_check_runs(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+
+    def running():
+        gate = threading.Event()
+        gates.append(gate)
+        started.set()
+        assert gate.wait(30)
+        return ["eeschema"]
+
+    dialog = make_install_dialog(kicad_running=running)
+    logged = []
+    dialog.issues_logged.connect(logged.extend)
+    install_ul(qtbot, dialog)
+    qtbot.waitUntil(started.is_set, timeout=30000)
+
+    dialog.close()  # returns at once: the KiCad check is still held
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert not dialog._result_view._kicad_notice.isVisible()
+    assert [i for i in logged if i.code == "import.kicad_running"] == []
+
+
+def test_cancelled_close_reprobes(qtbot, make_install_dialog):
+    calls: list[int] = []
+    started = threading.Event()
+
+    def probe(cplan, *, cancelled=None, **kwargs):
+        calls.append(1)
+        if len(calls) == 1:
+            started.set()
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline and not (cancelled is not None and cancelled()):
+                time.sleep(0.01)
+            return CommitProbe(state="unavailable", reason="cancelled")
+        return fake_ready_probe()(cplan)
+
+    dialog = make_install_dialog(probe_commit=probe)
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(started.is_set, timeout=30000)
+
+    dialog.close()
+    assert dialog.is_finishing()
+    dialog._finish_cancel.click()
+    assert dialog.isVisible()
+
+    qtbot.waitUntil(lambda: len(calls) == 2, timeout=30000)
+    qtbot.waitUntil(lambda: panel.state() == "ready" and not dialog.is_probing(), timeout=30000)
+    assert dialog.isVisible()
+
+
+# -- Toolbar Help (plan 12-12, G-12-9) ---------------------------------------------------------------
+
+from PySide6.QtGui import QKeySequence, QShortcut  # noqa: E402
+from PySide6.QtWidgets import QToolBar  # noqa: E402
+
+from kicad_lib_manager.widgets.help_dialog import HelpDialog  # noqa: E402
+
+HELP_TIP = "Open the User Guide on the Importing Parts page (F1). This window stays open."
+
+
+def help_key(help_window: HelpDialog) -> str:
+    return help_window._toc.currentItem().data(0, Qt.ItemDataRole.UserRole)
+
+
+@pytest.fixture(autouse=True)
+def _close_guides():
+    """The guide is parentless now, so it outlives its import window: close and release every one after each test."""
+    yield
+    for widget in QApplication.topLevelWidgets():
+        if isinstance(widget, HelpDialog):
+            widget.close()
+            widget.deleteLater()
+
+
+def test_import_window_with_a_guide_hook_creates_no_guide(qtbot, atomic_custom, tmp_path):
+    calls: list[str] = []
+    dialog = ImportDialog(
+        atomic_custom.repo_root,
+        atomic_custom,
+        core=core_with(),
+        backup_root=tmp_path / "backups",
+        show_guide=calls.append,
+    )
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog._help_action.trigger()
+    assert calls == ["importing"]
+
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    qtbot.keyClick(dialog, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: len(calls) == 2, timeout=5000)
+    assert calls == ["importing", "importing"]
+    assert dialog._help_dialog is None
+    assert not [w for w in QApplication.topLevelWidgets() if isinstance(w, HelpDialog)]
+    assert dialog.isVisible()
+
+
+def test_toolbar_help_opens_importing_page(qtbot, make_dialog):
+    dialog = make_dialog(open_now=False, show=True)
+    toolbar = dialog._toolbar
+    assert isinstance(toolbar, QToolBar)
+    layout = dialog.layout()
+    assert layout.itemAt(0).widget() is toolbar
+    assert layout.indexOf(toolbar) < layout.indexOf(dialog._stack)
+    assert not dialog._stack.isAncestorOf(toolbar)
+    assert toolbar.isVisible() and not toolbar.isMovable() and toolbar.styleSheet() == ""
+    assert toolbar.actions() == [dialog._help_action]
+    action = dialog._help_action
+    assert action.text() == import_dialog_module.HELP_ACTION_TEXT == "Help"
+    assert action.toolTip() == HELP_TIP
+    assert action.shortcut() == QKeySequence("F1")
+    assert dialog._stack.currentWidget() is dialog._start_page
+
+    action.trigger()
+    first = dialog._help_dialog
+    assert isinstance(first, HelpDialog) and first.isVisible()
+    assert first.parent() is None
+    assert help_key(first) == "importing"
+    assert "Importing Parts" in first._browser.toPlainText()
+    assert dialog.isVisible() and dialog._stack.currentWidget() is dialog._start_page
+    assert first not in dialog.findChildren(HelpDialog)
+
+    first.close()
+    assert not first.isVisible()
+    action.trigger()
+    assert dialog._help_dialog is first and first.isVisible()
+    assert first not in dialog.findChildren(HelpDialog)
+    assert dialog.isVisible()
+
+
+def test_import_help_keeps_opening_importing_parts_with_a_saved_place(qtbot, make_dialog):
+    settings.save_help_topic("filter")
+    dialog = make_dialog(open_now=False, show=True)
+    dialog._help_action.trigger()
+    guide = dialog._help_dialog
+    assert isinstance(guide, HelpDialog) and guide.isVisible()
+    assert help_key(guide) == "importing"
+    assert settings.load_help_topic() == "filter"  # showing Importing Parts is not the owner's move
+
+    # the owner moves the guide by a menu click; F1 in the import window brings it back to Importing Parts
+    item = help_shortcuts_item(guide)
+    guide._toc.scrollToItem(item)
+    QTest.mouseClick(
+        guide._toc.viewport(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier,
+        guide._toc.visualItemRect(item).center(),
+    )
+    qtbot.waitUntil(lambda: help_key(guide) == "shortcuts", timeout=5000)
+    assert settings.load_help_topic() == "shortcuts"
+
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    qtbot.keyClick(dialog, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: help_key(guide) == "importing", timeout=5000)
+    assert dialog._help_dialog is guide
+    assert settings.load_help_topic() == "shortcuts"
+
+
+def test_f1_opens_help_from_the_start_page(qtbot, make_dialog):
+    dialog = make_dialog(open_now=False, show=True)
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    qtbot.keyClick(dialog, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: dialog._help_dialog is not None and dialog._help_dialog.isVisible(), timeout=5000)
+    assert help_key(dialog._help_dialog) == "importing"
+    assert dialog.isVisible()
+    keys = [s.key() for s in dialog.findChildren(QShortcut)]
+    assert QKeySequence("F1") not in keys  # the Help action owns F1: a second binding makes both ambiguous
+    assert QKeySequence("Ctrl+Return") in keys
+
+
+def test_help_reachable_on_edit_and_result_pages(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    assert dialog._stack.currentWidget() is dialog._edit_page
+    assert dialog._toolbar.isVisible()
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    edit = dialog._field_edits["description"]
+    edit.setFocus()
+    text = edit.text()
+    qtbot.keyClick(edit, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: dialog._help_dialog is not None and dialog._help_dialog.isVisible(), timeout=5000)
+    help_window = dialog._help_dialog
+    assert help_key(help_window) == "importing"
+    assert dialog.isVisible() and dialog._stack.currentWidget() is dialog._edit_page
+    assert edit.text() == text
+    help_window.close()
+
+    install_ul(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._result_page
+    assert dialog._toolbar.isVisible()
+    help_window.show_topic("shortcuts")
+    dialog._help_action.trigger()
+    assert dialog._help_dialog is help_window and help_window.isVisible()
+    assert help_key(help_window) == "importing"
+    assert dialog.isVisible() and dialog._stack.currentWidget() is dialog._result_page
+    assert help_window not in dialog.findChildren(HelpDialog)
+
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    dialog._result_view.close_button.click()
+    assert not dialog.isVisible()
+    assert help_window.isVisible()  # the guide outlives this window
+
+
+def test_help_works_while_installing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(apply_plan=blocking_apply(gates, started=started))
+    dialog._install_btn.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_installing(), timeout=30000)
+    assert dialog._help_action.isEnabled() and dialog._toolbar.isEnabled()
+
+    dialog._help_action.trigger()
+    help_window = dialog._help_dialog
+    assert help_window is not None and help_window.isVisible()
+    assert help_key(help_window) == "importing"
+    assert dialog.is_installing() and dialog.isVisible()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: dialog.result is not None, timeout=60000)
+    qtbot.waitUntil(lambda: not dialog.is_installing(), timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    dialog.activateWindow()
+    qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+    QTest.keyClick(dialog, Qt.Key.Key_Escape)
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert help_window.isVisible()
+
+
+def test_help_works_while_committing(qtbot, make_install_dialog, gates):
+    started = threading.Event()
+    dialog = make_install_dialog(
+        probe_commit=fake_ready_probe(), run_commit=gated(gates, started, fake_committed)
+    )
+    install_ul(qtbot, dialog)
+    (panel,) = commit_panel_of(dialog)
+    qtbot.waitUntil(lambda: panel.state() == "ready", timeout=30000)
+    qtbot.waitUntil(lambda: not dialog.is_probing(), timeout=30000)
+    panel.commit_button.click()
+    qtbot.waitUntil(lambda: started.is_set() and dialog.is_committing(), timeout=30000)
+    assert dialog._help_action.isEnabled()
+
+    dialog._help_action.trigger()
+    help_window = dialog._help_dialog
+    assert help_window is not None and help_window.isVisible()
+    assert help_key(help_window) == "importing"
+    assert dialog.is_committing() and dialog.isVisible()
+    assert dialog._stack.currentWidget() is dialog._result_page
+    assert not dialog._result_view.close_button.isEnabled()  # Help changed no commit state
+
+    gates[-1].set()
+    qtbot.waitUntil(lambda: not dialog.is_committing(), timeout=30000)
+    dialog.close()
+    assert not dialog.isVisible()
+    assert help_window.isVisible()
+
+
+def test_help_works_while_finishing_and_outlives_the_dialog(qtbot, make_dialog, gates):
+    count = {"n": 0}
+
+    def gated_build(candidate, options, layout, tools=ToolContext(), **kwargs):
+        count["n"] += 1
+        if count["n"] == 2:
+            gate = threading.Event()
+            gates.append(gate)
+            assert gate.wait(30)
+        return real_build_plan(candidate, options, layout, tools, **kwargs)
+
+    dialog = make_dialog(core_with(build_plan=gated_build), show=True)
+    wait_plan(qtbot, dialog)
+    dialog._request_rebuild()
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog.is_finishing()
+    assert dialog._help_action.isEnabled()
+
+    dialog._help_action.trigger()  # the preview rebuilds
+    help_window = dialog._help_dialog
+    assert help_window is not None and help_window.isVisible()
+    assert help_key(help_window) == "importing"
+    help_window.close()
+
+    dialog.reject()
+    assert dialog.is_finishing() and not dialog._stack.isEnabled()
+    assert dialog._help_action.isEnabled()
+    dialog._help_action.trigger()  # Finishing
+    assert dialog._help_dialog is help_window and help_window.isVisible()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert help_window.isVisible()
+    assert QGuiApplication.overrideCursor() is None
+
+
+def help_shortcuts_item(help_window: HelpDialog):
+    stack = [help_window._toc.topLevelItem(i) for i in range(help_window._toc.topLevelItemCount())]
+    while stack:
+        item = stack.pop()
+        if item.data(0, Qt.ItemDataRole.UserRole) == "shortcuts":
+            return item
+        stack.extend(item.child(i) for i in range(item.childCount()))
+    raise AssertionError("no Keyboard Shortcuts topic")
+
+
+def test_import_window_takes_input_while_help_is_open(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    dialog._help_action.trigger()
+    qtbot.waitUntil(lambda: dialog._help_dialog is not None and dialog._help_dialog.isVisible(), timeout=5000)
+    help_window = dialog._help_dialog
+    assert not help_window.isModal()
+    assert help_window.windowModality() == Qt.WindowModality.NonModal
+    assert QApplication.activeModalWidget() is not help_window
+
+    # Clicks go through the window system (the QWindow overload), which drops a click aimed at a blocked window
+    item = help_shortcuts_item(help_window)
+    toc = help_window._toc
+    toc.scrollToItem(item)  # Importing Parts' sections are open above it, so the row may sit below the visible menu
+    point = toc.viewport().mapTo(help_window, toc.visualItemRect(item).center())
+    QTest.mouseClick(help_window.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    qtbot.waitUntil(lambda: help_key(help_window) == "shortcuts", timeout=5000)
+
+    cancel = dialog._cancel_btn
+    point = cancel.mapTo(dialog, cancel.rect().center())
+    QTest.mouseClick(dialog.windowHandle(), Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, point)
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert help_window.isVisible()
+    assert dialog._help_dialog is help_window
+
+
+# -- Start page Cancel and the window fitting its screen (plan 12-13, G-12-10) ------------------
+
+
+def test_start_page_cancel_closes_without_writing(qtbot, make_start_dialog, start_layout):
+    dialog = make_start_dialog()
+    cancel = dialog._start_cancel_btn
+    assert cancel.text() == "Cancel"
+    assert cancel.toolTip() == "Close without importing. Nothing is written."
+    assert cancel.isVisible()
+    assert not cancel.isDefault() and not cancel.autoDefault()
+    row = dialog._start_buttons
+    assert row.indexOf(cancel) == row.count() - 1
+    assert row.itemAt(row.count() - 2).spacerItem() is not None  # a stretch before it, so Cancel sits at the right
+
+    before = custom_snapshot(start_layout)
+    cancel.click()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert dialog.result is None
+    assert custom_snapshot(start_layout) == before
+
+
+def test_start_page_cancel_shares_the_browse_row(qtbot, make_start_dialog):
+    dialog = make_start_dialog()
+    row = dialog._start_buttons
+    assert row.count() == 4
+    assert row.itemAt(0).widget() is dialog._browse_btn
+    assert row.itemAt(1).widget() is dialog._browse_folder_btn
+    assert row.itemAt(2).spacerItem() is not None
+    assert row.itemAt(3).widget() is dialog._start_cancel_btn
+    browse_top = dialog._browse_btn.mapTo(dialog, QPoint(0, 0)).y()
+    cancel_top = dialog._start_cancel_btn.mapTo(dialog, QPoint(0, 0)).y()
+    assert cancel_top == browse_top
+    assert not hasattr(dialog, "_start_bottom")  # the separate bottom row is gone
+
+
+def test_start_page_cancel_while_reading_waits_then_closes(qtbot, make_start_dialog, gates):
+    def open_gated(path, repo_root, progress=None):
+        gate = threading.Event()
+        gates.append(gate)
+        assert gate.wait(30)
+        return fake_package(path)
+
+    dialog = make_start_dialog(open_package=open_gated, detect_candidate=lambda package: (None, []))
+    dialog.open_path(Path("held.zip"))
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog._browse_btn.isEnabled()
+    assert dialog._start_cancel_btn.isEnabled()
+
+    dialog._start_cancel_btn.click()  # returns at once: the open is still held, exactly as the window's X does
+    assert dialog.isVisible()
+    assert dialog.is_finishing()
+
+    gates[0].set()
+    qtbot.waitUntil(lambda: not dialog.isVisible(), timeout=30000)
+    assert QGuiApplication.overrideCursor() is None
+
+
+from PySide6.QtCore import QRect  # noqa: E402
+from PySide6.QtWidgets import QSplitter  # noqa: E402
+
+# The real function, captured before any test patches the module's screen_area
+real_screen_area = import_dialog_module.screen_area
+
+# Free areas in logical pixels, taskbar left out
+DESKTOP_100 = QRect(0, 0, 1920, 1032)  # Full HD at 100%, 48 px taskbar
+DESKTOP_200 = QRect(0, 0, 960, 492)  # Full HD at 200%
+OWNER_SCREEN = QRect(0, 0, 1280, 672)  # a 2560x1440 screen at 200%
+AREAS = [
+    pytest.param(DESKTOP_100, id="full_hd_100"),
+    pytest.param(DESKTOP_200, id="full_hd_200"),
+    pytest.param(OWNER_SCREEN, id="owner_screen"),
+]
+
+
+def use_screen(monkeypatch, area: QRect) -> None:
+    monkeypatch.setattr(import_dialog_module, "screen_area", lambda widget: area)
+
+
+def inside_window(dialog: ImportDialog, widget: QWidget) -> bool:
+    """Whether the widget lies fully inside the dialog's client area."""
+    return dialog.rect().contains(QRect(widget.mapTo(dialog, QPoint(0, 0)), widget.size()))
+
+
+def resize_and_wait(qtbot, dialog: ImportDialog, width: int, height: int) -> None:
+    dialog.resize(width, height)
+    qtbot.waitUntil(lambda: dialog.size() == QSize(width, height), timeout=5000)
+
+
+def test_fit_size_and_place_inside():
+    fit, place = import_dialog_module._fit_size, import_dialog_module._place_inside
+    wanted, minimum, frame = QSize(1100, 720), QSize(854, 268), QSize(16, 40)
+    assert fit(wanted, minimum, frame, DESKTOP_100.size()) == QSize(1100, 720)
+    assert fit(wanted, minimum, frame, DESKTOP_200.size()) == QSize(944, 452)
+    assert fit(wanted, minimum, frame, OWNER_SCREEN.size()) == QSize(1100, 632)
+    assert fit(wanted, minimum, frame, QSize(800, 400)) == QSize(854, 360)  # the minimum wins in width
+    assert place(QRect(1500, 900, 1116, 760), DESKTOP_100) == QPoint(804, 272)
+    assert place(QRect(-50, -20, 600, 400), DESKTOP_100) == QPoint(0, 0)
+    assert place(QRect(100, 100, 1000, 600), DESKTOP_200) == QPoint(0, 0)  # larger than the area: top-left edge
+    assert place(QRect(100, 100, 656, 480), QRect(1920, 0, 1920, 1032)) == QPoint(1920, 100)  # second monitor
+
+
+@pytest.mark.parametrize("area", AREAS)
+def test_window_fits_the_screen(qtbot, make_install_dialog, monkeypatch, area):
+    use_screen(monkeypatch, area)
+    dialog = make_install_dialog()
+    assert area.contains(dialog.frameGeometry())
+    for button in (dialog._install_btn, dialog._cancel_btn):
+        assert button.isVisible()
+        assert inside_window(dialog, button)
+    sizes = dialog._edit_page.findChild(QSplitter).sizes()
+    assert sizes[0] >= 380 and sizes[1] >= 400
+    if area == DESKTOP_100:
+        assert dialog.size() == QSize(1100, 720)
+        assert abs(sizes[0] / sum(sizes) - 0.40) <= 0.03
+    if area == DESKTOP_200:
+        assert dialog.width() <= 944 and dialog.height() <= 452
+
+
+def test_window_fits_the_screen_on_first_show(qtbot, make_start_dialog, monkeypatch):
+    use_screen(monkeypatch, DESKTOP_200)
+    dialog = make_start_dialog()
+    assert DESKTOP_200.contains(dialog.frameGeometry())
+
+
+def test_screen_area_reads_the_widget_screen(qtbot, make_start_dialog):
+    dialog = make_start_dialog()
+    assert real_screen_area(dialog) == dialog.screen().availableGeometry()
+
+
+@pytest.mark.parametrize("area", [DESKTOP_100, DESKTOP_200], ids=["full_hd_100", "full_hd_200"])
+def test_start_page_is_as_tall_as_its_content(qtbot, make_start_dialog, monkeypatch, area):
+    use_screen(monkeypatch, area)
+    dialog = make_start_dialog()
+    assert dialog.size() == dialog._start_size()
+    assert dialog.width() == 640
+    layout = dialog.layout()
+    assert dialog.height() == max(layout.totalHeightForWidth(640), dialog.minimumSizeHint().height())
+    cancel = dialog._start_cancel_btn
+    bottom = cancel.mapTo(dialog, QPoint(0, cancel.height())).y()
+    assert dialog.height() - bottom <= 24  # the 16 px window margin plus slack: no empty band below the row
+    assert area.contains(dialog.frameGeometry())
+    assert inside_window(dialog, cancel)
+
+
+def test_start_page_keeps_its_height_when_the_offer_arrives(qtbot, make_start_dialog, downloads, gates):
+    _zip_at(downloads, "part.zip", 30)
+
+    def gated_downloads():
+        gate = threading.Event()
+        gates.append(gate)
+        assert gate.wait(30)
+        return downloads
+
+    dialog = make_start_dialog(downloads_dir=gated_downloads)
+    qtbot.waitUntil(lambda: len(gates) == 1, timeout=30000)
+    assert not dialog._offer_row.isVisible()
+    size = dialog.size()
+    slot = dialog._offer_slot.sizeHint().height()
+
+    gates[0].set()
+    wait_offer(qtbot, dialog)
+    assert dialog.size() == size
+    assert dialog._offer_slot.sizeHint().height() == slot
+    assert dialog.size() == dialog._start_size()
+
+    dialog._set_reading(True)
+    assert dialog._reading_box.isVisible() and not dialog._offer_row.isVisible()
+    assert dialog._offer_slot.sizeHint().height() == slot
+    dialog._set_reading(False)
+    assert dialog._offer_row.isVisible() and not dialog._reading_box.isVisible()
+    assert dialog._offer_slot.sizeHint().height() == slot
+    assert dialog.size() == size
+
+
+def test_start_issues_refit_the_window(qtbot, make_start_dialog, monkeypatch):
+    use_screen(monkeypatch, DESKTOP_200)
+    issues = [Issue(Severity.WARNING, f"intake.test_{n}", f"Skipped unreadable file number {n}") for n in range(20)]
+    dialog = make_start_dialog(**nothing_found_core(issues))
+    compact = dialog.size()
+    assert compact == dialog._start_size()
+
+    dialog.open_path(Path("some_package.zip"))
+    wait_issue_box(qtbot, dialog)
+    assert dialog._issue_list.count() == 20
+    assert dialog.height() > compact.height()
+    # the start size computed with the issue box shown, cut to the screen but never below the layout minimum
+    frame = dialog.frameGeometry().size() - dialog.size()
+    wanted = import_dialog_module._fit_size(
+        dialog._start_size(), dialog.minimumSizeHint(), frame.expandedTo(QSize(16, 40)), DESKTOP_200.size()
+    )
+    assert dialog.size() == wanted
+    assert DESKTOP_200.contains(dialog.frameGeometry())
+
+    dialog._hide_issue_box()
+    assert dialog.size() == compact
+    assert dialog.size() == dialog._start_size()
+
+
+@pytest.mark.parametrize("area", [DESKTOP_100, DESKTOP_200], ids=["full_hd_100", "full_hd_200"])
+def test_start_page_opens_small(qtbot, make_start_dialog, monkeypatch, area):
+    use_screen(monkeypatch, area)
+    dialog = make_start_dialog()
+    assert dialog.size() == dialog._start_size()
+    assert dialog.height() < 440  # as tall as its content, not the old fixed 440
+    assert dialog.minimumSizeHint().width() < 640  # the edit page's minimum no longer counts
+    assert area.contains(dialog.frameGeometry())
+    assert dialog._start_cancel_btn.isVisible()
+    assert inside_window(dialog, dialog._start_cancel_btn)
+
+
+def test_window_grows_for_the_edit_page_and_shrinks_back(qtbot, make_dialog, monkeypatch):
+    dialog = make_dialog(show=True)
+    wait_plan(qtbot, dialog)
+    assert dialog.size() == QSize(1100, 720)
+    assert dialog.minimumSizeHint().width() >= 780
+    sizes = dialog._edit_page.findChild(QSplitter).sizes()
+    assert abs(sizes[0] / sum(sizes) - 0.40) <= 0.03
+    assert dialog._cancel_btn.isVisible() and dialog._cancel_btn.isEnabled()
+
+    resize_and_wait(qtbot, dialog, 1200, 760)
+    dialog._change_btn.click()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._start_page, timeout=30000)
+    assert dialog.size() == dialog._start_size()
+    assert dialog._start_cancel_btn.isVisible()
+
+    dialog.open_path(UL_ZIP)
+    wait_plan(qtbot, dialog)
+    assert dialog.size() == QSize(1200, 760)  # the size the user gave this window
+
+    use_screen(monkeypatch, DESKTOP_200)
+    dialog._change_btn.click()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._start_page, timeout=30000)
+    dialog.open_path(UL_ZIP)
+    wait_plan(qtbot, dialog)
+    assert dialog.size() == QSize(944, 452)  # the remembered size is still bounded by the screen
+    assert DESKTOP_200.contains(dialog.frameGeometry())
+
+
+def test_result_page_keeps_the_size_and_has_close(qtbot, make_install_dialog):
+    dialog = make_install_dialog()
+    before = dialog.size()
+    install_ul(qtbot, dialog)
+    assert dialog._stack.currentWidget() is dialog._result_view
+    assert dialog.size() == before
+    assert dialog._result_view.close_button.isVisible()
+    assert dialog._result_view.close_button.isEnabled()
+
+
+# -- The User Guide window fits the screen too (plan 12-14, G-12-11) ----------------------------------
+
+from PySide6.QtWidgets import QDialogButtonBox  # noqa: E402
+
+
+@pytest.mark.parametrize("opener", ["toolbar", "f1"])
+@pytest.mark.parametrize("area", [DESKTOP_100, DESKTOP_200], ids=["full_hd_100", "full_hd_200"])
+def test_help_window_fits_the_screen(qtbot, make_dialog, monkeypatch, area, opener):
+    use_screen(monkeypatch, area)
+    dialog = make_dialog(open_now=False, show=True)
+    if opener == "toolbar":
+        dialog._help_action.trigger()
+    else:
+        dialog.activateWindow()
+        qtbot.waitUntil(dialog.isActiveWindow, timeout=5000)
+        qtbot.keyClick(dialog, Qt.Key.Key_F1)
+    qtbot.waitUntil(lambda: dialog._help_dialog is not None and dialog._help_dialog.isVisible(), timeout=5000)
+    help_window = dialog._help_dialog
+    assert help_key(help_window) == "importing"
+    assert area.contains(help_window.frameGeometry())
+    close = help_window.findChild(QDialogButtonBox).button(QDialogButtonBox.StandardButton.Close)
+    assert close.isVisible()
+    assert inside_window(help_window, close)
+    if area == DESKTOP_100:
+        assert help_window.size() == QSize(860, 620)
+    if area == DESKTOP_200:
+        assert help_window.width() <= 944 and help_window.height() <= 452

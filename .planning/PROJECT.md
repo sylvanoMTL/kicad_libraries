@@ -1,0 +1,189 @@
+# KiCad Part Importer
+
+## What This Is
+
+A part importer added to the existing PySide6 KiCad Library Manager (`kicad_lib_manager`). The user browses to a component package downloaded from Ultra Librarian, SnapEDA, SamacSys / Component Search Engine, or a folder of loose files. They pick or create a target library in the `Custom/` submodule, review a preview, and click install. The importer extracts the package, places the symbol, footprint and 3D model in the right places, and rewrites names and paths to the repo's conventions. It then refreshes the library tables and, after confirmation, commits the part in the `Custom` submodule. It is a personal tool for the repo owner, replacing the manual copy, paste and path-fixing routine described in CLAUDE.md.
+
+## Current State
+
+**Shipped:** v1.0 Part Importer (2026-10-24, closed 2026-10-25). See `.planning/MILESTONES.md` and `.planning/milestones/v1.0-ROADMAP.md`.
+
+- Ultra Librarian, SnapEDA, SamacSys/CSE and loose-file packages import end to end into `Custom/`: intake, editable preview, per-item conflicts, transactional install, table refresh and a confirmed path-limited commit.
+- About 15.2k lines of application Python and 29.5k lines of tests (1966 passing). 21 tests depend on the environment and fail on the current workstation (see Active).
+- KiCad 10 is now installed on the workstation and is the reference version. KiCad 9 is no longer a target (owner, 2026-10-25).
+
+## Current Milestone: v2.0 Atomic Libraries
+
+**Goal:** Every own part lives in an `Atomic_<KiCad stem>` library and is guaranteed atomic, whether it came through the importer or was made by hand. The existing parts are migrated in one clean commit, and the test suite no longer depends on the workstation.
+
+**Target features:**
+- Test hygiene first: an isolated `Custom/` test fixture, and kicad-cli tests retargeted at KiCad 10 (the 21 environment-dependent failures)
+- One headless atomic rule check with blocking rules: MPN, Manufacturer, footprint link resolving to exactly one `<Lib>:<FP>`, Value = MPN, Datasheet, Description, 3D model
+- Importer on the new scheme: suggests `Atomic_<stem>` by device type (sibling lookup in KiCad's stock libraries, then a category map); footprints go to the shared `Atomic_Footprints`; 1:1 symbol/footprint library pairing dropped; Install blocked until the atomic rule passes
+- Checks on every scan: violations flagged in the tree and log, parts new or changed since the last `Custom` commit highlighted, a check dialog with one-click fixes where safe
+- Table generator writes library descriptions and keeps refusing nickname clashes
+- One previewed migration: tag `Custom` `pre-atomic`, re-file every part into its previewed `Atomic_` library, move footprints into `Atomic_Footprints`, rewrite Footprint fields, fill every missing datasheet/description/model in the preview (runs only once every part passes), regenerate tables, relink guidance for existing projects
+- Carried forward: re-tests 999.1 (KiCad 10) and 999.2 (case-sensitive folder), open Phase 5/6 review findings, Help dialog and Commit panel UI polish
+- Docs: CLAUDE.md naming section, library requirements, PROJECT.md
+
+**Later (not this milestone):** SVG preview via `kicad-cli export svg` (PREV2-01), KiCad 5 conversion (FMT2-01), provenance property (META2-01). `MF`/`MP` field migration (META2-02) is largely absorbed by the atomic migration.
+
+## Core Value
+
+A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library, with the symbol's Footprint field pointing at `<Lib>:<FP>` and the 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`, without hand-editing any KiCad file.
+
+## Requirements
+
+### Validated
+
+<!-- Inferred from the existing codebase (see .planning/codebase/). -->
+
+- ✓ Scan the repo for symbol libraries (`.kicad_sym`) and footprint libraries (`.pretty/`), grouped by source (Custom, WurthElektronik) — existing
+- ✓ Parse each symbol's footprint references and cross-check them against the repo and KiCad's default footprint libraries, with warnings for missing ones — existing
+- ✓ Check 3D model paths referenced in `.kicad_mod` files — existing
+- ✓ Auto-detect the KiCad install and user config directory, and prompt for the footprints folder if they aren't found — existing
+- ✓ Two-column Symbols | Footprints tree, where symbol selection drives footprint selection per source — existing
+- ✓ Generate `sym-lib-table` / `fp-lib-table`, merging in existing external entries, with numbered paired backups and restore — existing
+- ✓ Write `KICAD_LIB_GITHUB` and `CUSTOM_3DMODEL_DIR` into KiCad's `kicad_common.json` — existing
+- ✓ Background scan on a QThread, a colour-coded log panel, Rescan (Ctrl+Shift+R), and persisted settings (QSettings) — existing
+- ✓ Dependency manifest with pinned PySide6 (`requirements.txt` / `requirements-dev.txt`) — Phase 1
+- ✓ Headless pytest harness (offscreen Qt, strict markers), run bare from the repo root — Phase 1
+- ✓ Lossless S-expression layer: every repo `.kicad_sym`, `.kicad_mod` and lib table round-trips byte-identically; edits change only the targeted span and keep CRLF/LF — Phase 1
+- ✓ Atomic write helper (temp file + `os.replace`, read-only pre-check, locked-file retry) and `<name>_backup_<N>` backup helper in `fsutil.py` — Phase 1
+- ✓ Table merge keeps every external entry whatever its layout; entries it can't classify are kept verbatim with a warning (HARD-01) — Phase 2
+- ✓ Locked or read-only tables during Generate log one error per file and leave the UI consistent (HARD-02) — Phase 2
+- ✓ `kicad_common.json` is backed up, written atomically, and only `environment.vars` changes (HARD-03) — Phase 2
+- ✓ KiCad version directories sorted numerically, so `10.0` wins over `9.0` (HARD-04) — Phase 2
+- ✓ No overlapping scans: one guarded `_start_scan`, with controls disabled while a scan runs (HARD-05) — Phase 2
+- ✓ Generated S-expression values are escaped (HARD-06) — Phase 2
+- ✓ Rescan keeps the current selection; pre-selection from the tables happens only at startup (HARD-07) — Phase 2
+- ✓ Same-nickname libraries in different sources are reported as a collision and kept distinct in the UI (HARD-08) — Phase 2
+- ✓ Legacy `${KIPRJMOD}/Custom/3DModels` paths rewritten to `${CUSTOM_3DMODEL_DIR}` in one Custom commit; the scanner warns about any other model path (HARD-09) — Phase 2
+- ✓ Legacy `generate_lib_tables.py` CLI removed; issues routed by severity instead of message substrings — Phase 2
+- ✓ A vendor package opens as a `.zip` or a folder of loose KiCad files, read in place or staged outside the repo, never written into it (INTK-01) — Phase 3
+- ✓ Ultra Librarian zips are recognised and their symbol, footprint and 3D model found at any depth, including a root-level STEP with an unrelated name (INTK-02) — Phase 3
+- ✓ KiCad 5-only packages are rejected with a "re-download as KiCad v6+" message (INTK-05) — Phase 3
+- ✓ Hostile packages are refused or skipped safely: zip slip, absolute names, symlinks, zip bombs, corrupt members, and oversized or string-heavy KiCad text bounded in memory (INTK-06) — Phase 3
+- ✓ A `<Type>_<SubCategory>_<Manufacturer>` library name is suggested from existing `Custom/` libraries and part info (LIB-01; editing arrives with the Phase 5 preview) — Phase 3
+- ✓ Symbol, footprint and file names are sanitised, with original and sanitised names both reported (LIB-03) — Phase 3
+- ✓ Symbol merged into the target `.kicad_sym` S-expression-aware: other symbols and the header stay byte-identical, renames follow sub-symbols and `extends` (INST-01, INST-02) — Phase 4
+- ✓ Footprint copied into the target `.pretty/`; filename, internal name, value, symbol Footprint field `<Lib>:<FP>` and `ki_fp_filters` agree (INST-03) — Phase 4
+- ✓ 3D model copied to `Custom/3DModels/<MPN>.<ext>` (same SHA-256 reused) and linked as `${CUSTOM_3DMODEL_DIR}/<file>`, rewriting or inserting the `(model ...)` block (INST-04, INST-05) — Phase 4
+- ✓ Packages with no 3D model install without one and warn (INTK-08) — Phase 4
+- ✓ A new library creates the matching `.kicad_sym` + `.pretty/` pair; an existing library header is never changed (LIB-02 install side; choosing in the UI arrives with Phase 5) — Phase 4
+- ✓ Install is one transaction: app-data backups, ordered atomic writes, verify, and rollback on any failure or exception; a target changed after planning is refused as stale; a second identical install is a no-op (INST-06..INST-09) — Phase 4
+- ✓ Post-install warnings for a name found in another library and for pin/pad mismatches (POST-03, POST-04) — Phase 4
+- ✓ Import Part dialog (File > Import Part..., Ctrl+I, or drop one zip/folder on the main window) opens one Ultra Librarian zip or loose-files folder per session; the newest Downloads zip and the last folder are offered but never opened without a click (UX-01, UX-02) — Phase 5
+- ✓ Several symbols, footprints or models in a package are picked in the dialog (INTK-07); "nothing found" shows the package and detection reasons (Phase 4 WR-06, IN-04) — Phase 5
+- ✓ Target library suggested and editable, or an existing `Custom/` library picked; a "new" badge shows a `.kicad_sym` + `.pretty` pair will be created, and placeholder names block Install (LIB-01, LIB-02 UI) — Phase 5
+- ✓ Preview before any write: every file, rename, path rewrite and format/kicad-cli action, with diffs and a file content view; footprint name and Value/Datasheet/Description/Manufacturer/MPN editable, explicit clear supported, Footprint field `<Lib>:<FP>` kept in sync; preview and install share one plan (PREV-01..PREV-07) — Phase 5
+- ✓ Per-conflict Overwrite / Rename / Skip with no bulk control and nothing pre-selected; Install blocked until every conflict is decided (PREV-05) — Phase 5
+- ✓ After install: Result view, rescan with the library checked and current, add-only `sym-lib-table` / `fp-lib-table` entries for a new library, a Generate hint for an existing unlisted one, and a "reopen KiCad's editors" notice when KiCad is running (POST-01, POST-02, POST-05) — Phase 5
+- ✓ Commit step in the Result view: shows the Custom branch, the parent repo and branch, the exact installed files and an editable message with Import-Vendor / Import-Package / Import-Date trailers; on click commits only those files in `Custom` (`commit --only`, bystander changes untouched), then only the `Custom` gitlink in the parent; detached HEAD on `main`'s history offers a plain `switch main`, otherwise refuses; never pushes, reports "Not pushed — N commits ahead" (GIT-01..GIT-05) — Phase 6
+- ✓ SnapEDA and SamacSys/CSE zips open and auto-detect through the same flow as Ultra Librarian, with the vendor label, a readable Field changes section, and an `Import-Vendor:` commit trailer; a SnapEDA zip with no model installs with the "no 3D model found" warning, SamacSys other-CAD folders are skipped with one log line; real samples install and load in kicad-cli (Phase 7)
+- ✓ A separately downloaded 3D model (bare STEP/STP/WRL, or a zip holding one) is added with "Add 3D model..." in the import dialog under the same intake safety checks, and installs as `Custom/3DModels/<MPN>.<ext>` linked as `${CUSTOM_3DMODEL_DIR}/<file>` (FMT2-02, G-07-2) — Phase 7
+- ✓ An unusable model source (no model, failed content check, partly bad zip, read failure) is a red blocking error on the model row with Remove / Add 3D model... recovery; preview columns are user-resizable and elide; status-strip reasons carry a click hint (G-07-5, G-07-7, G-07-8) — Phase 7
+- ✓ Headless pytest suite for importer logic (format detection, symbol merge, path rewriting, naming), using real downloads as fixtures, plus tests for the hardened table and parser code; real-sample tests skip when the local downloads are absent — v1.0 (1966 passing at close)
+- ✓ All 54 v1 requirements (FOUND, HARD, INTK, FMT2-02, LIB, PREV, INST, POST, GIT, UX) — v1.0
+- ✓ Tests build their own synthetic `Custom/` and never read or write the live one, guarded by a write-protect check; the suite passes whatever parts the owner has installed (TEST-01) — Phase 8
+- ✓ Real kicad-cli tests expect KiCad 10 output (format 20251024) and skip with a stated reason when kicad-cli 10 is absent (TEST-02) — Phase 8
+- ✓ Bare `pytest` on the workstation: 8063 passed, 3 documented skips, 0 failed (TEST-03) — Phase 8
+- ✓ D-01 re-tested on KiCad 10: installing into a 20241209 `Custom/` library keeps the header, merges the symbol as-is with one warning, and the result opens in KiCad 10's Symbol Editor with both units placeable (VER-01, UAT 2026-10-26) — Phase 8
+- ✓ One atomic rule check (MPN, Manufacturer, footprint link resolving to exactly one `<Lib>:<FP>`, Value = MPN, Datasheet, Description, 3D model) with one canonical manufacturer table; every rule blocking for `Atomic_` libraries only, derived symbols checked on their own fields (ATOM-01..03) — Phase 9
+- ✓ Every scan runs the check: failing symbols marked in the tree per part with Status count and one row per broken rule and note, one log line per failure; parts new or changed since the last `Custom` commit highlighted; Check Atomic Parts (Ctrl+Shift+A, or double-click) previews and applies only safe fixes (SCAN-01..03, UAT 2026-10-26) — Phase 9
+- ✓ Importer on the atomic scheme: suggests `Atomic_<stem>` from KiCad sibling votes, then the vendor category map, else asks; refuses official KiCad names and manufacturer tokens; installs footprints into the shared `Atomic_Footprints` or links an official KiCad footprint (1:1 pairing dropped); Install blocked with clickable reasons until the part passes the atomic rule; generated `ki_keywords`, footprint description and tags, editable in the preview (LIB-04..07, FLD-01, FLD-03; UAT 2026-10-29) — Phase 10
+- ✓ Commit gate and commit panel: Commit refuses (and fails closed on unreadable linked libraries) while any committed part breaks the atomic rule, naming part and rule; the panel keeps git's output, the refusal detail and the manual command across re-probes, checks HEAD after a timeout, uses one parent-message builder and PowerShell quoting on Windows, keeps the parent checkbox choice and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` identity; primary Commit button, tinted outcomes, "Committed in Custom only" (GIT-06, REV-06..11, UI-02; UAT 2026-11-01, pasted command checked in real Windows PowerShell 5.1 and PowerShell 7 consoles) — Phase 11
+- ✓ Import-flow fixes: Phase 5 review warnings closed (table step text, empty Destination, build/Install overlap, GUI thread never waits on kicad-cli, fresh settings write gated by a KiCad-open question); Help and conflict rows on theme tokens; case-twin rollback/overwrite re-tested on a case-sensitive folder; plus UAT-raised fixes: Cancel on every import page, compact start page, per-source Skip while libraries load, a shared User Guide window with a numbered menu that reopens on the last chosen section (REV-01..05, UI-01, VER-02; UAT 2026-11-11, live re-tests of REV-05's KiCad-open dialog and REV-04's Finishing strip deferred to backlog 999.3/999.4) — Phase 12
+
+### Active
+
+**Atomic libraries (v2.0)**
+- [x] Own symbol libraries named `Atomic_<official KiCad stem>`, footprints in one shared `Atomic_Footprints`; parts filed by what the device is — Phase 13
+- [x] Existing `Custom/` parts migrated in one previewed commit, every part passing the rule, tables regenerated — Phase 13
+
+**Quality**
+- [ ] Phase 11 review findings, open and non-blocking (11-REVIEW-DISPOSITION.md): WR-01 a kept atomic refusal line survives the Check again that follows Open Check Atomic Parts fixes (Commit enablement unaffected); IN-01..IN-03
+- [ ] Phase 12 review findings, open and non-blocking (12-REVIEW-DISPOSITION.md)
+
+### Out of Scope
+
+- Downloading parts from vendor websites or APIs. The user downloads manually; the importer starts from a file on disk.
+- Pushing to remotes. The importer commits only; pushing stays manual.
+- Importing into the WurthElektronik submodule or other third-party libraries. They're upstream-owned, so imports go only into `Custom/`.
+- Batch or queued imports. Decided: one package at a time.
+- Non-KiCad formats inside packages (Altium, Eagle, OrCAD). Only the KiCad v6+ files are used.
+- Editing symbol graphics or footprint geometry. Only names, fields and paths are changed.
+
+## Context
+
+- **Brownfield.** The importer extends `kicad_lib_manager/`, a layered PySide6 app with Qt-free services (`library_scanner.py`, `table_generator.py`), dataclass models, and a widgets package. See `.planning/codebase/ARCHITECTURE.md`.
+- **Parsing:** the original regex parsing was replaced in v1.0 by a lossless span-splicing S-expression layer (`kicad_lib_manager/sexpr`, `kicad_files`). Edits change only their span, and every repo file round-trips byte-identically.
+- **Sample data:** `downloaded_examples/` holds the committed Ultra Librarian zip plus local-only, licence-restricted SnapEDA (CAD zip and a separate 3D model zip) and SamacSys downloads. Real-sample tests skip when the local files are absent. The original UL notes follow. Sample `downloaded_examples/ul_CSD85301Q2.zip` (Ultra Librarian): It contains `KiCADv6/<timestamp>.kicad_sym`, `KiCADv6/footprints.pretty/DQK0006B.kicad_mod`, import guides, and a STEP model `DLV0006A.stp` at the zip root, outside `KiCADv6/`. Its name matches neither the footprint nor the part. The symbol file is named by timestamp, not part number. The vendor footprint has no `(model ...)` block, so the importer must be able to insert one, not only rewrite an existing path. The symbol's `Footprint` field is the bare `DQK0006B` with no `Lib:` prefix, and `ki_fp_filters` repeats the vendor footprint name.
+- **Manual process being replaced** (from CLAUDE.md): download → move the `.kicad_mod` into `<Lib>.pretty/` → copy and paste the symbol into `<Lib>.kicad_sym` in the KiCad Symbol Editor → fix 3D paths to `${CUSTOM_3DMODEL_DIR}` → commit in the submodule, then update the parent repo.
+- **Repo layout:** `Custom/` is a git submodule (`sylvanoMTL/kicad_custom_library`) and is also detected as a separate repo by GSD. Work happens in the worktree `Kicad_Libraries-importer` on branch `feature/part-importer`.
+- **Tests and dependencies:** pinned `requirements.txt` / `requirements-dev.txt` and a headless pytest suite (offscreen Qt) since v1.0. There's still no lint config.
+- **Workstation KiCad:** KiCad 10.0 and 9.0 are both installed. kicad-cli discovery picks the newest (10.0), which writes symbol format 20251024.
+
+## Constraints
+
+- **Tech stack:** Python 3.10+ (venv on 3.14), PySide6 6.12, stdlib only otherwise unless a dependency is clearly justified. This extends the existing app rather than starting a new one.
+- **Platform:** Windows 11 is primary, with standard CPython (not MSYS2) because PySide6 requires it. Keep the existing cross-platform branches working.
+- **KiCad file formats:** output must load in KiCad 6+ libraries. The reference install is KiCad 10, and KiCad 9 is no longer a test target (owner, 2026-10-25). Symbol and footprint names must match the library naming convention, and `.kicad_sym` / `.pretty` names must pair.
+- **Safety:** no write without a preview first. Writes to KiCad files and the repo must be atomic or backed up. Git commits need explicit confirmation.
+- **Dependencies:** a new vendor format needs a real sample download in `downloaded_examples/` before it can be built and tested (met for UL, SnapEDA, SamacSys/CSE and loose files in v1.0).
+
+## Key Decisions
+
+| Decision | Rationale | Outcome |
+|----------|-----------|---------|
+| Importer lives inside the existing Library Manager app | Reuses scanner, log panel, settings and table generation; one tool for the repo | ✓ Good — Phase 5 UAT passed |
+| Support UL, SnapEDA, SamacSys/CSE and loose files in v1 | Owner uses all of them; zip layouts differ | ✓ Good — Phase 7 UAT passed on the real SnapEDA and SamacSys zips |
+| Preview before every write; per-conflict overwrite/rename/skip | Avoid silent damage to curated libraries | ✓ Good — Phase 5 UAT passed |
+| Library name suggested from `<Type>_<SubCategory>_<Manufacturer>`, editable | Keeps the convention without blocking edge cases | ⚠️ Revisit — replaced in v2.0 by `Atomic_<KiCad stem>` (worked in v1.0, Phase 5 UAT passed) |
+| Own libraries are `Atomic_<official KiCad stem>` with one shared `Atomic_Footprints`; every part must pass a blocking atomic rule (MPN, Manufacturer, footprint link, Value = MPN, Datasheet, Description, 3D model) | KiCad 10 ships libraries under every bare target stem, so a token is mandatory; "atomic" names the guarantee instead of a brand and appears nowhere in KiCad's stock libraries; the owner wants hand-made parts held to the same rule (2026-10-25) | ✓ Good — the check and scan detection shipped in Phase 9, the importer side in Phase 10 and the commit gate in Phase 11, all passed UAT; the migration (Phase 13) delivers the scheme for the existing parts, pending the owner's live UAT run |
+| Importer details kept as built (owner, 2026-10-29): strict majority for sibling votes, a part with no clear match asks for a library, measured package size (2.1x2.1 mm) and IPC-style tag in footprint text, a package family from tied KiCad footprints only when they agree and are within one pad of the vendor footprint, conflict choices asked again after a refused library name is fixed (WR-07 kept) | The suggestion must never guess a wrong library or family; the owner prefers asking over a wrong default | ✓ Good — Phase 10 UAT passed |
+| Footprint keeps vendor name by default, editable | Package codes are often the right name; user can override | ✓ Good — Phase 5 UAT passed |
+| Footprint link set automatically; other fields editable in preview | Footprint link is the most error-prone manual step | ✓ Good — Phase 5 UAT passed |
+| No 3D model → install without it and warn | Keep the flow simple; models can be added later | ✓ Good — SnapEDA no-model warning verified (Phase 7 UAT) |
+| A separately downloaded 3D model is added in the import dialog as a second intake source with the same safety checks; the plan contract is unchanged | SnapEDA ships the model as a separate download (bare file or zip); the Phase 7 UAT (G-07-2) reversed the earlier Out of Scope choice | ✓ Good — Phase 7 UAT tests 3, 4, 6 passed |
+| An unusable 3D model source blocks Install as an ERROR; a partly bad zip is rejected as a whole; Remove clears only rejected sources | A silently ignored bad model looked like success (G-07-5, owner decisions 2026-10-24) | ✓ Good — Phase 7 UAT re-test passed |
+| One package per import | Simpler review; batch not needed | ✓ Good — Phase 5 UAT passed |
+| Commit in `Custom` + bump parent ref after confirmation; never push | Matches the CLAUDE.md git workflow; pushing stays a deliberate act | ✓ Good — Phase 6 UAT passed on the real repo; remote unchanged |
+| Fix all High/Medium-High concerns from the codebase map | Importer builds on table/scan/write code that has known data-loss risks | ✓ Good — HARD-01..09 verified and UAT passed (Phase 2) |
+| Managed table entries identified by URI tail after `${KICAD_LIB_GITHUB}/`, not by nickname | Nicknames can collide across sources; the path cannot | ✓ Good (Phase 2) |
+| Scan busy guard is both disabled controls and a refusing `_start_scan` | A disabled control doesn't stop a programmatic caller (e.g. post-import rescan) | ✓ Good (Phase 2) |
+| On a nickname collision, the peer whose rel_path sorts first (Custom before WurthElektronik) stays selected | Deterministic, and personal parts win | ✓ Good (Phase 2) |
+| A running KiCad only warns; the `kicad_common.json` write still proceeds | Blocking would make Generate unusable while KiCad is open | — Pending |
+| Headless pytest for importer and hardened logic | No tests today; parsers and merges are regression-prone | ✓ Good — harness in place, 290+ tests at Phase 1 close |
+| Replace regex parsing with an S-expression tokenizer | Needed for safe symbol merge and fixes the table-merge bug | ✓ Good — span-splicing layer round-trips the whole corpus byte-identically (Phase 1) |
+| Untrusted KiCad text is bounded before and during parsing: 8 MiB raw-byte cap, 1,000,000-node ceiling, and a linear windowed string scan; an over-cap file is skipped with a WARNING, never a whole-package refusal | Vendor packages are untrusted input; a single hostile file must not exhaust memory or hide the rest of the package | ✓ Good — CR-01/CR-03 closed, 8 MiB hostile strings read within 10× decoded size (Phase 3) |
+| Intake never extracts into the repo: zips are staged member-by-member into a temp folder outside the repo, folders are read in place | Keeps the "no write without preview" guarantee for the whole intake step | ✓ Good (Phase 3) |
+| Install is a transaction under `except BaseException`: any exception rolls back (`install.unexpected`), interrupts roll back then re-raise | A partial install in a curated library is the worst outcome; an Issue-only rollback missed exceptions (CR-01) | ✓ Good — gap closed and re-verified (Phase 4) |
+| Stale-plan check held from preflight to the last write: post-gate re-check, backup copy hashed and used as the rollback pre-image, re-check before every write | kicad-cli runs between preflight and the first write; an edit there was silently overwritten (CR-02) | ✓ Good — gap closed and re-verified (Phase 4) |
+| Blank preview text means "not set, keep the vendor value"; an explicit clear is a Phase 5 preview decision | A Qt line edit returns "" for untouched fields (WR-05) | ✓ Good — Phase 5: an emptied field is an explicit clear (Datasheet written empty, cleared Manufacturer skips inference, cleared MPN refused); KiCad loads an empty Datasheet (UAT) |
+| kicad-cli normalises only the incoming symbol, and only when its output version equals the target header; footprints are copied as-is | Never change a library's version header; mixed versions load in KiCad 9 (D-01, D-02) | ✓ Good — loads in kicad-cli 9.0.9; verified on KiCad 10 by the automated Phase 8 test (kicad-cli 10.0.7): a 20241209 target takes the as-is-with-warning row and keeps its header (VER-01); the owner's Symbol Editor check is tracked in 08-UAT.md test 2 |
+| Post-install table update is add-only: one entry per table for a new library, a no-op when listed, never the tree selection; an existing unlisted library gets a Generate hint | Import must not rewrite the owner's tables or apply an ungenerated selection | ✓ Good (Phase 5) |
+| The import flow never runs git; the Result view holds a hidden commit slot for Phase 6 | Commit needs its own confirmation step (GIT-01..05) | ✓ Good (Phase 5) |
+| Git runs as `git --literal-pathspecs -c core.quotepath=false -C <repo>` from an allow-list with no remote subcommand, `GIT_*` env stripped, paths on stdin (`--pathspec-file-nul`), message via `-F`; owner hooks always run (no `--no-verify`, D-06) | Package-derived names are untrusted; the user's other changes and the remote must never be touched | ✓ Good — 06-SECURITY.md 26/26 threats closed (Phase 6) |
+| KiCad path variables are never written silently: Generate and the post-install table update show `VAR: old -> new` and ask (default No); a git worktree or a checkout other than the configured `KICAD_LIB_GITHUB` is refused with a WARNING; no confirm callback means no write | 2026-10-21: Generate from the dev worktree repointed KiCad 10 at it; 89 WurthElektronik libraries went missing and an ERC error followed | ✓ Good (Quick 261022-gnn) |
+| KiCad 10 is the reference version; KiCad 9 expectations are dropped | KiCad 10 is installed on the workstation and the owner no longer targets KiCad 9 (2026-10-25, v1.0 close) | ✓ Good — every real kicad-cli test pins KiCad 10 (format 20251024, generator 10.0) and skips with a stated reason on any other major version (Phase 8, TEST-02) |
+
+## Evolution
+
+This document evolves at phase transitions and milestone boundaries.
+
+**After each phase transition** (via `/gsd-transition`):
+1. Requirements invalidated? → Move to Out of Scope with reason
+2. Requirements validated? → Move to Validated with phase reference
+3. New requirements emerged? → Add to Active
+4. Decisions to log? → Add to Key Decisions
+5. "What This Is" still accurate? → Update if drifted
+
+**After each milestone** (via `/gsd-complete-milestone`):
+1. Full review of all sections
+2. Core Value check — still the right priority?
+3. Audit Out of Scope — reasons still valid?
+4. Update Context with current state
+
+---
+*Last updated: 2026-11-11 after Phase 12*

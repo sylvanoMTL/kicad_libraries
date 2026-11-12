@@ -13,6 +13,8 @@ __pycache__/
 
 # Backup files
 *_backup_*
+# ...but not the Restore Backup dialog's test module
+!tests/test_backup_dialog.py
 
 # Dummy KiCad project (local editing convenience)
 _LibraryEditor.kicad_pro
@@ -26,3 +28,7 @@ _autosave-*
 
 # Notes
 REFLECTION.md
+
+# Vendor downloads: licence-restricted, kept local (Phase 7 D-01, D-02); the UL sample stays tracked
+downloaded_examples/*
+!downloaded_examples/ul_CSD85301Q2.zip

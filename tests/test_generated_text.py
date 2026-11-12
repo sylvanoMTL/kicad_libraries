@@ -1,0 +1,657 @@
+"""Generated keywords, footprint description and footprint tags, from the planner to the installed files and the dialog (plan 10-23).
+
+The Ultra Librarian CSD85301Q2 sample is the subject: its footprint DQK0006B has tags "CSD85301Q2 " and no
+description, and KiCad's own Package_SON:Texas_DQK (a synthetic stand-in under tmp_path) names the family.
+Every install goes into an isolated Custom/ built in code.
+"""
+
+from dataclasses import replace
+from pathlib import Path
+
+import pytest
+from customfixtures import ABSENT_LIBRARY
+from installfixtures import UL_DESCRIPTION
+from PySide6.QtCore import QSettings
+from stockfixtures import write_stock_sample
+
+from kicad_lib_manager import settings
+from kicad_lib_manager.importer.applier import apply_plan
+from kicad_lib_manager.importer.footprint_text import vendor_texts
+from kicad_lib_manager.importer.plan import InstallOptions, ToolContext
+from kicad_lib_manager.importer.planner import build_plan
+from kicad_lib_manager.kicad_files import find_property, find_symbol, footprint_name, load
+from kicad_lib_manager.library_scanner import find_kicad_footprint_dir
+from kicad_lib_manager.widgets.import_dialog import ImportCore, ImportDialog
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+UL_ZIP = REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip"
+LIBRARY = ABSENT_LIBRARY  # Atomic_Transistor_FET, absent from the atomic_custom layout
+SYMBOL = "CSD85301Q2"
+FOOTPRINT = "DQK0006B"
+SENTENCE = "WSON-6 2.1x2.1 mm, 0.65 mm pitch, TI DQK0006B"
+
+
+@pytest.fixture(autouse=True)
+def _isolated_settings(tmp_path):
+    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(tmp_path / "qsettings"))
+    file_name = Path(settings.get_settings().fileName()).resolve()
+    assert tmp_path.resolve() in file_name.parents
+
+
+@pytest.fixture
+def stock_footprints(tmp_path) -> Path:
+    """KiCad's footprints folder as the synthetic stock tree holds it (Package_SON:Texas_DQK names the WSON-6 family)."""
+    return write_stock_sample(tmp_path / "stock")[1]
+
+
+def plan_for(candidate, layout, tools=ToolContext(), **options):
+    options.setdefault("description", UL_DESCRIPTION)
+    return build_plan(candidate, InstallOptions(library=LIBRARY, **options), layout, tools)
+
+
+def installed_texts(layout) -> tuple[str, str, str]:
+    """The keywords of the installed symbol and the description and tags of the installed footprint."""
+    library = load(layout.symbols_dir / f"{LIBRARY}.kicad_sym")
+    keywords = find_property(find_symbol(library.root, SYMBOL).node, "ki_keywords").value
+    pretty = next(layout.footprints_dir.glob("*.pretty"))
+    footprint = footprint_name(load(pretty / f"{FOOTPRINT}.kicad_mod").root)
+    description, tags = vendor_texts(footprint.node)
+    return keywords, description, tags
+
+
+# -- the tracer: the CSD sample end to end -------------------------------------------------------------
+
+
+def test_csd_part_text_is_generated_from_the_package_and_kicads_footprint(atomic_custom, ul_package, stock_footprints):
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom, ToolContext(kicad_footprints_dir=stock_footprints))
+    assert not plan.blocked, plan.issues
+    text = plan.part_text
+    assert text.fp_description == SENTENCE
+    tags = text.fp_tags.split()
+    assert tags[0] == SYMBOL  # the vendor's own tag stays first
+    assert {"WSON-6", FOOTPRINT, "P0.65mm"} <= set(tags)
+    words = text.keywords.split()
+    assert {"Transistor", "FET", "TI", "Texas"} <= set(words)
+    assert text == plan.generated_text  # nothing was typed over
+
+
+def test_installed_files_hold_exactly_the_planned_text(atomic_custom, ul_package, stock_footprints, tmp_path):
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom, ToolContext(kicad_footprints_dir=stock_footprints))
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert result.ok, result.issues
+    keywords, description, tags = installed_texts(atomic_custom)
+    assert (keywords, description, tags) == (
+        plan.part_text.keywords,
+        plan.part_text.fp_description,
+        plan.part_text.fp_tags,
+    )
+
+
+# -- the dialog shows the same three texts -------------------------------------------------------------
+
+
+def core_with(**changes) -> ImportCore:
+    from kicad_lib_manager.importer.commit_step import CommitProbe
+
+    fields = {
+        "detect_tools": lambda kicad_fp_dir: ToolContext(),
+        "kicad_running": lambda: [],
+        "probe_commit": lambda cplan, **kwargs: CommitProbe(state="unavailable", reason="git is not used by this test"),
+        **changes,
+    }
+    return replace(ImportCore(), **fields)
+
+
+@pytest.fixture
+def make_dialog(qtbot, atomic_custom, tmp_path):
+    def make(tools: ToolContext = ToolContext()) -> ImportDialog:
+        dialog = ImportDialog(
+            atomic_custom.repo_root,
+            atomic_custom,
+            core=core_with(detect_tools=lambda kicad_fp_dir: tools),
+            backup_root=tmp_path / "backups",
+        )
+        qtbot.addWidget(dialog)
+        dialog.open_path(UL_ZIP)
+        return dialog
+
+    return make
+
+
+def wait_current(qtbot, dialog: ImportDialog, timeout: int = 30000) -> None:
+    """Wait until the newest request has been built and accepted and nothing is pending."""
+    qtbot.waitUntil(
+        lambda: dialog._plan is not None
+        and dialog._plan_gen == dialog._gen
+        and dialog._building is None
+        and dialog._queued is None
+        and not dialog._dirty,
+        timeout=timeout,
+    )
+
+
+def pick_library(qtbot, dialog: ImportDialog, name: str = LIBRARY) -> None:
+    wait_current(qtbot, dialog)
+    dialog._library_combo.setEditText(name)
+    dialog._library_combo.textActivated.emit(name)
+    wait_current(qtbot, dialog)
+
+
+def dialog_texts(dialog: ImportDialog) -> tuple[str, str, str]:
+    edits = dialog._text_edits
+    return edits["keywords"].text(), edits["fp_description"].text(), edits["fp_tags"].text()
+
+
+def test_dialog_edits_show_the_plan_text(qtbot, make_dialog, stock_footprints):
+    dialog = make_dialog(ToolContext(kicad_footprints_dir=stock_footprints))
+    pick_library(qtbot, dialog)
+    plan = dialog._plan
+    assert plan.part_text.fp_description == SENTENCE
+    assert dialog_texts(dialog) == (
+        plan.part_text.keywords,
+        plan.part_text.fp_description,
+        plan.part_text.fp_tags,
+    )
+    assert all(not button.isEnabled() for button in dialog._text_regenerate.values())
+
+
+# -- overrides, empty values and the plain-language preview ---------------------------------------------
+
+
+def test_typed_texts_are_written_exactly(atomic_custom, ul_package, tmp_path):
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom, keywords="alpha beta", fp_description="My sentence", fp_tags="x y")
+    assert not plan.blocked, plan.issues
+    assert plan.part_text.keywords == "alpha beta"
+    assert plan.generated_text.keywords != "alpha beta"  # Regenerate has something to return to
+    assert apply_plan(plan, backup_root=tmp_path / "bk").ok
+    assert installed_texts(atomic_custom) == ("alpha beta", "My sentence", "x y")
+
+
+def test_empty_texts_are_written_empty(atomic_custom, ul_package, tmp_path):
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom, keywords="", fp_description="", fp_tags="")
+    assert not plan.blocked, plan.issues
+    assert (plan.part_text.keywords, plan.part_text.fp_description, plan.part_text.fp_tags) == ("", "", "")
+    assert apply_plan(plan, backup_root=tmp_path / "bk").ok
+    assert installed_texts(atomic_custom) == ("", "", "")
+
+
+def test_quotes_and_backslashes_in_typed_text_do_not_break_the_files(atomic_custom, ul_package, tmp_path):
+    # T-10-29: the values go through quote(), so the files still load and the text reads back exactly
+    text = 'say "hi" \\ and more'
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom, keywords=text, fp_description=text, fp_tags=text)
+    assert not plan.blocked, plan.issues
+    assert apply_plan(plan, backup_root=tmp_path / "bk").ok
+    assert installed_texts(atomic_custom) == (text, text, text)
+
+
+def test_without_a_kicad_footprints_folder_no_family_is_guessed(atomic_custom, ul_package):
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom)
+    assert plan.part_text.fp_description == "2.1x2.1 mm, 0.65 mm pitch, TI DQK0006B"
+    assert "WSON-6" not in plan.part_text.fp_tags.split()
+
+
+def test_an_unrelated_official_footprint_supplies_no_family(atomic_custom, ul_package, tmp_path):
+    # Package_SO holds only SOIC-8, and the code DQK0006B shares no leading word with it
+    from stockfixtures import write_stock_kicad
+
+    _, footprints = write_stock_kicad(
+        tmp_path / "other", {}, {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", ("1", "2"), "", ""),)}
+    )
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+    assert plan.part_text.fp_description == "2.1x2.1 mm, 0.65 mm pitch, TI DQK0006B"
+
+
+# -- field changes -------------------------------------------------------------------------------------
+
+
+def _field_rows(plan, candidate, options=None):
+    from kicad_lib_manager.importer.preview import preview_sections
+
+    sections = preview_sections(plan, candidate, options or InstallOptions(library=LIBRARY))
+    return next(s for s in sections if s.name == "Field changes").rows
+
+
+def test_field_changes_use_kicads_names_not_raw_ones(atomic_custom, ul_package):
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom)
+    rows = _field_rows(plan, candidate)
+    labels = [row.text for row in rows]
+    assert "Set Keywords" in labels
+    assert "Set Footprint description" in labels
+    assert "Set Footprint tags" in labels
+    assert not any("ki_" in row.text or "ki_" in row.detail for row in rows)
+
+
+def test_footprint_field_changes_are_scoped_to_the_footprint(atomic_custom, ul_package):
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom)
+    by_field = {change.field: change for change in plan.field_changes}
+    assert by_field["Footprint description"].scope == "footprint"
+    assert by_field["Footprint description"].symbol == FOOTPRINT
+    assert by_field["ki_keywords"].scope == "symbol"
+    assert by_field["Footprint tags"].old == "CSD85301Q2 "
+
+
+# -- a vendor package with its own text -----------------------------------------------------------------
+
+VENDOR = "PART"
+EXISTING = "Atomic_Battery_Management"
+
+
+def _vendor_zip(tmp_path, *, keywords="", descr="", tags="", footprint="FP", pads: int = 2):
+    from installfixtures import ATOMIC_PROPS, vendor_footprint, vendor_symbol_lib
+    from zipfixtures import STEP_BYTES, make_zip
+
+    footprint_data = vendor_footprint(footprint, pads=_pads(pads))
+    extra = (f'  (descr "{descr}")\r\n' if descr else "") + (f'  (tags "{tags}")\r\n' if tags else "")
+    footprint_data = footprint_data.replace(b'  (layer "F.Cu")\r\n', b'  (layer "F.Cu")\r\n' + extra.encode(), 1)
+    symbol = vendor_symbol_lib(
+        VENDOR, footprint_field=footprint, fp_filters=footprint, keywords=keywords, props=ATOMIC_PROPS
+    )
+    (tmp_path / "src").mkdir(exist_ok=True)
+    return make_zip(
+        tmp_path / "src" / "pkg.zip",
+        [("part.kicad_sym", symbol), (f"{footprint}.kicad_mod", footprint_data), ("part.step", STEP_BYTES)],
+    )
+
+
+def _open_vendor(zip_path):
+    from kicad_lib_manager.importer.detect import detect_candidate
+    from kicad_lib_manager.importer.package import open_package
+
+    package = open_package(zip_path, REPO_ROOT)
+    candidate, _ = detect_candidate(package)
+    assert candidate is not None
+    return package, candidate
+
+
+def test_a_vendor_description_is_replaced_and_listed(atomic_custom, tmp_path):
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, descr="Old sentence"))
+    try:
+        options = InstallOptions(library=EXISTING)
+        plan = build_plan(candidate, options, atomic_custom, ToolContext())
+        rows = _field_rows(plan, candidate, options)
+    finally:
+        package.close()
+    row = next(r for r in rows if r.text.endswith("Set Footprint description"))
+    assert row.detail == f"Old sentence → {plan.part_text.fp_description}: generated"
+    assert "Old sentence" not in plan.part_text.fp_description
+
+
+def test_vendor_keywords_come_first_and_junk_is_dropped(atomic_custom, tmp_path):
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, keywords="power digikey MOSFET"))
+    try:
+        plan = build_plan(candidate, InstallOptions(library=EXISTING), atomic_custom, ToolContext())
+    finally:
+        package.close()
+    words = plan.part_text.keywords.split()
+    assert words[:2] == ["power", "MOSFET"]
+    assert "digikey" not in [word.casefold() for word in words]
+    assert "Battery" in words  # the generated words follow
+
+
+def test_a_symbol_renamed_by_a_conflict_keeps_the_vendor_keywords_retokened(atomic_custom, tmp_path):
+    from kicad_lib_manager.importer.plan import Resolution
+
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, keywords="PART power"))
+    try:
+        first = build_plan(candidate, InstallOptions(library=EXISTING), atomic_custom, ToolContext())
+        assert apply_plan(first, backup_root=tmp_path / "bk").ok
+        # A changed description makes the second install differ from the first, so the symbol conflicts
+        options = InstallOptions(
+            library=EXISTING,
+            description="Another description",
+            resolutions={f"symbol:{EXISTING}:{VENDOR}": Resolution("rename")},
+        )
+        second = build_plan(candidate, options, atomic_custom, ToolContext())
+    finally:
+        package.close()
+    assert second.symbol_name == f"{VENDOR}_2"
+    assert second.part_text.keywords.split()[:2] == [f"{VENDOR}_2", "power"]
+
+
+# -- the package family comes from official footprints only when they all agree (CR-01, D-28) -------------
+
+
+def _pads(count: int) -> tuple[str, ...]:
+    return tuple(str(number) for number in range(1, count + 1))
+
+
+def _stock_tree(tmp_path, name: str, libraries: dict) -> Path:
+    """KiCad's footprints folder with the given libraries; each footprint is (name, pad count) with no descr or tags."""
+    from stockfixtures import write_stock_kicad
+
+    rows = {
+        library: tuple((footprint, _pads(pads), "", "") for footprint, pads in footprints)
+        for library, footprints in libraries.items()
+    }
+    return write_stock_kicad(tmp_path / name, {}, rows)[1]
+
+
+# A 9-pad vendor footprint drops SOIC-20W by size; SOIC-8 and SOIC-10 are both within one pad and name two families,
+# so the CR-01 tests reach the disagreement branch and not the size filter
+SOIC_TIE = {
+    "Package_SO": (
+        ("SOIC-8_3.9x4.9mm_P1.27mm", 8),
+        ("SOIC-10_3.9x4.9mm_P1mm", 10),
+        ("SOIC-20W_7.5x12.8mm_P1.27mm", 20),
+    )
+}
+
+# The two KiCad 10 footprints that UAT test 1 tied with a 6-pad part: SON-8, with 8 and 9 pads
+TWO_SON_8 = {
+    "Package_SON": (("MicroCrystal_C7_SON-8_1.5x3.2mm_P0.9mm", 8), ("SON-8-1EP_3x2mm_P0.5mm_EP1.4x1.6mm", 9))
+}
+
+
+def _plans_with_and_without(atomic_custom, tmp_path, code: str, footprints: Path, pads: int = 2):
+    """The plan for this vendor footprint code with the given KiCad footprints folder, and the same plan with none."""
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code, pads=pads))
+    try:
+        options = InstallOptions(library=EXISTING)
+        with_folder = build_plan(candidate, options, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+        without = build_plan(candidate, options, atomic_custom, ToolContext())
+    finally:
+        package.close()
+    assert not with_folder.blocked, with_folder.issues
+    assert not without.blocked, without.issues
+    return with_folder, without
+
+
+def _words(text: str) -> list[str]:
+    return [word.rstrip(",") for word in text.split()]
+
+
+@pytest.mark.parametrize("code", ["SON50P150X150X60-6N", "SON65P200X200X80-6N"])
+def test_a_six_pad_part_takes_no_family_from_a_son_8_tie(atomic_custom, tmp_path, code):
+    footprints = _stock_tree(tmp_path, "son", TWO_SON_8)
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code, pads=6))
+    try:
+        options = InstallOptions(library=EXISTING)
+        with_folder = build_plan(candidate, options, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+        bare = build_plan(candidate, options, atomic_custom, ToolContext())
+        assert not with_folder.blocked, with_folder.issues
+        assert not bare.blocked, bare.issues
+        text = with_folder.part_text
+        assert text == bare.part_text
+        assert bare.part_text.fp_description == f"1.5 mm pitch, TI {code}"
+        for field in (text.fp_description, text.fp_tags, text.keywords):
+            assert not any(word.startswith("SON-") for word in _words(field)), field
+        result = apply_plan(with_folder, backup_root=tmp_path / "bk")
+    finally:
+        package.close()
+    assert result.ok, result.issues
+    installed = load(atomic_custom.footprints_dir / "Atomic_Footprints.pretty" / f"{code}.kicad_mod")
+    assert vendor_texts(footprint_name(installed.root).node) == (bare.part_text.fp_description, bare.part_text.fp_tags)
+
+
+@pytest.mark.parametrize(
+    ("pads", "family"),
+    [
+        pytest.param(5, None, id="5 pads"),
+        pytest.param(7, "SON-8", id="7 pads"),
+        pytest.param(8, "SON-8", id="8 pads"),
+        pytest.param(10, "SON-8", id="10 pads"),
+        pytest.param(11, None, id="11 pads"),
+    ],
+)
+def test_a_leading_letters_tie_counts_only_footprints_within_one_pad(atomic_custom, tmp_path, pads, family):
+    # The 8-pad and 9-pad SON-8 footprints: 7 and 10 pads are still within one pad of one of them (owner decision 2026-10-29)
+    footprints = _stock_tree(tmp_path, "son", TWO_SON_8)
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, "SON50P150X150X60-6N", footprints, pads)
+    if family is None:
+        assert plan.part_text == bare.part_text
+        return
+    assert plan.part_text.fp_description.startswith(f"{family}, ")
+    assert family in plan.part_text.keywords.split()
+
+
+def test_an_ambiguous_package_code_supplies_no_family(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "two_soic", SOIC_TIE)
+    code = "SOIC127P600X175-8N"
+    package, candidate = _open_vendor(_vendor_zip(tmp_path, footprint=code, pads=9))
+    try:
+        options = InstallOptions(library=EXISTING)
+        ambiguous = build_plan(candidate, options, atomic_custom, ToolContext(kicad_footprints_dir=footprints))
+        bare = build_plan(candidate, options, atomic_custom, ToolContext())
+        assert not ambiguous.blocked, ambiguous.issues
+        text = ambiguous.part_text
+        assert text == bare.part_text
+        assert bare.part_text.fp_description == f"1.5 mm pitch, TI {code}"
+        for field in (text.fp_description, text.fp_tags, text.keywords):
+            assert not any(word.startswith("SOIC-") for word in _words(field)), field
+        result = apply_plan(ambiguous, backup_root=tmp_path / "bk")
+    finally:
+        package.close()
+    assert result.ok, result.issues
+    installed = load(atomic_custom.footprints_dir / "Atomic_Footprints.pretty" / f"{code}.kicad_mod")
+    assert vendor_texts(footprint_name(installed.root).node) == (bare.part_text.fp_description, bare.part_text.fp_tags)
+
+
+SOIC_CODE = "SOIC127P600X175-8N"
+
+
+def test_a_single_leading_letters_match_supplies_its_family(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "one_soic", {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8),)})
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints, pads=8)
+    assert plan.part_text.fp_description.startswith("SOIC-8, ")
+    assert "SOIC-8" in plan.part_text.keywords.split()
+
+
+def test_a_unique_full_code_match_supplies_its_family(atomic_custom, tmp_path):
+    # A full-code tie is not pad-filtered: these footprints have 5 pads, the vendor footprint 2, and it still gets SOT-23-5
+    footprints = _stock_tree(
+        tmp_path, "sot", {"Package_TO_SOT_SMD": (("SOT-23-5", 5), ("TSOT-23-5", 5))}
+    )
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, "SOT-23-5", footprints)
+    assert plan.part_text.fp_description.startswith("SOT-23-5, ")
+
+
+@pytest.mark.parametrize(
+    ("libraries", "code", "family", "pads"),
+    [
+        pytest.param(
+            {"Package_TO_SOT_SMD": (("SOT-23-5", 5), ("SOT-23-5_HandSoldering", 5))}, "SOT-23-5", "SOT-23-5", 2, id="full code"
+        ),
+        pytest.param(
+            {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8), ("SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.29x3mm", 9))},
+            SOIC_CODE,
+            "SOIC-8",
+            8,
+            id="leading letters",
+        ),
+    ],
+)
+def test_a_tie_that_agrees_supplies_the_family(atomic_custom, tmp_path, libraries, code, family, pads):
+    footprints = _stock_tree(tmp_path, "agree", libraries)
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, code, footprints, pads)
+    assert plan.part_text.fp_description.startswith(f"{family}, ")
+    assert family in plan.part_text.keywords.split()
+
+
+def test_a_tie_with_a_footprint_naming_no_family_supplies_no_family(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "socket", {"Package_SO": (("SOIC-8_3.9x4.9mm_P1.27mm", 8), ("SOIC_Socket", 8))})
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints, pads=8)
+    assert plan.part_text == bare.part_text
+
+
+def test_a_lower_case_code_ties_the_same_footprints(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "two_soic", SOIC_TIE)
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE.lower(), footprints, pads=9)
+    assert plan.part_text == bare.part_text
+
+
+def test_an_empty_kicad_footprints_folder_supplies_no_family(atomic_custom, tmp_path):
+    footprints = _stock_tree(tmp_path, "empty", {})
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, SOIC_CODE, footprints)
+    assert plan.part_text == bare.part_text
+
+
+# -- against the installed KiCad footprints (skipped when there is no KiCad install) ---------------------
+
+_LIVE_FP_DIR = find_kicad_footprint_dir()
+needs_kicad_footprints = pytest.mark.skipif(_LIVE_FP_DIR is None, reason="no KiCad install with a footprints folder")
+
+
+@needs_kicad_footprints
+@pytest.mark.parametrize(("code", "wrong_family"), [(SOIC_CODE, "SOIC-20"), ("LQFP48", "LQFP-100")])
+def test_kicad_footprints_give_no_family_to_an_ambiguous_code(atomic_custom, tmp_path, code, wrong_family):
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, code, _LIVE_FP_DIR)
+    assert plan.part_text == bare.part_text
+    text = plan.part_text
+    assert wrong_family not in " ".join((text.keywords, text.fp_description, text.fp_tags))
+
+
+@needs_kicad_footprints
+@pytest.mark.parametrize("code", ["SON50P150X150X60-6N", "SON65P200X200X80-6N"])
+def test_kicad_footprints_give_no_family_to_a_six_pad_son(atomic_custom, tmp_path, code):
+    # UAT test 1 on the real install: the two SON-8 footprints of the tie are 8 and 9 pads, too far from 6
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, code, _LIVE_FP_DIR, pads=6)
+    text = plan.part_text
+    assert text == bare.part_text
+    for field in (text.fp_description, text.fp_tags, text.keywords):
+        assert not any(word.startswith("SON-") for word in _words(field)), field
+
+
+@needs_kicad_footprints
+def test_kicad_footprints_give_a_48_pad_lqfp48_its_family(atomic_custom, tmp_path):
+    # The LQFP-48 footprints have 48 and 49 pads and agree; LQFP-100 is dropped by size
+    plan, _ = _plans_with_and_without(atomic_custom, tmp_path, "LQFP48", _LIVE_FP_DIR, pads=48)
+    text = plan.part_text
+    assert text.fp_description.startswith("LQFP-48, ")
+    assert "LQFP-48" in text.keywords.split()
+    assert "LQFP-100" not in " ".join((text.keywords, text.fp_description, text.fp_tags))
+
+
+@needs_kicad_footprints
+def test_kicad_footprints_give_no_family_to_sot_23_5(atomic_custom, tmp_path):
+    # The KiCad 10 tie at 80 is SOT-23-5 (family SOT-23-5) and SOT-23-5_HandSoldering (its own description gives SOT-23)
+    plan, bare = _plans_with_and_without(atomic_custom, tmp_path, "SOT-23-5", _LIVE_FP_DIR)
+    text = plan.part_text
+    assert text == bare.part_text
+    assert not text.fp_description.startswith("SOT-23-5, ")
+    for field in (text.fp_description, text.fp_tags, text.keywords):
+        assert "SOT-23-5" in _words(field), field
+
+
+@needs_kicad_footprints
+def test_kicad_footprints_keep_the_csd_sentence(atomic_custom, ul_package):
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom, ToolContext(kicad_footprints_dir=_LIVE_FP_DIR))
+    assert plan.part_text.fp_description == SENTENCE
+
+
+# -- the dialog: edit, Regenerate, follow the library ---------------------------------------------------
+
+
+def type_text(dialog: ImportDialog, name: str, text: str) -> None:
+    """Type into one generated-text row like the owner: key presses, so it counts as edited."""
+    from PySide6.QtTest import QTest
+
+    edit = dialog._text_edits[name]
+    edit.setFocus()
+    edit.selectAll()
+    QTest.keyClicks(edit, text)
+
+
+def test_an_edited_keywords_row_is_written_and_regenerate_returns_to_the_generated_text(qtbot, make_dialog):
+    dialog = make_dialog()
+    pick_library(qtbot, dialog)
+    generated = dialog._plan.generated_text.keywords
+    type_text(dialog, "keywords", "custom words")
+    wait_current(qtbot, dialog)
+    assert dialog._plan.part_text.keywords == "custom words"
+    assert dialog._text_edits["keywords"].text() == "custom words"
+    assert dialog._text_regenerate["keywords"].isEnabled()
+    assert not dialog._text_regenerate["fp_tags"].isEnabled()
+    dialog._text_regenerate["keywords"].click()
+    wait_current(qtbot, dialog)
+    assert dialog._plan.part_text.keywords == generated
+    assert dialog._text_edits["keywords"].text() == generated
+    assert not dialog._text_regenerate["keywords"].isEnabled()
+
+
+def test_an_emptied_row_writes_an_empty_value(qtbot, make_dialog):
+    dialog = make_dialog()
+    pick_library(qtbot, dialog)
+    edit = dialog._text_edits["fp_tags"]
+    edit.setFocus()
+    edit.selectAll()
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+
+    QTest.keyClick(edit, Qt.Key.Key_Delete)
+    wait_current(qtbot, dialog)
+    assert dialog._plan.part_text.fp_tags == ""
+    assert dialog._text_edits["fp_tags"].text() == ""
+
+
+def test_an_untouched_row_follows_a_library_change(qtbot, make_dialog):
+    dialog = make_dialog()
+    pick_library(qtbot, dialog, "Atomic_Transistor_FET")
+    before = dialog._text_edits["keywords"].text()
+    assert "FET" in before.split()
+    type_text(dialog, "fp_tags", "mine")
+    wait_current(qtbot, dialog)
+    pick_library(qtbot, dialog, "Atomic_Sensor_Temperature")
+    after = dialog._text_edits["keywords"].text()
+    assert "Temperature" in after.split() and "FET" not in after.split()
+    assert dialog._text_edits["fp_tags"].text() == "mine"  # a typed row keeps its text
+
+
+# -- the real kicad-cli loads what is written -----------------------------------------------------------
+
+
+@pytest.mark.kicad_cli
+def test_cli_loads_the_generated_text(atomic_custom, ul_package, tmp_path, real_tools, kicad_cli_path):
+    from kicad_lib_manager.importer import kicad_cli
+    from kicad_lib_manager.models import Severity
+
+    _, candidate = ul_package
+    plan = plan_for(candidate, atomic_custom, real_tools)
+    assert not plan.blocked, plan.issues
+    result = apply_plan(plan, backup_root=tmp_path / "bk")
+    assert result.ok, result.issues
+    keywords, description, tags = installed_texts(atomic_custom)
+    assert (keywords, description, tags) == (
+        plan.part_text.keywords,
+        plan.part_text.fp_description,
+        plan.part_text.fp_tags,
+    )
+    footprint_data = (plan.pretty_path / f"{FOOTPRINT}.kicad_mod").read_bytes()
+    symbol_lib = (atomic_custom.symbols_dir / f"{LIBRARY}.kicad_sym").read_bytes()
+    issues = kicad_cli.load_gate(
+        kicad_cli_path, library=LIBRARY, symbol_lib=symbol_lib, footprints=[(FOOTPRINT, footprint_data)]
+    )
+    assert [i for i in issues if i.severity is Severity.ERROR] == [], issues
+
+
+def test_text_rows_fit_the_left_pane_and_are_named(qtbot, make_dialog):
+    from PySide6.QtCore import QPoint, QSize
+
+    dialog = make_dialog()
+    dialog.show()
+    wait_current(qtbot, dialog)
+    dialog.resize(900, 600)  # after the edit page shows: it opens at its own size
+    qtbot.waitUntil(lambda: dialog.size() == QSize(900, 600), timeout=5000)
+    scroll = dialog._left_scroll
+    left = scroll.widget()
+    assert not scroll.horizontalScrollBar().isVisible()
+    assert left.width() <= scroll.viewport().width()
+    labels = {"keywords": "Keywords", "fp_description": "Footprint description", "fp_tags": "Footprint tags"}
+    for name, label in labels.items():
+        edit, button = dialog._text_edits[name], dialog._text_regenerate[name]
+        assert edit.accessibleName() == label
+        assert button.accessibleName() == f"Regenerate {label}"
+        assert (button.width(), button.height()) == (24, 24)
+        assert "ki_" not in edit.toolTip() + button.toolTip()
+        # a line edit never overlaps its button, and both stay inside the pane
+        assert edit.mapTo(left, QPoint(edit.width(), 0)).x() <= button.mapTo(left, QPoint(0, 0)).x()
+        assert button.mapTo(left, QPoint(button.width(), 0)).x() <= scroll.viewport().width()

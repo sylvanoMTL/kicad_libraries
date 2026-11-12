@@ -1,222 +1,521 @@
+import os
 import re
-import shutil
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
-from .models import FootprintLibrary, SymbolLibrary
+from . import fsutil, kicad_files
+from .kicad_files import LoadedFile
+from .models import FootprintLibrary, Issue, Severity, SymbolLibrary
+from .sexpr import Edit, Node, apply_edits, quote
 
 ENV_VAR = "KICAD_LIB_GITHUB"
 _MANAGED_MARKER = f"${{{ENV_VAR}}}/"
 
-# Regex to extract individual (lib ...) entries from a table file
-_LIB_ENTRY_RE = re.compile(
-    r'\(lib\s+\(name\s+"([^"]*)"\)'
-    r'\(type\s+"([^"]*)"\)'
-    r'\(uri\s+"([^"]*)"\)'
-    r'\(options\s+"([^"]*)"\)'
-    r'\(descr\s+"([^"]*)"\)\)',
-)
+_TABLE_FILES = {"sym_lib_table": "sym-lib-table", "fp_lib_table": "fp-lib-table"}
+
+# D-20 description rules
+ATOMIC_FOOTPRINTS_DESCRIPTION = "Atomic part footprints (own and vendor)"
+ATOMIC_DESCRIPTION_PREFIX = "Atomic parts: "
 
 
-def parse_lib_table(path: Path) -> list[dict]:
-    """Parse an existing sym-lib-table or fp-lib-table file.
-
-    Returns a list of dicts with keys: name, type, uri, options, descr, raw.
-    """
-    if not path.exists():
-        return []
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return []
-
-    entries = []
-    for m in _LIB_ENTRY_RE.finditer(text):
-        entries.append({
-            "name": m.group(1),
-            "type": m.group(2),
-            "uri": m.group(3),
-            "options": m.group(4),
-            "descr": m.group(5),
-            "raw": m.group(0),
-        })
-    return entries
-
-
-def count_table_entries(path: Path) -> int:
-    """Count the number of library entries in an existing table file."""
-    return len(parse_lib_table(path))
-
-
-def _format_entry(name: str, lib_type: str, uri: str,
-                   options: str = "", descr: str = "") -> str:
+def _entry_text(name: str, uri: str, descr: str = "") -> str:
     return (
-        f'  (lib (name "{name}")(type "{lib_type}")'
-        f'(uri "{uri}")'
-        f'(options "{options}")(descr "{descr}"))'
+        f'(lib (name {quote(name)})(type {quote("KiCad")})'
+        f'(uri {quote(uri)})(options {quote("")})(descr {quote(descr)}))'
     )
+
+
+def stock_descriptions(template_table: Path | None) -> dict[str, str]:
+    """Read KiCad's own per-stem descriptions from its stock lib table (D-20).
+
+    Never raises: None, a missing path, an unreadable file, or a file without a lib
+    table all give {}, so an Atomic_ library falls back to its stem's own words.
+    """
+    if template_table is None:
+        return {}
+    loaded = kicad_files.load(template_table)
+    if isinstance(loaded, Issue):
+        return {}
+    table = kicad_files.lib_table(loaded.root)
+    if table is None:
+        return {}
+    result: dict[str, str] = {}
+    for entry in table.entries:
+        if not entry.name or not entry.descr or not entry.descr.strip():
+            continue
+        result[entry.name] = " ".join(entry.descr.split())
+    return result
+
+
+def library_description(nickname: str, rel_path: str, stock: Mapping[str, str]) -> str:
+    """The D-20 description text for one library entry."""
+    if nickname == "Atomic_Footprints":
+        return ATOMIC_FOOTPRINTS_DESCRIPTION
+    if nickname.startswith("Atomic_"):
+        stem = nickname[len("Atomic_"):]
+        return ATOMIC_DESCRIPTION_PREFIX + stock.get(stem, stem.replace("_", " "))
+    source = rel_path.split("/", 1)[0]
+    return f"{source}: {nickname.replace('_', ' ')}"
+
+
+def _whole_line(text: str, start: int, end: int) -> tuple[int, int] | None:
+    """Span of the full source line(s) holding only this node, else None."""
+    left = start
+    while left > 0 and text[left - 1] in " \t":
+        left -= 1
+    if not (left == 0 or text[left - 1] == "\n"):
+        return None
+    right = end
+    while right < len(text) and text[right] in " \t":
+        right += 1
+    if right == len(text):
+        return left, right
+    if text.startswith("\r\n", right):
+        return left, right + 2
+    if text[right] == "\n":
+        return left, right + 1
+    return None  # another token follows on the same line
 
 
 class MergeResult:
     """Result of a table merge operation."""
-    __slots__ = ("content", "preserved", "added", "removed")
+    __slots__ = ("content", "preserved", "added", "removed", "issues")
 
     def __init__(self, content: str, preserved: int, added: int,
-                 removed: list[str] | None = None):
+                 removed: list[str] | None = None,
+                 issues: list[Issue] | None = None):
         self.content = content
         self.preserved = preserved
         self.added = added
         self.removed = removed or []
+        self.issues = issues or []
 
 
-def _merge_table(table_tag: str, existing_path: Path,
-                 new_entries: list[str],
-                 new_nicknames: set[str]) -> MergeResult:
-    """Merge new entries with existing non-managed entries.
+def _is_managed(entry: kicad_files.LibEntry) -> bool:
+    return entry.uri is not None and _MANAGED_MARKER in entry.uri
 
-    Preserves external entries, replaces managed entries with new selection.
-    Reports which managed entries were removed (deselected).
+
+def _tail(entry: kicad_files.LibEntry) -> str:
+    """Repo-relative path of a managed entry: the URI text after the marker."""
+    return entry.uri.split(_MANAGED_MARKER, 1)[1]
+
+
+def _line_of(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1
+
+
+def _insert_before_close(text: str, table_node: Node, eol: str, block: str) -> Edit:
+    """Edit that puts block just before the table's closing paren, on its own line(s)."""
+    p = table_node.end - 1
+    line_start = p
+    while line_start > 0 and text[line_start - 1] in " \t":
+        line_start -= 1
+    if line_start == 0 or text[line_start - 1] == "\n":
+        return Edit(line_start, line_start, block)
+    return Edit(p, p, eol + block)
+
+
+def _merge_table(tag: str, existing: LoadedFile | None,
+                 libs: list, *, stock: Mapping[str, str] | None = None) -> MergeResult | Issue:
+    """Splice the selected libraries into an existing table.
+
+    Only entries owned by this tool (URI holds the managed marker) are removed;
+    every other byte of the existing file is kept as it is.
     """
-    existing = parse_lib_table(existing_path)
+    filename = _TABLE_FILES[tag]
+    stock = stock or {}
+    selected = [lib for lib in libs if lib.selected]
 
-    preserved = [e for e in existing if _MANAGED_MARKER not in e["uri"]]
-    old_managed = [e for e in existing if _MANAGED_MARKER in e["uri"]]
+    seen: dict[str, SymbolLibrary | FootprintLibrary] = {}
+    for lib in selected:
+        prior = seen.get(lib.nickname)
+        if prior is not None:
+            return Issue(
+                Severity.ERROR,
+                "table.duplicate_nickname",
+                f"Did not write {filename}: '{lib.nickname}' is selected twice "
+                f"({prior.rel_path}, {lib.rel_path}); keep only one selected",
+            )
+        seen[lib.nickname] = lib
 
-    # Entries that were managed but are no longer in the selection
-    removed = [e["name"] for e in old_managed if e["name"] not in new_nicknames]
+    if existing is None or not existing.source.text.strip(" \t\r\n"):
+        lines = [f"({tag}\n"]
+        lines += [
+            f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}', library_description(lib.nickname, lib.rel_path, stock))}\n"
+            for lib in selected
+        ]
+        lines.append(")\n")
+        return MergeResult("".join(lines), 0, len(selected))
 
-    lines = [f"({table_tag}"]
-    for e in preserved:
-        lines.append(f"  {e['raw']}")
-    lines.extend(new_entries)
-    lines.append(")")
+    table = kicad_files.lib_table(existing.root)
+    if table is None or table.tag != tag:
+        return Issue(
+            Severity.ERROR,
+            "table.unrecognised",
+            f"Could not update {filename}: no ({tag} ...) table found; "
+            "file left unchanged",
+        )
+
+    text = existing.source.text
+    eol = existing.source.eol
+    issues: list[Issue] = []
+
+    # Classify every child: managed ones are regenerated, all others are kept as they are
+    managed: list[kicad_files.LibEntry] = []
+    externals: dict[str, kicad_files.LibEntry] = {}
+    external_count = 0
+    unclassified: list[Node] = []
+    for entry in table.entries:
+        if entry.name is None or entry.uri is None:
+            unclassified.append(entry.node)
+        elif _is_managed(entry):
+            managed.append(entry)
+        else:
+            external_count += 1
+            externals.setdefault(entry.name, entry)
+    unclassified += [n for n in table.others if n.head != "version"]
+    unclassified.sort(key=lambda n: n.start)
+    for node in unclassified:
+        issues.append(Issue(
+            Severity.WARNING,
+            "table.unclassified",
+            f"{filename}: kept an unrecognised item at line "
+            f"{_line_of(text, node.start)} as it is",
+        ))
+
+    # An external entry owns its nickname; the repo library of that name is not added
+    generated = []
+    for lib in selected:
+        clash = externals.get(lib.nickname)
+        if clash is None:
+            generated.append(lib)
+            continue
+        issues.append(Issue(
+            Severity.WARNING,
+            "table.external_clash",
+            f"{filename}: '{lib.nickname}' is already defined by an external entry "
+            f"({clash.uri}); kept it and did not add {_MANAGED_MARKER}{lib.rel_path}",
+        ))
+    # D-20: a description already present in an existing managed entry is kept as it is
+    kept = {
+        _tail(entry): entry.descr for entry in managed if entry.descr and entry.descr.strip()
+    }
+    block = "".join(
+        f"  {_entry_text(lib.nickname, f'{_MANAGED_MARKER}{lib.rel_path}', kept.get(lib.rel_path) or library_description(lib.nickname, lib.rel_path, stock))}{eol}"
+        for lib in generated
+    )
+
+    scanned_paths = {lib.rel_path for lib in libs}
+    generated_paths = {lib.rel_path for lib in generated}
+    removed: list[str] = []
+    for entry in managed:
+        tail = _tail(entry)
+        if tail not in scanned_paths:
+            issues.append(Issue(
+                Severity.WARNING,
+                "table.stale_managed",
+                f"{filename}: removed stale entry '{entry.name}' ({entry.uri}); "
+                "that library no longer exists in the repo (the backup still has it)",
+            ))
+        elif tail not in generated_paths:
+            removed.append(entry.name)
+        elif entry.flags or entry.extras:
+            settings = [*entry.flags, *(x.head for x in entry.extras)]
+            issues.append(Issue(
+                Severity.WARNING,
+                "table.managed_flags_dropped",
+                f"{filename}: '{entry.name}' was regenerated without its "
+                f"{', '.join(settings)} setting(s)",
+            ))
+
+    edits: list[Edit] = []
+    placed = False
+    for i, entry in enumerate(managed):
+        span = _whole_line(text, entry.node.start, entry.node.end)
+        if i == 0 and span is not None:
+            edits.append(Edit(span[0], span[1], block))
+            placed = True
+        else:
+            lo, hi = span if span is not None else (entry.node.start, entry.node.end)
+            edits.append(Edit(lo, hi, ""))
+
+    if not placed and block:
+        edits.append(_insert_before_close(text, table.node, eol, block))
 
     return MergeResult(
-        content="\n".join(lines) + "\n",
-        preserved=len(preserved),
-        added=len(new_entries),
-        removed=removed,
+        apply_edits(text, edits),
+        external_count + len(unclassified),
+        len(generated),
+        removed,
+        issues,
     )
 
 
 def generate_sym_lib_table(libs: list[SymbolLibrary],
-                           existing_path: Path | None = None) -> MergeResult:
-    selected = [lib for lib in libs if lib.selected]
-    new_entries = [
-        _format_entry(lib.nickname, "KiCad", f"${{{ENV_VAR}}}/{lib.rel_path}")
-        for lib in selected
-    ]
-    new_nicknames = {lib.nickname for lib in selected}
-
-    if existing_path and existing_path.exists():
-        return _merge_table("sym_lib_table", existing_path,
-                            new_entries, new_nicknames)
-
-    lines = ["(sym_lib_table"] + new_entries + [")"]
-    return MergeResult("\n".join(lines) + "\n", 0, len(new_entries))
+                           existing: LoadedFile | None = None,
+                           *, stock: Mapping[str, str] | None = None) -> MergeResult | Issue:
+    return _merge_table("sym_lib_table", existing, libs, stock=stock)
 
 
 def generate_fp_lib_table(libs: list[FootprintLibrary],
-                          existing_path: Path | None = None) -> MergeResult:
-    selected = [lib for lib in libs if lib.selected]
-    new_entries = [
-        _format_entry(lib.nickname, "KiCad", f"${{{ENV_VAR}}}/{lib.rel_path}")
-        for lib in selected
-    ]
-    new_nicknames = {lib.nickname for lib in selected}
-
-    if existing_path and existing_path.exists():
-        return _merge_table("fp_lib_table", existing_path,
-                            new_entries, new_nicknames)
-
-    lines = ["(fp_lib_table"] + new_entries + [")"]
-    return MergeResult("\n".join(lines) + "\n", 0, len(new_entries))
+                          existing: LoadedFile | None = None,
+                          *, stock: Mapping[str, str] | None = None) -> MergeResult | Issue:
+    return _merge_table("fp_lib_table", existing, libs, stock=stock)
 
 
-def _check_nickname_collisions(existing_path: Path,
-                               new_libs: list) -> list[str]:
-    """Warn if a new entry has the same name as a preserved external entry."""
-    existing = parse_lib_table(existing_path)
-    external_names = {
-        e["name"] for e in existing if _MANAGED_MARKER not in e["uri"]
-    }
-    new_names = {lib.nickname for lib in new_libs if lib.selected}
-    collisions = external_names & new_names
-    return [
-        f"Warning: nickname '{n}' exists in both external table and selection"
-        for n in sorted(collisions)
-    ]
-
-
-def backup_existing(file_path: Path) -> Path | None:
-    if not file_path.exists():
-        return None
-
-    base_name = file_path.name
-    parent = file_path.parent
-    max_num = 0
-    pattern = re.compile(re.escape(base_name) + r"_backup_(\d+)$")
-
-    for f in parent.iterdir():
-        m = pattern.match(f.name)
+def _next_backup_number(folder: Path) -> int:
+    """One more than the highest backup number of either table, so a pair shares it."""
+    pattern = re.compile(r"^(?:sym|fp)-lib-table_backup_(\d+)$")
+    highest = 0
+    try:
+        names = os.listdir(folder)
+    except OSError:
+        return 1
+    for name in names:
+        m = pattern.match(name)
         if m:
-            max_num = max(max_num, int(m.group(1)))
-
-    backup_name = f"{base_name}_backup_{max_num + 1}"
-    backup_path = parent / backup_name
-    shutil.copy2(file_path, backup_path)
-    return backup_path
+            highest = max(highest, int(m.group(1)))
+    return highest + 1
 
 
 def write_tables(dest_folder: Path,
                  sym_libs: list[SymbolLibrary],
-                 fp_libs: list[FootprintLibrary]) -> list[str]:
-    messages = []
-    dest_folder.mkdir(parents=True, exist_ok=True)
+                 fp_libs: list[FootprintLibrary],
+                 *, stock: Mapping[str, str] | None = None) -> list[Issue]:
+    issues: list[Issue] = []
+    try:
+        dest_folder.mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return [Issue(Severity.ERROR, "fs.write_failed",
+                      f"Could not create {dest_folder}: {e.strerror or e}")]
 
-    sym_path = dest_folder / "sym-lib-table"
-    fp_path = dest_folder / "fp-lib-table"
+    backup_number = _next_backup_number(dest_folder)
 
-    # Check for nickname collisions
-    for path, libs, label in [
-        (sym_path, sym_libs, "sym-lib-table"),
-        (fp_path, fp_libs, "fp-lib-table"),
-    ]:
-        collisions = _check_nickname_collisions(path, libs)
-        messages.extend(collisions)
+    # Each table is processed on its own: one failure never blocks the other
+    for tag, libs in (("sym_lib_table", sym_libs), ("fp_lib_table", fp_libs)):
+        filename = _TABLE_FILES[tag]
+        path = dest_folder / filename
 
-    # Generate merged content
-    sym_result = generate_sym_lib_table(sym_libs, sym_path)
-    fp_result = generate_fp_lib_table(fp_libs, fp_path)
+        existing = None
+        bom = False
+        if path.exists():
+            loaded = kicad_files.load(path)
+            if isinstance(loaded, Issue):
+                issues.append(loaded)
+                continue
+            issues.extend(loaded.source.issues)
+            existing = loaded
+            bom = loaded.source.bom
 
-    for path, result, label in [
-        (sym_path, sym_result, "sym-lib-table"),
-        (fp_path, fp_result, "fp-lib-table"),
-    ]:
-        backup = backup_existing(path)
-        if backup:
-            messages.append(f"Backed up {label} -> {backup.name}")
-        path.write_text(result.content, encoding="utf-8")
+        result = _merge_table(tag, existing, libs, stock=stock)
+        if isinstance(result, Issue):
+            issues.append(result)
+            continue
 
-        parts = [f"Written {label}:"]
-        if result.preserved:
-            parts.append(f"preserved {result.preserved} external")
-        parts.append(f"added {result.added} from selection")
+        if existing is not None and result.content == existing.source.text:
+            issues.append(Issue(Severity.INFO, "table.unchanged",
+                                f"{filename} is already up to date; not rewritten"))
+            issues.extend(result.issues)
+            continue
+
+        if existing is not None:
+            backup = fsutil.backup_file(path, path.parent, number=backup_number)
+            if isinstance(backup, Issue):
+                issues.append(backup)
+                continue
+            issues.append(Issue(Severity.INFO, "table.backed_up",
+                                f"Backed up {filename} -> {backup.name}"))
+
+        failure = fsutil.atomic_write_text(path, result.content, bom=bom)
+        if failure is not None:
+            issues.append(failure)
+            continue
+
+        issues.append(Issue(
+            Severity.SUCCESS, "table.written",
+            f"Written {filename}: preserved {result.preserved} external | "
+            f"added {result.added} from selection",
+        ))
         if result.removed:
-            parts.append(f"removed {len(result.removed)} "
-                         f"({', '.join(result.removed)})")
-        messages.append(" | ".join(parts))
+            issues.append(Issue(
+                Severity.INFO, "table.removed",
+                f"Removed from {filename} (deselected): {', '.join(result.removed)}",
+            ))
+        issues.extend(result.issues)
 
-    return messages
+    return issues
 
 
-def list_backups(folder: Path) -> list[Path]:
-    backups = []
-    pattern = re.compile(r"(sym-lib-table|fp-lib-table)_backup_\d+$")
-    if folder.exists():
-        for f in sorted(folder.iterdir()):
-            if f.is_file() and pattern.match(f.name):
-                backups.append(f)
-    return backups
+def _same_rel(a: str, b: str, *, fold: bool | None = None) -> bool:
+    """True when two repo-relative paths name the same place.
+
+    Slash direction and a trailing slash never matter; letter case matters only when fold is
+    true. fold=None means "on Windows", where the file system ignores case (D-03).
+    """
+    if fold is None:
+        fold = os.name == "nt"
+
+    def norm(value: str) -> str:
+        value = value.strip().replace("\\", "/").rstrip("/")
+        return value.casefold() if fold else value
+
+    return norm(a) == norm(b)
+
+
+def _add_entry(tag: str, path: Path, nickname: str, rel_path: str,
+               backup_number: int, issues: list[Issue], *, repo_root: Path,
+               add_missing: bool = True, fold: bool | None = None,
+               stock: Mapping[str, str] | None = None) -> str:
+    """Add or repoint one managed entry in one table.
+
+    Returns "added", "listed", "updated", "skipped" or "missing" (add_missing is false and the
+    table does not list the nickname).
+    """
+    filename = _TABLE_FILES[tag]
+    lib_cls = SymbolLibrary if tag == "sym_lib_table" else FootprintLibrary
+    uri = f"{_MANAGED_MARKER}{rel_path}"
+
+    if not path.exists():
+        if not add_missing:
+            return "missing"
+        template = _merge_table(
+            tag, None, [lib_cls(nickname, rel_path, "", selected=True)], stock=stock
+        )
+        failure = fsutil.atomic_write_text(path, template.content, bom=False)
+        if failure is not None:
+            issues.append(failure)
+            return "skipped"
+        return "added"
+
+    loaded = kicad_files.load(path)
+    if isinstance(loaded, Issue):
+        issues.append(loaded)
+        return "skipped"
+    issues.extend(loaded.source.issues)
+
+    text = loaded.source.text
+    outcome = "added"
+    if not text.strip(" \t\r\n"):
+        if not add_missing:
+            return "missing"
+        new_text = _merge_table(
+            tag, None, [lib_cls(nickname, rel_path, "", selected=True)], stock=stock
+        ).content
+    else:
+        table = kicad_files.lib_table(loaded.root)
+        if table is None or table.tag != tag:
+            issues.append(Issue(
+                Severity.ERROR,
+                "table.unrecognised",
+                f"Could not update {filename}: no ({tag} ...) table found; "
+                "file left unchanged",
+            ))
+            return "skipped"
+        # One outcome for all entries under this nickname, by precedence: a matching entry, then
+        # a live tool-owned entry, then a hand-added entry, then a stale tool-owned entry
+        same = [entry for entry in table.entries if entry.name == nickname]
+        managed = [entry for entry in same if _is_managed(entry)]
+        if any(_same_rel(_tail(entry), rel_path, fold=fold) for entry in managed):
+            return "listed"
+        live = next((entry for entry in managed if (repo_root / _tail(entry)).exists()), None)
+        if live is not None:
+            issues.append(Issue(
+                Severity.WARNING,
+                "table.path_clash",
+                f"Not added to {filename}: the name {nickname} already points at "
+                f"{_tail(live)}; KiCad still loads that library. Rename one of them.",
+            ))
+            return "skipped"
+        by_hand = next((entry for entry in same if not _is_managed(entry)), None)
+        if by_hand is not None:
+            issues.append(Issue(
+                Severity.WARNING,
+                "table.external_clash",
+                f"Not added to {filename}: {nickname} is already used by an entry you added "
+                f"by hand ({by_hand.uri}); KiCad keeps loading that one.",
+            ))
+            return "skipped"
+        if managed:
+            # Every tool-owned entry under the name points at a library that is gone: repoint
+            # the first one, changing only its URI value
+            node = managed[0].value_nodes["uri"]
+            new_text = apply_edits(text, [Edit(node.start, node.end, quote(uri))])
+            outcome = "updated"
+        elif not add_missing:
+            return "missing"
+        else:
+            descr = library_description(nickname, rel_path, stock or {})
+            block = f"  {_entry_text(nickname, uri, descr)}{loaded.source.eol}"
+            new_text = apply_edits(
+                text, [_insert_before_close(text, table.node, loaded.source.eol, block)]
+            )
+
+    backup = fsutil.backup_file(path, path.parent, number=backup_number)
+    if isinstance(backup, Issue):
+        issues.append(backup)
+        return "skipped"
+    issues.append(Issue(Severity.INFO, "table.backed_up",
+                        f"Backed up {filename} -> {backup.name}"))
+    failure = fsutil.atomic_write_text(path, new_text, bom=loaded.source.bom)
+    if failure is not None:
+        issues.append(failure)
+        return "skipped"
+    return outcome
+
+
+def add_library_entries(dest_folder: Path, *, symbol: tuple[str, str] | None = None,
+                        footprint: tuple[str, str] | None = None, repo_root: Path,
+                        add_missing: bool = True, fold: bool | None = None,
+                        stock: Mapping[str, str] | None = None) -> list[Issue]:
+    """Add managed entries to sym-lib-table and fp-lib-table, each under its own nickname.
+
+    symbol and footprint are (nickname, repo-relative posix path) pairs; only the ones given are
+    handled. Never reorders or removes any entry, and never creates the destination folder
+    (D-17). A table that already lists the nickname at that path is left alone. A tool-owned
+    entry under the nickname whose target is gone from repo_root is repointed (the table is
+    backed up first, only the URI changes); one whose target still exists, and any entry added
+    by hand, is never edited and gives a warning. A missing table is created from the same
+    template Generate uses. With add_missing false no entry is ever added or created: a table
+    that does not list the nickname gives "table.not_listed" (an install into an existing library).
+    """
+    if not dest_folder.is_dir():
+        return [Issue(Severity.ERROR, "table.dest_missing",
+                      f"Destination folder does not exist: {dest_folder}")]
+
+    issues: list[Issue] = []
+    requested = [
+        (tag, pair) for tag, pair in (("sym_lib_table", symbol), ("fp_lib_table", footprint))
+        if pair is not None
+    ]
+    if not requested:
+        return issues
+    backup_number = _next_backup_number(dest_folder)
+    outcomes: list[tuple[str, str, str, str]] = []  # (filename, nickname, outcome, rel_path)
+    for tag, (nickname, rel_path) in requested:
+        filename = _TABLE_FILES[tag]
+        outcome = _add_entry(tag, dest_folder / filename, nickname, rel_path, backup_number, issues,
+                             repo_root=repo_root, add_missing=add_missing, fold=fold, stock=stock)
+        outcomes.append((filename, nickname, outcome, rel_path))
+
+    if len(outcomes) == 2 and all(outcome == "added" for _, _, outcome, _ in outcomes):
+        issues.append(Issue(Severity.SUCCESS, "table.entries_added",
+                            f"Added {outcomes[0][1]} to sym-lib-table and {outcomes[1][1]} to fp-lib-table"))
+        return issues
+    for filename, nickname, outcome, rel_path in outcomes:
+        if outcome == "added":
+            issues.append(Issue(Severity.SUCCESS, "table.entry_added",
+                                f"Added {nickname} to {filename}"))
+        elif outcome == "updated":
+            issues.append(Issue(Severity.SUCCESS, "table.entry_updated",
+                                f"Updated: {nickname} in {filename} now points at {rel_path}"))
+        elif outcome == "listed":
+            issues.append(Issue(Severity.INFO, "table.already_listed",
+                                f"{filename} already lists {nickname}; not changed"))
+        elif outcome == "missing":
+            issues.append(Issue(Severity.INFO, "table.not_listed",
+                                f"{filename} does not list {nickname}"))
+    return issues
 
 
 def list_backup_pairs(folder: Path) -> list[tuple[int, Path | None, Path | None]]:
@@ -242,33 +541,58 @@ def list_backup_pairs(folder: Path) -> list[tuple[int, Path | None, Path | None]
     return [(n, sym_map.get(n), fp_map.get(n)) for n in all_nums]
 
 
-def restore_backup(backup_path: Path) -> list[str]:
-    messages = []
-    name = backup_path.name
-    # Extract base name: remove _backup_N suffix
-    base_name = re.sub(r"_backup_\d+$", "", name)
-    current_path = backup_path.parent / base_name
-
-    # Back up current file before restoring
-    backup = backup_existing(current_path)
-    if backup:
-        messages.append(f"Backed up current {base_name} -> {backup.name}")
-
-    shutil.copy2(backup_path, current_path)
-    messages.append(f"Restored {name} -> {base_name}")
-    return messages
-
-
-def restore_backup_pair(folder: Path, backup_num: int) -> list[str]:
+def restore_backup_pair(folder: Path, backup_num: int) -> list[Issue]:
     """Restore both sym-lib-table and fp-lib-table for a given backup number."""
-    messages = []
+    issues: list[Issue] = []
+    backup_number = _next_backup_number(folder)
     for base_name in ("sym-lib-table", "fp-lib-table"):
         backup_path = folder / f"{base_name}_backup_{backup_num}"
-        if backup_path.exists():
-            current_path = folder / base_name
-            existing_backup = backup_existing(current_path)
-            if existing_backup:
-                messages.append(f"Backed up current {base_name} -> {existing_backup.name}")
-            shutil.copy2(backup_path, current_path)
-            messages.append(f"Restored {backup_path.name} -> {base_name}")
-    return messages
+        if not backup_path.is_file():
+            continue
+        try:
+            data = backup_path.read_bytes()
+        except OSError as e:
+            issues.append(Issue(Severity.ERROR, "fs.read_failed",
+                                f"Could not read {backup_path.name}: {e.strerror or e}"))
+            continue
+
+        current_path = folder / base_name
+        # Never overwrite a table without a safety copy of it
+        if current_path.exists():
+            safety = fsutil.backup_file(current_path, folder, number=backup_number)
+            if isinstance(safety, Issue):
+                issues.append(safety)
+                continue
+            issues.append(Issue(Severity.INFO, "table.backed_up",
+                                f"Backed up current {base_name} -> {safety.name}"))
+
+        failure = fsutil.atomic_write_bytes(current_path, data)
+        if failure is not None:
+            issues.append(failure)
+            continue
+        issues.append(Issue(Severity.SUCCESS, "table.restored",
+                            f"Restored {backup_path.name} -> {base_name}"))
+    return issues
+
+
+@dataclass(frozen=True)
+class TableInfo:
+    entry_count: int
+    managed: frozenset[str]  # repo-relative paths (URI tails) of managed entries
+
+
+def table_info(path: Path) -> TableInfo | Issue | None:
+    """Read a lib table's entry count and managed rel_paths; None when the file is absent."""
+    if not path.exists():
+        return None
+    loaded = kicad_files.load(path)
+    if isinstance(loaded, Issue):
+        return loaded
+    table = kicad_files.lib_table(loaded.root)
+    if table is None:
+        return Issue(Severity.ERROR, "table.unrecognised",
+                     f"Could not read {path.name}: no lib table found")
+    managed = frozenset(
+        _tail(e) for e in table.entries if _is_managed(e)
+    )
+    return TableInfo(len(table.entries), managed)

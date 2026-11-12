@@ -1,0 +1,43 @@
+{
+  "contract": "1.0.0",
+  "flavor": "core",
+  "milestone": "v2.0 — Atomic Libraries",
+  "phases": [
+    {
+      "number": "8",
+      "name": "Test Isolation and KiCad 10",
+      "status": "complete"
+    },
+    {
+      "number": "9",
+      "name": "Atomic Rule Check and Scan Detection",
+      "status": "complete"
+    },
+    {
+      "number": "10",
+      "name": "Importer on the Atomic Scheme",
+      "status": "complete"
+    },
+    {
+      "number": "11",
+      "name": "Commit Gate and Commit Panel Fixes",
+      "status": "complete"
+    },
+    {
+      "number": "12",
+      "name": "Import Flow Fixes and Case-Sensitive Re-test",
+      "status": "in_progress"
+    },
+    {
+      "number": "13",
+      "name": "Atomic Migration and KiCad Setup",
+      "status": "pending"
+    }
+  ],
+  "next": {
+    "command": "/gsd-progress --next",
+    "label": "Advance to the next step",
+    "reason": "Phase 5 of 6 · 67% · executing"
+  },
+  "updated_at": "2026-11-01T13:50:15.669Z"
+}

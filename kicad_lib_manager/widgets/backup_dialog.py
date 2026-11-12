@@ -49,12 +49,17 @@ class BackupDialog(QDialog):
         self._list.currentRowChanged.connect(self._on_selection_changed)
         self._pairs: list[tuple[int, Path | None, Path | None]] = []
 
-        if default_folder:
+        if default_folder.strip():
             self._scan()
+
+    def _folder(self) -> Path | None:
+        """The folder box as a path; None when it is blank (Path("") is the working directory)."""
+        text = self._folder_edit.text().strip()
+        return Path(text) if text else None
 
     def _browse_folder(self):
         folder = QFileDialog.getExistingDirectory(
-            self, "Select backup folder", self._folder_edit.text()
+            self, "Select backup folder", self._folder_edit.text().strip()
         )
         if folder:
             self._folder_edit.setText(folder)
@@ -63,8 +68,8 @@ class BackupDialog(QDialog):
     def _scan(self):
         self._list.clear()
         self._pairs.clear()
-        folder = Path(self._folder_edit.text())
-        if folder.exists():
+        folder = self._folder()
+        if folder is not None and folder.exists():
             self._pairs = list_backup_pairs(folder)
             for num, sym_path, fp_path in self._pairs:
                 parts = []
@@ -84,8 +89,11 @@ class BackupDialog(QDialog):
         )
 
     def _on_accept(self):
+        folder = self._folder()
+        if folder is None:
+            return
         row = self._list.currentRow()
         if 0 <= row < len(self._pairs):
             self.selected_backup_num = self._pairs[row][0]
-            self.selected_folder = Path(self._folder_edit.text())
+            self.selected_folder = folder
             self.accept()
