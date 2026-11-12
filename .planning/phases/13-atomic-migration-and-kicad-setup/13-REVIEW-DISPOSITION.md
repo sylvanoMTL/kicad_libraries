@@ -1,4 +1,4 @@
-| IN-01 |  | fixed | 13-22 (confirmed fixed by 13-REVIEW.md, 2026-11-12) || CR-01 |  | fixed | 13-22 (confirmed fixed by 13-REVIEW.md, 2026-11-12) |---
+---
 phase: 13
 review: 13-REVIEW.md
 titles: json
@@ -29,8 +29,8 @@ recorded: 2026-11-12T12:08:23.783Z
 | Finding | Severity | Disposition | Source |
 |---------|----------|-------------|--------|
 | WR-01 | warning | open | - |
-| CR-01 | critical | open | - (not in the current review) |
-| IN-01 | info | open | - (not in the current review) |
+| CR-01 | critical | fixed | 13-22 (confirmed fixed by 13-REVIEW.md, 2026-11-12) |
+| IN-01 | info | fixed | 13-22 (confirmed fixed by 13-REVIEW.md, 2026-11-12) |
 | WR-02 | warning | open | - (not in the current review) |
 
 Dispositions: `open` (recorded, not yet triaged), `fixed`, `skipped`, `deferred`.
