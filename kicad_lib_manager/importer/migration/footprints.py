@@ -311,6 +311,7 @@ def _model_final_names(
     issues: list[Issue] = []
     claimed: dict[str, str] = {}
     clashed: set[str] = set()
+    model_names_cf = {name.casefold() for name in model_name_set}
 
     for old_name, group in sorted(model_groups.items()):
         winner_key, winner_fp = min(group, key=lambda item: item[0])
@@ -326,7 +327,7 @@ def _model_final_names(
             # Case-only difference or no real change: keep the on-disk spelling (Phase 12 D-14).
             model_final_name[old_name] = old_name
             continue
-        if candidate in model_name_set and candidate != old_name:
+        if candidate.casefold() in model_names_cf:
             issues.append(
                 Issue(
                     Severity.INFO,
