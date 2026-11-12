@@ -69,8 +69,8 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 ### Migration
 
 - [ ] **MIG-01**: Before migrating, the app tags `Custom` as `pre-atomic`, and refuses to start while `Custom` has uncommitted changes.
-- [ ] **MIG-02**: The migration preview shows, for every existing part, its target `Atomic_` library, its footprint destination, every rename and field change, and every atomic-rule failure with an edit box. The migration cannot run until every part passes.
-- [ ] **MIG-03**: The migration runs as one transaction with rollback, using byte-safe span edits. It:
+- [x] **MIG-02**: The migration preview shows, for every existing part, its target `Atomic_` library, its footprint destination, every rename and field change, and every atomic-rule failure with an edit box. The migration cannot run until every part passes.
+- [x] **MIG-03**: The migration runs as one transaction with rollback, using byte-safe span edits. It:
   - moves every part of the v1-named symbol libraries (and any part the preview re-files) into its previewed `Atomic_` library, removing the emptied libraries;
   - moves every footprint into `Atomic_Footprints`, or switches it to an official footprint;
   - rewrites every Footprint field and model path;
@@ -160,8 +160,8 @@ Which phases cover which requirements. Filled in during roadmap creation.
 | TBL-01 | Phase 13 | Pending |
 | TBL-02 | Phase 13 | Pending |
 | MIG-01 | Phase 13 | Pending |
-| MIG-02 | Phase 13 | Pending |
-| MIG-03 | Phase 13 | Pending |
+| MIG-02 | Phase 13 | Complete |
+| MIG-03 | Phase 13 | Complete |
 | MIG-04 | Phase 13 | Pending |
 | MIG-05 | Phase 13 | Pending |
 | GIT-06 | Phase 11 | Complete |
