@@ -5,11 +5,11 @@ milestone_name: Atomic Libraries
 current_phase: 13
 current_phase_name: Atomic Migration and KiCad Setup
 status: executing
-stopped_at: "Phase 13 executed (20/20 plans merged); verification gaps_found (CR-01 3D-model rename clash) — next: /gsd-plan-phase 13 --gaps"
-last_updated: "2026-11-12T10:23:58.295Z"
+stopped_at: "Phase 13 gap-closure 13-21 executed and merged (21/21 plans); re-verification gaps_found (case-insensitive model-name clash at footprints.py:329, CR-01 reopened) — next: /gsd-plan-phase 13 --gaps"
+last_updated: "2026-11-12T10:24:17.685Z"
 last_activity: 2026-11-12
 last_activity_desc: Phase 13 gap-closure wave executed; re-verification gaps_found
-state_head: a05a3d1ecbef5e96cafe341444b4944c49a6de01
+state_head: f7886135015ba1f5a58718692db85a6df0e9e380
 progress:
   total_phases: 6
   completed_phases: 5
@@ -134,7 +134,7 @@ Items acknowledged and deferred at milestone close, most recent first:
 ## Session Continuity
 
 Last session: 2026-11-12T07:19:56.363Z
-Stopped at: Phase 13 executed (20/20 plans merged); verification gaps_found (CR-01 3D-model rename clash) — next: /gsd-plan-phase 13 --gaps
+Stopped at: Phase 13 gap-closure 13-21 executed and merged (21/21 plans); re-verification gaps_found (case-insensitive model-name clash at footprints.py:329, CR-01 reopened) — next: /gsd-plan-phase 13 --gaps
 Resume file: .planning/phases/13-atomic-migration-and-kicad-setup/13-VERIFICATION.md
 
 ## Operator Next Steps
