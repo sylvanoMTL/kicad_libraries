@@ -235,6 +235,31 @@ def _preflight(plan: MigrationPlan) -> list[Issue]:
     if issues:
         return issues
 
+    # Two write ops aimed at one path (a planner bug, MIG-03, gap CR-01): refused before the first
+    # byte, so a future recurrence cannot destroy a file by silently overwriting it twice. Checked
+    # before staleness/name-taken for the same reason case_twin is placed here -- this is the more
+    # useful, specific code. Byte content is irrelevant: two writes for one path are a defect
+    # whether the bytes match or not.
+    write_paths: dict[str, MigrationOp] = {}
+    duplicate_ops: dict[str, MigrationOp] = {}
+    for op in plan.ops:
+        if op.kind != "write":
+            continue
+        key = str(op.path).casefold()
+        if key in write_paths:
+            duplicate_ops[key] = op
+        else:
+            write_paths[key] = op
+    issues = [
+        _err(
+            "migration.duplicate_write",
+            f"{duplicate_ops[key].rel} has two writes queued for one file; nothing was written",
+        )
+        for key in sorted(duplicate_ops)
+    ]
+    if issues:
+        return issues
+
     issues = []
     for op in plan.ops:
         if op.kind not in ("write", "delete") or op.base_sha256 is None:

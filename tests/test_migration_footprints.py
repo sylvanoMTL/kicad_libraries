@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from customfixtures import OFFICIAL_FOOTPRINT, OFFICIAL_LIBRARY, OFFICIAL_PADS, write_fake_kicad
+from fakecli import FakeCli
 from installfixtures import vendor_footprint
 from migrationfixtures import _id_lib, _id_symbol
 from zipfixtures import STEP_BYTES
@@ -15,9 +16,11 @@ from zipfixtures import STEP_BYTES
 from kicad_lib_manager import kicad_files
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.migration.footprints import CLASH_PREFIX, SHARED, plan_footprints
+from kicad_lib_manager.importer.migration.gate import check_plan, end_state_context
 from kicad_lib_manager.importer.migration.inventory import read_inventory
+from kicad_lib_manager.importer.migration.planner import build_migration_plan, prepare_context
 from kicad_lib_manager.importer.migration.plan import MigrationChoices, PartChoice
-from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, Resolution
+from kicad_lib_manager.importer.plan import MODEL_DIR_VAR, Resolution, ToolContext
 
 _CTX = SimpleNamespace(kicad_fp_dir=None)
 
@@ -506,3 +509,248 @@ def test_added_model_is_linked(tmp_path):
     )
     bad_outcome = plan_footprints(inventory, bad_choices, _CTX, mpns={key: "PARTF"})
     assert any(i.code == "migration.model_unreadable" and i.severity.value == "error" for i in bad_outcome.issues)
+
+
+# -- Gap CR-01 (13-21): the claimed-name registry catches a second claim on one model file name --
+
+
+def test_colliding_model_names_queue_no_write(tmp_path):
+    _write_symbols(tmp_path, "LibG", [("PARTG", "LibG:FPG")])
+    _write_symbols(tmp_path, "LibH", [("PARTH", "LibH:FPH")])
+    _write_footprint(tmp_path, "LibG", "FPG", model=f"{MODEL_DIR_VAR}/OLD1.step")
+    _write_footprint(tmp_path, "LibH", "FPH", model=f"{MODEL_DIR_VAR}/OLD2.step")
+    _write_model(tmp_path, "OLD1.step")
+    _write_model(tmp_path, "OLD2.step")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key_g, key_h = _key("LibG", "PARTG"), _key("LibH", "PARTH")
+    choices = MigrationChoices(
+        parts={
+            key_g: PartChoice(model_name="COLLIDE"),
+            key_h: PartChoice(model_name="COLLIDE"),
+        }
+    )
+
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key_g: "", key_h: ""})
+
+    assert outcome.model_renames == ()
+    assert not any(op.rel.startswith("Custom/3DModels/") for op in outcome.ops)
+    clash_issues = [i for i in outcome.issues if i.code == "migration.model_clash"]
+    assert len(clash_issues) == 1
+    assert clash_issues[0].severity.value == "error"
+    text = clash_issues[0].text
+    assert "OLD1.step" in text and "OLD2.step" in text and "COLLIDE.step" in text
+
+    data_g = _write_op(outcome.ops, f"Custom/Footprints/{SHARED}.pretty/FPG.kicad_mod").data
+    data_h = _write_op(outcome.ops, f"Custom/Footprints/{SHARED}.pretty/FPH.kicad_mod").data
+    assert _model_paths(data_g) == [f"{MODEL_DIR_VAR}/OLD1.step"]
+    assert _model_paths(data_h) == [f"{MODEL_DIR_VAR}/OLD2.step"]
+
+
+def test_colliding_model_names_are_case_insensitive(tmp_path):
+    _write_symbols(tmp_path, "LibI", [("PARTI", "LibI:FPI")])
+    _write_symbols(tmp_path, "LibJ", [("PARTJ", "LibJ:FPJ")])
+    _write_footprint(tmp_path, "LibI", "FPI", model=f"{MODEL_DIR_VAR}/OLD3.step")
+    _write_footprint(tmp_path, "LibJ", "FPJ", model=f"{MODEL_DIR_VAR}/OLD4.step")
+    _write_model(tmp_path, "OLD3.step")
+    _write_model(tmp_path, "OLD4.step")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key_i, key_j = _key("LibI", "PARTI"), _key("LibJ", "PARTJ")
+    choices = MigrationChoices(
+        parts={
+            key_i: PartChoice(model_name="COLLIDE"),
+            key_j: PartChoice(model_name="collide"),
+        }
+    )
+
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key_i: "", key_j: ""})
+
+    assert not any(op.rel.startswith("Custom/3DModels/") for op in outcome.ops)
+    clash_issues = [i for i in outcome.issues if i.code == "migration.model_clash"]
+    assert len(clash_issues) == 1
+    assert clash_issues[0].severity.value == "error"
+
+
+def test_three_groups_one_name_keeps_the_sorted_first(tmp_path):
+    _write_symbols(tmp_path, "LibK", [("PARTK", "LibK:FPK")])
+    _write_symbols(tmp_path, "LibL", [("PARTL", "LibL:FPL")])
+    _write_symbols(tmp_path, "LibR", [("PARTR", "LibR:FPR")])
+    _write_footprint(tmp_path, "LibK", "FPK", model=f"{MODEL_DIR_VAR}/OLDK.step")
+    _write_footprint(tmp_path, "LibL", "FPL", model=f"{MODEL_DIR_VAR}/OLDL.step")
+    _write_footprint(tmp_path, "LibR", "FPR", model=f"{MODEL_DIR_VAR}/OLDR.step")
+    _write_model(tmp_path, "OLDK.step")
+    _write_model(tmp_path, "OLDL.step")
+    _write_model(tmp_path, "OLDR.step")
+    layout = _layout(tmp_path)
+
+    key_k, key_l, key_r = _key("LibK", "PARTK"), _key("LibL", "PARTL"), _key("LibR", "PARTR")
+    choices = MigrationChoices(
+        parts={
+            key_k: PartChoice(model_name="COLLIDE"),
+            key_l: PartChoice(model_name="COLLIDE"),
+            key_r: PartChoice(model_name="COLLIDE"),
+        }
+    )
+    mpns = {key_k: "", key_l: "", key_r: ""}
+
+    outcome1 = plan_footprints(read_inventory(layout), choices, _CTX, mpns=mpns)
+    outcome2 = plan_footprints(read_inventory(layout), choices, _CTX, mpns=mpns)
+
+    for outcome in (outcome1, outcome2):
+        assert not any(op.rel.startswith("Custom/3DModels/") for op in outcome.ops)
+        clash_issues = [i for i in outcome.issues if i.code == "migration.model_clash"]
+        assert len(clash_issues) == 1
+        assert "OLDK.step" in clash_issues[0].text and "OLDL.step" in clash_issues[0].text
+
+    assert outcome1.issues == outcome2.issues
+
+
+def test_model_clash_line_is_plain_and_single(tmp_path):
+    _write_symbols(tmp_path, "LibG", [("PARTG", "LibG:FPG")])
+    _write_symbols(tmp_path, "LibH", [("PARTH", "LibH:FPH")])
+    _write_footprint(tmp_path, "LibG", "FPG", model=f"{MODEL_DIR_VAR}/OLD1.step")
+    _write_footprint(tmp_path, "LibH", "FPH", model=f"{MODEL_DIR_VAR}/OLD2.step")
+    _write_model(tmp_path, "OLD1.step")
+    _write_model(tmp_path, "OLD2.step")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key_g, key_h = _key("LibG", "PARTG"), _key("LibH", "PARTH")
+    choices = MigrationChoices(
+        parts={
+            key_g: PartChoice(model_name="COLLIDE"),
+            key_h: PartChoice(model_name="COLLIDE"),
+        }
+    )
+
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key_g: "", key_h: ""})
+
+    clash_issues = [i for i in outcome.issues if i.code == "migration.model_clash"]
+    assert len(clash_issues) == 1
+    text = clash_issues[0].text
+    assert "migration." not in text
+    assert "ki_" not in text
+    assert "${" not in text
+    assert "different" in text and "name" in text
+
+
+def test_two_models_resolving_to_one_name_block_run(tmp_path):
+    _write_symbols(tmp_path, "LibG", [("PARTG", "LibG:FPG")])
+    _write_symbols(tmp_path, "LibH", [("PARTH", "LibH:FPH")])
+    _write_footprint(tmp_path, "LibG", "FPG", model=f"{MODEL_DIR_VAR}/OLD1.step")
+    _write_footprint(tmp_path, "LibH", "FPH", model=f"{MODEL_DIR_VAR}/OLD2.step")
+    _write_model(tmp_path, "OLD1.step")
+    _write_model(tmp_path, "OLD2.step")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key_g, key_h = _key("LibG", "PARTG"), _key("LibH", "PARTH")
+    choices = MigrationChoices(
+        parts={
+            key_g: PartChoice(library="Atomic_Test", model_name="COLLIDE"),
+            key_h: PartChoice(library="Atomic_Test", model_name="COLLIDE"),
+        }
+    )
+
+    tools = ToolContext(kicad_cli=Path("kicad-cli"), cli_runner=FakeCli())
+    ctx = prepare_context(inventory, tools, None, today="2026-11-12")
+    plan = build_migration_plan(inventory, choices, ctx)
+
+    assert any(i.code == "migration.model_clash" and i.severity.value == "error" for i in plan.issues)
+    write_rels = [op.rel for op in plan.ops if op.kind == "write"]
+    assert len(write_rels) == len(set(write_rels))
+
+    gate_ctx = end_state_context(plan, inventory, None)
+    outcome = check_plan(plan, inventory, gate_ctx)
+
+    assert outcome.run_enabled is False
+    first_line = outcome.lines[0]
+    assert first_line.key is None
+    assert first_line.target is None
+
+
+def test_added_model_cannot_take_an_existing_model_name(tmp_path):
+    _write_symbols(tmp_path, "LibG", [("PARTG", "LibG:FPG")])
+    _write_footprint(tmp_path, "LibG", "FPG")
+    _write_model(tmp_path, "TAKEN.step")
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    external = tmp_path / "external"
+    external.mkdir(parents=True, exist_ok=True)
+    model_source = external / "x.step"
+    model_source.write_bytes(STEP_BYTES)
+
+    key = _key("LibG", "PARTG")
+    choices = MigrationChoices(parts={key: PartChoice(model_source=str(model_source), model_name="TAKEN")})
+
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key: "PARTG"})
+
+    clash_issues = [i for i in outcome.issues if i.code == "migration.model_clash"]
+    assert len(clash_issues) == 1
+    assert clash_issues[0].severity.value == "error"
+    assert not _has_op(outcome.ops, "write", "Custom/3DModels/TAKEN.step")
+
+    data = _write_op(outcome.ops, f"Custom/Footprints/{SHARED}.pretty/FPG.kicad_mod").data
+    assert _model_paths(data) == []
+    assert (tmp_path / "Custom" / "3DModels" / "TAKEN.step").read_bytes() == STEP_BYTES
+
+
+def test_in_run_footprint_overwrite_is_refused(tmp_path):
+    _write_symbols(tmp_path, "LibG", [("PARTG", "LibG:FPSHARED")])
+    _write_symbols(tmp_path, "LibH", [("PARTH", "LibH:FPSHARED")])
+    _write_footprint(tmp_path, "LibG", "FPSHARED")
+    pretty_h = tmp_path / "Custom" / "Footprints" / "LibH.pretty"
+    pretty_h.mkdir(parents=True, exist_ok=True)
+    (pretty_h / "FPSHARED.kicad_mod").write_bytes(vendor_footprint("FPSHARED", pads=("1", "2", "3"), eol="\r\n"))
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key_g, key_h = _key("LibG", "PARTG"), _key("LibH", "PARTH")
+    clash_key = f"{CLASH_PREFIX}FPSHARED"
+    choices = MigrationChoices(resolutions={clash_key: Resolution(action="overwrite")})
+
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key_g: "PARTG", key_h: "PARTH"})
+
+    shared_rel = f"Custom/Footprints/{SHARED}.pretty/FPSHARED.kicad_mod"
+    write_ops = [op for op in outcome.ops if op.kind == "write" and op.rel == shared_rel]
+    assert len(write_ops) == 1
+    assert write_ops[0].data.count(b"(pad ") == 2  # LibG's pad count (2), not LibH's (3)
+
+    refused_issues = [i for i in outcome.issues if i.code == "migration.overwrite_refused"]
+    assert len(refused_issues) == 1
+    assert refused_issues[0].severity.value == "error"
+    assert "FPSHARED.kicad_mod" in refused_issues[0].text
+    assert "Rename" in refused_issues[0].text or "Skip" in refused_issues[0].text
+
+    assert _has_op(outcome.ops, "delete", "Custom/Footprints/LibG.pretty/FPSHARED.kicad_mod")
+    assert _has_op(outcome.ops, "delete", "Custom/Footprints/LibH.pretty/FPSHARED.kicad_mod")
+
+
+def test_different_footprint_clash_asks_still_works(tmp_path):
+    """Unchanged regression anchor: a clash against a file already on disk keeps all three choices."""
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty" / "FPZZ.kicad_mod").write_bytes(
+        vendor_footprint("FPZZ", pads=("1", "2"), eol="\n")
+    )
+    _write_symbols(tmp_path, "LibZZ", [("PARTZZ", "LibZZ:FPZZ")])
+    _write_footprint(tmp_path, "LibZZ", "FPZZ")
+    (tmp_path / "Custom" / "Footprints" / "LibZZ.pretty" / "FPZZ.kicad_mod").write_bytes(
+        vendor_footprint("FPZZ", pads=("1", "2", "3"), eol="\r\n")
+    )
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibZZ", "PARTZZ")
+    clash_key = f"{CLASH_PREFIX}FPZZ"
+    overwrite_choices = MigrationChoices(resolutions={clash_key: Resolution(action="overwrite")})
+
+    outcome = plan_footprints(inventory, overwrite_choices, _CTX, mpns={key: "PARTZZ"})
+
+    shared_rel = f"Custom/Footprints/{SHARED}.pretty/FPZZ.kicad_mod"
+    assert outcome.links[key] == f"{SHARED}:FPZZ"
+    assert _has_op(outcome.ops, "write", shared_rel)
+    assert not any(i.code == "migration.overwrite_refused" for i in outcome.issues)
