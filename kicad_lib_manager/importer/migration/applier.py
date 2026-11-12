@@ -253,9 +253,35 @@ def _preflight(plan: MigrationPlan) -> list[Issue]:
     issues = [
         _err(
             "migration.duplicate_write",
-            f"{duplicate_ops[key].rel} has two writes queued for one file; nothing was written",
+            f"{write_paths[key].rel} and {duplicate_ops[key].rel} have two writes queued for one "
+            "file; nothing was written",
         )
         for key in sorted(duplicate_ops)
+    ]
+    if issues:
+        return issues
+
+    # A rename's write op landing on bytes no delete op in this plan removes (MIG-03, gap CR-01):
+    # refused before the first byte, because the write's own base_sha256 was seeded from the
+    # victim's current content, so the staleness loop below cannot see this defect at all. Scoped
+    # to renames: source_rel is set by exactly one emitter in the package (the model rename), so an
+    # owner's footprint-clash Overwrite choice -- whose write ops carry no source_rel -- never trips
+    # this check.
+    deleted = {str(op.path).casefold() for op in plan.ops if op.kind == "delete"}
+    rename_writes = [
+        op
+        for op in sorted(plan.ops, key=lambda op: op.rel)
+        if op.kind == "write"
+        and op.source_rel is not None
+        and op.base_sha256 is not None
+        and str(op.path).casefold() not in deleted
+    ]
+    issues = [
+        _err(
+            "migration.rename_would_overwrite",
+            f"{op.rel} would overwrite a file this migration does not remove; nothing was written",
+        )
+        for op in rename_writes
     ]
     if issues:
         return issues
