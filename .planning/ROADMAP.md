@@ -312,7 +312,7 @@ Plans:
   4. One confirmed action sets up KiCad 10's chooser: it pins the `Atomic_` libraries, shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column. Like the path-variable sync, it shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout.
   5. The app shows and saves the old → new library name map with the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB). `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
 
-**Plans**: 20/20 plans executed
+**Plans**: 21 plans (20 executed; 1 gap-closure plan pending: 13-21)
 
 Plans:
 **Wave 1**
@@ -350,6 +350,9 @@ Plans:
 
 **Wave 8** *(blocked on Wave 7 completion)*
 - [x] 13-18-PLAN.md — CLAUDE.md, PROJECT.md, LIBRARY-NAMING.md, test notes, full-suite gate and the owner's live UAT from the main checkout (DOC-01, D-26)
+
+**Gap closure (verification CR-01)**
+- [ ] 13-21-PLAN.md — Wave 5 (after 13-10, 13-13): a second claim on a 3D model file name within one run is a blocking strip line instead of a silent overwrite — growing claimed-name registry in the model-rename pass, the same check for an added model, duplicate-write refusal in the applier preflight, and an in-run footprint Overwrite refused (MIG-02, MIG-03, D-07, D-09, D-15)
 
 **UI hint**: yes
 
