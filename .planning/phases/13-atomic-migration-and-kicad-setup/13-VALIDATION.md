@@ -57,6 +57,7 @@ created: "2026-11-11"
 | 13-14-01..03 | 14 | 4 | MIG-01, MIG-02 | T-13-34, T-13-35 | plain-text widgets; workers only | qtbot | `pytest tests/test_migration_dialog.py tests/test_plain_names.py -q` | ✅ | ✅ green |
 | 13-15-01..03 | 15 | 5 | MIG-02, MIG-03 | T-13-36, T-13-37 | bounded diff on a worker | qtbot | `pytest tests/test_migration_dialog_files.py tests/test_migration_dialog.py -q` | ✅ | ✅ green |
 | 13-20-01 | 20 | 5 | MIG-01, MIG-03..05 | T-13-46 | whole-fixture test never touches the live Custom | real git | `pytest tests/test_migration_full.py -q` (the plan's gate; no other task runs it) | ✅ | ✅ green |
+| 13-21-01..03 | 21 | 5 | MIG-02, MIG-03 (CR-01) | T-13-, T-13-47, T-13-48, T-13-49, T-13-50, T-13-51, T-13-52 | claimed-name registry blocks two models onto one file; duplicate-write preflight refusal; in-run Overwrite refused | unit + tmp tree | `pytest tests/test_migration_footprints.py tests/test_migration_apply.py tests/test_migration_gate.py tests/test_migration_full.py -q` | ✅ | ✅ green |
 | 13-16-01..02 | 16 | 6 | MIG-01, MIG-03..05 (D-26) | T-13-38, T-13-39, T-13-45 | wrong-checkout refusal; no close mid-run; commit only on click | qtbot | `pytest tests/test_migration_dialog_run.py tests/test_migration_dialog.py -q` | ✅ | ✅ green |
 | 13-17-01..03 | 17 | 7 | MIG-02, MIG-04, TBL-01 | T-13-40, T-13-41 | one writer at a time; tables keep Atomic_ libraries | qtbot | `pytest tests/test_main_window_migration.py tests/test_help_dialog.py -q` | ✅ | ✅ green |
 | 13-18-01..02 | 18 | 8 | DOC-01 (+ UAT of all) | T-13-42 | docs test never touches live Custom | unit + manual | `pytest tests/test_docs_atomic.py -q`; full suite (with the slow real-git files) in the background as the phase gate | ✅ | ✅ green |
@@ -94,7 +95,7 @@ Existing infrastructure covers all phase requirements. Every test file named in 
 
 **Approval:** approved 2026-11-12 (execute-phase validation audit)
 
-**Evidence:** per-wave full-suite gates passed on every merge through wave 6 (last: 9626 passed, 4 skipped on `29c22ec`); plans 13-17 and 13-18 passed their own verification commands (222 and 71 tests) plus a 510-test regression sweep; the final full-suite run on `a5466ce` was stopped at 73% by the host for low system memory with zero failures recorded, and was not rerun (owner decision 2026-11-12).
+**Evidence:** gap-closure plan 13-21 (CR-01) merged on `acc1be1` and the full suite passed on that tree (9646 passed, 4 skipped, 26 min, 2026-11-12); earlier: per-wave full-suite gates passed on every merge through wave 6 (last: 9626 passed, 4 skipped on `29c22ec`); plans 13-17 and 13-18 passed their own verification commands (222 and 71 tests) plus a 510-test regression sweep; the final full-suite run on `a5466ce` was stopped at 73% by the host for low system memory with zero failures recorded, and was not rerun (owner decision 2026-11-12).
 
 ## Validation Audit 2026-11-12
 
