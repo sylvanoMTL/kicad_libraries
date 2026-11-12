@@ -17,7 +17,7 @@ from kicad_lib_manager import atomic_check, fsutil, kicad_files
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.migration.applier import apply_migration
 from kicad_lib_manager.importer.migration.gate import check_plan, end_state_context
-from kicad_lib_manager.importer.migration.inventory import read_inventory
+from kicad_lib_manager.importer.migration.inventory import SHARED_FOOTPRINT_LIBRARY, read_inventory
 from kicad_lib_manager.importer.migration.planner import build_migration_plan, prepare_context
 from kicad_lib_manager.importer.migration.plan import (
     MigrationChoices,
@@ -145,6 +145,53 @@ def test_one_part_migrates_end_to_end(tmp_path):
     part = next(p for p in new_inventory.parts if p.library == FUEL_GAUGE_TARGET)
     assert part.fields["Value"] == "MAX17048G"
     assert part.footprint == f"Atomic_Footprints:{FUEL_GAUGE_FOOTPRINT}"
+
+    lib_path = new_layout.symbols_dir / f"{FUEL_GAUGE_TARGET}.kicad_sym"
+    loaded = kicad_files.load(lib_path)
+    ctx = atomic_check.repo_context(new_layout.repo_root, _fp_libs(new_layout), None)
+    entry = atomic_check.check_symbol(
+        loaded.root, part.name, rel_path=f"Custom/Symbols/{FUEL_GAUGE_TARGET}.kicad_sym", fixable=False, ctx=ctx
+    )
+    assert entry.violations == []
+
+
+def test_model_rename_cannot_overwrite_an_untouched_model(tmp_path):
+    """Gap CR-01's second manifestation: a case-only collision with an untouched, unlinked model
+    must never become a write, proved end to end through plan, gate, apply and disk."""
+    layout = _write_fuel_gauge_tree(tmp_path)
+    (layout.models_dir / "TAKEN.STEP").write_bytes(b"UNRELATED-ORIGINAL-CONTENT")
+    key = _fuel_gauge_key()
+    choices = MigrationChoices(parts={key: PartChoice(library=FUEL_GAUGE_TARGET, model_name="taken")})
+    inventory, plan = _plan_for(layout, choices)
+
+    assert not any(op.rel.startswith("Custom/3DModels/") for op in plan.ops)
+    assert plan.model_renames == ()
+    kept_issues = [i for i in plan.issues if i.code == "migration.model_kept_name"]
+    assert len(kept_issues) == 1
+    assert kept_issues[0].severity.value == "info"
+    assert "MAX17048G.step" in kept_issues[0].text and "taken.step" in kept_issues[0].text
+    assert not any(i.code == "migration.model_clash" for i in plan.issues)
+
+    gate_ctx = end_state_context(plan, inventory, None)
+    gate = check_plan(plan, inventory, gate_ctx)
+    assert gate.run_enabled, gate.lines
+    assert not any("taken" in line.text for line in gate.lines)
+
+    result = apply_migration(plan)
+    assert result.ok is True, result.issues
+
+    new_layout = RepoLayout.for_repo(tmp_path)
+    assert (new_layout.models_dir / "TAKEN.STEP").read_bytes() == b"UNRELATED-ORIGINAL-CONTENT"
+    assert (new_layout.models_dir / FUEL_GAUGE_MODEL).read_bytes() == STEP_BYTES
+
+    new_inventory = read_inventory(new_layout)
+    part = next(p for p in new_inventory.parts if p.library == FUEL_GAUGE_TARGET)
+    fp_path = new_layout.footprints_dir / f"{SHARED_FOOTPRINT_LIBRARY}.pretty" / f"{FUEL_GAUGE_FOOTPRINT}.kicad_mod"
+    fp_data = fp_path.read_bytes()
+    loaded_fp = kicad_files.parse_bytes(fp_data, fp_path.name)
+    ref = kicad_files.footprint_name(loaded_fp.root)
+    model_paths = [m.path for m in kicad_files.find_models(ref.node)]
+    assert model_paths == [f"{MODEL_DIR_VAR}/{FUEL_GAUGE_MODEL}"]
 
     lib_path = new_layout.symbols_dir / f"{FUEL_GAUGE_TARGET}.kicad_sym"
     loaded = kicad_files.load(lib_path)
