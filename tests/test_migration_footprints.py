@@ -697,3 +697,60 @@ def test_added_model_cannot_take_an_existing_model_name(tmp_path):
     data = _write_op(outcome.ops, f"Custom/Footprints/{SHARED}.pretty/FPG.kicad_mod").data
     assert _model_paths(data) == []
     assert (tmp_path / "Custom" / "3DModels" / "TAKEN.step").read_bytes() == STEP_BYTES
+
+
+def test_in_run_footprint_overwrite_is_refused(tmp_path):
+    _write_symbols(tmp_path, "LibG", [("PARTG", "LibG:FPSHARED")])
+    _write_symbols(tmp_path, "LibH", [("PARTH", "LibH:FPSHARED")])
+    _write_footprint(tmp_path, "LibG", "FPSHARED")
+    pretty_h = tmp_path / "Custom" / "Footprints" / "LibH.pretty"
+    pretty_h.mkdir(parents=True, exist_ok=True)
+    (pretty_h / "FPSHARED.kicad_mod").write_bytes(vendor_footprint("FPSHARED", pads=("1", "2", "3"), eol="\r\n"))
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key_g, key_h = _key("LibG", "PARTG"), _key("LibH", "PARTH")
+    clash_key = f"{CLASH_PREFIX}FPSHARED"
+    choices = MigrationChoices(resolutions={clash_key: Resolution(action="overwrite")})
+
+    outcome = plan_footprints(inventory, choices, _CTX, mpns={key_g: "PARTG", key_h: "PARTH"})
+
+    shared_rel = f"Custom/Footprints/{SHARED}.pretty/FPSHARED.kicad_mod"
+    write_ops = [op for op in outcome.ops if op.kind == "write" and op.rel == shared_rel]
+    assert len(write_ops) == 1
+    assert write_ops[0].data.count(b"(pad ") == 2  # LibG's pad count (2), not LibH's (3)
+
+    refused_issues = [i for i in outcome.issues if i.code == "migration.overwrite_refused"]
+    assert len(refused_issues) == 1
+    assert refused_issues[0].severity.value == "error"
+    assert "FPSHARED.kicad_mod" in refused_issues[0].text
+    assert "Rename" in refused_issues[0].text or "Skip" in refused_issues[0].text
+
+    assert _has_op(outcome.ops, "delete", "Custom/Footprints/LibG.pretty/FPSHARED.kicad_mod")
+    assert _has_op(outcome.ops, "delete", "Custom/Footprints/LibH.pretty/FPSHARED.kicad_mod")
+
+
+def test_different_footprint_clash_asks_still_works(tmp_path):
+    """Unchanged regression anchor: a clash against a file already on disk keeps all three choices."""
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "Custom" / "Footprints" / f"{SHARED}.pretty" / "FPZZ.kicad_mod").write_bytes(
+        vendor_footprint("FPZZ", pads=("1", "2"), eol="\n")
+    )
+    _write_symbols(tmp_path, "LibZZ", [("PARTZZ", "LibZZ:FPZZ")])
+    _write_footprint(tmp_path, "LibZZ", "FPZZ")
+    (tmp_path / "Custom" / "Footprints" / "LibZZ.pretty" / "FPZZ.kicad_mod").write_bytes(
+        vendor_footprint("FPZZ", pads=("1", "2", "3"), eol="\r\n")
+    )
+    layout = _layout(tmp_path)
+    inventory = read_inventory(layout)
+
+    key = _key("LibZZ", "PARTZZ")
+    clash_key = f"{CLASH_PREFIX}FPZZ"
+    overwrite_choices = MigrationChoices(resolutions={clash_key: Resolution(action="overwrite")})
+
+    outcome = plan_footprints(inventory, overwrite_choices, _CTX, mpns={key: "PARTZZ"})
+
+    shared_rel = f"Custom/Footprints/{SHARED}.pretty/FPZZ.kicad_mod"
+    assert outcome.links[key] == f"{SHARED}:FPZZ"
+    assert _has_op(outcome.ops, "write", shared_rel)
+    assert not any(i.code == "migration.overwrite_refused" for i in outcome.issues)

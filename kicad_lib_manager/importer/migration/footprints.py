@@ -177,10 +177,17 @@ def _resolve_clash(
     taken_stems: set[str],
     resolutions: Mapping[str, Resolution],
     mpn: str,
+    queued: set[str],
 ) -> tuple[str, bytes | None, Conflict | None, list[Issue]]:
     """Settle one footprint's name against Atomic_Footprints.pretty (D-07, Phase 10 D-19).
 
     Returns (final stem, bytes to write (None = reuse, nothing to write), conflict, issues).
+
+    `queued` holds the casefolded filenames this run has already queued a write op for (gap
+    CR-01); both call sites add to it after emitting a write. When the owner chooses Overwrite for
+    a name already in `queued`, that name is this run's OWN new footprint for another part, not an
+    on-disk file -- overwriting it would queue a second write op for the same path, so it is
+    refused instead (migration.overwrite_refused).
     """
     if wanted_filename not in known:
         existing_path = shared_dir / wanted_filename
@@ -215,6 +222,15 @@ def _resolve_clash(
         ]
     resolved = replace(base_conflict, resolution=resolution)
     if resolution.action == "overwrite":
+        if wanted_filename.casefold() in queued:
+            return stem, None, resolved, [
+                Issue(
+                    Severity.ERROR,
+                    "migration.overwrite_refused",
+                    f"{wanted_filename} is the footprint this migration is already creating for "
+                    "another part; choose Rename or Skip instead",
+                )
+            ]
         known[wanted_filename] = data
         return stem, data, resolved, []
     if resolution.action == "skip":
@@ -379,6 +395,11 @@ def plan_footprints(
     except OSError:
         shared_taken_stems = set()
     shared_known: dict[str, bytes] = {}
+    # Casefolded filenames this run has already queued a write op for (gap CR-01, D-07): both
+    # _resolve_clash call sites add to this after emitting a write, so an Overwrite choice made for
+    # a name this run is also creating for another part is refused rather than queuing a second
+    # write op for the same path.
+    queued: set[str] = set()
 
     model_name_set = frozenset(inventory.models)
 
@@ -587,6 +608,7 @@ def plan_footprints(
             taken_stems=shared_taken_stems,
             resolutions=choices.resolutions,
             mpn=mpns.get(first_key, ""),
+            queued=queued,
         )
         issues.extend(clash_issues)
         if conflict is not None:
@@ -599,6 +621,7 @@ def plan_footprints(
             existing_target_bytes = new_path.read_bytes() if new_path.exists() else None
             base_sha256 = hashlib.sha256(existing_target_bytes).hexdigest() if existing_target_bytes is not None else None
             ops.append(MigrationOp("write", new_path, new_rel, data=write_data, base_sha256=base_sha256))
+            queued.add(f"{resolved_stem}.kicad_mod".casefold())
 
         old_path = layout.repo_root / fp.rel_path
         ops.append(
@@ -676,6 +699,7 @@ def plan_footprints(
             taken_stems=shared_taken_stems,
             resolutions=choices.resolutions,
             mpn="",
+            queued=queued,
         )
         issues.extend(clash_issues)
         if conflict is not None:
@@ -688,6 +712,7 @@ def plan_footprints(
             existing_bytes = new_path.read_bytes() if new_path.exists() else None
             base_sha256 = hashlib.sha256(existing_bytes).hexdigest() if existing_bytes is not None else None
             ops.append(MigrationOp("write", new_path, new_rel, data=write_data, base_sha256=base_sha256))
+            queued.add(f"{resolved_stem}.kicad_mod".casefold())
         ops.append(MigrationOp("delete", old_path, rel, base_sha256=fp.sha256, note="moved into Atomic_Footprints"))
         deleted_rels.add(rel)
 
