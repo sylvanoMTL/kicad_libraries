@@ -276,6 +276,75 @@ def _open_added_model(source: str, repo_root: Path) -> tuple[str, bytes, list[Is
         package.close()
 
 
+def _model_final_names(
+    model_groups: Mapping[str, list],
+    choices: MigrationChoices,
+    mpns: Mapping[PartKey, str],
+    model_name_set: frozenset[str],
+) -> tuple[dict[str, str], list[Issue]]:
+    """Decide every single-model group's final name; no two groups may ever claim one file name.
+
+    Walks sorted(model_groups.items()) so the first claimer is deterministic across runs. `claimed`
+    is this run's own growing name registry (casefolded candidate -> the old_name that claimed it,
+    gap CR-01): a later group whose candidate collides with an earlier claim keeps its own old name,
+    and the earlier claimer's final name is reset back to its old name too, so the colliding pair
+    never both end up pointing at the same file. Exactly one migration.model_clash ERROR is raised
+    per colliding candidate, however many groups want it.
+    """
+    model_final_name: dict[str, str] = {}
+    issues: list[Issue] = []
+    claimed: dict[str, str] = {}
+    clashed: set[str] = set()
+
+    for old_name, group in sorted(model_groups.items()):
+        winner_key, winner_fp = min(group, key=lambda item: item[0])
+        choice = choices.parts.get(winner_key, PartChoice())
+        mpn = mpns.get(winner_key, "")
+        stem = choice.model_name if choice.model_name else (mpn or None)
+        if stem is None:
+            model_final_name[old_name] = old_name
+            continue
+        ext = Path(old_name).suffix
+        candidate = sanitize_filename(f"{stem}{ext}").sanitized
+        if candidate.casefold() == old_name.casefold():
+            # Case-only difference or no real change: keep the on-disk spelling (Phase 12 D-14).
+            model_final_name[old_name] = old_name
+            continue
+        if candidate in model_name_set and candidate != old_name:
+            issues.append(
+                Issue(
+                    Severity.INFO,
+                    "migration.model_kept_name",
+                    f"{old_name}: kept, {candidate} is already used by a different model",
+                )
+            )
+            model_final_name[old_name] = old_name
+            continue
+
+        claim_key = candidate.casefold()
+        claiming_old_name = claimed.get(claim_key)
+        if claiming_old_name is not None and claiming_old_name != old_name:
+            model_final_name[old_name] = old_name
+            model_final_name[claiming_old_name] = claiming_old_name
+            if claim_key not in clashed:
+                first_name, second_name = sorted((claiming_old_name, old_name))
+                issues.append(
+                    Issue(
+                        Severity.ERROR,
+                        "migration.model_clash",
+                        f"{first_name} and {second_name} would both be renamed to {candidate}; "
+                        "give one of them a different 3D model name",
+                    )
+                )
+                clashed.add(claim_key)
+            continue
+
+        claimed[claim_key] = old_name
+        model_final_name[old_name] = candidate
+
+    return model_final_name, issues
+
+
 def plan_footprints(
     inventory: Inventory,
     choices: MigrationChoices,
@@ -373,33 +442,16 @@ def plan_footprints(
             old_name = _model_name_of(resolvable[0].path)
             model_groups.setdefault(old_name, []).append((first_key, fp))
 
-    # Decide the final name of every single-model group, by the smallest first-linker key.
-    model_final_name: dict[str, str] = {}
-    for old_name, group in model_groups.items():
-        winner_key, winner_fp = min(group, key=lambda item: item[0])
-        choice = choices.parts.get(winner_key, PartChoice())
-        mpn = mpns.get(winner_key, "")
-        stem = choice.model_name if choice.model_name else (mpn or None)
-        if stem is None:
-            model_final_name[old_name] = old_name
-            continue
-        ext = Path(old_name).suffix
-        candidate = sanitize_filename(f"{stem}{ext}").sanitized
-        if candidate.casefold() == old_name.casefold():
-            # Case-only difference or no real change: keep the on-disk spelling (Phase 12 D-14).
-            model_final_name[old_name] = old_name
-            continue
-        if candidate in model_name_set and candidate != old_name:
-            issues.append(
-                Issue(
-                    Severity.INFO,
-                    "migration.model_kept_name",
-                    f"{old_name}: kept, {candidate} is already used by a different model",
-                )
-            )
-            model_final_name[old_name] = old_name
-            continue
-        model_final_name[old_name] = candidate
+    # Decide the final name of every single-model group, by the smallest first-linker key; the
+    # helper owns the claimed-name registry so two groups can never both claim one file (gap CR-01).
+    model_final_name, model_final_issues = _model_final_names(model_groups, choices, mpns, model_name_set)
+    issues.extend(model_final_issues)
+
+    # The registry an owner-added model (D-15) must not collide with: every pre-migration model
+    # name, plus every final name the rename pass above just assigned. Grown in place as this run's
+    # own added models claim a name, so a second added model cannot take the first one's name either.
+    claimed_model_names: set[str] = {name.casefold() for name in model_name_set}
+    claimed_model_names.update(new_name.casefold() for new_name in model_final_name.values())
 
     for old_name, new_name in model_final_name.items():
         if new_name == old_name:
@@ -448,18 +500,34 @@ def plan_footprints(
                 ext = Path(model_file_name).suffix
                 stem = choice.model_name if choice.model_name else (mpn or Path(model_file_name).stem)
                 new_model_name = sanitize_filename(f"{stem}{ext}").sanitized
-                own_model_names.append(new_model_name)
-                model_path = layout.models_dir / new_model_name
-                model_rel = _rel(layout, model_path)
-                existing_model_bytes = model_path.read_bytes() if model_path.exists() else None
-                model_base_sha256 = (
-                    hashlib.sha256(existing_model_bytes).hexdigest() if existing_model_bytes is not None else None
-                )
-                ops.append(MigrationOp("write", model_path, model_rel, data=model_data, base_sha256=model_base_sha256))
-                edits.append(
-                    model_insert_edit(loaded.source.text, name_ref.node, f"{MODEL_DIR_VAR}/{new_model_name}", loaded.source.eol)
-                )
-                final_model_names.add(new_model_name)
+                claim_key = new_model_name.casefold()
+                if claim_key in claimed_model_names:
+                    issues.append(
+                        Issue(
+                            Severity.ERROR,
+                            "migration.model_clash",
+                            f"{new_model_name} is already the 3D model file name of another part; "
+                            "choose a different 3D model name",
+                        )
+                    )
+                else:
+                    claimed_model_names.add(claim_key)
+                    own_model_names.append(new_model_name)
+                    model_path = layout.models_dir / new_model_name
+                    model_rel = _rel(layout, model_path)
+                    existing_model_bytes = model_path.read_bytes() if model_path.exists() else None
+                    model_base_sha256 = (
+                        hashlib.sha256(existing_model_bytes).hexdigest() if existing_model_bytes is not None else None
+                    )
+                    ops.append(
+                        MigrationOp("write", model_path, model_rel, data=model_data, base_sha256=model_base_sha256)
+                    )
+                    edits.append(
+                        model_insert_edit(
+                            loaded.source.text, name_ref.node, f"{MODEL_DIR_VAR}/{new_model_name}", loaded.source.eol
+                        )
+                    )
+                    final_model_names.add(new_model_name)
 
         # Footprint text (D-11): the description is always regenerated, tags merged; never on an
         # official footprint (those never reach this loop at all).
