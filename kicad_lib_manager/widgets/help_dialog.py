@@ -15,8 +15,8 @@ from .import_dialog import (
     REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT, fit_window,
 )
 from .migration_dialog import (
-    CHOOSER_TEXT, FILES_TAB_TEXT, GENERATE_TEXT, GUESS_MARK, LEFTOVERS_TEXT, MOVE_FOOTPRINT_TEXT,
-    OPEN_MAP_TEXT, RUN_TEXT, SUGGESTED_MARK,
+    BROWSE_TEXT, CHOOSER_TEXT, DESTINATION_LABEL, FILES_TAB_TEXT, GENERATE_TEXT, GUESS_MARK, LEFTOVERS_TEXT,
+    MOVE_FOOTPRINT_TEXT, OPEN_MAP_TEXT, RUN_TEXT, SUGGESTED_MARK,
 )
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
@@ -224,7 +224,8 @@ HELP_PAGES["generating"] = _wrap(
     "<h2>Generating Tables</h2>"
     "<ol>"
     "<li>Select the libraries you want to include</li>"
-    "<li>Set the <b>Destination</b> folder (defaults to the repository root)</li>"
+    "<li>Set the <b>Destination</b> folder (defaults to the repository root). At start the "
+    "Destination box offers only folders that still exist</li>"
     "<li>Click <b>Generate Tables</b> (blue button) or press <code>Ctrl+G</code></li>"
     "</ol>"
     "<h3>What happens</h3>"
@@ -517,6 +518,10 @@ HELP_PAGES["migrating"] = _wrap(
     "<code>MIGRATION-ATOMIC.md</code> in <code>Custom/</code>, so it stays available "
     "after the window closes.</p>"
     "<h3>Afterwards</h3>"
+    "<p>The result shows the folder the library tables go to (<b>" + DESTINATION_LABEL + "</b>), "
+    "with <b>" + BROWSE_TEXT + "</b> to change it; the Destination box of the main window "
+    "changes with it. A folder that is not set, or that no longer exists, is pointed out "
+    "there. The outcome of <b>" + GENERATE_TEXT + "</b> is shown under the buttons.</p>"
     "<p>From the result, click <b>" + GENERATE_TEXT + "</b> first, so the library tables "
     "list the new <code>Atomic_</code> libraries and drop the old names. Then commit in "
     "the panel below the result: one commit in <code>Custom</code>, plus the usual commit "

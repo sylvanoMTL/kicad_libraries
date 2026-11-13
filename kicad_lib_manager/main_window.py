@@ -473,13 +473,21 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._log)
 
     def _populate_dest_combo(self):
+        self._set_dest_items(load_dest_history())
+
+    def _set_dest_items(self, history: list[str]):
+        """Refill the Destination box with the first entry current.
+
+        Display only: blank entries and folders that no longer exist are skipped (a deleted
+        throwaway folder must not come back as the Destination) and the repository folder is
+        used when none is left. The saved history itself is never rewritten.
+        """
+        items = [entry for entry in history if entry.strip() and Path(entry).is_dir()]
+        if not items:
+            items = [str(REPO_ROOT)]
         self._dest_combo.blockSignals(True)
         self._dest_combo.clear()
-        history = load_dest_history()
-        if history:
-            self._dest_combo.addItems(history)
-        else:
-            self._dest_combo.addItem(str(REPO_ROOT))
+        self._dest_combo.addItems(items)
         self._dest_combo.setCurrentIndex(0)
         self._dest_combo.blockSignals(False)
 
@@ -1261,10 +1269,29 @@ class MainWindow(QMainWindow):
         dialog.migrated.connect(self._on_migrated)
         dialog.generate_requested.connect(self._on_migration_generate)
         dialog.setup_chooser_requested.connect(self._on_setup_chooser)
+        dialog.destination_changed.connect(self._on_migration_destination_changed)
         dialog.atomic_check_requested.connect(lambda rel, name: self._open_atomic_check((rel, name)))
         dialog.finished.connect(self._on_migration_dialog_finished)
         self._migration_dialog = dialog
+        dialog.set_destination(self._dest_combo.currentText().strip())
         dialog.open()
+
+    def _mirror_destination(self):
+        """Show the Destination box's folder in the migration Result view (it never owns one)."""
+        dialog = self._migration_dialog
+        if dialog is not None:
+            dialog.set_destination(self._dest_combo.currentText().strip())
+
+    def _set_migration_status(self, text: str, severity: Severity):
+        """Show an outcome under the Result view's buttons; nothing happens with no migration window."""
+        dialog = self._migration_dialog
+        if dialog is not None:
+            dialog.set_result_status(text, severity)
+
+    def _on_migration_destination_changed(self, folder: str):
+        """Browse... in the Result view: the main window takes the folder, then echoes it back."""
+        self._use_destination(folder)
+        self._mirror_destination()
 
     def _on_migration_dialog_finished(self, _result: int):
         dialog, self._migration_dialog = self._migration_dialog, None
@@ -1528,6 +1555,7 @@ class MainWindow(QMainWindow):
         """Offer to pin the Atomic_ libraries in KiCad: check for a running KiCad first, off the GUI thread."""
         if self._dest_path() is None:
             self._log.log(_NO_DEST_CHOOSER_TEXT, "warning")
+            self._set_migration_status(_NO_DEST_CHOOSER_TEXT, Severity.WARNING)
             return
         if self._chooser_busy:
             return
@@ -1603,8 +1631,24 @@ class MainWindow(QMainWindow):
         if self._worker is not None or self._pending_migration:
             self._generate_after_scan = True
             self._log.log("Generate Tables runs when the rescan finishes", "info")
+            self._set_migration_status("Generate Tables runs when the rescan finishes", Severity.INFO)
             return
         self._run_migration_generate()
+
+    @staticmethod
+    def _generate_outcome(issues: list[Issue], dest: Path | None) -> tuple[str, Severity]:
+        """The line the migration Result view shows for a Generate Tables run, from its Issues."""
+        for issue in issues:
+            if issue.severity is Severity.ERROR:
+                return issue.text, Severity.ERROR
+        for issue in issues:
+            if issue.code in ("generate.no_destination", "generate.nothing_selected"):
+                return issue.text, Severity.WARNING
+        if any(issue.code == "table.written" for issue in issues):
+            return f"Library tables written to {dest}", Severity.SUCCESS
+        if any(issue.code == "table.unchanged" for issue in issues):
+            return f"The library tables in {dest} were already up to date", Severity.INFO
+        return "Library tables checked", Severity.INFO
 
     def _run_migration_generate(self):
         """Select the Atomic_ libraries, then run the normal Generate path (D-24)."""
@@ -1612,6 +1656,11 @@ class MainWindow(QMainWindow):
             self._select_atomic_libraries(self._scan_result)
             self._tree.populate(self._scan_result)
         issues = self._on_generate()
+        # The write moved the Destination to the top of the history; show it first, because a
+        # changed folder clears the status line
+        self._mirror_destination()
+        text, severity = self._generate_outcome(issues, self._dest_path())
+        self._set_migration_status(text, severity)
         if any(issue.code == "table.stale_managed" for issue in issues):
             self._log.log(
                 "The old library names were removed from the tables; KiCad projects that "
@@ -1621,23 +1670,25 @@ class MainWindow(QMainWindow):
 
     def _on_generate(self) -> list[Issue]:
         if not self._scan_result:
-            self._log.log("No scan results available. Please wait for scan.", "error")
-            return []
+            return self._generate_stop(
+                Issue(Severity.ERROR, "generate.no_scan", "No scan results available. Please wait for scan.")
+            )
 
         dest = self._dest_path()
         if dest is None:
-            self._log.log(_NO_DEST_TEXT, "warning")
-            return []
+            return self._generate_stop(Issue(Severity.WARNING, "generate.no_destination", _NO_DEST_TEXT))
         if not dest.exists():
-            self._log.log(f"Destination folder does not exist: {dest}", "error")
-            return []
+            return self._generate_stop(Issue(
+                Severity.ERROR, "generate.destination_missing", f"Destination folder does not exist: {dest}",
+            ))
 
         sym_selected = [lib for lib in self._scan_result.symbol_libs if lib.selected]
         fp_selected = [lib for lib in self._scan_result.footprint_libs if lib.selected]
 
         if not sym_selected and not fp_selected:
-            self._log.log("No libraries selected.", "warning")
-            return []
+            return self._generate_stop(
+                Issue(Severity.WARNING, "generate.nothing_selected", "No libraries selected.")
+            )
 
         self._log.log(
             f"Generating tables ({len(sym_selected)} symbols, "
@@ -1659,13 +1710,13 @@ class MainWindow(QMainWindow):
         self._sync_path_vars()
 
         # Save destination to history
-        history = add_dest_to_history(str(dest))
-        self._dest_combo.blockSignals(True)
-        self._dest_combo.clear()
-        self._dest_combo.addItems(history)
-        self._dest_combo.setCurrentIndex(0)
-        self._dest_combo.blockSignals(False)
+        self._set_dest_items(add_dest_to_history(str(dest)))
         return issues
+
+    def _generate_stop(self, issue: Issue) -> list[Issue]:
+        """An early stop of Generate Tables: logged at its own level and returned for the caller."""
+        self._log_issues([issue])
+        return [issue]
 
     def _on_rescan(self):
         self._log.log("Rescanning repository...", "info")
@@ -1705,13 +1756,12 @@ class MainWindow(QMainWindow):
             self, "Select destination folder", self._dest_combo.currentText().strip()
         )
         if folder:
-            history = add_dest_to_history(folder)
-            self._dest_combo.blockSignals(True)
-            self._dest_combo.clear()
-            self._dest_combo.addItems(history)
-            self._dest_combo.setCurrentIndex(0)
-            self._dest_combo.blockSignals(False)
-            self._log_existing_tables(self._dest_path())
+            self._use_destination(folder)
+
+    def _use_destination(self, folder: str):
+        """Make a chosen folder the Destination: history, the box, and a note of the tables found there."""
+        self._set_dest_items(add_dest_to_history(folder))
+        self._log_existing_tables(self._dest_path())
 
     def _on_dest_changed(self, *_args):
         """Destination picked or typed: only report which tables exist there."""

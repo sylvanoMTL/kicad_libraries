@@ -280,6 +280,29 @@ def test_destination_change_only_logs_and_never_on_keystrokes(make_window, tmp_p
     assert [lib.selected for lib in scan.footprint_libs] == [False]
 
 
+def test_destination_history_skips_folders_that_no_longer_exist(make_window, tmp_path):
+    missing = tmp_path / "gone"
+    existing_a = tmp_path / "a"
+    existing_b = tmp_path / "b"
+    existing_a.mkdir()
+    existing_b.mkdir()
+    settings.get_settings().setValue(
+        "dest_history", [str(missing), "", str(existing_a), str(existing_b)],
+    )
+    saved = settings.load_dest_history()
+
+    w = make_window([ScanResult()])
+
+    items = [w._dest_combo.itemText(i) for i in range(w._dest_combo.count())]
+    assert items == [str(existing_a), str(existing_b)]
+    assert w._dest_combo.currentText() == str(existing_a)
+    assert settings.load_dest_history() == saved
+
+    settings.get_settings().setValue("dest_history", [str(missing)])
+    w2 = make_window([ScanResult()], repo=tmp_path / "repo2")
+    assert [w2._dest_combo.itemText(i) for i in range(w2._dest_combo.count())] == [str(make_window.repo)]
+
+
 NO_DEST = "No destination folder set; library tables not changed"
 
 
