@@ -50,7 +50,7 @@ blocked: 0
 ## Deferred Follow-Ups
 
 - test: 4
-  idea: "Regroup the main-window menus (today everything but Help is under File). Proposed: File = Import Part, Exit; Libraries = Rescan, Select All / Deselect All, separator, Check Atomic Parts, Migrate to Atomic Libraries; KiCad = Generate Tables, Restore Backup, separator, Pin Atomic Libraries in KiCad, Set KiCad Footprint Path; Help unchanged. Open choices: menu name Libraries vs Atomic Libraries (Rescan/Select All also cover Wurth, so Libraries recommended), and Pin under KiCad (recommended, it edits KiCad config) vs Libraries. Shortcuts unchanged; User Guide menu paths to update."
+  idea: "Regroup the main-window menus (today everything but Help is under File). Decided 2026-11-13 with the owner: File = Import Part (Ctrl+I), Exit (Ctrl+Q); Libraries = Rescan Libraries (Ctrl+Shift+R), Select All / Deselect All, separator, Check Atomic Parts (Ctrl+Shift+A), Migrate to Atomic Libraries (Ctrl+Shift+M); KiCad = Generate Tables (Ctrl+G), Restore Backup (Ctrl+R), separator, Pin Atomic Libraries in KiCad (Ctrl+Shift+K), Set KiCad Footprint Path (Ctrl+K); Help unchanged. Menu is named Libraries (not Atomic Libraries) because Rescan and Select All also cover Wurth; Pin lives under KiCad because it edits KiCad config. Shortcuts unchanged; update the User Guide menu paths and CLAUDE.md Menu Shortcuts."
   deferred_at: 2026-11-13
 
 ## Gaps

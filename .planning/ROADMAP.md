@@ -30,7 +30,8 @@ Phase 8 makes the suite green first, so every later phase starts from a baseline
 - [x] **Phase 9: Atomic Rule Check and Scan Detection** - One atomic rule check and one canonical manufacturer table, run on every scan, with tree marks, changed-part highlights and a check dialog of safe fixes (completed 2026-10-26)
 - [x] **Phase 10: Importer on the Atomic Scheme** - Importer suggests `Atomic_<stem>`, installs footprints into `Atomic_Footprints`, generates keywords and footprint tags, and blocks Install until the part is atomic (completed 2026-10-29)
 - [x] **Phase 11: Commit Gate and Commit Panel Fixes** - Commit panel refuses non-atomic parts, reports what git really did, and follows the theme (completed 2026-11-01)
-- [x] **Phase 12: Import Flow Fixes and Case-Sensitive Re-test** - Post-install table step, import threading, `kicad_common.json` write and Help dialog fixed; case-twin rollback re-tested (completed 2026-11-11)
+- [x] **Phase 12: Import Flow Fixes and Case-Sensitive Re-test** - Post-install table step, import threading, `kicad_common.json` write and Help dialog fixed; case-twin rollback re-tested
+ (completed 2026-11-11)
 - [ ] **Phase 13: Atomic Migration and KiCad Setup** - Existing parts migrated into `Atomic_` libraries in one previewed commit, tables regenerated with descriptions, KiCad's chooser set up, docs updated
 
 ## Phase Details
@@ -398,3 +399,11 @@ Former backlog 999.1 is now VER-01 (Phase 8) and 999.2 is now VER-02 (Phase 12).
 **Deferred at:** 2026-11-11 during /gsd-verify-work 12 session completion
 **Follow-ups:**
 - [ ] Test 4: Window stays live during a real kicad-cli rebuild (REV-04): Finishing strip, slow note and Cancel with a real rebuild; too fast to catch by hand, covered by automated tests. (deferred 2026-11-11)
+
+### Phase 999.1: Follow-up — Phase 13 deferred UAT follow-up: Test 4 (BACKLOG)
+
+**Goal:** Resolve the UAT checkpoint deferred during Phase 13 verification
+**Source phase:** 13
+**Deferred at:** 2026-11-13 during /gsd-verify-work 13 session completion
+**Follow-ups:**
+- [ ] Test 4: Regroup the main-window menus (today everything but Help is under File). Decided 2026-11-13 with the owner: File = Import Part (Ctrl+I), Exit (Ctrl+Q); Libraries = Rescan Libraries (Ctrl+Shift+R), Select All / Deselect All, separator, Check Atomic Parts (Ctrl+Shift+A), Migrate to Atomic Libraries (Ctrl+Shift+M); KiCad = Generate Tables (Ctrl+G), Restore Backup (Ctrl+R), separator, Pin Atomic Libraries in KiCad (Ctrl+Shift+K), Set KiCad Footprint Path (Ctrl+K); Help unchanged. Menu is named Libraries (not Atomic Libraries) because Rescan and Select All also cover Wurth; Pin lives under KiCad because it edits KiCad config. Shortcuts unchanged; update the User Guide menu paths and CLAUDE.md Menu Shortcuts. (deferred 2026-11-13)
