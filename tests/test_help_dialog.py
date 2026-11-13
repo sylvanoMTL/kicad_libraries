@@ -760,7 +760,7 @@ def test_help_repo_scan_explains_skip_and_the_saved_scan():
 
     for text in (
         "saved scan", "no library file changed", "Rescan", "Loading Libraries", "Skip",
-        "3D model paths", "still listed", "Generate Tables",
+        "3D model paths", "still listed", "Generate Tables", "symbols are read",
     ):
         assert text in page, text
     assert "<h3" not in HELP_PAGES["repo_scan"]

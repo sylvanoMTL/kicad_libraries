@@ -151,12 +151,14 @@ HELP_PAGES["repo_scan"] = _wrap(
     "library file changed since it was saved, and the log says so. <b>Rescan</b> "
     "always runs the whole scan.</p>"
     "<p>While the libraries load, the <b>Loading Libraries</b> window shows a "
-    "<b>Skip</b> button during the 3D model path check. It names the library source "
-    "being checked, for example <b>Skip WurthElektronik</b>. Skip stops checking the "
-    "3D model paths of that source only: its libraries are still listed and its "
-    "symbols' footprint links are still read, so Generate Tables keeps them. The log "
-    "says which source was skipped. The scan is saved with that note, and the next "
-    "start says so until a Rescan checks everything again.</p>"
+    "<b>Skip</b> button as soon as the scan starts reading a library source: first "
+    "while the symbols are read, then while the 3D model paths are checked. It names "
+    "that source, for example <b>Skip WurthElektronik</b>. Skip stops checking the "
+    "3D model paths of that source only, now or when the check reaches them. The "
+    "symbols are read in full whatever you press, so its libraries are still listed "
+    "and its symbols' footprint links are still read, and Generate Tables keeps them. "
+    "The log says which source was skipped. The scan is saved with that note, and the "
+    "next start says so until a Rescan checks everything again.</p>"
 )
 
 HELP_PAGES["library_tree"] = _wrap(

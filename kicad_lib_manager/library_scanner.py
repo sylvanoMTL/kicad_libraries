@@ -426,14 +426,24 @@ def _collect_files(root: Path, pattern: str) -> list[Path]:
     )
 
 
-def find_symbol_libs(root: Path, progress: Callable | None = None) -> list[SymbolLibrary]:
+def find_symbol_libs(root: Path, progress: Callable | None = None, *,
+                     checking: Callable[[str | None], None] | None = None) -> list[SymbolLibrary]:
+    """Every symbol library with its footprint links.
+
+    checking is told each source as its first file is reached. It only reports: every file is still
+    parsed, so a skip requested meanwhile never drops a library or a link.
+    """
     sym_files = _collect_files(root, "*.kicad_sym")
     libs = []
+    previous: str | None = None
     for i, f in enumerate(sym_files):
         if progress:
             progress(f"Parsing symbol: {f.stem}", i, len(sym_files))
         rel = f.relative_to(root).as_posix()
         source = _determine_source(rel)
+        if checking is not None and source != previous:
+            checking(source)
+        previous = source
         fp_refs = _parse_footprint_refs(f)
         libs.append(SymbolLibrary(
             nickname=f.stem,
@@ -673,11 +683,13 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
              checking: Callable[[str | None], None] | None = None) -> ScanResult:
     """Scan the whole repo.
 
-    checking(source) is called as the 3D model path check reaches each source's first file, then
-    checking(None) at its end. skip(source) is asked before each file of a source not yet skipped; True
-    stops that source's 3D model path check at once and drops its lines (the result records the source
-    in skipped_sources and what is left unchecked in models_unchecked). Both are plain callables, called
-    from the scanning thread. A skip never drops a library or a footprint link.
+    checking(source) is called as the symbol parse and then the 3D model path check reach each
+    source's first file, then checking(None) at the end of the 3D model path check. skip(source) is
+    asked only by the 3D model path check, before each file of a source not yet skipped; True stops
+    that source's check at once and drops its lines (the result records the source in skipped_sources
+    and what is left unchecked in models_unchecked). A skip requested while the symbols are read takes
+    effect when that source's check starts. Both are plain callables, called from the scanning thread.
+    The symbols are always read in full: a skip never drops a library or a footprint link.
     """
     # One 0-100 scale for the whole scan. Measured on the full repo (about 70 s): listing 0.25 s,
     # symbol links 6 s, the 3D model path check 63 s, so that check gets most of the bar
@@ -696,7 +708,7 @@ def scan_all(repo_root: Path, progress: Callable | None = None,
     report("Discovering files...", 0)
 
     fp_libs = find_footprint_libs(repo_root, banded(0, 1))
-    sym_libs = find_symbol_libs(repo_root, banded(1, 10))
+    sym_libs = find_symbol_libs(repo_root, banded(1, 10), checking=checking)
 
     report("Cross-referencing...", 10)
     issues = find_nickname_collisions(sym_libs, fp_libs)

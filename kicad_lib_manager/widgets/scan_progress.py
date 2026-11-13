@@ -1,8 +1,10 @@
 """Loading Libraries window: scan progress plus a Skip button for one source's 3D model path check (G-12-21).
 
 Qt's own progress dialog hides itself when its button is clicked, so it cannot offer a Skip that
-lets the scan go on. This small dialog shows the progress, offers Skip while a source's 3D model
-paths are checked, and closes only when the window that owns it says the scan is over.
+lets the scan go on. This small dialog shows the progress, offers Skip while a source's symbols
+are read and while its 3D model paths are checked (a Skip pressed early is an advance skip of that
+check), remembers every source asked for, and closes only when the window that owns it says the
+scan is over.
 """
 
 from PySide6.QtCore import Qt, Signal
@@ -25,6 +27,7 @@ class ScanProgressDialog(QDialog):
         self.setMinimumWidth(_MIN_WIDTH)
         self._finished = False
         self._source: str | None = None
+        self._requested: set[str] = set()
 
         self._label = QLabel("Scanning libraries...")
         self._label.setTextFormat(Qt.TextFormat.PlainText)
@@ -54,16 +57,20 @@ class ScanProgressDialog(QDialog):
         self._bar.setValue(value)
 
     def set_skippable(self, source: str | None):
-        """Offer Skip for source, or switch it off; a new report always replaces a 'Skipping' text."""
+        """Offer Skip for source, or switch it off; a source already asked for keeps its 'Skipping' text."""
         self._source = source
         if source is None:
             self._show_idle()
             return
-        self.skip_button.setText(f"Skip {source}")
         self.skip_button.setToolTip(
-            f"Stop checking the 3D model paths of {source}. "
+            f"Stop checking the 3D model paths of {source}, now or when the scan reaches them. "
             "Its libraries are still listed, and Rescan checks them again."
         )
+        if source in self._requested:
+            self.skip_button.setText(f"Skipping {source}...")
+            self.skip_button.setEnabled(False)
+            return
+        self.skip_button.setText(f"Skip {source}")
         self.skip_button.setEnabled(True)
 
     def finish(self):
@@ -79,7 +86,7 @@ class ScanProgressDialog(QDialog):
     def _show_idle(self):
         self.skip_button.setText("Skip")
         self.skip_button.setToolTip(
-            "Skip is offered while the 3D model paths of a library source are checked."
+            "Skip is offered once the scan starts reading a library source."
         )
         self.skip_button.setEnabled(False)
 
@@ -87,6 +94,7 @@ class ScanProgressDialog(QDialog):
         source = self._source
         if source is None:
             return
+        self._requested.add(source)
         self.skip_button.setText(f"Skipping {source}...")
         self.skip_button.setEnabled(False)
         self.skip_requested.emit(source)
