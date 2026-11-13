@@ -476,8 +476,13 @@ class MainWindow(QMainWindow):
         self._set_dest_items(load_dest_history())
 
     def _set_dest_items(self, history: list[str]):
-        """Refill the Destination box with the first entry current (the repository folder when empty)."""
-        items = list(history)
+        """Refill the Destination box with the first entry current.
+
+        Display only: blank entries and folders that no longer exist are skipped (a deleted
+        throwaway folder must not come back as the Destination) and the repository folder is
+        used when none is left. The saved history itself is never rewritten.
+        """
+        items = [entry for entry in history if entry.strip() and Path(entry).is_dir()]
         if not items:
             items = [str(REPO_ROOT)]
         self._dest_combo.blockSignals(True)
