@@ -89,18 +89,25 @@ def test_help_shortcuts_complete():
         ("Ctrl+I", "Import Part"), ("Ctrl+Shift+R", "Rescan Libraries"),
         ("Ctrl+G", "Generate Tables"), ("Ctrl+R", "Restore Backup"),
         ("Ctrl+K", "Set KiCad Footprint Path"), ("Ctrl+Q", "Exit"), ("F1", "User Guide"),
-        ("Ctrl+Shift+A", "Check Atomic Parts"), ("Ctrl+Shift+K", "Set Up KiCad Chooser"),
+        ("Ctrl+Shift+A", "Check Atomic Parts"), ("Ctrl+Shift+K", "Pin Atomic Libraries in KiCad"),
         ("Ctrl+Shift+M", "Migrate to Atomic Libraries"),
     ):
         assert shortcut in page, shortcut
         assert action in page, action
 
 
-def test_help_generating_page_explains_the_chooser():
+def test_help_generating_page_explains_pinning():
     page = _page_text("generating")
-    assert "KiCad chooser" in page
+    assert "Pin Atomic libraries in KiCad" in page
     for word in ("pins", "MPN", "Manufacturer", "Retry", "worktree"):
         assert word in page, word
+
+
+def test_help_no_page_uses_the_old_menu_name():
+    # Renamed by gap G-13-1-c; the old name must not survive on any guide page
+    for key, raw in HELP_PAGES.items():
+        assert "Set Up KiCad Chooser" not in raw, key
+        assert "Set Up KiCad Chooser" not in _page_text(key), key
 
 
 def test_help_mentions_wrong_checkout():
@@ -413,7 +420,7 @@ def test_help_migrating_page():
     page = _page_text("migrating")
     for text in (
         "Ctrl+Shift+M", "uncommitted files", "pre-atomic", "failure strip", "Run Migration",
-        "Files", "leftover files", "Generate Tables", "Set Up KiCad Chooser",
+        "Files", "leftover files", "Generate Tables", "Pin Atomic Libraries in KiCad",
         "MIGRATION-ATOMIC.md", "Edit Symbol Library Links", "Update Symbols from Library",
         "Update PCB from Schematic",
     ):

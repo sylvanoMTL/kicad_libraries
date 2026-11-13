@@ -7,6 +7,8 @@ backup folder: every call passes config_base and backup_root.
 import copy
 import json
 import os
+import re
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -321,9 +323,78 @@ def test_other_checkout_refused_before_asking(repo, cfg, backups, dest, tmp_path
     (refused,) = _by_code(issues, "chooser.other_checkout_refused")
     assert refused.severity is Severity.WARNING
     mismatch = kicad_setup.wrong_checkout(repo, other)
-    assert refused.text == kicad_setup.wrong_checkout_refusal(mismatch, "Not setting up KiCad's chooser")
+    assert refused.text == kicad_setup.wrong_checkout_refusal(mismatch, kicad_setup.PIN_REFUSAL_TEXT)
     assert confirm.calls == []
     assert common_path.read_bytes() == before
+
+
+def test_pin_texts_never_name_the_chooser_alone(repo, cfg, backups, dest, tmp_path):
+    """No log line of the pin action says "chooser" on its own (gap G-13-1-c); the worktree
+    and wrong-checkout refusals start with PIN_REFUSAL_TEXT and still name both folders."""
+    repo_str = str(repo).replace("\\", "/")
+    texts = []
+
+    def run(repo_root, *, confirm, running=lambda: [], kicad_lib=None, session=None):
+        _write_tables(dest, ["Atomic_Connector"], ["Atomic_Footprints"])
+        _write_common(cfg, "10.0", {
+            "session": session or _owner_session(),
+            "environment": {"vars": {"KICAD_LIB_GITHUB": kicad_lib or repo_str}},
+        })
+        _write_eeschema(cfg, "10.0", {"lib_tree": _owner_lib_tree()})
+        issues = kicad_setup.sync_kicad_chooser(
+            repo_root, dest, config_base=cfg, backup_root=backups,
+            running=running, confirm=confirm,
+        )
+        texts.extend(i.text for i in issues)
+        return issues
+
+    # worktree refusal
+    (repo / ".git").write_text("gitdir: elsewhere\n")
+    (worktree,) = _by_code(run(repo, confirm=_recorder()), "chooser.worktree_refused")
+    assert worktree.text.startswith(kicad_setup.PIN_REFUSAL_TEXT)
+    (repo / ".git").unlink()
+
+    # wrong-checkout refusal names both folders
+    other = str(tmp_path / "other checkout").replace("\\", "/")
+    (wrong,) = _by_code(run(repo, confirm=_recorder(), kicad_lib=other), "chooser.other_checkout_refused")
+    assert wrong.text.startswith(kicad_setup.PIN_REFUSAL_TEXT)
+    assert repo_str in wrong.text and other in wrong.text
+
+    # no confirmation step, declined, KiCad open (then written), already pinned
+    run(repo, confirm=None)
+    run(repo, confirm=_recorder(False))
+    run(repo, confirm=_recorder(True), running=lambda: ["eeschema", "kicad"])
+    run(repo, confirm=_recorder(True))
+
+    # settings that keep changing while asked
+    calls = []
+
+    def churn(changes):
+        calls.append(1)
+        session = _owner_session()
+        session["pinned_symbol_libs"] = [f"Hand{len(calls)}"]
+        _write_common(cfg, "10.0", {
+            "session": session,
+            "environment": {"vars": {"KICAD_LIB_GITHUB": repo_str}},
+        })
+        return True
+
+    shutil.rmtree(backups, ignore_errors=True)
+    _write_common(cfg, "10.0", {
+        "session": _owner_session(),
+        "environment": {"vars": {"KICAD_LIB_GITHUB": repo_str}},
+    })
+    texts.extend(
+        i.text for i in kicad_setup.sync_kicad_chooser(
+            repo, dest, config_base=cfg, backup_root=backups,
+            running=lambda: [], confirm=churn,
+        )
+    )
+
+    assert len(texts) >= 6
+    for text in texts:
+        bare = re.sub(r"symbol chooser", "", text, flags=re.IGNORECASE)
+        assert "chooser" not in bare.lower(), text
 
 
 @pytest.mark.parametrize(

@@ -61,7 +61,7 @@ from ..importer.preview import PreviewRow, PreviewSection
 from ..importer.stems import name_verdict
 from ..importer.suggest import existing_libraries, suggestion_text
 from ..kicad_process import kicad_running
-from ..kicad_setup import checkout_mismatch, wrong_checkout_refusal
+from ..kicad_setup import PIN_ACTION_TEXT, checkout_mismatch, wrong_checkout_refusal
 from ..library_scanner import ConfirmAnswer
 from ..models import Issue, Severity
 from ..settings import migration_draft_file
@@ -109,10 +109,10 @@ RESULT_TITLE = "Migration done"
 COPY_TEXT = "Copy"
 OPEN_MAP_TEXT = "Open MIGRATION-ATOMIC.md"
 GENERATE_TEXT = "Generate Tables"
-CHOOSER_TEXT = "Set Up KiCad Chooser..."
+CHOOSER_TEXT = f"{PIN_ACTION_TEXT}..."
 NEXT_STEPS_TEXT = (
     "Next: press Generate Tables so KiCad finds the new libraries, then commit below, then press "
-    "Set Up KiCad Chooser to pin them and show the MPN and Manufacturer columns."
+    f"{PIN_ACTION_TEXT} to pin them and show the MPN and Manufacturer columns."
 )
 _RUN_FAILED_TITLE = "Migration failed"
 _RUN_FAILED_NOT_RESTORED_TITLE = "Migration failed; not everything could be restored"

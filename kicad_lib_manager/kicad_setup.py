@@ -1,5 +1,5 @@
-"""The chooser setup of TBL-02: pins the Atomic_ libraries and sets the MPN/Manufacturer
-columns in KiCad's symbol chooser. Same config-write contract as sync_kicad_path_vars
+"""Pinning the Atomic_ libraries in KiCad (TBL-02): pins them at the top of KiCad's library
+lists and sets the MPN/Manufacturer columns in KiCad's Symbol Chooser. Same config-write contract as sync_kicad_path_vars
 (library_scanner.py): old -> new shown first, backup, verified atomic write, KiCad-open
 aware, re-read merge. Qt-free.
 """
@@ -24,6 +24,11 @@ from .library_scanner import (
     find_kicad_config_dir,
 )
 from .models import Issue, Severity
+
+# The action's user-facing name and the prefix of its refusals (owner wording 2026-11-12,
+# gap G-13-1-c): menu, Result view button, guide and log lines all read from these.
+PIN_ACTION_TEXT = "Pin Atomic Libraries in KiCad"
+PIN_REFUSAL_TEXT = "Not pinning the Atomic_ libraries in KiCad"
 
 EESCHEMA_FILE = "eeschema.json"
 COMMON_FILE = "kicad_common.json"
@@ -306,7 +311,7 @@ def _chooser_refusal(repo_root: Path, repo_str: str, old_vars: dict) -> Issue | 
         return Issue(
             Severity.WARNING,
             "chooser.worktree_refused",
-            f"Not setting up KiCad's chooser: this app runs from a git worktree "
+            f"{PIN_REFUSAL_TEXT}: this app runs from a git worktree "
             f"({repo_str}). Run the app from the library checkout.",
         )
     mismatch = wrong_checkout(repo_root, old_vars.get("KICAD_LIB_GITHUB"))
@@ -314,7 +319,7 @@ def _chooser_refusal(repo_root: Path, repo_str: str, old_vars: dict) -> Issue | 
         return Issue(
             Severity.WARNING,
             "chooser.other_checkout_refused",
-            wrong_checkout_refusal(mismatch, "Not setting up KiCad's chooser"),
+            wrong_checkout_refusal(mismatch, PIN_REFUSAL_TEXT),
         )
     return None
 
@@ -386,7 +391,7 @@ def _read_eeschema(eeschema_path: Path) -> "tuple[object, dict, dict, list[str] 
             Severity.ERROR,
             "chooser.bad_shape",
             "KiCad's schematic editor settings have an unexpected structure "
-            "(its chooser columns cannot be read); nothing was written",
+            "(its Symbol Chooser columns cannot be read); nothing was written",
         )
     new_columns, new_widths = plan_columns(lib_tree)
     return src, config, lib_tree, new_columns, new_widths
@@ -416,7 +421,7 @@ def sync_kicad_chooser(
         return [Issue(
             Severity.WARNING,
             "chooser.dir_not_found",
-            "Could not find KiCad config directory; KiCad's chooser was not set up",
+            "Could not find KiCad config directory; the Atomic_ libraries were not pinned in KiCad",
         )]
 
     common_path = config_dir / COMMON_FILE
@@ -470,7 +475,7 @@ def sync_kicad_chooser(
         return issues + [Issue(
             Severity.INFO,
             "chooser.ok",
-            "KiCad's chooser is already set up; nothing to change",
+            "The Atomic_ libraries are already pinned in KiCad; nothing to change",
         )]
 
     repo_str = str(repo_root).replace("\\", "/")
@@ -482,7 +487,7 @@ def sync_kicad_chooser(
         return issues + [Issue(
             Severity.WARNING,
             "chooser.confirm_required",
-            "Not setting up KiCad's chooser: no confirmation step was provided",
+            f"{PIN_REFUSAL_TEXT}: no confirmation step was provided",
         )]
 
     names = (running or kicad_running)()
@@ -498,7 +503,7 @@ def sync_kicad_chooser(
             return issues + [Issue(
                 Severity.INFO,
                 "chooser.declined",
-                "KiCad's chooser left unchanged (change declined)",
+                "The Atomic_ libraries were not pinned in KiCad (change declined)",
             )]
 
         # KiCad may have saved while the owner read the dialog: the write starts
@@ -533,7 +538,7 @@ def sync_kicad_chooser(
             return issues + [Issue(
                 Severity.INFO,
                 "chooser.ok",
-                "KiCad's chooser is already set up; nothing to change",
+                "The Atomic_ libraries are already pinned in KiCad; nothing to change",
             )]
         if fresh_changes == changes:
             break
@@ -542,16 +547,16 @@ def sync_kicad_chooser(
         return [Issue(
             Severity.WARNING,
             "chooser.keeps_changing",
-            "KiCad's chooser settings kept changing while you were asked; nothing "
-            "was written. Try Set Up KiCad Chooser again.",
+            "KiCad's settings kept changing while you were asked; nothing "
+            f"was written. Try {PIN_ACTION_TEXT} again.",
         )]
 
     if names:
         issues.append(Issue(
             Severity.WARNING,
             "chooser.kicad_running",
-            f"KiCad is open ({', '.join(names)}); it may undo the chooser setup "
-            f"when it exits. If it does, close KiCad and set it up again.",
+            f"KiCad is open ({', '.join(names)}); it may undo the pins and columns "
+            f"when it exits. If it does, close KiCad and pin the Atomic_ libraries again.",
         ))
 
     common_changed = any(c.file == "common" for c in changes)
@@ -569,7 +574,7 @@ def sync_kicad_chooser(
                 Severity.ERROR,
                 "chooser.verify_failed",
                 "Did not write KiCad's settings file: the new content would change "
-                "more than the chooser keys",
+                "more than the pinned libraries",
             )]
         new_common_text = fsutil.normalize_eol(new_common_text, common_src.eol)
 
@@ -585,7 +590,7 @@ def sync_kicad_chooser(
                 Severity.ERROR,
                 "chooser.verify_failed",
                 "Did not write KiCad's schematic editor settings: the new content "
-                "would change more than the chooser columns",
+                "would change more than the Symbol Chooser columns",
             )]
         new_eeschema_text = fsutil.normalize_eol(new_eeschema_text, eeschema_src.eol)
 
