@@ -28,7 +28,7 @@ from migrationfixtures import (
 from zipfixtures import STEP_BYTES
 
 from kicad_lib_manager.gitops import GitContext
-from kicad_lib_manager.importer import commit_step
+from kicad_lib_manager.importer import commit_step, stems
 from kicad_lib_manager.importer.layout import RepoLayout
 from kicad_lib_manager.importer.migration.applier import apply_migration
 from kicad_lib_manager.importer.migration.commitplan import build_migration_commit_plan
@@ -132,15 +132,18 @@ def test_whole_v1_custom_migrates_to_zero_violations(tmp_path):
         kicad_cli=Path("kicad-cli"),
         cli_runner=FakeCli(output_version=V10_VERSION),
         kicad_symbols_dir=stock_symbols_dir,
+        # Mirror detect_tools(): an empty allowed set would filter every suggestion out (see
+        # test_migration_symbols._tools), and this test is about the suggestion placing the IMU
+        allowed_stems=stems.allowed_stems(stems.installed_stems(stock_symbols_dir)),
     )
     ctx = prepare_context(inventory, tools, stock_footprints_dir, today=TODAY)
 
-    # 13-CONTEXT "Research defaults": the IMU-style part's sibling vote mis-suggests Atomic_Timer;
-    # the owner corrects it to Atomic_Sensor_Motion in the preview. Every other gap -- the LTC2954
-    # orderable MPNs, the missing datasheets/descriptions/libraries, the model-less footprints -- is
-    # filled generically below, straight from what the gate itself reports.
+    # The IMU-style part's ICM- sibling vote lands it in Atomic_Sensor_Motion with no owner choice
+    # (gap G-13-1-f). Every gap -- the LTC2954 orderable MPNs, the missing datasheets/descriptions/
+    # libraries, the model-less footprints -- is filled generically below, straight from what the
+    # gate itself reports.
     imu_key = (f"Custom/Symbols/{IMU_LIBRARY}.kicad_sym", "ICM-42688-P")
-    choices = MigrationChoices(parts={imu_key: PartChoice(library=EXPECTED_TARGETS[imu_key])})
+    choices = MigrationChoices()
 
     plan = outcome = None
     for _ in range(MAX_FILL_PASSES):
@@ -155,6 +158,8 @@ def test_whole_v1_custom_migrates_to_zero_violations(tmp_path):
                 changed = True
         assert changed, f"gate reported lines a pass could not fix (D-15): {outcome.lines}"
     assert outcome is not None and outcome.run_enabled, outcome.lines if outcome else "never ran"
+    imu_plan = next(part for part in plan.parts if part.key == imu_key)
+    assert imu_plan.target_library == "Atomic_Sensor_Motion"
 
     result = apply_migration(
         plan,

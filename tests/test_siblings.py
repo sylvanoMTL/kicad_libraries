@@ -53,6 +53,10 @@ def test_csd_part_votes_into_transistor_fet_from_the_owners_atomic_libraries(tmp
         ("USB4145-03-0170-C", ["USB4145", "USB4", "USB"]),
         ("ATXK-H14-D-32.768KHZ-E50-T3", ["ATXK"]),
         ("MAX4238", ["MAX4238", "MAX4", "MAX"]),
+        ("ICM-42688-P", ["ICM-42688", "ICM-4", "ICM-", "ICM"]),
+        ("ICM-4", ["ICM-4", "ICM-", "ICM"]),
+        ("ABC_123", ["ABC_123", "ABC_1", "ABC_", "ABC"]),
+        ("icm-20602", ["icm-20602", "icm-2", "icm-", "icm"]),
         ("csd85301q2", ["csd85301", "csd8", "csd"]),
         ("RS3-1212S/H3", []),
         ("R-78E5.0", []),
@@ -102,6 +106,34 @@ def test_an_exact_half_is_not_a_majority():
     index = SiblingIndex((SiblingEntry("Diode", "ZZZ1", ""), SiblingEntry("Device", "ZZZ2", "")))
 
     assert pick(index, "ZZZ9").stem is None
+
+
+def _icm_stock_index():
+    """KiCad 10's shape: four Intersil ICM7xxx timers in Timer, two InvenSense ICM-2xxxx IMUs in Sensor_Motion."""
+    timer = ("ICM7209", "ICM7555xB", "ICM7555xP", "ICM7556")
+    motion = ("ICM-20602", "ICM-20948")
+    return SiblingIndex(
+        tuple(SiblingEntry("Timer", name, "") for name in timer)
+        + tuple(SiblingEntry("Sensor_Motion", name, "") for name in motion)
+    )
+
+
+def test_icm_imu_votes_into_sensor_motion_on_the_hyphen_step():
+    index = _icm_stock_index()
+
+    # The hyphen reaches the vote: the ICM- step finds only the two IMUs
+    assert pick(index, "ICM-42688-P") == SiblingPick("Sensor_Motion", "ICM-", (("Sensor_Motion", 2),))
+    # Without a hyphen only the letters ICM find siblings, and the timers outnumber the IMUs
+    assert pick(index, "ICM42688P") == SiblingPick("Timer", "ICM", (("Timer", 4), ("Sensor_Motion", 2)))
+
+
+def test_a_vote_on_the_letters_alone_or_a_close_vote_is_weak():
+    assert SiblingPick("Timer", "ICM", (("Timer", 4), ("Sensor_Motion", 2))).weak is True
+    assert SiblingPick("Sensor_Motion", "ICM-", (("Sensor_Motion", 2),)).weak is False
+    assert SiblingPick("X", "ABC1", (("X", 2), ("Y", 1))).weak is True
+    assert SiblingPick("X", "ABC1", (("X", 3), ("Y", 1))).weak is False
+    assert SiblingPick(None, "ABC", (("X", 1), ("Y", 1))).weak is False
+    assert SiblingPick(None, "", ()).weak is False
 
 
 def test_a_part_number_with_too_few_letters_gets_no_lookup(tmp_path):
@@ -224,3 +256,11 @@ def test_live_kicad_10_votes_csd_into_transistor_fet_and_usb_into_connector():
     assert (csd.stem, csd.prefix) == ("Transistor_FET", "CSD")
     assert csd.counts[:2] == (("Transistor_FET", 75), ("Diode", 2))
     assert usb.stem == "Connector"
+
+
+@pytest.mark.skipif(_LIVE_SYMBOLS is None, reason="no KiCad install with a stock symbols folder")
+@pytest.mark.skipif(not _LIVE_IS_KICAD_10, reason="installed KiCad is not version 10")
+def test_live_kicad_10_votes_the_icm_imu_into_sensor_motion():
+    result = pick(stock_index(_LIVE_SYMBOLS), "ICM-42688-P")
+
+    assert (result.stem, result.prefix) == ("Sensor_Motion", "ICM-")

@@ -74,23 +74,35 @@ def test_default_targets_follow_the_suggestion(tmp_path):
     ctx = prepare_context(inventory, tools, footprints_dir, today=TODAY)
     targets = symbols.target_libraries(inventory, MigrationChoices(), ctx)
 
-    # write_v1_stock's own docstring names exactly two sibling-vote cases this synthetic KiCad
-    # stand-in supports: the USB parts into Connector, and the IMU-style part into (mis-suggested)
-    # Timer (research Open Question 2, covered on its own below). Every fixture part EXPECTED_TARGETS
-    # names for a *real* KiCad 10 install (full stock libraries) that this stand-in does not carry
-    # correctly has no sibling or category evidence here, and stays "" (ask) for the owner to place.
-    imu_key = _key(IMU_LIBRARY, "ICM-42688-P")
+    # write_v1_stock's own docstring names the sibling-vote cases this synthetic KiCad stand-in
+    # supports: the USB parts into Connector, and the IMU-style part into Sensor_Motion at the ICM-
+    # step (gap G-13-1-f). Every fixture part EXPECTED_TARGETS names for a *real* KiCad 10 install
+    # (full stock libraries) that this stand-in does not carry correctly has no sibling or category
+    # evidence here, and stays "" (ask) for the owner to place.
     placed_here = {
         _key("Connector_USB_GCT", "USB4056-03-A_REVA2"): "Atomic_Connector",
         _key("Connector_USB_GCT", "USB4730-GF-A_REVA"): "Atomic_Connector",
+        _key(IMU_LIBRARY, "ICM-42688-P"): "Atomic_Sensor_Motion",
     }
     for key, expected in EXPECTED_TARGETS.items():
         if key in placed_here:
             assert targets.get(key) == placed_here[key], key
-        elif key == imu_key:
-            assert targets.get(key)  # placed somewhere, just not where EXPECTED_TARGETS lands it
         else:
             assert targets.get(key, "") == "", key
+
+
+def test_imu_is_suggested_into_sensor_motion(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    symbols_dir, footprints_dir = write_v1_stock(tmp_path)
+    key = _key(IMU_LIBRARY, "ICM-42688-P")
+    inventory = read_inventory(layout)
+    tools = _tools(kicad_symbols_dir=symbols_dir, kicad_footprints_dir=footprints_dir)
+    ctx = prepare_context(inventory, tools, footprints_dir, today=TODAY)
+
+    suggestion = ctx.suggestions[key]
+
+    assert (suggestion.name, suggestion.source) == ("Atomic_Sensor_Motion", "stock")
+    assert symbols.target_libraries(inventory, MigrationChoices(), ctx)[key] == "Atomic_Sensor_Motion"
 
 
 def test_crystal_stays_in_atomic_oscillator(tmp_path):
@@ -157,8 +169,9 @@ def test_imu_picked_library_passes_gate(tmp_path):
     ctx = prepare_context(inventory, tools, footprints_dir, today=TODAY)
 
     targets = symbols.target_libraries(inventory, MigrationChoices(), ctx)
-    assert targets[key] == "Atomic_Timer"  # the mis-suggestion the owner corrects in the preview
+    assert targets[key] == "Atomic_Sensor_Motion"  # the ICM- step votes into KiCad's Sensor_Motion
 
+    # The owner can still pick the library, with the fields the gate wants
     choices = MigrationChoices(
         parts={
             key: PartChoice(

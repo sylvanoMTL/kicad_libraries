@@ -407,14 +407,16 @@ def write_v1_custom(root: Path) -> RepoLayout:
 def write_v1_stock(root: Path) -> tuple[Path, Path]:
     """Write a KiCad stand-in under root/kicad: return (symbols dir, footprints dir).
 
-    Sibling symbols vote the USB parts into Connector and the IMU-style part into Timer, the way
-    the live suggestion engine places them today (RESEARCH F-12); the fake official SOT-23-5
-    footprint and its model (customfixtures.write_fake_kicad) and a template/sym-lib-table with
-    stock descriptions (TBL-01) sit beside them.
+    Sibling symbols vote the USB parts into Connector. The ICM names mirror KiCad 10: four Intersil
+    ICM7xxx timers sit in Timer and two InvenSense ICM-2xxxx IMUs in Sensor_Motion, so the IMU-style
+    part ICM-42688-P votes into Sensor_Motion at the ICM- step (gap G-13-1-f). The fake official
+    SOT-23-5 footprint and its model (customfixtures.write_fake_kicad) and a template/sym-lib-table
+    with stock descriptions (TBL-01) sit beside them.
     """
     symbols = {
         "Connector": (("USB4105-GF-A", ""), ("USB4110-GF-A", ""), ("USB4085-GF-A", "")),
-        "Timer": (("ICM7555", ""), ("ICM7556", ""), ("ICM7232", ""), ("ICM7211", "")),
+        "Timer": (("ICM7209", ""), ("ICM7555xB", ""), ("ICM7555xP", ""), ("ICM7556", "")),
+        "Sensor_Motion": (("ICM-20602", ""), ("ICM-20948", "")),
     }
     symbols_dir, footprints_dir = write_stock_kicad(root, symbols)
     template = root / "kicad" / "template"
