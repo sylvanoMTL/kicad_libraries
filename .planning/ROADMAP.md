@@ -312,7 +312,7 @@ Plans:
   4. One confirmed action sets up KiCad 10's chooser: it pins the `Atomic_` libraries, shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column. Like the path-variable sync, it shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout.
   5. The app shows and saves the old → new library name map with the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB). `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
 
-**Plans**: 28 plans (22 executed; 6 gap-closure plans pending from the owner's live UAT: 13-23..13-28)
+**Plans**: 25/28 plans executed (22 executed; 6 gap-closure plans pending from the owner's live UAT: 13-23..13-28)
 
 Plans:
 **Wave 1**
@@ -356,9 +356,9 @@ Plans:
 - [x] 13-22-PLAN.md — Wave 6 (after 13-10, 13-13, 13-21): a model rename can no longer overwrite an untouched, unlinked model that differs only by letter case — the existing-model guard in the rename pass is casefolded, the model keeps its on-disk name with a non-blocking note, the regression tests run end to end through apply, and the applier refuses any rename landing on bytes it does not delete (MIG-02, MIG-03, D-09)
 
 **Gap closure (live UAT 2026-11-12, G-13-1-a..h; d and e hot-fixed in 3dc3081)**
-- [ ] 13-23-PLAN.md — Wave 1: the migration window imports on Python 3.10-3.13 (CommitPlan / CommitProbe imported) with an annotation-resolution gate over every module, and a library picked from the dropdown list is recorded (G-13-1-a, G-13-1-h; MIG-02)
-- [ ] 13-24-PLAN.md — Wave 1: Skip <source> offered while the symbols are read, as an advance skip of that source's 3D model path check; amends the 2026-11-04 decision (G-13-1-b; MIG-04, DOC-01)
-- [ ] 13-25-PLAN.md — Wave 1: separator-aware part-number steps, a weak sibling vote yields to the description, motion words; ICM-42688-P suggested into Atomic_Sensor_Motion (G-13-1-f matching; MIG-02)
+- [x] 13-23-PLAN.md — Wave 1: the migration window imports on Python 3.10-3.13 (CommitPlan / CommitProbe imported) with an annotation-resolution gate over every module, and a library picked from the dropdown list is recorded (G-13-1-a, G-13-1-h; MIG-02)
+- [x] 13-24-PLAN.md — Wave 1: Skip <source> offered while the symbols are read, as an advance skip of that source's 3D model path check; amends the 2026-11-04 decision (G-13-1-b; MIG-04, DOC-01)
+- [x] 13-25-PLAN.md — Wave 1: separator-aware part-number steps, a weak sibling vote yields to the description, motion words; ICM-42688-P suggested into Atomic_Sensor_Motion (G-13-1-f matching; MIG-02)
 - [ ] 13-26-PLAN.md — Wave 2 (after 13-23, 13-24, 13-25): a guessed library blocks Run until confirmed, marks in the part list, the reason under the field, alternatives in the dropdown (G-13-1-f visibility; MIG-02, DOC-01)
 - [ ] 13-27-PLAN.md — Wave 3 (after 13-26): "Set Up KiCad Chooser..." renamed "Pin Atomic Libraries in KiCad..." in every user-facing text from one constant; identifiers and chooser.* codes kept (G-13-1-c; TBL-02, DOC-01)
 - [ ] 13-28-PLAN.md — Wave 4 (after 13-27): the Result view shows and changes the Destination and reports Generate's outcome, stale history folders are skipped, the window stays modal; full-suite gate for the round (G-13-1-g; MIG-04, TBL-02, DOC-01)
@@ -377,7 +377,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 21/21 | Complete    | 2026-11-11 |
-| 13. Atomic Migration and KiCad Setup | v2.0 | 22/22 | In Progress | - |
+| 13. Atomic Migration and KiCad Setup | v2.0 | 25/28 | In Progress | - |
 
 ## Backlog
 
