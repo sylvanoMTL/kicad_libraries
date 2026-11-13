@@ -13,13 +13,22 @@ import threading
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QSettings, Signal
+from dataclasses import replace
+
+from PySide6.QtCore import QSettings, Qt, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QDialog, QMessageBox
 
 from kicad_lib_manager import kicad_setup, library_scanner, main_window, settings
+from kicad_lib_manager.importer.migration.applier import MigrationResult
+from kicad_lib_manager.importer.migration.gate import GateOutcome
+from kicad_lib_manager.importer.migration.inventory import Inventory
+from kicad_lib_manager.importer.migration.plan import MigrationPlan, PartPlan
+from kicad_lib_manager.importer.migration.precheck import Precheck
+from kicad_lib_manager.importer.plan import PartText, ToolContext
 from kicad_lib_manager.library_scanner import ConfirmAnswer
-from kicad_lib_manager.models import FootprintLibrary, ScanResult, SymbolLibrary
+from kicad_lib_manager.models import FootprintLibrary, Issue, ScanResult, Severity, SymbolLibrary
+from kicad_lib_manager.widgets.migration_dialog import MigrationCore, MigrationDialog as RealMigrationDialog
 
 
 @pytest.fixture(autouse=True)
@@ -45,6 +54,7 @@ class FakeMigrationDialog(QDialog):
     migrated = Signal(object)
     generate_requested = Signal()
     setup_chooser_requested = Signal()
+    destination_changed = Signal(str)
     issues_logged = Signal(list)
     atomic_check_requested = Signal(str, str)
 
@@ -58,7 +68,15 @@ class FakeMigrationDialog(QDialog):
         self._running = False
         self._committing = False
         self.opened = False
+        self.destinations: list[str] = []
+        self.statuses: list[tuple[str, Severity]] = []
         FakeMigrationDialog.instances.append(self)
+
+    def set_destination(self, text: str):
+        self.destinations.append(text)
+
+    def set_result_status(self, text: str, severity: Severity):
+        self.statuses.append((text, severity))
 
     def is_running(self) -> bool:
         return self._running
@@ -398,3 +416,187 @@ def test_close_blocked_while_migration_runs(qtbot, make_window):
     w.closeEvent(event2)
     assert event2.isAccepted()
     assert w._migration_dialog is None
+
+
+# -- Gap G-13-1-g: the Result view shows and changes the Destination (13-28, D-24) -------------
+
+
+def _real_dialog_core(tmp_path, pick):
+    """A migration core for the real dialog: one part, an empty gate, a successful apply, no Custom/ read."""
+    part = PartPlan(
+        key=("Custom/Symbols/IC_LDO_TI.kicad_sym", "U1"),
+        source_library="IC_LDO_TI",
+        target_library="Atomic_Connector",
+        suggestion=None,
+        old_name="U1",
+        new_name="P1",
+        mpn="P1",
+        parent=None,
+        footprint_old="",
+        footprint_new="",
+        footprint_target="shared",
+        model_files=(),
+        field_changes=(),
+        generated_text=PartText(),
+        part_text=PartText(),
+        issues=(),
+    )
+
+    def plan_for(inventory, choices, ctx):
+        return MigrationPlan(
+            layout=inventory.layout, parts=(part,), ops=(), library_map=(), symbol_renames=(),
+            footprint_links=(), model_renames=(), leftovers=(), families=(), conflicts=(),
+            removed_libraries=(), bak_files=(), map_text="Old -> New\n", issues=(),
+        )
+
+    def inventory_for(layout):
+        return Inventory(
+            layout=layout, parts=(), footprints=(), models=(), model_linkers={}, bak_files=(),
+            symbol_libraries=(), footprint_libraries=(), issues=(),
+        )
+
+    return replace(
+        MigrationCore(),
+        check_custom=lambda custom_dir, repo_root: Precheck(True, (), "head", "main", ""),
+        read_inventory=inventory_for,
+        detect_tools=lambda kicad_fp_dir: ToolContext(),
+        prepare_context=lambda inventory, tools, kicad_fp_dir, progress=None: "ctx",
+        build_plan=plan_for,
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+        fingerprints=lambda inventory: {},
+        load_draft=lambda path, repo_root: Issue(Severity.INFO, "draft.none", "No saved migration draft yet."),
+        draft_file=lambda repo_root: tmp_path / "draft.json",
+        checkout_mismatch=lambda repo_root: None,
+        kicad_running=lambda: [],
+        ask_kicad_open=lambda parent, names: ConfirmAnswer.DECLINE,
+        ensure_tag=lambda custom_dir, repo_root: [],
+        apply=lambda plan, **kw: MigrationResult(True, (), (), (), None, plan, {}),
+        pick_destination=pick,
+    )
+
+
+def test_real_result_view_changes_the_destination_end_to_end(
+    qtbot, make_window, monkeypatch, tmp_path
+):
+    repo = tmp_path / "repo"
+    missing = tmp_path / "gone"
+    picked = tmp_path / "picked"
+    picked.mkdir()
+    picks = []
+
+    def fake_pick(parent, start):
+        picks.append((parent, start))
+        return str(picked)
+
+    w = make_window([_v1_result(), _atomic_result()], repo=repo)
+    monkeypatch.setattr(main_window, "MigrationDialog", RealMigrationDialog)
+    monkeypatch.setattr(main_window, "MIGRATION_CORE", _real_dialog_core(tmp_path, fake_pick))
+    w._dest_combo.setCurrentText(str(missing))
+
+    w._open_migration()
+    dialog = w._migration_dialog
+    assert isinstance(dialog, RealMigrationDialog)
+    assert dialog.windowModality() == Qt.WindowModality.WindowModal
+    qtbot.waitUntil(lambda: dialog._run_btn.isEnabled(), timeout=5000)
+    dialog._run_btn.click()
+    qtbot.waitUntil(lambda: dialog._stack.currentWidget() is dialog._result_page, timeout=5000)
+    settle(qtbot, w)
+    qtbot.waitUntil(lambda: not w._pending_migration, timeout=5000)
+    settle(qtbot, w)
+    assert dialog.windowModality() == Qt.WindowModality.WindowModal
+
+    # The Result view shows the missing folder with the amber note
+    assert dialog._dest_edit.text() == str(missing)
+    assert not dialog._dest_note.isHidden()
+
+    # Generate writes nothing and the Result view says why
+    dialog._generate_btn.click()
+    assert not missing.exists()
+    assert dialog._result_status.text() == f"Destination folder does not exist: {missing}"
+    assert not dialog._result_status.isHidden()
+
+    # Browse... changes the main window's Destination and shows the new folder
+    dialog._browse_dest_btn.click()
+    assert picks and picks[0][0] is dialog
+    assert w._dest_combo.currentText() == str(picked)
+    assert dialog._dest_edit.text() == str(picked)
+    assert dialog._dest_note.isHidden()
+    assert dialog.windowModality() == Qt.WindowModality.WindowModal
+
+    # Generate again: the tables go to the picked folder and the Result view reports it
+    dialog._generate_btn.click()
+    settle(qtbot, w)
+    assert '(lib (name "Atomic_Connector")' in (picked / "sym-lib-table").read_text(encoding="utf-8")
+    assert dialog._result_status.text() == f"Library tables written to {picked}"
+    assert dialog.windowModality() == Qt.WindowModality.WindowModal
+
+
+def test_destination_changed_in_the_result_view_is_used_by_generate(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    new = tmp_path / "newdest"
+    new.mkdir()
+    w = make_window([_v1_result(), _atomic_result()], repo=repo)
+    w._open_migration()
+    dialog = FakeMigrationDialog.instances[0]
+    assert dialog.destinations == [str(repo)]
+
+    dialog.migrated.emit(object())
+    settle(qtbot, w)
+
+    dialog.destination_changed.emit(str(new))
+    assert w._dest_combo.currentText() == str(new)
+    assert settings.load_dest_history()[0] == str(new)
+    assert dialog.destinations[-1] == str(new)
+
+    dialog.generate_requested.emit()
+    settle(qtbot, w)
+    assert '(lib (name "Atomic_Connector")' in (new / "sym-lib-table").read_text(encoding="utf-8")
+    assert dialog.statuses[-1] == (f"Library tables written to {new}", Severity.SUCCESS)
+
+
+def test_blank_destination_is_reported_in_the_result_view(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    w = make_window([_v1_result(), _atomic_result()], repo=repo)
+    w._open_migration()
+    dialog = FakeMigrationDialog.instances[0]
+    w._dest_combo.setCurrentText("")
+
+    dialog.generate_requested.emit()
+    assert dialog.statuses[-1] == (
+        "No destination folder set; library tables not changed", Severity.WARNING,
+    )
+    assert not (repo / "sym-lib-table").exists()
+    assert "No destination folder set; library tables not changed" in w._log._text.toPlainText()
+
+    dialog.setup_chooser_requested.emit()
+    assert dialog.statuses[-1] == (main_window._NO_DEST_CHOOSER_TEXT, Severity.WARNING)
+
+
+def test_deferred_generate_is_reported_in_the_result_view(qtbot, make_window, tmp_path):
+    repo = tmp_path / "repo"
+    gate = threading.Event()
+
+    def atomic_result_gated():
+        gate.wait(5)
+        return _atomic_result()
+
+    w = make_window([_v1_result(), atomic_result_gated], repo=repo)
+    w._open_migration()
+    dialog = FakeMigrationDialog.instances[0]
+    dialog.migrated.emit(object())
+    qtbot.waitUntil(lambda: w._worker is not None, timeout=5000)
+
+    dialog.generate_requested.emit()
+    assert dialog.statuses == [("Generate Tables runs when the rescan finishes", Severity.INFO)]
+
+    gate.set()
+    settle(qtbot, w)
+    assert dialog.statuses[-1] == (f"Library tables written to {repo}", Severity.SUCCESS)
+
+
+def test_migration_window_is_window_modal(qtbot, make_window):
+    w = make_window([ScanResult()])
+    w._open_migration()
+    dialog = FakeMigrationDialog.instances[0]
+    assert dialog.isModal()
+    assert dialog.windowModality() == Qt.WindowModality.WindowModal
