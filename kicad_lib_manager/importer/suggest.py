@@ -10,7 +10,7 @@ and the form call manufacturer_from_datasheet (D-23).
 """
 
 from collections.abc import Iterable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from urllib.parse import urlsplit
 
 from ..manufacturers import by_host
@@ -61,6 +61,8 @@ class LibrarySuggestion:
     alternatives: tuple[Alternative, ...]
     related_stems: tuple[str, ...]
     issues: tuple[Issue, ...]
+    # True when the library is only a best guess from similar part numbers and nothing in the description confirms it
+    weak: bool = False
 
 
 def datasheet_host(value: str) -> str | None:
@@ -147,17 +149,32 @@ def suggest_library(meta: PartMeta, *, own: SiblingIndex = EMPTY_INDEX, stock: S
     def decided(found: SiblingPick) -> bool:
         return found.stem is not None and found.stem in stems
 
+    def from_vote(found: SiblingPick, source: str, reason: str) -> LibrarySuggestion:
+        """The vote's suggestion; a weak vote yields to the description, is confirmed by it, or is marked weak."""
+        alternatives = _alternatives(found, found.stem, stems)
+        voted = LibrarySuggestion(
+            ATOMIC_PREFIX + str(found.stem), source, reason, alternatives,
+            _related(found.stem, alternatives, ()), tuple(issues),
+        )
+        if not found.weak:
+            return voted
+        match = classify(meta, stems)
+        if match.stem is None:
+            return replace(voted, weak=True)
+        if match.stem == found.stem:
+            return voted
+        by_category = _alternatives(found, match.stem, stems)
+        return LibrarySuggestion(
+            ATOMIC_PREFIX + match.stem, "category", f"Suggested from {match.detail}", by_category,
+            _related(match.stem, by_category, match.runner_up), tuple(issues),
+        )
+
     found = pick(own, part)
     if found.counts:
         last = found
     if decided(found):
         count = found.counts[0][1]
-        reason = f"Suggested from {count} similar parts in your {ATOMIC_PREFIX}{found.stem}"
-        alternatives = _alternatives(found, found.stem, stems)
-        return LibrarySuggestion(
-            ATOMIC_PREFIX + str(found.stem), "own", reason, alternatives,
-            _related(found.stem, alternatives, ()), tuple(issues),
-        )
+        return from_vote(found, "own", f"Suggested from {count} similar parts in your {ATOMIC_PREFIX}{found.stem}")
 
     if stock is None:
         issues.append(Issue(Severity.INFO, "naming.no_stock_libraries", NO_STOCK_TEXT))
@@ -167,12 +184,7 @@ def suggest_library(meta: PartMeta, *, own: SiblingIndex = EMPTY_INDEX, stock: S
             last = found
         if decided(found):
             count = found.counts[0][1]
-            reason = f"Suggested from {count} similar parts in KiCad's {found.stem}"
-            alternatives = _alternatives(found, found.stem, stems)
-            return LibrarySuggestion(
-                ATOMIC_PREFIX + str(found.stem), "stock", reason, alternatives,
-                _related(found.stem, alternatives, ()), tuple(issues),
-            )
+            return from_vote(found, "stock", f"Suggested from {count} similar parts in KiCad's {found.stem}")
 
     match = classify(meta, stems)
     if match.stem is not None:
