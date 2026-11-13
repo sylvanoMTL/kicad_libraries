@@ -50,8 +50,15 @@ RULES: tuple[CategoryRule, ...] = (
     CategoryRule("Regulator_Switching", any_words=("buck", "boost", "switching regulator")),
     CategoryRule("Transistor_FET", any_words=("mosfet", "n channel", "p channel")),
     CategoryRule("Transistor_BJT", any_words=("bjt", "npn", "pnp")),
+    # Before Sensor_Magnetic: a 9-axis IMU often names its magnetometer and is still a motion sensor
+    CategoryRule(
+        "Sensor_Motion",
+        any_words=(
+            "imu", "accelerometer", "gyroscope", "6 axis", "9 axis", "motion sensor", "motion tracking",
+            "motiontracking", "inertial",
+        ),
+    ),
     CategoryRule("Sensor_Magnetic", any_words=("magnetometer",)),
-    CategoryRule("Sensor_Motion", any_words=("imu", "accelerometer", "gyroscope")),
     CategoryRule("Battery_Management", any_words=("fuel gauge", "battery charger", "charger")),
     CategoryRule("Oscillator", any_words=("tcxo", "vcxo", "ocxo", "mems oscillator", "oscillator")),
     CategoryRule(
