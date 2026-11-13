@@ -14,7 +14,10 @@ from .atomic_check import is_atomic
 from .importer.layout import RepoLayout
 from .importer.migration.inventory import migration_reason
 from .kicad_process import kicad_running
-from .kicad_setup import CHECKOUT_MISMATCH, checkout_mismatch, sync_kicad_chooser, wrong_checkout_warning
+from .kicad_setup import (
+    CHECKOUT_MISMATCH, PIN_ACTION_TEXT, checkout_mismatch, sync_kicad_chooser,
+    wrong_checkout_warning,
+)
 from .library_scanner import (
     ConfirmAnswer, LibraryRescan, find_kicad_footprint_dir, rescan_library, scan_all,
     sync_kicad_path_vars,
@@ -55,9 +58,10 @@ MIGRATION_CORE: MigrationCore | None = None
 
 # Shown when the Destination box is blank: Path("") would be the working directory (REV-02)
 _NO_DEST_TEXT = "No destination folder set; library tables not changed"
-# Menu text and the Destination-blank warning for the chooser setup action (D-17, D-18)
-SETUP_CHOOSER_TEXT = "Set Up KiCad &Chooser..."
-_NO_DEST_CHOOSER_TEXT = "No destination folder set; KiCad's chooser not set up"
+# Menu text and the Destination-blank warning for the pin action (D-17, D-18; renamed by
+# gap G-13-1-c, the name comes from kicad_setup.PIN_ACTION_TEXT)
+SETUP_CHOOSER_TEXT = f"&{PIN_ACTION_TEXT}..."
+_NO_DEST_CHOOSER_TEXT = "No destination folder set; the Atomic_ libraries were not pinned in KiCad"
 # Menu text, the enabled tooltip, the disabled-tooltip reason and the help topic key for
 # the migration action (D-13)
 MIGRATE_TEXT = "&Migrate to Atomic Libraries..."
@@ -339,14 +343,12 @@ class MainWindow(QMainWindow):
 
         self._act_setup_chooser = QAction(SETUP_CHOOSER_TEXT, self)
         self._act_setup_chooser.setShortcut(QKeySequence("Ctrl+Shift+K"))
-        self._act_setup_chooser.setToolTip(
-            "Pin the Atomic_ libraries and show the MPN and Manufacturer columns in "
-            "KiCad's symbol chooser"
+        pin_tip = (
+            "Pin the Atomic_ libraries at the top of KiCad's library lists and show the "
+            "MPN and Manufacturer columns when you place a symbol"
         )
-        self._act_setup_chooser.setStatusTip(
-            "Pin the Atomic_ libraries and show the MPN and Manufacturer columns in "
-            "KiCad's symbol chooser"
-        )
+        self._act_setup_chooser.setToolTip(pin_tip)
+        self._act_setup_chooser.setStatusTip(pin_tip)
         self._act_setup_chooser.triggered.connect(self._on_setup_chooser)
         file_menu.addAction(self._act_setup_chooser)
 
@@ -1377,7 +1379,7 @@ class MainWindow(QMainWindow):
     # same confirmation is a three-button variant (Retry, Change anyway, Not now). Both are
     # window-modal, so only the main window waits and the User Guide stays usable (G-12-22).
     # The chooser setup's confirm (_confirm_chooser_changes, below) is the same sanctioned
-    # exception for KiCad's chooser pins and columns (D-17).
+    # exception for the pinned libraries and columns in KiCad's settings (D-17).
     def _confirm_path_var_changes(self, changes, names=()):
         if names:
             return self._ask_kicad_open(changes, names)
@@ -1498,7 +1500,7 @@ class MainWindow(QMainWindow):
         """Chooser-specific KiCad-open dialog (Retry / Change anyway / Not now)."""
         box, answers = self._kicad_open_box(
             None, names,
-            intro="These settings of KiCad's symbol chooser would change:",
+            intro="These KiCad settings would change to pin the Atomic_ libraries:",
             lines=lines,
         )
         box.exec()
@@ -1510,12 +1512,12 @@ class MainWindow(QMainWindow):
         if names:
             return self._ask_chooser_kicad_open(lines, names)
         text = (
-            "These settings of KiCad's symbol chooser would change:\n\n"
+            "These KiCad settings would change to pin the Atomic_ libraries:\n\n"
             + "\n".join(lines)
             + "\n\nKiCad shows them after a restart. Change them?"
         )
         answer = self._question(
-            "Set up KiCad's chooser?",
+            "Pin Atomic libraries in KiCad?",
             text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
@@ -1523,7 +1525,7 @@ class MainWindow(QMainWindow):
         return answer == QMessageBox.StandardButton.Yes
 
     def _on_setup_chooser(self):
-        """Offer the KiCad chooser setup: check for a running KiCad first, off the GUI thread."""
+        """Offer to pin the Atomic_ libraries in KiCad: check for a running KiCad first, off the GUI thread."""
         if self._dest_path() is None:
             self._log.log(_NO_DEST_CHOOSER_TEXT, "warning")
             return
