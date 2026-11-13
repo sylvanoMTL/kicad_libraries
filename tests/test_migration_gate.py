@@ -13,12 +13,17 @@ from installfixtures import V10_VERSION, vendor_footprint
 from migrationfixtures import (
     BOARD_FEATURES,
     EXPECTED_TARGETS,
+    IMU_LIBRARY,
     WIRELESS_LIBRARY,
     write_v1_custom,
+    write_v1_stock,
 )
+from stockfixtures import write_stock_kicad
 from zipfixtures import STEP_BYTES
 
+from kicad_lib_manager.importer import stems
 from kicad_lib_manager.importer.layout import RepoLayout
+from kicad_lib_manager.importer.migration import gate as gate_module
 from kicad_lib_manager.importer.migration.gate import (
     TARGET_LIBRARY,
     TARGET_NAME,
@@ -294,3 +299,106 @@ def test_board_features_never_judged(tmp_path):
     for line in outcome.lines:
         for name in board_feature_names:
             assert name not in line.text
+
+
+# -- plan 13-26 Task 1: a guessed library blocks Run until the owner confirms it ----------------
+
+_IMU_KEY = (f"Custom/Symbols/{IMU_LIBRARY}.kicad_sym", "ICM-42688-P")
+_USB_KEY = ("Custom/Symbols/Connector_USB_GCT.kicad_sym", "USB4056-03-A_REVA2")
+
+
+def _guess_tools(symbols_dir: Path) -> ToolContext:
+    # Mirror detect_tools(): an empty allowed set would filter every suggestion out
+    return ToolContext(
+        kicad_cli=Path("kicad-cli"),
+        cli_runner=FakeCli(output_version=V10_VERSION),
+        kicad_symbols_dir=symbols_dir,
+        allowed_stems=stems.allowed_stems(stems.installed_stems(symbols_dir)),
+    )
+
+
+def _guess_plan(tmp_path: Path, choices: MigrationChoices | None = None):
+    """The v1 fixture over a stock with ICM7xxx timers only: the IMU's only vote is on the letters ICM."""
+    layout = write_v1_custom(tmp_path)
+    symbols_dir, footprints_dir = write_stock_kicad(
+        tmp_path,
+        {
+            "Connector": (("USB4105-GF-A", ""), ("USB4110-GF-A", ""), ("USB4085-GF-A", "")),
+            "Timer": (("ICM7555", ""), ("ICM7556", ""), ("ICM7232", ""), ("ICM7211", "")),
+        },
+    )
+    inventory = read_inventory(layout)
+    ctx = prepare_context(inventory, _guess_tools(symbols_dir), footprints_dir, today=TODAY)
+    plan = build_migration_plan(inventory, choices or MigrationChoices(), ctx)
+    return inventory, plan
+
+
+def _part(plan: MigrationPlan, key) -> PartPlan:
+    return next(part for part in plan.parts if part.key == key)
+
+
+def _lines_for(plan: MigrationPlan, inventory, key):
+    outcome = check_plan(plan, inventory, end_state_context(plan, inventory, None))
+    return [line for line in outcome.lines if line.key == key]
+
+
+def test_library_basis_follows_the_owner_choice(tmp_path):
+    _, plan = _guess_plan(tmp_path)
+    imu = _part(plan, _IMU_KEY)
+    assert imu.suggestion is not None and imu.suggestion.weak
+    assert imu.target_library == "Atomic_Timer"
+    assert imu.library_basis == "guessed"
+    assert _part(plan, _USB_KEY).library_basis == "suggested"
+
+    choices = MigrationChoices(parts={_IMU_KEY: PartChoice(library="Atomic_Timer")})
+    _, chosen = _guess_plan(tmp_path / "chosen", choices)
+    assert _part(chosen, _IMU_KEY).library_basis == "chosen"
+
+    # A part with neither a suggestion nor a choice has no library, hence no basis
+    bare = _part_plan(("x", "Y"), target_library="", new_name="Y", footprint="")
+    assert bare.library_basis == ""
+
+
+def test_guessed_library_blocks_run_until_confirmed(tmp_path):
+    inventory, plan = _guess_plan(tmp_path)
+    imu = _part(plan, _IMU_KEY)
+    expected = gate_module.GUESSED_LIBRARY_TEXT.format(name=imu.new_name, library="Atomic_Timer")
+
+    guess_lines = [line for line in _lines_for(plan, inventory, _IMU_KEY) if line.text == expected]
+    assert len(guess_lines) == 1
+    assert guess_lines[0].target == TARGET_LIBRARY
+    assert not check_plan(plan, inventory, end_state_context(plan, inventory, None)).run_enabled
+
+    for library in ("Atomic_Timer", "Atomic_Sensor_Motion"):
+        choices = MigrationChoices(parts={_IMU_KEY: PartChoice(library=library)})
+        inv2, plan2 = _guess_plan(tmp_path / library, choices)
+        lines = _lines_for(plan2, inv2, _IMU_KEY)
+        assert not [line for line in lines if "only a guess" in line.text]
+        assert not [line for line in lines if line.target == TARGET_LIBRARY]
+
+
+def test_suggested_library_is_marked_but_does_not_block(tmp_path):
+    layout = write_v1_custom(tmp_path)
+    symbols_dir, footprints_dir = write_v1_stock(tmp_path)
+    inventory = read_inventory(layout)
+    ctx = prepare_context(inventory, _guess_tools(symbols_dir), footprints_dir, today=TODAY)
+    plan = build_migration_plan(inventory, MigrationChoices(), ctx)
+
+    imu = _part(plan, _IMU_KEY)
+    assert imu.library_basis == "suggested"
+    assert imu.target_library == "Atomic_Sensor_Motion"
+    outcome = check_plan(plan, inventory, end_state_context(plan, inventory, None))
+    assert not [line for line in outcome.lines if "only a guess" in line.text]
+
+
+def test_guessed_library_line_is_plain(tmp_path):
+    inventory, plan = _guess_plan(tmp_path)
+    imu = _part(plan, _IMU_KEY)
+    guess = [line for line in _lines_for(plan, inventory, _IMU_KEY) if line.target == TARGET_LIBRARY]
+    assert guess
+    for line in guess:
+        assert "migration." not in line.text
+        assert "ki_" not in line.text
+        assert "${" not in line.text
+        assert imu.new_name in line.text
+        assert "Atomic_Timer" in line.text

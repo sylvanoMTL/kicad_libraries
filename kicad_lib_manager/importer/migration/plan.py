@@ -112,6 +112,7 @@ class PartPlan:
     part_text: PartText
     changed_since_draft: bool = False
     issues: tuple[Issue, ...] = ()
+    library_basis: str = ""  # where the library came from: "chosen", "suggested", "guessed" or "" (none)
 
 
 @dataclass(frozen=True)

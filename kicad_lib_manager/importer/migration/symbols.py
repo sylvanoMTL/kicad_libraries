@@ -93,6 +93,17 @@ def target_libraries(inventory: Inventory, choices: MigrationChoices, ctx) -> di
     return targets
 
 
+def _library_basis(choice, suggestion, target: str) -> str:
+    """Where a part's library came from: "chosen" (owner), "suggested", "guessed" (weak suggestion) or ""."""
+    if not target:
+        return ""
+    if choice is not None and choice.library is not None:
+        return "chosen"
+    if suggestion is not None and target == suggestion.name:
+        return "guessed" if suggestion.weak else "suggested"
+    return "chosen"
+
+
 def _default_mpn(part: InventoryPart) -> str:
     """A part's own default MPN before duplicate-blanking: MPN, else MP, else SNAPEDA_PN, else Value (D-06)."""
     fields = part.fields
@@ -593,6 +604,7 @@ def plan_symbols(
                     generated_text=generated_text,
                     part_text=part_text,
                     issues=(),
+                    library_basis=_library_basis(choice, ctx.suggestions.get(part.key), target),
                 )
             )
             library_map.add((part.library, target))
@@ -652,6 +664,7 @@ def plan_symbols(
                 generated_text=texts[0],
                 part_text=texts[1],
                 issues=part_issues,
+                library_basis=_library_basis(choice, ctx.suggestions.get(part.key), target),
             )
         )
 
