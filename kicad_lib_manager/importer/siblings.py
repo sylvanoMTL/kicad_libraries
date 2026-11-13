@@ -63,22 +63,35 @@ class SiblingPick:
     prefix: str
     counts: tuple[tuple[str, int], ...]
 
+    @property
+    def weak(self) -> bool:
+        """True for a decided vote that is only a coarse guess: found on the bare leading letters, or won
+        with less than three quarters of the siblings counted at its step. An undecided pick is never weak."""
+        if self.stem is None or not self.counts:
+            return False
+        total = sum(count for _, count in self.counts)
+        return self.prefix.isalpha() or self.counts[0][1] * 4 < total * 3
+
 
 def family_prefixes(part_number: str) -> list[str]:
     """The leading letters plus the first digit run, then the letters plus the first digit, then the letters.
 
-    CSD85301Q2 gives CSD85301, CSD8, CSD. Nothing comes back for fewer than 3 leading letters, so a
-    part such as RS3-1212S/H3 or LM7805 never looks up siblings.
+    CSD85301Q2 gives CSD85301, CSD8, CSD. A single - or _ between the letters and the first digit run
+    stays in every step but the last, so ICM-42688-P gives ICM-42688, ICM-4, ICM-, ICM; a separator
+    followed by a letter (ATXK-H14) adds no step. Nothing comes back for fewer than 3 leading letters,
+    so a part such as RS3-1212S/H3 or LM7805 never looks up siblings.
     """
-    found = re.match(r"([A-Za-z]+)(\d+)?", part_number)
+    found = re.match(r"([A-Za-z]+)(?:([-_])(?=\d))?(\d+)?", part_number)
     if not found or len(found.group(1)) < _MIN_LETTERS:
         return []
-    letters, digits = found.group(1), found.group(2) or ""
+    letters, separator, digits = found.group(1), found.group(2) or "", found.group(3) or ""
     steps = []
     if digits:
-        steps.append(letters + digits)
+        steps.append(letters + separator + digits)
         if len(digits) > 1:
-            steps.append(letters + digits[0])
+            steps.append(letters + separator + digits[0])
+    if separator:
+        steps.append(letters + separator)
     steps.append(letters)
     return list(dict.fromkeys(steps))
 

@@ -51,6 +51,7 @@ def make_window(qtbot, monkeypatch, tmp_path):
             calls.append((root, kicad_fp_dir))
             # A gated item reads the hooks to play the part of the real scan
             make.hooks = (skip, checking)
+            make.progress = progress
             item = queue.pop(0) if len(queue) > 1 else queue[0]
             return item() if callable(item) else item
 
@@ -93,6 +94,7 @@ def make_window(qtbot, monkeypatch, tmp_path):
     make.calls = []
     make.repo = None
     make.hooks = None
+    make.progress = None
 
     # Patched at fixture level so no test can block on a real modal dialog;
     # tests set make.answer to choose the reply and read make.questions for the calls
@@ -276,6 +278,29 @@ def test_destination_change_only_logs_and_never_on_keystrokes(make_window, tmp_p
     assert w._log._text.toPlainText().count(marker) == 1
     assert [lib.selected for lib in scan.symbol_libs] == [True]
     assert [lib.selected for lib in scan.footprint_libs] == [False]
+
+
+def test_destination_history_skips_folders_that_no_longer_exist(make_window, tmp_path):
+    missing = tmp_path / "gone"
+    existing_a = tmp_path / "a"
+    existing_b = tmp_path / "b"
+    existing_a.mkdir()
+    existing_b.mkdir()
+    settings.get_settings().setValue(
+        "dest_history", [str(missing), "", str(existing_a), str(existing_b)],
+    )
+    saved = settings.load_dest_history()
+
+    w = make_window([ScanResult()])
+
+    items = [w._dest_combo.itemText(i) for i in range(w._dest_combo.count())]
+    assert items == [str(existing_a), str(existing_b)]
+    assert w._dest_combo.currentText() == str(existing_a)
+    assert settings.load_dest_history() == saved
+
+    settings.get_settings().setValue("dest_history", [str(missing)])
+    w2 = make_window([ScanResult()], repo=tmp_path / "repo2")
+    assert [w2._dest_combo.itemText(i) for i in range(w2._dest_combo.count())] == [str(make_window.repo)]
 
 
 NO_DEST = "No destination folder set; library tables not changed"
@@ -1446,9 +1471,10 @@ def test_library_rescan_updates_the_saved_scan(make_window, qtbot, monkeypatch, 
 # ── Skip on the Loading Libraries window (plan 12-17, G-12-21) ─────────────
 
 SKIP_TIP = (
-    "Stop checking the 3D model paths of WurthElektronik. "
+    "Stop checking the 3D model paths of WurthElektronik, now or when the scan reaches them. "
     "Its libraries are still listed, and Rescan checks them again."
 )
+SKIP_IDLE_TIP = "Skip is offered once the scan starts reading a library source."
 
 
 def test_scan_progress_dialog_skip_button_follows_the_source(qtbot):
@@ -1460,6 +1486,7 @@ def test_scan_progress_dialog_skip_button_follows_the_source(qtbot):
     assert dialog.windowTitle() == "Loading Libraries"
     assert button.text() == "Skip"
     assert not button.isEnabled()
+    assert button.toolTip() == SKIP_IDLE_TIP
     assert not button.isDefault() and not button.autoDefault()
 
     emitted = []
@@ -1474,6 +1501,15 @@ def test_scan_progress_dialog_skip_button_follows_the_source(qtbot):
     assert emitted == ["WurthElektronik"]
     assert button.text() == "Skipping WurthElektronik..."
     assert not button.isEnabled()
+
+    # Another source is offered normally; a requested source is remembered
+    dialog.set_skippable("Custom")
+    assert button.text() == "Skip Custom"
+    assert button.isEnabled()
+    dialog.set_skippable("WurthElektronik")
+    assert button.text() == "Skipping WurthElektronik..."
+    assert not button.isEnabled()
+    assert emitted == ["WurthElektronik"]
 
     dialog.set_skippable(None)
     assert button.text() == "Skip"
@@ -1544,6 +1580,63 @@ def test_loading_dialog_skips_the_source_being_checked(make_window, qtbot):
     assert not w._progress.isVisible()
     assert [lib.nickname for lib in w._scan_result.symbol_libs] == ["WE_S"]
     assert [lib.nickname for lib in w._scan_result.footprint_libs] == ["WE_F"]
+
+
+def test_skip_is_offered_while_symbols_are_read(make_window, qtbot):
+    at_symbols = threading.Event()
+    released = threading.Event()
+    custom_reported = threading.Event()
+    custom_go = threading.Event()
+    wurth_reported = threading.Event()
+    wurth_go = threading.Event()
+    answers = []
+
+    def scan():
+        skip, checking = make_window.hooks
+        progress = make_window.progress
+        progress("Parsing symbol: WE_S", 5, 100)
+        checking("WurthElektronik")
+        at_symbols.set()
+        released.wait(5)
+        # The 3D model path check reaches each source in turn
+        checking("Custom")
+        custom_reported.set()
+        custom_go.wait(5)
+        checking("WurthElektronik")
+        wurth_reported.set()
+        wurth_go.wait(5)
+        answers.append(skip("WurthElektronik"))
+        checking(None)
+        return _wurth_scan_result(["WurthElektronik"])
+
+    w = make_window([scan], wait=False)
+    try:
+        qtbot.waitUntil(lambda: w._progress is not None
+                        and w._progress._label.text() == "Parsing symbol: WE_S"
+                        and w._progress.skip_button.text() == "Skip WurthElektronik"
+                        and w._progress.skip_button.isEnabled(), timeout=5000)
+        button = w._progress.skip_button
+        button.click()
+        assert button.text() == "Skipping WurthElektronik..."
+        assert not button.isEnabled()
+        released.set()
+
+        qtbot.waitUntil(lambda: custom_reported.is_set()
+                        and button.text() == "Skip Custom" and button.isEnabled(), timeout=5000)
+        custom_go.set()
+        qtbot.waitUntil(lambda: wurth_reported.is_set()
+                        and button.text() == "Skipping WurthElektronik..."
+                        and not button.isEnabled(), timeout=5000)
+    finally:
+        released.set()
+        custom_go.set()
+        wurth_go.set()
+    qtbot.waitUntil(lambda: w._worker is None, timeout=5000)
+
+    assert answers == [True]
+    lines = _log_text(w).splitlines()
+    assert sum(1 for line in lines if _skip_line() in line) == 1
+    assert not any("Skipping" in line for line in lines)
 
 
 def test_a_skip_click_after_the_check_ended_logs_no_skip(make_window, qtbot):

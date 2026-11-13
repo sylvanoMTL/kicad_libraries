@@ -85,6 +85,25 @@ def test_real_samacsys_download_is_placed_in_converter_dcdc_isolated():
             "words",
             "the description",
         ),
+        (
+            PartMeta("A", description="High Precision 6-Axis MEMS MotionTrackingTM Device"),
+            "Sensor_Motion",
+            "words",
+            "the description",
+        ),
+        # An IMU that names its magnetometer stays a motion sensor (the Sensor_Motion rule comes first)
+        (
+            PartMeta("A", description="9-axis IMU with accelerometer, gyroscope and magnetometer"),
+            "Sensor_Motion",
+            "words",
+            "the description",
+        ),
+        (
+            PartMeta("A", description="Motion sensor, inertial measurement"),
+            "Sensor_Motion",
+            "words",
+            "the description",
+        ),
         (PartMeta("A", description="AC/DC converter 5V"), "Converter_ACDC", "words", "the description"),
         (
             PartMeta("A", description="Isolated 5V DC-DC module"),

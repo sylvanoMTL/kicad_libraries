@@ -15,8 +15,8 @@ from .import_dialog import (
     REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT, fit_window,
 )
 from .migration_dialog import (
-    CHOOSER_TEXT, FILES_TAB_TEXT, GENERATE_TEXT, LEFTOVERS_TEXT, MOVE_FOOTPRINT_TEXT, OPEN_MAP_TEXT,
-    RUN_TEXT,
+    BROWSE_TEXT, CHOOSER_TEXT, DESTINATION_LABEL, FILES_TAB_TEXT, GENERATE_TEXT, GUESS_MARK, LEFTOVERS_TEXT,
+    MOVE_FOOTPRINT_TEXT, OPEN_MAP_TEXT, RUN_TEXT, SUGGESTED_MARK,
 )
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
@@ -151,12 +151,14 @@ HELP_PAGES["repo_scan"] = _wrap(
     "library file changed since it was saved, and the log says so. <b>Rescan</b> "
     "always runs the whole scan.</p>"
     "<p>While the libraries load, the <b>Loading Libraries</b> window shows a "
-    "<b>Skip</b> button during the 3D model path check. It names the library source "
-    "being checked, for example <b>Skip WurthElektronik</b>. Skip stops checking the "
-    "3D model paths of that source only: its libraries are still listed and its "
-    "symbols' footprint links are still read, so Generate Tables keeps them. The log "
-    "says which source was skipped. The scan is saved with that note, and the next "
-    "start says so until a Rescan checks everything again.</p>"
+    "<b>Skip</b> button as soon as the scan starts reading a library source: first "
+    "while the symbols are read, then while the 3D model paths are checked. It names "
+    "that source, for example <b>Skip WurthElektronik</b>. Skip stops checking the "
+    "3D model paths of that source only, now or when the check reaches them. The "
+    "symbols are read in full whatever you press, so its libraries are still listed "
+    "and its symbols' footprint links are still read, and Generate Tables keeps them. "
+    "The log says which source was skipped. The scan is saved with that note, and the "
+    "next start says so until a Rescan checks everything again.</p>"
 )
 
 HELP_PAGES["library_tree"] = _wrap(
@@ -222,7 +224,8 @@ HELP_PAGES["generating"] = _wrap(
     "<h2>Generating Tables</h2>"
     "<ol>"
     "<li>Select the libraries you want to include</li>"
-    "<li>Set the <b>Destination</b> folder (defaults to the repository root)</li>"
+    "<li>Set the <b>Destination</b> folder (defaults to the repository root). At start the "
+    "Destination box offers only folders that still exist</li>"
     "<li>Click <b>Generate Tables</b> (blue button) or press <code>Ctrl+G</code></li>"
     "</ol>"
     "<h3>What happens</h3>"
@@ -252,12 +255,13 @@ HELP_PAGES["generating"] = _wrap(
     "itself once the two folders match</li>"
     "</ul>"
     "<p>The log panel at the bottom confirms what was written.</p>"
-    "<h3>KiCad chooser</h3>"
-    "<p><b>File &rarr; Set Up KiCad Chooser...</b> (<code>Ctrl+Shift+K</code>) pins every "
+    "<h3>Pin Atomic libraries in KiCad</h3>"
+    "<p><b>File &rarr; " + CHOOSER_TEXT + "</b> (<code>Ctrl+Shift+K</code>) pins every "
     "<code>Atomic_</code> library listed in the tables of the Destination folder, and "
-    "<code>Atomic_Footprints</code>, in KiCad's symbol and footprint choosers. A pin you "
+    "<code>Atomic_Footprints</code>, at the top of KiCad's library lists (KiCad's Symbol "
+    "Chooser and Footprint Chooser). A pin you "
     "added yourself is kept, and a pin of an <code>Atomic_</code> library that no longer "
-    "exists is removed. The symbol chooser's <b>MPN</b> and <b>Manufacturer</b> columns are "
+    "exists is removed. The Symbol Chooser's <b>MPN</b> and <b>Manufacturer</b> columns are "
     "shown right after Description, and the old Manufacturer column some KiCad versions show "
     "on its own is removed.</p>"
     "<p>The app shows every old and new value first and asks before changing anything, and "
@@ -265,7 +269,7 @@ HELP_PAGES["generating"] = _wrap(
     "it offers <b>Retry</b> (close KiCad first, then press it), <b>Change anyway</b> or "
     "<b>Not now</b>, the same choice as the path-variable change. It never runs from a git "
     "worktree or a checkout other than the one your KiCad settings point at, and changes "
-    "nothing when the chooser is already set up.</p>"
+    "nothing when they are already pinned.</p>"
 )
 
 HELP_PAGES["importing"] = _wrap(
@@ -310,8 +314,10 @@ HELP_PAGES["importing"] = _wrap(
     "<p>The app suggests a name. It looks first at similar parts in your own "
     "<code>Atomic_</code> libraries, then at similar parts in KiCad's libraries, and then "
     "at the vendor's category and the part's description. Hover the field: the tooltip "
-    "says which of these gave the suggestion. When nothing fits, the field starts empty "
-    "and waits for you.</p>"
+    "says which of these gave the suggestion. Similar parts decide only when they agree: "
+    "when they are spread over several libraries, or only the first letters match, the "
+    "part's description decides if it names the kind of part. When nothing fits, the "
+    "field starts empty and waits for you.</p>"
     "<ul>"
     "<li>The list shows your <code>Atomic_</code> libraries first, then every other name "
     "that is allowed. Typing filters it.</li>"
@@ -476,6 +482,14 @@ HELP_PAGES["migrating"] = _wrap(
     "problems otherwise. A <b>failure strip</b> above the list names every blocking "
     "problem across all groups; click a line in the failure strip to jump straight to "
     "the part and field it is about.</p>"
+    "<p>A library the app only guessed (similar part numbers spread over several KiCad "
+    "libraries, or matching only on the first letters, with nothing in the description to "
+    "confirm it) is marked <b>" + GUESS_MARK + "</b> in the part list and gets a line in "
+    "the failure strip. Pick that library, or another one, from the <b>Library</b> list, "
+    "or type one, to confirm it, and the line goes away. A library suggested with "
+    "confidence is marked <b>" + SUGGESTED_MARK + "</b> and does not block the run. The "
+    "<b>Library</b> list also offers the other libraries that hold similar parts, and the "
+    "reason for the suggestion is shown under the field.</p>"
     "<p>Selecting a part shows its detail pane: the <b>Library</b> field with the app's "
     "suggestion, the <b>Symbol name</b> taken from the MPN, and the MPN, Manufacturer, "
     "Datasheet and Description fields, the same as importing a part. The footprint row "
@@ -504,11 +518,15 @@ HELP_PAGES["migrating"] = _wrap(
     "<code>MIGRATION-ATOMIC.md</code> in <code>Custom/</code>, so it stays available "
     "after the window closes.</p>"
     "<h3>Afterwards</h3>"
+    "<p>The result shows the folder the library tables go to (<b>" + DESTINATION_LABEL + "</b>), "
+    "with <b>" + BROWSE_TEXT + "</b> to change it; the Destination box of the main window "
+    "changes with it. A folder that is not set, or that no longer exists, is pointed out "
+    "there. The outcome of <b>" + GENERATE_TEXT + "</b> is shown under the buttons.</p>"
     "<p>From the result, click <b>" + GENERATE_TEXT + "</b> first, so the library tables "
     "list the new <code>Atomic_</code> libraries and drop the old names. Then commit in "
     "the panel below the result: one commit in <code>Custom</code>, plus the usual commit "
     "of its ref in the parent repo. Then click <b>" + CHOOSER_TEXT + "</b> to pin the new "
-    "libraries in KiCad's chooser.</p>"
+    "libraries at the top of KiCad's library lists.</p>"
     "<p>Any KiCad project that already used the old library names needs relinking once: "
     "open it, then run <b>Tools &rarr; Edit Symbol Library Links...</b>, then "
     "<b>Update Symbols from Library...</b>, then <b>Update PCB from Schematic...</b>. "
@@ -567,7 +585,7 @@ HELP_PAGES["shortcuts"] = _wrap(
     "<tr><td><code>Ctrl+Shift+R</code></td><td>Rescan Libraries</td></tr>"
     "<tr><td><code>Ctrl+Shift+A</code></td><td>Check Atomic Parts</td></tr>"
     "<tr><td><code>Ctrl+Shift+M</code></td><td>Migrate to Atomic Libraries</td></tr>"
-    "<tr><td><code>Ctrl+Shift+K</code></td><td>Set Up KiCad Chooser</td></tr>"
+    "<tr><td><code>Ctrl+Shift+K</code></td><td>Pin Atomic Libraries in KiCad</td></tr>"
     "<tr><td><code>Ctrl+K</code></td><td>Set KiCad Footprint Path</td></tr>"
     "<tr><td><code>Ctrl+Q</code></td><td>Exit</td></tr>"
     "<tr><td><code>F1</code></td><td>Open the User Guide in its own window, which stays open beside the other windows. "

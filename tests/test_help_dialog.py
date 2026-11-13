@@ -27,6 +27,9 @@ from kicad_lib_manager.widgets.commit_panel import _ADDED_MARK, _CHANGED_MARK, C
 from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
 from kicad_lib_manager.widgets.import_result import ImportResultView
+from kicad_lib_manager.widgets.migration_dialog import (
+    BROWSE_TEXT, DESTINATION_LABEL, GUESS_MARK, SUGGESTED_MARK,
+)
 from kicad_lib_manager.widgets import conflict_row, help_dialog, theme
 from kicad_lib_manager.widgets.conflict_row import _button_qss
 from kicad_lib_manager.widgets.theme import (
@@ -88,18 +91,25 @@ def test_help_shortcuts_complete():
         ("Ctrl+I", "Import Part"), ("Ctrl+Shift+R", "Rescan Libraries"),
         ("Ctrl+G", "Generate Tables"), ("Ctrl+R", "Restore Backup"),
         ("Ctrl+K", "Set KiCad Footprint Path"), ("Ctrl+Q", "Exit"), ("F1", "User Guide"),
-        ("Ctrl+Shift+A", "Check Atomic Parts"), ("Ctrl+Shift+K", "Set Up KiCad Chooser"),
+        ("Ctrl+Shift+A", "Check Atomic Parts"), ("Ctrl+Shift+K", "Pin Atomic Libraries in KiCad"),
         ("Ctrl+Shift+M", "Migrate to Atomic Libraries"),
     ):
         assert shortcut in page, shortcut
         assert action in page, action
 
 
-def test_help_generating_page_explains_the_chooser():
+def test_help_generating_page_explains_pinning():
     page = _page_text("generating")
-    assert "KiCad chooser" in page
+    assert "Pin Atomic libraries in KiCad" in page
     for word in ("pins", "MPN", "Manufacturer", "Retry", "worktree"):
         assert word in page, word
+
+
+def test_help_no_page_uses_the_old_menu_name():
+    # Renamed by gap G-13-1-c; the old name must not survive on any guide page
+    for key, raw in HELP_PAGES.items():
+        assert "Set Up KiCad Chooser" not in raw, key
+        assert "Set Up KiCad Chooser" not in _page_text(key), key
 
 
 def test_help_mentions_wrong_checkout():
@@ -412,13 +422,24 @@ def test_help_migrating_page():
     page = _page_text("migrating")
     for text in (
         "Ctrl+Shift+M", "uncommitted files", "pre-atomic", "failure strip", "Run Migration",
-        "Files", "leftover files", "Generate Tables", "Set Up KiCad Chooser",
+        "Files", "leftover files", "Generate Tables", "Pin Atomic Libraries in KiCad",
         "MIGRATION-ATOMIC.md", "Edit Symbol Library Links", "Update Symbols from Library",
-        "Update PCB from Schematic",
+        "Update PCB from Schematic", DESTINATION_LABEL, BROWSE_TEXT,
     ):
         assert text in page, text
     assert "ki_" not in page
     assert "ki_" not in raw
+    # A guessed library is marked and blocks Run until confirmed; a confident one is only marked
+    for text in (GUESS_MARK, SUGGESTED_MARK):
+        assert text in page, text
+    assert "failure strip" in page
+    assert "only on the first letters" in page
+
+
+def test_help_importing_page_says_when_similar_parts_decide():
+    page = _page_text("importing")
+    assert "only the first letters match" in page
+    assert "description decides" in page
 
 
 def test_help_css_uses_theme_tokens_only():
@@ -760,7 +781,7 @@ def test_help_repo_scan_explains_skip_and_the_saved_scan():
 
     for text in (
         "saved scan", "no library file changed", "Rescan", "Loading Libraries", "Skip",
-        "3D model paths", "still listed", "Generate Tables",
+        "3D model paths", "still listed", "Generate Tables", "symbols are read",
     ):
         assert text in page, text
     assert "<h3" not in HELP_PAGES["repo_scan"]

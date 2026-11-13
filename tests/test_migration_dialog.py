@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QSettings, Qt
 
+from kicad_lib_manager.importer.form import library_badge
 from kicad_lib_manager.importer.migration.draft import LoadedDraft
 from kicad_lib_manager.importer.migration.gate import GateOutcome, StripLine
 from kicad_lib_manager.importer.migration.inventory import Inventory, InventoryPart
@@ -19,7 +20,7 @@ from kicad_lib_manager.importer.migration.plan import MigrationChoices, Migratio
 from kicad_lib_manager.importer.migration.precheck import Precheck
 from kicad_lib_manager.importer.plan import FieldChange, PartText, ToolContext
 from kicad_lib_manager.importer.stems import name_verdict
-from kicad_lib_manager.importer.suggest import LibrarySuggestion, suggestion_text
+from kicad_lib_manager.importer.suggest import Alternative, LibrarySuggestion, suggestion_text
 from kicad_lib_manager.models import Issue, Severity
 from kicad_lib_manager.widgets.migration_dialog import (
     CHANGED_MARK,
@@ -30,6 +31,8 @@ from kicad_lib_manager.widgets.migration_dialog import (
     _DRAFT_DELAY_MS,
     _REBUILD_DELAY_MS,
 )
+from kicad_lib_manager.widgets import migration_dialog as dialog_module
+from kicad_lib_manager.widgets.theme import AMBER, MUTED
 
 KEY_A = ("Custom/Symbols/Connector_USB_GCT.kicad_sym", "USB1")
 KEY_B = ("Custom/Symbols/Connector_USB_GCT.kicad_sym", "USB2")
@@ -65,7 +68,7 @@ def _inventory_with_part(layout, key, fields) -> Inventory:
 
 def _part(
     key, source_library, target_library, new_name, *, mpn=None, suggestion=None,
-    field_changes=(), generated_text=None, part_text=None,
+    field_changes=(), generated_text=None, part_text=None, library_basis="",
 ) -> PartPlan:
     return PartPlan(
         key=key,
@@ -84,6 +87,7 @@ def _part(
         generated_text=generated_text or PartText(),
         part_text=part_text or PartText(),
         issues=(),
+        library_basis=library_basis,
     )
 
 
@@ -302,6 +306,176 @@ def test_library_picker_lists_atomic_libraries_and_current(qtbot, make_dialog, t
 
     qtbot.waitUntil(lambda: captured.get("choices") is not None and captured["choices"].parts.get(KEY_A) is not None)
     assert captured["choices"].parts[KEY_A].library == "Atomic_Crystal"
+
+
+def test_library_picked_from_the_list_is_recorded(qtbot, make_dialog, tmp_path):
+    suggestion = LibrarySuggestion(
+        "Atomic_Timer", "own", "Suggested from 3 similar parts in your Atomic_Timer", (), (), ()
+    )
+    part_a = _part(KEY_A, "Atomic_Oscillator", "Atomic_Timer", "OSC1", suggestion=suggestion)
+    part_b = _part(KEY_B, "Connector_X", "Atomic_Connector", "CONN1")
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        return _plan_for(inventory, (part_a, part_b))
+
+    def build():
+        captured.clear()
+        core = core_with(
+            tmp_path, build_plan=fake_build_plan, check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {})
+        )
+        dialog = make_dialog(core)
+        qtbot.waitUntil(lambda: dialog._tree.topLevelItemCount() >= 1)
+        dialog._select_part(KEY_A)
+        assert dialog._library_combo.currentText() == "Atomic_Timer"
+        return dialog
+
+    # Guard: filling the combo for each displayed part never records a choice
+    dialog = build()
+    dialog._select_part(KEY_B)
+    dialog._select_part(KEY_A)
+    assert KEY_B not in dialog._choices.parts
+    assert KEY_A not in dialog._choices.parts
+
+    # A list pick: the combo moves to the item and emits textActivated, not textEdited
+    dialog._draft_timer.stop()
+    index = dialog._library_combo.findText("Atomic_Connector")
+    assert index >= 0
+    dialog._library_combo.setCurrentIndex(index)
+    dialog._library_combo.textActivated.emit(dialog._library_combo.itemText(index))
+    assert dialog._choices.parts[KEY_A].library == "Atomic_Connector"
+    assert dialog._draft_timer.isActive()
+    allowed = getattr(dialog._ctx, "allowed", None)
+    assert dialog._library_badge.text() == library_badge("Atomic_Connector", dialog._library_names(), allowed)
+    qtbot.waitUntil(lambda: captured["choices"].parts.get(KEY_A) is not None)
+    assert captured["choices"].parts[KEY_A].library == "Atomic_Connector"
+
+    # Picking the library already recorded changes nothing: no generation bump, no rebuild
+    generation = dialog._gen
+    dialog._library_combo.textActivated.emit("Atomic_Connector")
+    assert dialog._gen == generation
+
+    # Confirming the suggestion (the text the combo already shows) records it
+    confirm = build()
+    assert KEY_A not in confirm._choices.parts
+    confirm._library_combo.textActivated.emit("Atomic_Timer")
+    assert confirm._choices.parts[KEY_A].library == "Atomic_Timer"
+    assert KEY_B not in confirm._choices.parts
+
+
+_GUESS = LibrarySuggestion(
+    "Atomic_Timer",
+    "stock",
+    "Suggested from 4 similar parts in KiCad's Timer",
+    (Alternative("Atomic_Sensor_Motion", 2), Alternative("Atomic_Crystal", 1)),
+    ("Timer", "Sensor_Motion"),
+    (),
+    weak=True,
+)
+
+
+def _status_of(dialog, key) -> str:
+    for i in range(dialog._tree.topLevelItemCount()):
+        group = dialog._tree.topLevelItem(i)
+        for j in range(group.childCount()):
+            item = group.child(j)
+            if item.data(0, Qt.ItemDataRole.UserRole) == key:
+                return item.text(1)
+    raise AssertionError(f"{key} is not in the tree")
+
+
+def test_guessed_and_suggested_libraries_are_marked_in_the_tree(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "IC_IMU", "Atomic_Timer", "ICM1", suggestion=_GUESS, library_basis="guessed")
+    part_b = _part(KEY_B, "Connector_X", "Atomic_Connector", "CONN1", library_basis="suggested")
+    part_c = _part(KEY_C, "Foo", "Atomic_Foo", "FOO1", library_basis="chosen")
+    core = core_with(tmp_path, build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a, part_b, part_c)))
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._tree.topLevelItemCount() >= 3)
+
+    assert dialog_module.GUESS_MARK in _status_of(dialog, KEY_A)
+    assert dialog_module.SUGGESTED_MARK not in _status_of(dialog, KEY_A)
+    assert dialog_module.SUGGESTED_MARK in _status_of(dialog, KEY_B)
+    assert dialog_module.GUESS_MARK not in _status_of(dialog, KEY_B)
+    assert dialog_module.GUESS_MARK not in _status_of(dialog, KEY_C)
+    assert dialog_module.SUGGESTED_MARK not in _status_of(dialog, KEY_C)
+
+
+def test_guess_note_explains_and_how_to_confirm(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "IC_IMU", "Atomic_Timer", "ICM1", suggestion=_GUESS, library_basis="guessed")
+    suggested = LibrarySuggestion("Atomic_Connector", "own", "Suggested from 3 similar parts", (), (), ())
+    part_b = _part(KEY_B, "Connector_X", "Atomic_Connector", "CONN1", suggestion=suggested, library_basis="suggested")
+    part_c = _part(KEY_C, "Foo", "Atomic_Foo", "FOO1", library_basis="chosen")
+    core = core_with(tmp_path, build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a, part_b, part_c)))
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._tree.topLevelItemCount() >= 3)
+
+    dialog._select_part(KEY_A)
+    note = dialog._suggestion_note
+    assert not note.isHidden()
+    assert note.text().startswith("Only a guess:")
+    assert suggestion_text(_GUESS) in note.text()
+    assert "Pick a library from the list" in note.text()
+    assert AMBER in note.styleSheet()
+    assert dialog._library_combo.toolTip() == suggestion_text(_GUESS)
+
+    dialog._select_part(KEY_B)
+    assert not note.isHidden()
+    assert note.text() == suggestion_text(suggested)
+    assert MUTED in note.styleSheet()
+    assert AMBER not in note.styleSheet()
+
+    dialog._select_part(KEY_C)
+    assert note.isHidden()
+
+
+def test_dropdown_offers_the_alternatives(qtbot, make_dialog, tmp_path):
+    part_a = _part(KEY_A, "IC_IMU", "Atomic_Timer", "ICM1", suggestion=_GUESS, library_basis="guessed")
+    part_b = _part(KEY_B, "Connector_X", "Atomic_Connector", "CONN1")
+    core = core_with(tmp_path, build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a, part_b)))
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._tree.topLevelItemCount() >= 2)
+    dialog._select_part(KEY_A)
+
+    items = [dialog._library_combo.itemText(i) for i in range(dialog._library_combo.count())]
+    assert "Atomic_Sensor_Motion" in items
+    assert "Atomic_Timer" in items and "Atomic_Connector" in items
+    assert "Atomic_Crystal" not in items  # fails the name rule, so it is not offered
+
+    # The alternative is not an existing library: picking it still reads as a new one
+    dialog._draft_timer.stop()
+    dialog._library_combo.setCurrentIndex(items.index("Atomic_Sensor_Motion"))
+    dialog._library_combo.textActivated.emit("Atomic_Sensor_Motion")
+    allowed = getattr(dialog._ctx, "allowed", None)
+    expected = library_badge("Atomic_Sensor_Motion", dialog._library_names(), allowed)
+    assert expected
+    assert "Atomic_Sensor_Motion" not in dialog._library_names()
+    assert dialog._library_badge.text() == expected
+    assert dialog._library_badge.text() != library_badge("Atomic_Timer", dialog._library_names(), allowed)
+
+
+def test_picking_the_guess_from_the_list_confirms_it(qtbot, make_dialog, tmp_path):
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        picked = choices.parts.get(KEY_A)
+        confirmed = picked is not None and picked.library is not None
+        part_a = _part(
+            KEY_A, "IC_IMU", "Atomic_Timer", "ICM1", suggestion=_GUESS,
+            library_basis="chosen" if confirmed else "guessed",
+        )
+        return _plan_for(inventory, (part_a,))
+
+    dialog = make_dialog(core_with(tmp_path, build_plan=fake_build_plan))
+    qtbot.waitUntil(lambda: dialog._tree.topLevelItemCount() >= 1)
+    dialog._select_part(KEY_A)
+    assert dialog_module.GUESS_MARK in _status_of(dialog, KEY_A)
+
+    dialog._library_combo.textActivated.emit("Atomic_Timer")
+    assert dialog._choices.parts[KEY_A].library == "Atomic_Timer"
+    qtbot.waitUntil(lambda: dialog_module.GUESS_MARK not in _status_of(dialog, KEY_A))
+    assert captured["choices"].parts[KEY_A].library == "Atomic_Timer"
 
 
 def test_field_edits_reach_the_plan(qtbot, make_dialog, tmp_path):

@@ -125,6 +125,7 @@ The target count is therefore no longer 9 (see D-04).
 ### KiCad chooser setup and table descriptions
 - **D-17:** **"Set Up KiCad Chooser…" is its own menu action.** It can be run any time, for example after the importer creates a new `Atomic_` library, and the migration Result view also offers it as a button.
   - It follows the path-variable sync contract: old → new values shown first, a backup of each config file, an atomic write of only the changed keys, and a refusal from a worktree or a checkout other than the configured `KICAD_LIB_GITHUB`.
+  - Renamed 2026-11-12 by plan 13-27 (UAT gap G-13-1-c) to "Pin Atomic Libraries in KiCad..." in every user-facing text; identifiers and `chooser.*` codes unchanged.
   - It uses the KiCad-open Retry / Change anyway / Not now dialog with a re-read and merge into fresh content (Phase 12 D-09..D-11).
   - It writes two files: `kicad_common.json` (`session.pinned_symbol_libs`, `session.pinned_fp_libs`) and `eeschema.json` (`lib_tree.columns`, `lib_tree.column_widths`).
 - **D-18:** **Pins:**

@@ -403,7 +403,7 @@ def test_successful_run_shows_result_and_clears_draft(qtbot, make_dialog, tmp_pa
     assert dialog._result_title.text() == "Migration done"
     assert dialog._result_map_text.isReadOnly()
     assert dialog._result_map_text.toPlainText() == plan_holder["plan"].map_text
-    assert "Next: press Generate Tables" in dialog._next_steps_label.text()
+    assert "Next: check the folder the library tables go to" in dialog._next_steps_label.text()
 
 
 def test_copy_and_open_map(qtbot, make_dialog, tmp_path):
@@ -544,3 +544,100 @@ def test_commit_panel_offered_and_probed(qtbot, make_dialog, tmp_path):
 
     commit_gate.set()
     qtbot.waitUntil(lambda: not dialog.is_committing())
+
+
+# -- Gap G-13-1-g: the Result view shows and changes the Destination (13-28) ---------------------
+
+
+def _result_dialog(qtbot, make_dialog, tmp_path, **changes):
+    part_a = _part(KEY_A, "Lib", "Atomic_Connector", "P1")
+    core = core_with(
+        tmp_path,
+        build_plan=lambda inventory, choices, ctx: _plan_for(inventory, (part_a,)),
+        check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {}),
+        **changes,
+    )
+    dialog = make_dialog(core)
+    qtbot.waitUntil(lambda: dialog._run_btn.isEnabled())
+    dialog._run_btn.click()
+    qtbot.wait(200)
+    assert dialog._stack.currentWidget() is dialog._result_page
+    return dialog
+
+
+def test_result_view_shows_destination_and_browse_emits(qtbot, make_dialog, tmp_path):
+    from kicad_lib_manager.widgets.migration_dialog import (
+        DESTINATION_LABEL,
+        MISSING_DESTINATION_NOTE,
+        NO_DESTINATION_NOTE,
+    )
+    from kicad_lib_manager.widgets.theme import AMBER
+
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    missing = tmp_path / "missing"
+    other = tmp_path / "other"
+    picks = []
+    answers = {"value": str(other)}
+
+    def fake_pick(parent, start):
+        picks.append((parent, start))
+        return answers["value"]
+
+    dialog = _result_dialog(qtbot, make_dialog, tmp_path, pick_destination=fake_pick)
+    assert DESTINATION_LABEL == "Library tables go to:"
+    assert dialog._dest_edit.isReadOnly()
+
+    dialog.set_destination(str(existing))
+    assert dialog._dest_edit.text() == str(existing)
+    assert dialog._dest_note.isHidden()
+
+    dialog.set_destination(str(missing))
+    assert dialog._dest_edit.text() == str(missing)
+    assert not dialog._dest_note.isHidden()
+    assert dialog._dest_note.text() == MISSING_DESTINATION_NOTE
+    assert AMBER in dialog._dest_note.styleSheet()
+
+    dialog.set_destination("")
+    assert dialog._dest_edit.text() == ""
+    assert not dialog._dest_note.isHidden()
+    assert dialog._dest_note.text() == NO_DESTINATION_NOTE
+
+    dialog.set_destination(str(existing))
+    emitted = []
+    dialog.destination_changed.connect(emitted.append)
+    dialog._browse_dest_btn.click()
+    assert emitted == [str(other)]
+    assert picks == [(dialog, str(existing))]
+
+    answers["value"] = ""
+    dialog._browse_dest_btn.click()
+    assert emitted == [str(other)]
+
+
+def test_result_status_follows_severity(qtbot, make_dialog, tmp_path):
+    from kicad_lib_manager.widgets.theme import AMBER, ERROR, MUTED, SUCCESS
+
+    dialog = _result_dialog(qtbot, make_dialog, tmp_path)
+    existing = tmp_path / "existing"
+    existing.mkdir()
+    dialog.set_destination(str(existing))
+    for severity, colour in (
+        (Severity.ERROR, ERROR),
+        (Severity.SUCCESS, SUCCESS),
+        (Severity.WARNING, AMBER),
+        (Severity.INFO, MUTED),
+    ):
+        dialog.set_result_status("something happened", severity)
+        assert not dialog._result_status.isHidden()
+        assert dialog._result_status.text() == "something happened"
+        assert colour in dialog._result_status.styleSheet()
+
+    # the same folder again keeps the status; another folder clears it
+    dialog.set_destination(str(existing))
+    assert not dialog._result_status.isHidden()
+    other = tmp_path / "other"
+    other.mkdir()
+    dialog.set_destination(str(other))
+    assert dialog._result_status.isHidden()
+    assert dialog._result_status.text() == ""

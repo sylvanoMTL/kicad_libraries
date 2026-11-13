@@ -96,11 +96,40 @@ def test_scan_without_skip_is_unchanged(two_sources):
     assert hooked.models_unchecked == []
     assert _skip_lines(hooked.issues) == []
 
-    # One report per change of source, then None at the end
-    assert seen[-1] is None
-    sources = seen[:-1]
-    assert None not in sources and len(sources) == len(set(sources))
-    assert sources.index("Custom") < sources.index(WURTH)
+    # One report per change of source while the symbols are read, one per change while the 3D model
+    # paths are checked, then None at the end of that check (plan 13-24)
+    assert seen == ["Custom", "Other", WURTH, "Custom", "Other", WURTH, None]
+
+
+def test_a_skip_requested_while_symbols_are_read_is_honoured(two_sources):
+    root, fp = two_sources
+    plain = scan_all(root, kicad_fp_dir=fp)
+
+    label = {"text": ""}
+    requested: set[str] = set()
+    seen_during_symbols: list[str] = []
+
+    def progress(text, value, total):
+        label["text"] = text
+
+    def checking(source):
+        # The first WurthElektronik report comes while the symbols are read: the click lands here
+        if source == WURTH and not requested:
+            assert label["text"].startswith("Parsing symbol:")
+            seen_during_symbols.append(label["text"])
+            requested.add(WURTH)
+
+    result = scan_all(root, progress, fp, skip=lambda source: source in requested, checking=checking)
+
+    assert seen_during_symbols
+    assert result.skipped_sources == [WURTH]
+    assert result.symbol_libs == plain.symbol_libs
+    assert result.footprint_libs == plain.footprint_libs
+    we_symbols = [lib for lib in result.symbol_libs if lib.nickname == "WE_Test"]
+    refs = we_symbols[0].footprint_refs
+    assert [(r.library_name, r.footprint_name, r.found_in_repo) for r in refs] == [("WE_Test", "WE_FP_A", True)]
+    assert _model_lines(result.issues, WURTH) == []
+    assert [i.text for i in _skip_lines(result.issues)] == [SKIP_TEXT]
 
 
 def test_skipped_source_has_no_3d_path_lines(two_sources, monkeypatch):

@@ -1,4 +1,4 @@
-"""Offscreen MainWindow tests for the "Set Up KiCad Chooser..." menu action (TBL-02, D-17).
+"""Offscreen MainWindow tests for the "Pin Atomic Libraries in KiCad..." menu action (TBL-02, D-17).
 
 Own fixture (tests do not import from other test modules): isolated QSettings, patched
 REPO_ROOT / load_kicad_fp_dir / scan_all / kicad_running, and sync_kicad_chooser wrapped
@@ -180,7 +180,8 @@ def test_setup_chooser_confirmed_writes_both_files(qtbot, make_window):
 
     assert len(make_window.questions) == 1
     _window, title, text = make_window.questions[0][0], make_window.questions[0][1], make_window.questions[0][2]
-    assert title == "Set up KiCad's chooser?"
+    assert title == "Pin Atomic libraries in KiCad?"
+    assert text.startswith("These KiCad settings would change to pin the Atomic_ libraries:")
     for label in ("Pinned symbol libraries", "Pinned footprint libraries", "Symbol chooser columns"):
         assert label in text
 
@@ -198,12 +199,13 @@ def test_setup_chooser_menu_entry(qtbot, make_window):
 
     file_menu = w.menuBar().actions()[0].menu()
     assert w._act_setup_chooser in file_menu.actions()
-    assert w._act_setup_chooser.text() == "Set Up KiCad &Chooser..."
+    assert w._act_setup_chooser.text() == "&Pin Atomic Libraries in KiCad..."
     assert w._act_setup_chooser.shortcut() == QKeySequence("Ctrl+Shift+K")
     assert w._act_setup_chooser.toolTip() == (
-        "Pin the Atomic_ libraries and show the MPN and Manufacturer columns in "
-        "KiCad's symbol chooser"
+        "Pin the Atomic_ libraries at the top of KiCad's library lists and show the "
+        "MPN and Manufacturer columns when you place a symbol"
     )
+    assert w._act_setup_chooser.statusTip() == w._act_setup_chooser.toolTip()
 
     w._set_scan_running(True)
     assert not w._act_setup_chooser.isEnabled()
@@ -265,7 +267,7 @@ def test_chooser_not_now_writes_nothing(qtbot, make_window):
     assert (make_window.config_base / "10.0" / "kicad_common.json").read_bytes() == common_before
     assert (make_window.config_base / "10.0" / "eeschema.json").read_bytes() == eeschema_before
     assert not make_window.backup_root.exists()
-    assert "KiCad's chooser left unchanged (change declined)" in w._log._text.toPlainText()
+    assert "The Atomic_ libraries were not pinned in KiCad (change declined)" in w._log._text.toPlainText()
 
 
 def test_chooser_box_texts(qtbot, make_window):
@@ -273,12 +275,12 @@ def test_chooser_box_texts(qtbot, make_window):
 
     box, answers = w._kicad_open_box(
         None, ["eeschema", "kicad"],
-        intro="These settings of KiCad's symbol chooser would change:",
+        intro="These KiCad settings would change to pin the Atomic_ libraries:",
         lines=["Pinned symbol libraries: (none) -> Atomic_Connector"],
         outro="KiCad may undo them when it exits. Close KiCad, then press Retry.",
     )
     text = box.text()
-    assert "KiCad is open (eeschema, kicad). These settings of KiCad's symbol chooser would change:" in text
+    assert "KiCad is open (eeschema, kicad). These KiCad settings would change to pin the Atomic_ libraries:" in text
     assert "Pinned symbol libraries: (none) -> Atomic_Connector" in text
     assert "KiCad may undo them when it exits. Close KiCad, then press Retry." in text
     assert {b.text() for b in box.buttons()} == {"Retry", "Change anyway", "Not now"}
