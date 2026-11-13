@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "G-13-1-b: the skip button is grayed out I guess for the symbol scanning, This should not be grayed out. user can skip that stage."
 created: 2026-11-12T18:00:00Z
-updated: 2026-11-12T18:08:00Z
+updated: 2026-11-13T14:45:00Z
 goal: find_root_cause_only
 gap_id: G-13-1-b
 ---
@@ -106,6 +106,8 @@ started: Discovered during UAT on 2026-11-12.
 ## Resolution
 
 root_cause: "Design-scope gap, not a code regression. ScanProgressDialog enables Skip only when set_skippable(source) receives a non-None source, and its only producer is checking(source), which scan_all passes solely to _check_model_files (the 3D model path check). find_symbol_libs and every other stage (saved-scan check, listing, cross-reference, atomic check, change marking) take only a progress callback, so the button stays 'Skip' and disabled until the 3D check starts. This follows plan 12-17 (owner decision 2026-11-04: the skip unit is the source, skipping only its 3D model path check) and is pinned by tests. It shows on the owner's checkout because the pre-3D stages take about 9 s there (symbol parse 6 s over 412 files incl. a 12.9 MB WE library), and the owner wants to cut WurthElektronik's work then; the long stage (about 100 s WE 3D check) is already skippable once reached. A request made earlier would already be honoured by the backend (ScanWorker keeps a sticky per-source set that _check_model_files asks before each source's files)."
-fix: ""
-verification: ""
+fix: "Plan 13-24 (G-13-1-b): Skip is offered while the symbols are read; an early click skips only that source's 3D model path check once it starts."
+verification: "Phase 13 re-test UAT 5/5 passed 2026-11-13."
 files_changed: []
+
+Resolved at the v2.0 milestone close (2026-11-13) against the plan that fixed it.

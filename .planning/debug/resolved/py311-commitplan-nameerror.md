@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "G-13-1-a: import kicad_lib_manager.main_window fails on Python 3.11 with NameError: name 'CommitPlan' is not defined (migration_dialog.py line 338, _CommitStepHost.start)"
 created: 2026-11-12T17:45:06Z
-updated: 2026-11-12T18:20:00Z
+updated: 2026-11-13T14:45:00Z
 gap_id: G-13-1-a
 goal: find_root_cause_only
 ---
@@ -97,6 +97,8 @@ started: Discovered during UAT on 2026-11-12.
 ## Resolution
 
 root_cause: kicad_lib_manager/widgets/migration_dialog.py (added in 02cc644, feat(13-16)) annotates two _CommitStepHost method parameters with names that are never bound in the module: line 338 `def start(self, plan: CommitPlan)` and line 373 `def _on_probe_done(self, worker: TaskWorker, probe: CommitProbe)`. CommitPlan lives in importer/commit_plan.py and CommitProbe in importer/commit_step.py. The module imports neither (its commit_step import lists only functions) and has no `from __future__ import annotations`. Python 3.10-3.13 evaluate parameter annotations when the class body executes, so importing migration_dialog (and with it help_dialog and main_window) raises NameError. Python 3.14 defers evaluation (PEP 649/749), so the repo venv, the only interpreter the tests run on, never evaluates them, and no lint or CI gate checks for undefined names.
-fix:
-verification:
+fix: "Plan 13-23 (G-13-1-a): migration_dialog.py imports CommitPlan and CommitProbe; tests/test_annotations_resolve.py keeps every annotation resolvable on Python 3.10+."
+verification: "App starts on both the 3.11 and 3.14 venvs; Phase 13 re-test UAT 5/5 passed 2026-11-13."
 files_changed: []
+
+Resolved at the v2.0 milestone close (2026-11-13) against the plan that fixed it.

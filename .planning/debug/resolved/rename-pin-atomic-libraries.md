@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "G-13-1-c: rename 'Set Up KiCad Chooser...' to 'Pin Atomic Libraries in KiCad...' (plain-language UI)"
 created: 2026-11-12T18:00:00Z
-updated: 2026-11-12T18:30:00Z
+updated: 2026-11-13T14:45:00Z
 goal: find_root_cause_only
 gap_id: G-13-1-c
 ---
@@ -84,6 +84,8 @@ started: Discovered during UAT on 2026-11-12 (wording introduced in phase 13).
 ## Resolution
 
 root_cause: The action was named "Set Up KiCad Chooser..." in decision D-17 (phase 13) and that wording, plus KiCad's jargon word "chooser", was written as literal strings into main_window.py (menu text, tooltip/status tip, no-destination warning, confirm title and intro), kicad_setup.py (9 log/refusal texts), migration_dialog.py (Result view button + next-steps label) and help_dialog.py (section heading, paragraph, migrating sentence, shortcuts row), mirrored in CLAUDE.md (5 lines) and frozen by assertions in test_main_window_chooser.py, test_kicad_setup.py, test_help_dialog.py and (indirectly) test_docs_atomic.py.
-fix: (not applied; diagnosis only) see ROOT CAUSE FOUND report for the per-file inventory and proposed strings
-verification: baseline 41 coupled tests pass before any change
+fix: "Plan 13-27 (G-13-1-c): the action is named Pin Atomic Libraries in KiCad from one constant, mirrored in the User Guide, CLAUDE.md and decision D-17."
+verification: "Phase 13 re-test UAT 5/5 passed 2026-11-13."
 files_changed: []
+
+Resolved at the v2.0 milestone close (2026-11-13) against the plan that fixed it.

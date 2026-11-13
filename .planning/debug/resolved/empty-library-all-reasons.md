@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "G-10-11: With the library field empty, the strip lists every reason Install is blocked at once: the library name, Enter the Manufacturer, The Datasheet must be a link or a file path, Type a Description and the 3D model reason. Actual: ATXK-H14 with no library shows only 'Pick or type a library name'; the other reasons appear only after a library is typed."
 created: 2026-10-29T00:00:00Z
-updated: 2026-10-29T00:40:00Z
+updated: 2026-11-13T14:45:00Z
 goal: find_root_cause_only
 ---
 
@@ -128,6 +128,8 @@ started: Discovered during Phase 10 UAT
 ## Resolution
 
 root_cause: "build_plan (kicad_lib_manager/importer/planner.py:870-872) returns refuse(_err('install.invalid_library', verdict.reason)) as its first check, before the incoming atomic gate (incoming_context + incoming_issues, planner.py:1476-1495) that produces install.atomic.manufacturer/datasheet/description/model_3d. refuse() (860-861 -> _refused 809-836) returns a blocked plan whose only ERROR is install.invalid_library. blocking_reasons (kicad_lib_manager/importer/form.py:258-319) then treats that ERROR as explained by its own verdict (277-278) and adds Reason(verdict.reason, 'library') (303-304), so the strip shows exactly one reason. This affects every refused name (empty, Atomic_TI, v1 names), not only the empty one."
-fix: ""
-verification: ""
+fix: "Plan 10-30 (G-10-11): build_plan no longer stops at a refused library name; it plans as for a new library it never reads and returns every library-independent reason, with the library reason listed first."
+verification: "Phase 10 UAT re-test passed 2026-10-29 (16 checks)."
 files_changed: []
+
+Resolved at the v2.0 milestone close (2026-11-13) against the plan that fixed it.

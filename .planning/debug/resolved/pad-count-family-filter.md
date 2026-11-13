@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "UAT gap G-10-1 (Phase 10, test 1): a 6-pin vendor footprint (SON50P150X150X60-6N, SON65P200X200X80-6N) gets SON-8 from two score-30 tied KiCad matches; owner chose to fix WR-06 with a pad-count filter"
 created: 2026-10-29T00:00:00Z
-updated: 2026-10-29T01:25:00Z
+updated: 2026-11-13T14:45:00Z
 goal: find_root_cause_only
 ---
 
@@ -120,7 +120,9 @@ started: Discovered during UAT (residual of CR-01 after fix 1276906)
 ## Resolution
 
 root_cause: "_agreed_family_texts(footprint_index, code) in kicad_lib_manager/importer/planner.py:91-107 has no vendor pad count and no size check. When the top rank score is 30 (_SCORE_LEADING_LETTERS, footprint_index.py:28, accepted because _MIN_FAMILY_SCORE = 30 at planner.py:84), the only link to the vendor part is that the code's leading letters are a word of the footprint name. So a small tie whose members all name one family supplies that family whatever the vendor part's size. Its only caller, build_plan at planner.py:1089-1092, passes the result as texts= to footprint_facts. From there the family reaches describe() (fp description, planner.py:1095), generated_tags() (family tag and IPC-style name, planner.py:1096) and package_words, then generate_keywords (symbol keywords, planner.py:1099/1107). Against KiCad 10, SON50P150X150X60-6N and SON65P200X200X80-6N tie at 30 on exactly MicroCrystal_C7_SON-8_1.5x3.2mm_P0.9mm (8 pads) and SON-8-1EP_3x2mm_P0.5mm_EP1.4x1.6mm (9 pads), and both name SON-8."
-fix: "Not applied (goal is find_root_cause_only). Direction: give _agreed_family_texts a vendor_pads: int argument. When ranked[0].score < _SCORE_FULL_CODE, keep only the tied entries whose pad_numbers(index, link) is readable and within one of vendor_pads, return [] if none survive, then run the agreement loop over the survivors. Pass len(footprint_pad_numbers(fp_refs[0].node)) at planner.py:1091."
-verification: "Diagnosis only. The fix direction was simulated without repo edits (scratch plugin). Both 6-pad cases give part_text == no-KiCad plan, DQK0006B keeps WSON-6 and an 8-pad SON keeps SON-8. The full suite gives 2891 passed and 2 failed, the two fixture-driven leading-letters tests."
+fix: "Plan 10-29 (G-10-1, WR-06): a leading-letters-only footprint tie supplies a package family only from official KiCad footprints within one distinct pad of the vendor footprint, so 6-pin SON parts no longer get SON-8."
+verification: "Phase 10 UAT re-test passed 2026-10-29 (16 checks)."
 files_changed: []
 oracle_type: "derived (D-28 contract: when no family can be safely borrowed, the plan with KiCad's footprints must equal the plan without them) plus specified (no word starting SON- in the description, tags or keywords)"
+
+Resolved at the v2.0 milestone close (2026-11-13) against the plan that fixed it.

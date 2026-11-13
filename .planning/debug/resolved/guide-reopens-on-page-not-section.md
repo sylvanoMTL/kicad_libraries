@@ -1,8 +1,8 @@
 ---
-status: inconclusive
+status: resolved
 trigger: "UAT gap G-12-27 (Phase 12, test 27): User Guide reopens on the page 4.4 Importing Parts instead of the section 4.4.7 Conflicts last chosen"
 created: 2026-11-10T17:38:00Z
-updated: 2026-11-10T18:15:00Z
+updated: 2026-11-13T14:45:00Z
 goal: find_root_cause_only
 ---
 
@@ -146,6 +146,8 @@ started: discovered during UAT 2026-11-10, re-check of G-12-23 after plan 12-19 
 ## Resolution
 
 root_cause: "INCONCLUSIVE for the page-row half. Confirmed defects: D1 show_remembered/show_topic do not re-scroll an already-current section on a reused guide (help_dialog.py:640-658, main_window.py:1367-1368); D3 _sync_expansion (singleShot 0, help_dialog.py:697-698) runs while the mouse button is still held, so a click on a page row selects and saves a different row. D2 (narrowing fit_window after QTextEdit's deferred anchor scroll) only matters on narrow screens."
-fix:
-verification:
+fix: "Plan 12-21 (G-12-27): show_remembered/show_topic re-scroll an already-current section, the menu fold waits for the mouse release, and main-window Help brings back the chosen section and its heading."
+verification: "Phase 12 UAT complete 2026-11-11 (28 checks)."
 files_changed: []
+
+Resolved at the v2.0 milestone close (2026-11-13) against the plan that fixed it.

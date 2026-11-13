@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "G-13-1-f: migration planner suggested ICM-42688-P (IMU, from IC_IMU_TDK) into Atomic_Timer instead of Atomic_Sensor_Motion, with no strip line"
 created: 2026-11-12T18:00:00Z
-updated: 2026-11-12T18:40:00Z
+updated: 2026-11-13T14:45:00Z
 goal: find_root_cause_only
 gap_id: G-13-1-f
 ---
@@ -86,6 +86,8 @@ started: Discovered during UAT on 2026-11-12 (anticipated in 13-RESEARCH.md Open
 ## Resolution
 
 root_cause: "siblings.family_prefixes('ICM-42688-P') returns only ['ICM'] (regex ([A-Za-z]+)(\d+)? stops at the hyphen); siblings.pick votes on every KiCad 10 stock symbol starting with ICM - Timer: ICM7209, ICM7555xB, ICM7555xP, ICM7556 (Intersil timers, 4) vs Sensor_Motion: ICM-20602, ICM-20948 (2) - and 4/6 > 50% decides Timer; suggest.suggest_library returns that stock pick before categories.classify runs (and classify would find no category word in 'High Precision 6-Axis MEMS MotionTrackingTM Device' anyway); symbols.target_libraries copies the suggestion as the target; the gate has no rule for split/weak-vote suggestions and the dialog shows the suggested library identically to a chosen one (reason only in a tooltip), so Run enables once the atomic-rule lines are fixed. The behaviour was foreseen and accepted in 13-RESEARCH Open Question 2 / 13-CONTEXT Claude's Discretion and is locked by tests/test_migration_symbols.py:160."
-fix: ""
-verification: "diagnosis reproduced with scratchpad/repro_imu.py on real KiCad 10 stock symbols + temp Custom/"
+fix: "Plans 13-25 and 13-26 (G-13-1-f): family prefixes keep the - or _ before the first digit run, a weak sibling vote yields to the description (ICM-42688-P into Atomic_Sensor_Motion), and a guessed library blocks Run with a strip line until confirmed."
+verification: "Phase 13 re-test UAT 5/5 passed 2026-11-13."
 files_changed: []
+
+Resolved at the v2.0 milestone close (2026-11-13) against the plan that fixed it.

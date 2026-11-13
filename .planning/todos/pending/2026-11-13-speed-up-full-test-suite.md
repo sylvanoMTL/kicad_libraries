@@ -3,6 +3,9 @@ title: Speed up the full test suite (about 30 min today)
 created: 2026-11-13
 source: owner, during /gsd-execute-phase 13 --gaps-only
 area: tests
+audit_acknowledged:
+  milestone: v2.0
+  at: 2026-11-13
 ---
 
 The full `pytest` run (about 9700 tests) takes about 30 minutes, which the owner finds too long.

@@ -1,8 +1,8 @@
 ---
-status: diagnosed
+status: resolved
 trigger: "G-13-1-g: Result view Generate Tables - Destination folder not visible or changeable (migration window modal; Destination pointed at deleted folder)"
 created: 2026-11-12T00:00:00Z
-updated: 2026-11-12T00:00:00Z
+updated: 2026-11-13T14:45:00Z
 goal: find_root_cause_only
 gap_id: G-13-1-g
 ---
@@ -141,6 +141,8 @@ root_cause: |
       Result view (unlike the import path, which mirrors it via _set_import_status("tables", ...)).
   Trigger (data): the Destination combo is restored from QSettings dest_history without an existence check,
   so a deleted throwaway folder stayed current.
-fix: (diagnosis only)
-verification:
+fix: "Plan 13-28 (G-13-1-g): the migration Result view shows and changes the Destination (Browse...), reports Generate's outcome under the buttons, and the Destination box skips folders that no longer exist."
+verification: "Phase 13 re-test UAT 5/5 passed 2026-11-13."
 files_changed: []
+
+Resolved at the v2.0 milestone close (2026-11-13) against the plan that fixed it.
