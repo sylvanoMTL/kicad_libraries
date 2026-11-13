@@ -70,7 +70,9 @@ from .conflict_row import ConflictRow
 from .content_view import ContentViewDialog
 from .import_dialog import ADD_MODEL_TEXT, OFFICIAL_FOOTPRINT_TEXT, TaskWorker, fit_window, official_candidates
 from .preview_tree import PreviewTree
-from .theme import AMBER, AMBER_TINT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, MONO_FAMILY, MONO_PT, MUTED, PRIMARY_BUTTON_QSS
+from .theme import (
+    AMBER, AMBER_TINT, ERROR, ERROR_TINT, FIELD_FRAME_QSS, MONO_FAMILY, MONO_PT, MUTED, PRIMARY_BUTTON_QSS, SUCCESS,
+)
 
 WINDOW_TITLE = "Migrate to Atomic Libraries"
 RUN_TEXT = "Run Migration"
@@ -110,9 +112,14 @@ COPY_TEXT = "Copy"
 OPEN_MAP_TEXT = "Open MIGRATION-ATOMIC.md"
 GENERATE_TEXT = "Generate Tables"
 CHOOSER_TEXT = f"{PIN_ACTION_TEXT}..."
+DESTINATION_LABEL = "Library tables go to:"
+BROWSE_TEXT = "Browse..."
+NO_DESTINATION_NOTE = "No destination folder is set. Press Browse... to choose the folder for the library tables."
+MISSING_DESTINATION_NOTE = "This folder does not exist. Press Browse... to choose another one."
 NEXT_STEPS_TEXT = (
-    "Next: press Generate Tables so KiCad finds the new libraries, then commit below, then press "
-    f"{PIN_ACTION_TEXT} to pin them and show the MPN and Manufacturer columns."
+    "Next: check the folder the library tables go to, press Generate Tables so KiCad finds the new "
+    f"libraries, then commit below, then press {PIN_ACTION_TEXT} to pin them and show the MPN and "
+    "Manufacturer columns."
 )
 _RUN_FAILED_TITLE = "Migration failed"
 _RUN_FAILED_NOT_RESTORED_TITLE = "Migration failed; not everything could be restored"
@@ -163,6 +170,14 @@ def _pick_model_file(parent) -> str:
         parent, "Add 3D model", str(Path.home()), "3D models (*.step *.stp *.wrl)"
     )
     return path
+
+
+def _pick_destination_folder(parent, start) -> str:
+    """The default pick_destination: a plain folder dialog (13-28, G-13-1-g).
+
+    Tests replace this field with a fake so no test ever opens a real system dialog.
+    """
+    return QFileDialog.getExistingDirectory(parent, "Select destination folder", start)
 
 
 def _ask_kicad_open(parent, names) -> ConfirmAnswer:
@@ -284,6 +299,7 @@ class MigrationCore:
     official_candidates: object = official_candidates
     op_content: object = op_content
     pick_model_file: object = _pick_model_file
+    pick_destination: object = _pick_destination_folder
     apply: object = apply_migration
     ensure_tag: object = ensure_tag
     checkout_mismatch: object = checkout_mismatch
@@ -492,12 +508,14 @@ class _CommitStepHost:
 
 
 class MigrationDialog(QDialog):
-    """Non-modal migration window. Opens to a refusal page or the grouped, gated part list (D-15, D-25)."""
+    """Window-modal migration window (it blocks the main window, so the Result view shows and changes the
+    Destination itself). Opens to a refusal page or the grouped, gated part list (D-15, D-25)."""
 
     help_requested = Signal()
     migrated = Signal(object)
     generate_requested = Signal()
     setup_chooser_requested = Signal()
+    destination_changed = Signal(str)
     issues_logged = Signal(list)
     atomic_check_requested = Signal(str, str)
 
@@ -1729,6 +1747,25 @@ class MigrationDialog(QDialog):
         self._next_steps_label.setWordWrap(True)
         lay.addWidget(self._next_steps_label)
 
+        # The folder the library tables go to: the main window owns it, this row only shows it and asks
+        # for a change (G-13-1-g)
+        dest_row = QHBoxLayout()
+        dest_row.addWidget(QLabel(DESTINATION_LABEL))
+        self._dest_edit = QLineEdit()
+        self._dest_edit.setReadOnly(True)
+        dest_row.addWidget(self._dest_edit, 1)
+        self._browse_dest_btn = QPushButton(BROWSE_TEXT)
+        self._browse_dest_btn.clicked.connect(self._on_browse_destination)
+        dest_row.addWidget(self._browse_dest_btn)
+        lay.addLayout(dest_row)
+
+        self._dest_note = QLabel()
+        self._dest_note.setTextFormat(Qt.TextFormat.PlainText)
+        self._dest_note.setWordWrap(True)
+        self._dest_note.setStyleSheet(f"color: {AMBER};")
+        self._dest_note.hide()
+        lay.addWidget(self._dest_note)
+
         actions = QHBoxLayout()
         self._generate_btn = QPushButton(GENERATE_TEXT)
         self._generate_btn.clicked.connect(self.generate_requested.emit)
@@ -1738,6 +1775,12 @@ class MigrationDialog(QDialog):
         actions.addWidget(self._chooser_btn)
         actions.addStretch()
         lay.addLayout(actions)
+
+        self._result_status = QLabel()
+        self._result_status.setTextFormat(Qt.TextFormat.PlainText)
+        self._result_status.setWordWrap(True)
+        self._result_status.hide()
+        lay.addWidget(self._result_status)
 
         self._commit_panel_host = QWidget()
         host_lay = QVBoxLayout(self._commit_panel_host)
@@ -1755,6 +1798,36 @@ class MigrationDialog(QDialog):
         close_row.addWidget(self._result_close_btn)
         outer.addLayout(close_row)
         return page
+
+    def set_destination(self, text: str):
+        """Show the folder the main window will write the library tables to; never stores it (G-13-1-g)."""
+        changed = text != self._dest_edit.text()
+        self._dest_edit.setText(text)
+        if not text.strip():
+            self._dest_note.setText(NO_DESTINATION_NOTE)
+            self._dest_note.show()
+        elif not Path(text).is_dir():
+            self._dest_note.setText(MISSING_DESTINATION_NOTE)
+            self._dest_note.show()
+        else:
+            self._dest_note.hide()
+        if changed:
+            self._result_status.clear()
+            self._result_status.hide()
+
+    def set_result_status(self, text: str, severity: Severity):
+        """Show what Generate Tables (or the pin action) did, under the buttons, in the severity's colour."""
+        colours = {
+            Severity.SUCCESS: SUCCESS, Severity.WARNING: AMBER, Severity.ERROR: ERROR, Severity.INFO: MUTED,
+        }
+        self._result_status.setStyleSheet(f"color: {colours.get(severity, MUTED)};")
+        self._result_status.setText(text)
+        self._result_status.show()
+
+    def _on_browse_destination(self):
+        folder = self._core.pick_destination(self, self._dest_edit.text())
+        if folder:
+            self.destination_changed.emit(folder)
 
     def _show_result(self, result: MigrationResult, plan: MigrationPlan):
         self._result_plan = plan
