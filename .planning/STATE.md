@@ -2,19 +2,19 @@
 gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Atomic Libraries
-current_phase: 13
-status: completed
+status: Awaiting next milestone
 stopped_at: Phase 13 complete — all phases complete
-last_updated: "2026-11-13T12:15:17.437Z"
+last_updated: "2026-11-13T15:37:05.969Z"
 last_activity: 2026-11-13
-last_activity_desc: Phase 13 complete
-state_head: 30e1b0edc910e5c3629c7a715a6147255d0755e3
+last_activity_desc: Milestone v2.0 completed and archived
+state_head: 2b825aa94fdfea08358aa1518a9f3129b6eccca1
 progress:
   total_phases: 6
   completed_phases: 6
   total_plans: 111
   completed_plans: 111
   percent: 100
+current_phase: 13
 ---
 
 # Project State
@@ -24,16 +24,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-11-13)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Close milestone v2.0 Atomic Libraries (all six phases complete)
+**Current focus:** Planning the next milestone (v2.0 Atomic Libraries shipped 2026-11-13; run /gsd-new-milestone)
 
 ## Current Position
 
-Phase: 13
-Plan: Not started
-Status: All phases complete
-Last activity: 2026-11-13 — Phase 13 complete
-
-Progress: [████████████████████] 111/111 plans (100%)
+Phase: Milestone v2.0 complete
+Plan: —
+Status: Awaiting next milestone
+Last activity: 2026-11-13 — Milestone v2.0 completed and archived
 
 ## Performance Metrics
 
@@ -82,52 +80,37 @@ Progress: [████████████████████] 111/111
 
 ### Decisions
 
-The full decision log is in the PROJECT.md Key Decisions table. The v1.0 per-phase decisions are archived with `milestones/v1.0-phases/` and summarised in `milestones/v1.0-ROADMAP.md`.
+The full decision log is in the PROJECT.md Key Decisions table. The v1.0 per-phase decisions are archived with `milestones/v1.0-phases/` (summary in `milestones/v1.0-ROADMAP.md`) and the v2.0 ones with `milestones/v2.0-phases/` (summary in `milestones/v2.0-ROADMAP.md`).
 
 - [v1.0 close]: KiCad 10 is the reference version and KiCad 9 is no longer a target (owner, 2026-10-25).
-- [v2.0 roadmap]: Phase order is tests (8), atomic check and scan (9), importer (10), commit gate (11), import-flow fixes (12), migration (13). The check and the manufacturer table come before every consumer, and the importer moves to the new names before the migration.
-- [v2.0 roadmap]: VER-01 (D-01 re-test on KiCad 10) sits in Phase 8, not with the other re-test. Its subject is the existing 20241209 `Custom/` libraries as import targets, and Phase 10 limits targets to `Atomic_` libraries. VER-02 stays in Phase 12, off the critical path, because the owner could not set up a case-sensitive folder in v1.0.
-- [v2.0 roadmap]: Phase 12 depends only on Phase 8. It is placed before Phase 13 so the chooser setup (TBL-02) reuses the `kicad_common.json` write corrected by REV-05.
-- [v2.0 roadmap]: TBL-01 and TBL-02 go with the migration (Phase 13). The table descriptions are written when the tables are regenerated, and the chooser pins the `Atomic_` libraries once they exist.
-- [Phase 08]: 08-06: Wurth parse budget is max(60 s, 0.05 s per file); measured 69.5 s for 6034 files
-- [Phase 09]: UAT passed 2026-10-26 (3/3 re-test): G-09-1 helper fix verified on the live Custom/ (read only); WR-01 accepted, double-click on a part both opens Check Atomic Parts and toggles expansion
-- [Phase 09]: The UAT scratch repo's Atomic_Connector holds synthetic rule-case parts (DS-EMPTY, MPN-NONE, ...), one per rule; only Atomic_Connector_FFC-FPC and Atomic_Battery_Management carry real parts
-- [Phase 10]: UAT passed 2026-10-29 (16 checks; G-10-1 WR-06 pad-count family filter and G-10-11 every reason listed with an empty library, closed by 10-29 and 10-30); WR-07 kept: conflict choices are asked again after a refused library name is fixed
-- [Phase 10]: Deferred follow-up (kept in 10-UAT.md, not in the backlog): a log panel inside the import dialog for debugging
-- [Phase 08]: VER-01 closed: the KiCad 10 Symbol Editor check (08-UAT.md test 2) passed on 2026-10-26, with the scratch library unchanged by the session
-- [Phase 11]: UAT passed 2026-11-01 (3/3): commit panel look checked from rendered screenshots at 100% and 200%; the "Finish it by hand" command pasted into real interactive Windows PowerShell 5.1 and PowerShell 7.6 consoles made the parent commit with quotes, $, $(...) and backticks intact
-- [Phase 11]: The commit gate fails closed: an unreadable outside `Atomic_` library or unlistable Symbols folder refuses the commit (owner decision, plan 11-15)
-- [Phase 12]: UAT complete 2026-11-11 (28 checks, 12 gaps closed by plans 12-09..12-21); the User Guide is one shared parentless window that reopens on the owner's last chosen section; import window stays locked to the main window
-- [Phase 12]: UAT tests 3 (KiCad-open dialog, unreachable from a worktree) and 4 (Finishing strip, too fast by hand) deferred to backlog 999.3 / 999.4 for after the merge
-- [Phase 13]: Live migration 2026-11-12 from the main checkout: 21 parts into 10 Atomic_ libraries (Custom bbd48c5, parent c6920f5), chooser pinned in KiCad 10; seven problems became gaps G-13-1-a..g, closed by 13-23..13-28; re-test UAT 5/5 passed 2026-11-13
-- [Phase 13]: Security 81/81 threats closed at ASVS L1 (13-SECURITY.md); UI review 16/24 advisory (13-UI-REVIEW.md: no accessible names on icon-only controls, User Guide leads with raw table file names, new windows never rendered for a spacing check)
-- [Phase 13]: Both checkouts now on Python 3.14.4 / PySide6 6.12.0; the main checkout's 3.11 venv kept as env-py311; feature/part-importer merged into main (05f9fff) on 2026-11-13
-- [Phase 13]: Owner decision 2026-11-13: regroup the menus into File / Libraries / KiCad / Help (Pin under KiCad) — backlog 999.1, not a Phase 13 gap
+- [v2.0]: Own symbol libraries are `Atomic_<official KiCad stem>` with one shared `Atomic_Footprints`; every `Atomic_` part passes the blocking atomic rule (owner, 2026-10-25). Live migration 2026-11-12: 21 parts into 10 libraries (`Custom` bbd48c5, parent c6920f5; `Custom` tagged `pre-atomic` before it).
+- [v2.0]: The app runs from the checkout KiCad reads (D-26): Generate and Install warn, the migration's Run and Pin Atomic Libraries in KiCad refuse, when `KICAD_LIB_GITHUB` names another folder.
+- [v2.0]: Both checkouts on Python 3.14.4 / PySide6 6.12.0; the main checkout's 3.11 venv is kept as `env-py311`. `feature/part-importer` merged into `main` (05f9fff) on 2026-11-13; the Phase 13 close-out docs commits and this milestone close are on `feature/part-importer`.
+- [v2.0 close]: Closed as override_closeout without a milestone audit; Phase 8-12 verification reports left stale after their gap plans (owner, 2026-11-13). Eight fixed debug sessions resolved against plans 10-29, 10-30, 12-21, 13-23..13-28.
+- [v2.0 close]: Owner decision 2026-11-13: regroup the menus into File / Libraries / KiCad / Help (Pin under KiCad) — backlog 999.1.
 
 ### Pending Todos
 
-None yet.
+- Speed up the full test suite (about 30 min, 9689 tests) — `todos/pending/2026-11-13-speed-up-full-test-suite.md`, acknowledged as deferred at the v2.0 close; agreed plan inside (durations, pytest-xdist, `slow` marker, shared git fixtures).
 
 ### Blockers/Concerns
 
-- [Phase 10]: Review findings open and non-blocking (10-REVIEW-DISPOSITION.md): WR-01 unlocked shared caches in footprint_index/siblings, WR-03 unvalidated manufacturer owner chain, WR-04 unescaped vendor tooltips, IN-01..IN-06
-- [Phase 11]: Review findings open and non-blocking (11-REVIEW-DISPOSITION.md): WR-01 a kept atomic refusal line survives the Check again after Open Check Atomic Parts fixes (one-line fix: `CommitPanel.forget_refusal()` from `_on_atomic_fixes_applied`); IN-01..IN-03
+None block the next milestone. Open, non-blocking:
 
-Open, carried into v2.0 and now mapped to phases (none block the milestone):
-
-- [Phase 12]: Review findings open and non-blocking (12-REVIEW-DISPOSITION.md)
-- [Phase 13]: UI review findings open and non-blocking (13-UI-REVIEW.md, 16/24): accessible names on icon-only controls, User Guide wording, spacing of the new windows not rendered
-- [Backlog]: 999.1 regroup the main-window menus (File / Libraries / KiCad / Help), decided by the owner 2026-11-13
-- [Backlog]: 999.3 re-test the KiCad-open dialog from the main checkout after the merge; 999.4 Finishing strip with a real kicad-cli rebuild. 999.1/999.2 closed as VER-01 (Phase 8) / VER-02 (Phase 12)
-- [Review]: Phase 4 WR-04, IN-01/02/03/05; Phase 5 WR-01..WR-06 (WR-04 closed, WR-05 GUI thread waits up to 60 s on kicad-cli); Phase 6 WR-01..WR-05, IN-01..IN-03. See the REVIEW-DISPOSITION files under `milestones/v1.0-phases/`. → Phase 5 WR-01/02/03/05/06 closed as REV-01..05 (Phase 12). Phase 6 WR-01..05 and IN-01..03 are REV-06..11 (Phase 11). Phase 4 WR-04 is deferred as REF-01. Phase 4 IN-01/02/03/05 and Phase 5 IN-01..06 are not in v2.0.
+- [Phase 10]: Review findings (10-REVIEW-DISPOSITION.md): WR-01 unlocked shared caches in footprint_index/siblings, WR-03 unvalidated manufacturer owner chain, WR-04 unescaped vendor tooltips, IN-01..IN-06
+- [Phase 11]: Review findings (11-REVIEW-DISPOSITION.md): WR-01 a kept atomic refusal line survives the Check again after Open Check Atomic Parts fixes (one-line fix: `CommitPanel.forget_refusal()` from `_on_atomic_fixes_applied`); IN-01..IN-03
+- [Phase 12]: Review findings (12-REVIEW-DISPOSITION.md); Phase 10 follow-up kept in 10-UAT.md: a log panel inside the import dialog
+- [Phase 13]: UI review advisory items (13-UI-REVIEW.md, 16/24): accessible names on icon-only controls, User Guide wording, spacing of the new windows not rendered
+- [Backlog]: 999.1 regroup the main-window menus; 999.3 re-test the KiCad-open question from the main checkout; 999.4 Finishing strip with a real kicad-cli rebuild
+- [From v1.0]: Phase 4 WR-04 deferred as REF-01 (split `build_plan`); Phase 4 IN-01/02/03/05 and Phase 5 IN-01..IN-06 not addressed. REVIEW-DISPOSITION files under `milestones/v1.0-phases/` and `milestones/v2.0-phases/`.
+- [Repo]: in the `Kicad_Libraries-importer` worktree the `Custom` submodule is checked out at 8f7d454 ("Added and modified some components") while the parent records d78f3f7; the gitlink bump is pending and outside the milestone close.
 
 ### Quick Tasks Completed
 
-v1.0 quick tasks are archived in `milestones/v1.0-quick/` (see its README.md).
+v1.0 quick tasks are archived in `milestones/v1.0-quick/` and v2.0 quick tasks (261027-gg7, saved scan reused at startup) in `milestones/v2.0-quick/` (see each README.md).
 
 | # | Description | Date | Commit | Directory |
 |---|-------------|------|--------|-----------|
-| 261027-gg7 | Reuse the last scan at startup; right-click Rescan this library | 2026-10-27 | 64513df | [261027-gg7-reuse-the-last-scan-at-startup-instead-o](./quick/261027-gg7-reuse-the-last-scan-at-startup-instead-o/) |
 
 ## Deferred Items
 
@@ -135,15 +118,16 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 | Category | Item | Status | Deferred At | Milestone |
 |----------|------|--------|-------------|-----------|
-| *(none)* | | | | |
+| todos | 2026-11-13-speed-up-full-test-suite.md | (presence-only) | 2026-11-13 | v2.0 |
 
 ## Session Continuity
 
-Last session: 2026-11-13T12:18:06.000Z
-Stopped at: Phase 13 complete — UAT 5/5, security closed, UI review written; milestone v2.0 ready to close
+Last session: 2026-11-13T15:45:00.000Z
+Stopped at: Milestone v2.0 Atomic Libraries closed and archived (override_closeout, tag v2.0)
 Resume file: None
 
 ## Operator Next Steps
 
-- Close the milestone: /gsd-complete-milestone v2.0
-- Afterwards: backlog 999.1 (menu regroup) via /gsd-quick or the next milestone
+- `/clear` then `/gsd-new-milestone` to define the next milestone (candidates in PROJECT.md under Next Milestone Goals)
+- Or close small items first: backlog 999.1 (menu regroup) and the test-suite speed-up via `/gsd-quick`
+- Merge `feature/part-importer` into `main` and push the `v2.0` tag when ready (tag created locally, not pushed)
