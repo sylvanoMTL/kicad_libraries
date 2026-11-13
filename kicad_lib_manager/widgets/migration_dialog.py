@@ -751,6 +751,8 @@ class MigrationDialog(QDialog):
         self._library_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._library_combo.setMinimumContentsLength(32)
         self._library_combo.lineEdit().textEdited.connect(self._on_library_edited)
+        # A list pick emits textActivated, not textEdited; one path records both
+        self._library_combo.textActivated.connect(self._on_library_activated)
         form.addRow("Library", self._framed(self._library_combo, "library"))
         self._library_badge = QLabel()
         self._library_badge.setTextFormat(Qt.TextFormat.PlainText)
@@ -1223,6 +1225,14 @@ class MigrationDialog(QDialog):
         self._library_note.setText("" if verdict.ok else verdict.reason)
         self._library_note.setVisible(not verdict.ok)
         self._library_badge.setText(library_badge(text, self._library_names(), allowed))
+
+    def _on_library_activated(self, text: str):
+        if self._current_key is None:
+            return
+        recorded = self._choices.parts.get(self._current_key)
+        if recorded is not None and recorded.library == text:
+            return
+        self._on_library_edited(text)
 
     def _on_text_changed(self, name: str):
         if self._current_key is None:
