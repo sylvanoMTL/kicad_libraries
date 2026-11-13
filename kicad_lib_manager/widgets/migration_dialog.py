@@ -78,6 +78,9 @@ CHECK_AGAIN_TEXT = "Check again"
 UNDECIDED_GROUP = "Choose a library"
 CHANGED_MARK = "changed since the draft"
 PASS_MARK = "✓"
+# A library nobody confirmed: only guessed (blocks Run) or suggested with confidence (G-13-1-f)
+GUESS_MARK = "library to check"
+SUGGESTED_MARK = "suggested library"
 _REBUILD_DELAY_MS = 300
 _DRAFT_DELAY_MS = 800
 
@@ -764,6 +767,11 @@ class MigrationDialog(QDialog):
         self._library_note.setStyleSheet(f"color: {MUTED};")
         self._library_note.hide()
         form.addRow("", self._library_note)
+        self._suggestion_note = QLabel()
+        self._suggestion_note.setTextFormat(Qt.TextFormat.PlainText)
+        self._suggestion_note.setWordWrap(True)
+        self._suggestion_note.hide()
+        form.addRow("", self._suggestion_note)
 
         self._symbol_name_edit = QLineEdit()
         self._symbol_name_edit.textEdited.connect(lambda text: self._on_field_edited("symbol_name", text))
@@ -1255,6 +1263,10 @@ class MigrationDialog(QDialog):
     def _status_text(self, part: PartPlan) -> str:
         count = self._gate.failing.get(part.key, 0) if self._gate is not None else 0
         bits = [PASS_MARK if count == 0 else _plural(count, "problem", "problems")]
+        if part.library_basis == "guessed":
+            bits.append(GUESS_MARK)
+        elif part.library_basis == "suggested":
+            bits.append(SUGGESTED_MARK)
         if part.target_library and part.source_library != part.target_library:
             bits.append(f"from {part.source_library}")
         if part.key in self._changed:
@@ -1339,6 +1351,23 @@ class MigrationDialog(QDialog):
         allowed = getattr(self._ctx, "allowed", None)
         return existing_libraries(names, allowed)
 
+    def _show_suggestion_note(self, part: PartPlan):
+        """Why the library was suggested, as plain text: amber for a guess, muted for a confident suggestion."""
+        reason = suggestion_text(part.suggestion) if part.suggestion is not None else ""
+        if part.library_basis == "guessed":
+            lead = f"{reason} " if reason else ""
+            text = f"Only a guess: {lead}Pick a library from the list, or type one, to confirm it."
+            colour = AMBER
+        elif part.library_basis == "suggested" and reason:
+            text, colour = reason, MUTED
+        else:
+            self._suggestion_note.setText("")
+            self._suggestion_note.hide()
+            return
+        self._suggestion_note.setText(text)
+        self._suggestion_note.setStyleSheet(f"color: {colour};")
+        self._suggestion_note.show()
+
     def _display_part(self, part: PartPlan):
         self._current_key = part.key
         choice = self._choices.parts.get(part.key, PartChoice())
@@ -1355,8 +1384,16 @@ class MigrationDialog(QDialog):
         names = self._library_names()
         if part.source_library and part.source_library not in names:
             names = sorted({*names, part.source_library}, key=lambda n: (n.casefold(), n))
+        # The list also offers the libraries that hold similar parts; the badge below still counts only
+        # the planned ones, so an alternative reads as a new library
+        offered = names
+        if part.suggestion is not None:
+            extras = [a.name for a in part.suggestion.alternatives]
+            if part.suggestion.name:
+                extras.append(part.suggestion.name)
+            offered = sorted({*names, *existing_libraries(extras, allowed)}, key=lambda n: (n.casefold(), n))
         self._library_combo.clear()
-        self._library_combo.addItems(names)
+        self._library_combo.addItems(offered)
         self._library_combo.setEditText(library_text)
         self._library_combo.setToolTip(suggestion_text(part.suggestion) if part.suggestion is not None else "")
         self._library_combo.blockSignals(False)
@@ -1364,6 +1401,7 @@ class MigrationDialog(QDialog):
         self._library_note.setText("" if verdict.ok else verdict.reason)
         self._library_note.setVisible(not verdict.ok)
         self._library_badge.setText(library_badge(library_text, names, allowed))
+        self._show_suggestion_note(part)
 
         self._symbol_name_edit.blockSignals(True)
         self._symbol_name_edit.setText(part.new_name)
