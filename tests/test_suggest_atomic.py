@@ -25,7 +25,7 @@ from kicad_lib_manager.importer.suggest import (
     suggestion_text,
 )
 from kicad_lib_manager.widgets.import_dialog import ImportCore, ImportDialog
-from stockfixtures import write_stock_sample
+from stockfixtures import write_stock_kicad, write_stock_sample
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 UL_ZIP = REPO_ROOT / "downloaded_examples" / "ul_CSD85301Q2.zip"
@@ -169,6 +169,59 @@ def test_without_kicad_the_own_lookup_still_runs(tmp_path):
     assert suggestion.name == "Atomic_Transistor_FET"
     assert suggestion.source == "own"
     assert suggestion.issues == ()
+
+
+# -- a weak vote yields to the description (gap G-13-1-f) -----------------------
+
+_ICM_STOCK = {
+    "Timer": (("ICM7209", ""), ("ICM7555xB", ""), ("ICM7555xP", ""), ("ICM7556", "")),
+    "Sensor_Motion": (("ICM-20602", ""), ("ICM-20948", "")),
+}
+
+
+def test_description_outranks_a_weak_vote(tmp_path):
+    # KiCad 10's shape: with no hyphen only the letters ICM find siblings, and the timers win 4 to 2
+    symbols_dir, _ = write_stock_kicad(tmp_path, _ICM_STOCK)
+    meta = PartMeta("ICM42688P", description="High Precision 6-Axis MEMS MotionTrackingTM Device")
+
+    suggestion = suggest_library(meta, stock=stock_index(symbols_dir))
+
+    assert suggestion.name == "Atomic_Sensor_Motion"
+    assert suggestion.source == "category"
+    assert suggestion.reason == "Suggested from the description"
+    assert suggestion.weak is False
+    assert Alternative("Atomic_Timer", 4) in suggestion.alternatives
+
+
+def test_a_weak_vote_the_description_confirms_is_not_weak(tmp_path):
+    symbols_dir, _ = write_stock_sample(tmp_path)
+    meta = PartMeta("CSD85301Q2", description="Dual N-Channel MOSFET")
+
+    suggestion = suggest_library(meta, stock=stock_index(symbols_dir))
+
+    assert suggestion.name == "Atomic_Transistor_FET"
+    assert suggestion.source == "stock"
+    assert suggestion.reason == "Suggested from 3 similar parts in KiCad's Transistor_FET"
+    assert suggestion.weak is False
+
+
+def test_a_weak_vote_nothing_contradicts_is_kept_and_marked_weak(tmp_path):
+    symbols_dir, _ = write_stock_kicad(tmp_path / "icm", _ICM_STOCK)
+
+    timer = suggest_library(PartMeta("ICM42688P"), stock=stock_index(symbols_dir))
+
+    assert (timer.name, timer.source, timer.weak) == ("Atomic_Timer", "stock", True)
+
+    sample_dir, _ = write_stock_sample(tmp_path / "sample")
+    csd = suggest_library(PartMeta("CSD85301Q2"), stock=stock_index(sample_dir))
+
+    assert csd.name == "Atomic_Transistor_FET"
+    assert csd.source == "stock"
+    assert csd.reason == "Suggested from 3 similar parts in KiCad's Transistor_FET"
+    assert csd.alternatives == (Alternative("Atomic_Diode", 1),)
+    assert csd.related_stems == ("Transistor_FET", "Diode")
+    assert csd.issues == ()
+    assert csd.weak is True
 
 
 # -- no manufacturer, ever (LIB-04) --------------------------------------------
