@@ -6,7 +6,8 @@ runs. check_plan runs the unchanged atomic_check.check_symbol over every written
 each violation into a plain-language StripLine: whole-set lines (plan-wide and inventory ERRORs)
 first, then one line per part per broken rule, ordered by target library, new name and rule order
 (D-15). No line ever shows a raw KiCad field name or an internal issue code (owner plain-language
-rule) — part.issues ERRORs are already plain text by the time they reach here (13-09/13-10/13-11),
+rule). A part whose library is only a weak guess nobody has confirmed also blocks Run, with a plain
+line that targets the Library field (plan 13-26) — part.issues ERRORs are already plain text by the time they reach here (13-09/13-10/13-11),
 and atomic-rule violations go through form.atomic_reason, which strips ki_* names itself.
 """
 
@@ -28,6 +29,11 @@ _MODELS_PREFIX = "Custom/3DModels/"
 # form.ATOMIC_TARGETS values ("mpn", "manufacturer", "footprint_name", "datasheet", "description",
 # "model"), via atomic_reason below.
 TARGET_LIBRARY = "library"
+# A library that is only a weak guess blocks Run until the owner picks one (gap G-13-1-f, D-01)
+GUESSED_LIBRARY_TEXT = (
+    "{name}: check the library. {library} is only a guess from similar part numbers; "
+    "pick the right one from the Library list"
+)
 TARGET_NAME = "symbol_name"
 TARGET_FOOTPRINT = "footprint"
 TARGET_MODEL = "model"
@@ -158,7 +164,7 @@ def _order(by_key: Mapping[PartKey, tuple[str, str]]) -> Callable[[tuple[int, St
 
 
 def check_plan(plan: MigrationPlan, inventory: Inventory, ctx: AtomicContext) -> GateOutcome:
-    """Judge every planned part against ctx; a violation, an undecided library or a whole-set ERROR blocks Run.
+    """Judge every planned part against ctx; a violation, an undecided or unconfirmed guessed library, or a whole-set ERROR blocks Run.
 
     Whole-set lines (D-05, D-07, F-13) always come first; part lines are ordered by target library,
     part name and atomic rule order (D-15).
@@ -186,6 +192,15 @@ def check_plan(plan: MigrationPlan, inventory: Inventory, ctx: AtomicContext) ->
             part_entries.append((0, line))
             bump(part.key)
             continue
+
+        if part.library_basis == "guessed":
+            line = StripLine(
+                part.key,
+                GUESSED_LIBRARY_TEXT.format(name=part.new_name, library=part.target_library),
+                TARGET_LIBRARY,
+            )
+            part_entries.append((0, line))
+            bump(part.key)
 
         has_error = False
         for issue in part.issues:
