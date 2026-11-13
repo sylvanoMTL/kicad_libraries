@@ -27,7 +27,9 @@ from kicad_lib_manager.widgets.commit_panel import _ADDED_MARK, _CHANGED_MARK, C
 from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
 from kicad_lib_manager.widgets.import_result import ImportResultView
-from kicad_lib_manager.widgets.migration_dialog import GUESS_MARK, SUGGESTED_MARK
+from kicad_lib_manager.widgets.migration_dialog import (
+    BROWSE_TEXT, DESTINATION_LABEL, GUESS_MARK, SUGGESTED_MARK,
+)
 from kicad_lib_manager.widgets import conflict_row, help_dialog, theme
 from kicad_lib_manager.widgets.conflict_row import _button_qss
 from kicad_lib_manager.widgets.theme import (
@@ -422,7 +424,7 @@ def test_help_migrating_page():
         "Ctrl+Shift+M", "uncommitted files", "pre-atomic", "failure strip", "Run Migration",
         "Files", "leftover files", "Generate Tables", "Pin Atomic Libraries in KiCad",
         "MIGRATION-ATOMIC.md", "Edit Symbol Library Links", "Update Symbols from Library",
-        "Update PCB from Schematic",
+        "Update PCB from Schematic", DESTINATION_LABEL, BROWSE_TEXT,
     ):
         assert text in page, text
     assert "ki_" not in page
