@@ -60,23 +60,23 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### Library Tables and KiCad Setup
 
-- [ ] **TBL-01**: Generated `sym-lib-table` / `fp-lib-table` entries carry a library description instead of an empty one.
-- [ ] **TBL-02**: One confirmed action sets up KiCad 10's chooser:
+- [x] **TBL-01**: Generated `sym-lib-table` / `fp-lib-table` entries carry a library description instead of an empty one.
+- [x] **TBL-02**: One confirmed action sets up KiCad 10's chooser:
   - pins the `Atomic_` libraries;
   - shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column;
   - shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout, like the path-variable sync.
 
 ### Migration
 
-- [ ] **MIG-01**: Before migrating, the app tags `Custom` as `pre-atomic`, and refuses to start while `Custom` has uncommitted changes.
+- [x] **MIG-01**: Before migrating, the app tags `Custom` as `pre-atomic`, and refuses to start while `Custom` has uncommitted changes.
 - [x] **MIG-02**: The migration preview shows, for every existing part, its target `Atomic_` library, its footprint destination, every rename and field change, and every atomic-rule failure with an edit box. The migration cannot run until every part passes.
 - [x] **MIG-03**: The migration runs as one transaction with rollback, using byte-safe span edits. It:
   - moves every part of the v1-named symbol libraries (and any part the preview re-files) into its previewed `Atomic_` library, removing the emptied libraries;
   - moves every footprint into `Atomic_Footprints`, or switches it to an official footprint;
   - rewrites every Footprint field and model path;
   - deletes every `.bak` file in `Custom/Symbols`.
-- [ ] **MIG-04**: After migration, the scan reports zero atomic violations, and the library tables are regenerated (old names removed, new ones added). One `Custom` commit plus a parent ref commit is offered through the commit step.
-- [ ] **MIG-05**: The app shows and saves the old → new library name map, plus the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB).
+- [x] **MIG-04**: After migration, the scan reports zero atomic violations, and the library tables are regenerated (old names removed, new ones added). One `Custom` commit plus a parent ref commit is offered through the commit step.
+- [x] **MIG-05**: The app shows and saves the old → new library name map, plus the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB).
 
 ### Git
 
@@ -108,7 +108,7 @@ v1.0 requirements (FOUND, HARD, INTK, FMT2-02, LIB-01..03, PREV, INST, POST, GIT
 
 ### Docs
 
-- [ ] **DOC-01**: `CLAUDE.md` (naming section and SnapEDA import steps), PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
+- [x] **DOC-01**: `CLAUDE.md` (naming section and SnapEDA import steps), PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
 
 ## Future Requirements
 
@@ -157,13 +157,13 @@ Which phases cover which requirements. Filled in during roadmap creation.
 | FLD-01 | Phase 10 | Complete |
 | FLD-02 | Phase 9 | Complete |
 | FLD-03 | Phase 10 | Complete |
-| TBL-01 | Phase 13 | Pending |
-| TBL-02 | Phase 13 | Pending |
-| MIG-01 | Phase 13 | Pending |
+| TBL-01 | Phase 13 | Complete |
+| TBL-02 | Phase 13 | Complete |
+| MIG-01 | Phase 13 | Complete |
 | MIG-02 | Phase 13 | Complete |
 | MIG-03 | Phase 13 | Complete |
-| MIG-04 | Phase 13 | Pending |
-| MIG-05 | Phase 13 | Pending |
+| MIG-04 | Phase 13 | Complete |
+| MIG-05 | Phase 13 | Complete |
 | GIT-06 | Phase 11 | Complete |
 | VER-01 | Phase 8 | Complete |
 | VER-02 | Phase 12 | Complete |
@@ -180,7 +180,7 @@ Which phases cover which requirements. Filled in during roadmap creation.
 | REV-11 | Phase 11 | Complete |
 | UI-01 | Phase 12 | Complete |
 | UI-02 | Phase 11 | Complete |
-| DOC-01 | Phase 13 | Pending |
+| DOC-01 | Phase 13 | Complete |
 
 **Coverage:**
 - v2.0 requirements: 40 total

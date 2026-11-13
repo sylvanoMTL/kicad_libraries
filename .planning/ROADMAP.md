@@ -32,7 +32,7 @@ Phase 8 makes the suite green first, so every later phase starts from a baseline
 - [x] **Phase 11: Commit Gate and Commit Panel Fixes** - Commit panel refuses non-atomic parts, reports what git really did, and follows the theme (completed 2026-11-01)
 - [x] **Phase 12: Import Flow Fixes and Case-Sensitive Re-test** - Post-install table step, import threading, `kicad_common.json` write and Help dialog fixed; case-twin rollback re-tested
  (completed 2026-11-11)
-- [ ] **Phase 13: Atomic Migration and KiCad Setup** - Existing parts migrated into `Atomic_` libraries in one previewed commit, tables regenerated with descriptions, KiCad's chooser set up, docs updated
+- [x] **Phase 13: Atomic Migration and KiCad Setup** - Existing parts migrated into `Atomic_` libraries in one previewed commit, tables regenerated with descriptions, KiCad's chooser set up, docs updated (completed 2026-11-13)
 
 ## Phase Details
 
@@ -313,7 +313,7 @@ Plans:
   4. One confirmed action sets up KiCad 10's chooser: it pins the `Atomic_` libraries, shows the `MPN` and `Manufacturer` columns and removes the stray `MANUFACTURER` column. Like the path-variable sync, it shows old → new values first, backs up the config, and refuses to run from a worktree or another checkout.
   5. The app shows and saves the old → new library name map with the KiCad steps to relink existing projects (Edit Symbol Library Links → Update Symbols → Update PCB). `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule.
 
-**Plans**: 28/28 plans executed (22 executed; 6 gap-closure plans pending from the owner's live UAT: 13-23..13-28)
+**Plans**: 28/28 plans complete (22 planned + 6 gap-closure plans 13-23..13-28 from the owner's live UAT; re-test UAT 5/5 passed 2026-11-13)
 
 Plans:
 **Wave 1**
@@ -378,7 +378,7 @@ Phases execute in numeric order: 8 → 9 → 10 → 11 → 12 → 13
 | 10. Importer on the Atomic Scheme | v2.0 | 30/30 | Complete    | 2026-10-29 |
 | 11. Commit Gate and Commit Panel Fixes | v2.0 | 17/17 | Complete    | 2026-11-01 |
 | 12. Import Flow Fixes and Case-Sensitive Re-test | v2.0 | 21/21 | Complete    | 2026-11-11 |
-| 13. Atomic Migration and KiCad Setup | v2.0 | 28/28 | In Progress | - |
+| 13. Atomic Migration and KiCad Setup | v2.0 | 28/28 | Complete    | 2026-11-13 |
 
 ## Backlog
 

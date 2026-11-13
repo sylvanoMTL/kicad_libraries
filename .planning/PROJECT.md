@@ -26,6 +26,8 @@ A part importer added to the existing PySide6 KiCad Library Manager (`kicad_lib_
 - Carried forward: re-tests 999.1 (KiCad 10) and 999.2 (case-sensitive folder), open Phase 5/6 review findings, Help dialog and Commit panel UI polish
 - Docs: CLAUDE.md naming section, library requirements, PROJECT.md
 
+**Status 2026-11-13:** all six v2.0 phases are complete and verified (Phase 13 UAT 5/5, security 81/81 closed, UI review 16/24 advisory); the milestone is ready to close with `/gsd-complete-milestone v2.0`. Open follow-up: backlog 999.1 regroups the main-window menus into File / Libraries / KiCad / Help.
+
 **Later (not this milestone):** SVG preview via `kicad-cli export svg` (PREV2-01), KiCad 5 conversion (FMT2-01), provenance property (META2-01). `MF`/`MP` field migration (META2-02) is largely absorbed by the atomic migration.
 
 ## Core Value
@@ -95,11 +97,11 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 - ✓ Commit gate and commit panel: Commit refuses (and fails closed on unreadable linked libraries) while any committed part breaks the atomic rule, naming part and rule; the panel keeps git's output, the refusal detail and the manual command across re-probes, checks HEAD after a timeout, uses one parent-message builder and PowerShell quoting on Windows, keeps the parent checkbox choice and `GIT_AUTHOR_*`/`GIT_COMMITTER_*` identity; primary Commit button, tinted outcomes, "Committed in Custom only" (GIT-06, REV-06..11, UI-02; UAT 2026-11-01, pasted command checked in real Windows PowerShell 5.1 and PowerShell 7 consoles) — Phase 11
 - ✓ Import-flow fixes: Phase 5 review warnings closed (table step text, empty Destination, build/Install overlap, GUI thread never waits on kicad-cli, fresh settings write gated by a KiCad-open question); Help and conflict rows on theme tokens; case-twin rollback/overwrite re-tested on a case-sensitive folder; plus UAT-raised fixes: Cancel on every import page, compact start page, per-source Skip while libraries load, a shared User Guide window with a numbered menu that reopens on the last chosen section (REV-01..05, UI-01, VER-02; UAT 2026-11-11, live re-tests of REV-05's KiCad-open dialog and REV-04's Finishing strip deferred to backlog 999.3/999.4) — Phase 12
 
-### Active
+- ✓ Own symbol libraries are `Atomic_<official KiCad stem>` with one shared `Atomic_Footprints`; the migration refuses on uncommitted `Custom`, tags `pre-atomic`, previews every part with a failure strip and a saved draft, runs as one transaction with rollback, writes the old -> new map (`Custom/MIGRATION-ATOMIC.md`) and offers the Custom + parent commits; a guessed library blocks Run until confirmed (MIG-01..05; live run 2026-11-12: 21 parts into 10 `Atomic_` libraries, zero violations) — Phase 13
+- ✓ Generated table entries carry library descriptions; Pin Atomic Libraries in KiCad (Ctrl+Shift+K) pins the `Atomic_` libraries and the MPN/Manufacturer columns after an old -> new preview and a backup, refusing from a worktree or another checkout; Generate/Install warn and Run/Pin refuse when `KICAD_LIB_GITHUB` names another folder (TBL-01, TBL-02, D-26; chooser pinned in KiCad 10 on 2026-11-12) — Phase 13
+- ✓ CLAUDE.md, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and the atomic rule; the User Guide has Migrating and Pin sections (DOC-01); the app imports on Python 3.10+ (annotation-resolution test) and the Loading Libraries Skip is offered while symbols are read (re-test UAT 5/5, 2026-11-13) — Phase 13
 
-**Atomic libraries (v2.0)**
-- [x] Own symbol libraries named `Atomic_<official KiCad stem>`, footprints in one shared `Atomic_Footprints`; parts filed by what the device is — Phase 13
-- [x] Existing `Custom/` parts migrated in one previewed commit, every part passing the rule, tables regenerated — Phase 13
+### Active
 
 **Quality**
 - [ ] Phase 11 review findings, open and non-blocking (11-REVIEW-DISPOSITION.md): WR-01 a kept atomic refusal line survives the Check again that follows Open Check Atomic Parts fixes (Commit enablement unaffected); IN-01..IN-03
@@ -140,7 +142,7 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | Support UL, SnapEDA, SamacSys/CSE and loose files in v1 | Owner uses all of them; zip layouts differ | ✓ Good — Phase 7 UAT passed on the real SnapEDA and SamacSys zips |
 | Preview before every write; per-conflict overwrite/rename/skip | Avoid silent damage to curated libraries | ✓ Good — Phase 5 UAT passed |
 | Library name suggested from `<Type>_<SubCategory>_<Manufacturer>`, editable | Keeps the convention without blocking edge cases | ⚠️ Revisit — replaced in v2.0 by `Atomic_<KiCad stem>` (worked in v1.0, Phase 5 UAT passed) |
-| Own libraries are `Atomic_<official KiCad stem>` with one shared `Atomic_Footprints`; every part must pass a blocking atomic rule (MPN, Manufacturer, footprint link, Value = MPN, Datasheet, Description, 3D model) | KiCad 10 ships libraries under every bare target stem, so a token is mandatory; "atomic" names the guarantee instead of a brand and appears nowhere in KiCad's stock libraries; the owner wants hand-made parts held to the same rule (2026-10-25) | ✓ Good — the check and scan detection shipped in Phase 9, the importer side in Phase 10 and the commit gate in Phase 11, all passed UAT; the migration (Phase 13) delivers the scheme for the existing parts, pending the owner's live UAT run |
+| Own libraries are `Atomic_<official KiCad stem>` with one shared `Atomic_Footprints`; every part must pass a blocking atomic rule (MPN, Manufacturer, footprint link, Value = MPN, Datasheet, Description, 3D model) | KiCad 10 ships libraries under every bare target stem, so a token is mandatory; "atomic" names the guarantee instead of a brand and appears nowhere in KiCad's stock libraries; the owner wants hand-made parts held to the same rule (2026-10-25) | ✓ Good — the check and scan detection shipped in Phase 9, the importer side in Phase 10 and the commit gate in Phase 11, all passed UAT; the migration (Phase 13) moved the 21 existing parts into 10 `Atomic_` libraries on 2026-11-12 and the re-test UAT passed 5/5 on 2026-11-13 |
 | Importer details kept as built (owner, 2026-10-29): strict majority for sibling votes, a part with no clear match asks for a library, measured package size (2.1x2.1 mm) and IPC-style tag in footprint text, a package family from tied KiCad footprints only when they agree and are within one pad of the vendor footprint, conflict choices asked again after a refused library name is fixed (WR-07 kept) | The suggestion must never guess a wrong library or family; the owner prefers asking over a wrong default | ✓ Good — Phase 10 UAT passed |
 | Footprint keeps vendor name by default, editable | Package codes are often the right name; user can override | ✓ Good — Phase 5 UAT passed |
 | Footprint link set automatically; other fields editable in preview | Footprint link is the most error-prone manual step | ✓ Good — Phase 5 UAT passed |
@@ -167,6 +169,9 @@ A downloaded vendor package ends up as a correctly named, correctly linked part 
 | Git runs as `git --literal-pathspecs -c core.quotepath=false -C <repo>` from an allow-list with no remote subcommand, `GIT_*` env stripped, paths on stdin (`--pathspec-file-nul`), message via `-F`; owner hooks always run (no `--no-verify`, D-06) | Package-derived names are untrusted; the user's other changes and the remote must never be touched | ✓ Good — 06-SECURITY.md 26/26 threats closed (Phase 6) |
 | KiCad path variables are never written silently: Generate and the post-install table update show `VAR: old -> new` and ask (default No); a git worktree or a checkout other than the configured `KICAD_LIB_GITHUB` is refused with a WARNING; no confirm callback means no write | 2026-10-21: Generate from the dev worktree repointed KiCad 10 at it; 89 WurthElektronik libraries went missing and an ERC error followed | ✓ Good (Quick 261022-gnn) |
 | KiCad 10 is the reference version; KiCad 9 expectations are dropped | KiCad 10 is installed on the workstation and the owner no longer targets KiCad 9 (2026-10-25, v1.0 close) | ✓ Good — every real kicad-cli test pins KiCad 10 (format 20251024, generator 10.0) and skips with a stated reason on any other major version (Phase 8, TEST-02) |
+| The app runs from the checkout KiCad reads (D-26): Generate Tables and Install Part warn in amber when `KICAD_LIB_GITHUB` names another folder, while the migration's Run and Pin Atomic Libraries in KiCad refuse outright | The 2026-11-12 live UAT first ran from the dev worktree; KiCad would not have seen the migrated libraries | ✓ Good — refusal and warning verified in the Phase 13 re-test |
+| A weak sibling vote yields to the part's description, and a guessed library is a blocking strip line until the owner picks one | The live migration filed the ICM-42688-P IMU into `Atomic_Timer` on a weak name match | ✓ Good — 13-25/13-26, UAT 2026-11-13 |
+| Both checkouts run on Python 3.14.4 / PySide6 6.12.0 (python.org CPython; main venv rebuilt 2026-11-13, old 3.11 venv kept as `env-py311`); `tests/test_annotations_resolve.py` keeps the code importable on 3.10+ | The main checkout's 3.11 venv exposed a NameError that 3.14's deferred annotations hid (G-13-1-a) | ✓ Good — app starts on both venvs |
 
 ## Evolution
 
@@ -186,4 +191,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-11-11 after Phase 12*
+*Last updated: 2026-11-13 after Phase 13*

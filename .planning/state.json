@@ -26,18 +26,18 @@
     {
       "number": "12",
       "name": "Import Flow Fixes and Case-Sensitive Re-test",
-      "status": "in_progress"
+      "status": "complete"
     },
     {
       "number": "13",
       "name": "Atomic Migration and KiCad Setup",
-      "status": "pending"
+      "status": "complete"
     }
   ],
   "next": {
-    "command": "/gsd-progress --next",
-    "label": "Advance to the next step",
-    "reason": "Phase 5 of 6 · 67% · executing"
+    "command": "/gsd-new-milestone",
+    "label": "Start a new milestone",
+    "reason": "All phases complete — start a new milestone"
   },
-  "updated_at": "2026-11-01T13:50:15.669Z"
+  "updated_at": "2026-11-13T12:15:17.516Z"
 }

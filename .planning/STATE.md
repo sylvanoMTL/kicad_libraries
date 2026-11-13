@@ -3,43 +3,42 @@ gsd_state_version: "1.0"
 milestone: v2.0
 milestone_name: Atomic Libraries
 current_phase: 13
-current_phase_name: Atomic Migration and KiCad Setup
-status: executing
-stopped_at: "Phase 13 gap-closure 13-22 executed and merged (22/22 plans); re-verification human_needed (5/5 must-haves, CR-01 closed) — next: /gsd-verify-work 13 (owner's live migration UAT from the main checkout)"
-last_updated: "2026-11-13T09:05:45.923Z"
+status: completed
+stopped_at: Phase 13 complete — all phases complete
+last_updated: "2026-11-13T12:15:17.437Z"
 last_activity: 2026-11-13
-last_activity_desc: Phase 13 execution resumed (wave continue)
-state_head: 32f33940f3e6a0dc91cce3859cd7c9cb2295e2b3
+last_activity_desc: Phase 13 complete
+state_head: 30e1b0edc910e5c3629c7a715a6147255d0755e3
 progress:
   total_phases: 6
-  completed_phases: 5
+  completed_phases: 6
   total_plans: 111
-  completed_plans: 105
-  percent: 83
+  completed_plans: 111
+  percent: 100
 ---
 
 # Project State
 
 ## Project Reference
 
-See: .planning/PROJECT.md (updated 2026-11-11)
+See: .planning/PROJECT.md (updated 2026-11-13)
 
 **Core value:** A downloaded vendor package ends up as a correctly named, correctly linked part in the right `Custom/` library (Footprint field `<Lib>:<FP>`, 3D model at `${CUSTOM_3DMODEL_DIR}/<file>.step`) without hand-editing any KiCad file.
-**Current focus:** Phase 13 — Atomic Migration and KiCad Setup
+**Current focus:** Close milestone v2.0 Atomic Libraries (all six phases complete)
 
 ## Current Position
 
-Phase: 13 (Atomic Migration and KiCad Setup) — EXECUTING
-Plan: 1 of 22
-Status: Executing Phase 13
-Last activity: 2026-11-13 — Phase 13 execution resumed (wave continue)
+Phase: 13
+Plan: Not started
+Status: All phases complete
+Last activity: 2026-11-13 — Phase 13 complete
 
-Progress: [████████░░] 83%
+Progress: [████████████████████] 111/111 plans (100%)
 
 ## Performance Metrics
 
 **Velocity:**
-- Total plans completed: 153
+- Total plans completed: 181
 - Average duration: -
 - Total execution time: 0.0 hours
 
@@ -59,6 +58,7 @@ Progress: [████████░░] 83%
 | 10 | 30 | - | - |
 | 11 | 17 | - | - |
 | 12 | 21 | - | - |
+| 13 | 28 | - | - |
 
 **Recent Trend:**
 - Last 5 plans: -
@@ -99,6 +99,10 @@ The full decision log is in the PROJECT.md Key Decisions table. The v1.0 per-pha
 - [Phase 11]: The commit gate fails closed: an unreadable outside `Atomic_` library or unlistable Symbols folder refuses the commit (owner decision, plan 11-15)
 - [Phase 12]: UAT complete 2026-11-11 (28 checks, 12 gaps closed by plans 12-09..12-21); the User Guide is one shared parentless window that reopens on the owner's last chosen section; import window stays locked to the main window
 - [Phase 12]: UAT tests 3 (KiCad-open dialog, unreachable from a worktree) and 4 (Finishing strip, too fast by hand) deferred to backlog 999.3 / 999.4 for after the merge
+- [Phase 13]: Live migration 2026-11-12 from the main checkout: 21 parts into 10 Atomic_ libraries (Custom bbd48c5, parent c6920f5), chooser pinned in KiCad 10; seven problems became gaps G-13-1-a..g, closed by 13-23..13-28; re-test UAT 5/5 passed 2026-11-13
+- [Phase 13]: Security 81/81 threats closed at ASVS L1 (13-SECURITY.md); UI review 16/24 advisory (13-UI-REVIEW.md: no accessible names on icon-only controls, User Guide leads with raw table file names, new windows never rendered for a spacing check)
+- [Phase 13]: Both checkouts now on Python 3.14.4 / PySide6 6.12.0; the main checkout's 3.11 venv kept as env-py311; feature/part-importer merged into main (05f9fff) on 2026-11-13
+- [Phase 13]: Owner decision 2026-11-13: regroup the menus into File / Libraries / KiCad / Help (Pin under KiCad) — backlog 999.1, not a Phase 13 gap
 
 ### Pending Todos
 
@@ -112,6 +116,8 @@ None yet.
 Open, carried into v2.0 and now mapped to phases (none block the milestone):
 
 - [Phase 12]: Review findings open and non-blocking (12-REVIEW-DISPOSITION.md)
+- [Phase 13]: UI review findings open and non-blocking (13-UI-REVIEW.md, 16/24): accessible names on icon-only controls, User Guide wording, spacing of the new windows not rendered
+- [Backlog]: 999.1 regroup the main-window menus (File / Libraries / KiCad / Help), decided by the owner 2026-11-13
 - [Backlog]: 999.3 re-test the KiCad-open dialog from the main checkout after the merge; 999.4 Finishing strip with a real kicad-cli rebuild. 999.1/999.2 closed as VER-01 (Phase 8) / VER-02 (Phase 12)
 - [Review]: Phase 4 WR-04, IN-01/02/03/05; Phase 5 WR-01..WR-06 (WR-04 closed, WR-05 GUI thread waits up to 60 s on kicad-cli); Phase 6 WR-01..WR-05, IN-01..IN-03. See the REVIEW-DISPOSITION files under `milestones/v1.0-phases/`. → Phase 5 WR-01/02/03/05/06 closed as REV-01..05 (Phase 12). Phase 6 WR-01..05 and IN-01..03 are REV-06..11 (Phase 11). Phase 4 WR-04 is deferred as REF-01. Phase 4 IN-01/02/03/05 and Phase 5 IN-01..06 are not in v2.0.
 
@@ -133,10 +139,11 @@ Items acknowledged and deferred at milestone close, most recent first:
 
 ## Session Continuity
 
-Last session: 2026-11-12T07:19:56.363Z
-Stopped at: Phase 13 gap-closure 13-22 executed and merged (22/22 plans); re-verification human_needed (5/5 must-haves, CR-01 closed) — next: /gsd-verify-work 13 (owner's live migration UAT from the main checkout)
-Resume file: .planning/phases/13-atomic-migration-and-kicad-setup/13-UAT.md
+Last session: 2026-11-13T12:18:06.000Z
+Stopped at: Phase 13 complete — UAT 5/5, security closed, UI review written; milestone v2.0 ready to close
+Resume file: None
 
 ## Operator Next Steps
 
-- Discuss Phase 13 with /gsd-discuss-phase 13, then plan it with /gsd-plan-phase 13
+- Close the milestone: /gsd-complete-milestone v2.0
+- Afterwards: backlog 999.1 (menu regroup) via /gsd-quick or the next milestone
