@@ -23,8 +23,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout, QWidget,
 )
 
+from ..importer.commit_plan import CommitPlan
 from ..importer.commit_step import (
-    changed_diff, combined_view, pre_import_diff, probe_commit, recheck_commit, run_commit, switch_to_main,
+    CommitProbe, changed_diff, combined_view, pre_import_diff, probe_commit, recheck_commit, run_commit, switch_to_main,
 )
 from ..importer.content import ContentText, MAX_READ, binary_text, cap_lines, decode_text, diff_text, sha256_file
 from ..importer.footprint_index import build_index
