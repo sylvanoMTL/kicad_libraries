@@ -1,130 +1,169 @@
 ---
 phase: 13-atomic-migration-and-kicad-setup
-verified: 2026-11-12T12:30:00Z
+verified: 2026-11-13T12:00:00Z
 status: human_needed
-score: 5/5 must-haves verified
-covered_files: [".planning/phases/13-atomic-migration-and-kicad-setup/13-01-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-01-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-02-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-02-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-03-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-03-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-04-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-04-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-05-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-05-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-06-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-06-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-07-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-07-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-08-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-08-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-09-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-09-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-10-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-10-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-11-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-11-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-12-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-12-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-13-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-13-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-14-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-14-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-15-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-15-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-16-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-16-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-17-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-17-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-18-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-18-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-19-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-19-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-20-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-20-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-21-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-21-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-22-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-22-SUMMARY.md", "kicad_lib_manager/importer/migration/applier.py", "kicad_lib_manager/importer/migration/footprints.py", "tests/test_migration_apply.py", "tests/test_migration_e2e.py", "tests/test_migration_footprints.py"]
-covered_digest: "v3:sha256:11a58e0361c388f1d08f3d78d80f36cb742c9e9efad4bbc0e4849adeec118d7d"
+score: 11/11 must-haves verified
+covered_files: [".planning/phases/13-atomic-migration-and-kicad-setup/13-01-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-01-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-02-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-02-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-03-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-03-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-04-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-04-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-05-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-05-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-06-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-06-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-07-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-07-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-08-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-08-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-09-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-09-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-10-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-10-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-11-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-11-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-12-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-12-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-13-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-13-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-14-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-14-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-15-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-15-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-16-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-16-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-17-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-17-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-18-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-18-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-19-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-19-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-20-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-20-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-21-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-21-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-22-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-22-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-23-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-23-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-24-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-24-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-25-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-25-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-26-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-26-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-27-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-27-SUMMARY.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-28-PLAN.md", ".planning/phases/13-atomic-migration-and-kicad-setup/13-28-SUMMARY.md", "kicad_lib_manager/importer/categories.py", "kicad_lib_manager/importer/migration/gate.py", "kicad_lib_manager/importer/migration/plan.py", "kicad_lib_manager/importer/migration/symbols.py", "kicad_lib_manager/importer/siblings.py", "kicad_lib_manager/importer/suggest.py", "kicad_lib_manager/kicad_setup.py", "kicad_lib_manager/library_scanner.py", "kicad_lib_manager/main_window.py", "kicad_lib_manager/widgets/migration_dialog.py", "kicad_lib_manager/widgets/scan_progress.py", "tests/test_annotations_resolve.py"]
+covered_digest: "v3:sha256:d6a174fe03ef65221f0a2581b7dda52f14f662516944dd5b247552c00008744a"
 behavior_unverified: 0
 overrides_applied: 0
 re_verification:
-  previous_status: gaps_found
-  previous_score: 4/5
+  previous_status: human_needed
+  previous_score: 5/5
   gaps_closed:
-    - "A 3D-model rename candidate colliding only by letter case with an untouched, unlinked, pre-existing model file is no longer silently destroyed: _model_final_names's existing-model guard in footprints.py now casefolds the comparison against a prebuilt casefolded inventory (model_names_cf), mirroring the already-correct claimed_model_names registry. Confirmed by reading the guard at footprints.py (candidate.casefold() in model_names_cf) and by independently running the exact reproduction test, tests/test_migration_e2e.py::test_model_rename_cannot_overwrite_an_untouched_model, which builds the identical scenario the prior verification round used to demonstrate the gap (an untouched TAKEN.STEP model and a colliding rename candidate) and now asserts the untouched file's bytes survive a full plan/gate/apply/disk round trip — passes."
-    - "The exact-name collision variant of the same guard (candidate matches an on-disk model exactly, not just by case) is now covered by its own regression, tests/test_migration_footprints.py::test_model_rename_onto_an_exact_existing_name_keeps_its_name — passes."
-    - "A rename chain (A renaming onto B while B itself renames away) is refused rather than reordered, because the guard keeps comparing against the whole pre-migration inventory rather than a post-migration projection — tests/test_migration_footprints.py::test_a_rename_onto_a_model_that_is_itself_renamed_is_kept — passes."
-    - "The kept-name note is confirmed plain-language, single, and non-blocking (Run stays enabled) — tests/test_migration_footprints.py::test_model_kept_name_note_is_plain_and_single and test_untouched_model_collision_raises_no_blocking_line — both pass."
-    - "A structural, transaction-layer backstop now exists for the whole defect class (not only this one instance): applier.py's _preflight gained migration.rename_would_overwrite, refusing before the first byte any write op carrying source_rel whose target existed at plan time and is removed by no delete op in the same plan — confirmed by reading the new block in _preflight and by independently running tests/test_migration_apply.py::test_rename_overwrite_plan_is_refused — passes."
+    - "G-13-1-a: kicad_lib_manager imports on Python 3.11 (CommitPlan / CommitProbe now imported in migration_dialog.py); independently imported all 77 package modules under py -3.11 with no failure; test_annotations_resolve.py gate present and passing on 3.14"
+    - "G-13-1-b: Skip offered while the symbols are read (find_symbol_libs takes checking=; scan_all passes it; ScanProgressDialog remembers requested sources); symbol parse still complete so no library or link is dropped"
+    - "G-13-1-c: action renamed to Pin Atomic Libraries in KiCad... from one constant (kicad_setup.PIN_ACTION_TEXT); no 'Set Up KiCad Chooser' string remains in kicad_lib_manager/ or CLAUDE.md; chooser.* Issue codes and identifiers kept"
+    - "G-13-1-f: family_prefixes keeps the separator (ICM-42688-P gives ICM-42688, ICM-4, ICM-, ICM), SiblingPick.weak and LibrarySuggestion.weak exist, the description outranks a weak vote, the Sensor_Motion rule knows 6 axis / motion tracking / inertial; a guess is visible (library_basis, strip line GUESSED_LIBRARY_TEXT blocking Run, tree marks, note, alternatives in the dropdown)"
+    - "G-13-1-g: the Result view shows the Destination with Browse... (destination_changed signal), mirrors Generate's outcome (set_result_status), the window stays window-modal (dialog.open(), asserted), the Destination box skips folders that no longer exist (_set_dest_items)"
+    - "G-13-1-h: a library picked from the Library dropdown list is recorded (textActivated connected to _on_library_activated)"
   gaps_remaining: []
   regressions: []
+behavior_unverified_items: []
+human_verification:
+  - test: "Python 3.11 start-up from the main checkout: run C:/Git_Repo_Clones/Kicad_Libraries/env/Scripts/python.exe kicad_lib_manager.py (venv Python 3.11.3, PySide6 6.10.2) and open Migrate to Atomic Libraries..."
+    expected: "The app starts, no NameError; the migration window opens"
+    why_human: "13-23 and 13-28 prohibit tests and verify steps from touching the main checkout or its venv. This verifier did import all 77 modules under the system Python 3.11.3 with PySide6 6.5.0 (no failure), which is strong but not the same interpreter and PySide6 version."
+  - test: "Live Skip: start the app from the main checkout with a changed library file so the full scan runs, and watch the Loading Libraries window"
+    expected: "Skip <source> is enabled as soon as the label reads Parsing symbol: ...; pressing it gives Skipping <source>... (disabled), the symbol parse still finishes, the source's libraries stay listed, one skip line is logged, Generate Tables removes no entry"
+    why_human: "Timing of a real scan over the real WurthElektronik submodule cannot be observed by an offscreen test"
+  - test: "Menu name and tooltip: open the File menu from the running app"
+    expected: "Entry reads Pin Atomic Libraries in KiCad... (Ctrl+Shift+K) with the new tooltip; the Result view button and Help (F1) use the same name"
+    why_human: "Visual check of the live window"
+  - test: "Stale Destination: leave a deleted folder in the saved Destination history, start the app, run Migrate ... Result view"
+    expected: "The Destination box does not offer the deleted folder; the Result view shows the Destination and a Browse... button; a blank or missing folder shows an amber note; Generate Tables outcome appears under the buttons"
+    why_human: "Needs the owner's real QSettings history and the real window (13-28 Task 3 human check)"
+  - test: "Live data follow-up: check where ICM-42688-P sits in the main checkout's Custom/ after the 2026-11-12 migration (Custom bbd48c5)"
+    expected: "The part is in Atomic_Sensor_Motion. The live run filed it in Atomic_Timer before the fix, and none of plans 13-23..13-28 moves it, so the owner may need to move it by hand (or re-run the importer's library move)"
+    why_human: "Reads the owner's live Custom/ submodule, which this verification must not touch; the worktree's Custom is still the pre-migration copy"
 ---
 
 # Phase 13: Atomic Migration and KiCad Setup Verification Report
 
 **Phase Goal:** All existing `Custom/` parts move to the `Atomic_` scheme in one previewed, reversible commit, with every part passing the atomic rule, and KiCad's library list and chooser show the new libraries
-**Verified:** 2026-11-12T12:30:00Z
+**Verified:** 2026-11-13T12:00:00Z
 **Status:** human_needed
-**Re-verification:** Yes — after gap closure 13-22 (CR-01's second manifestation)
+**Re-verification:** Yes. After the owner's live UAT (13-UAT.md, 2026-11-12) found G-13-1-a, b, c, f, g, h and gap plans 13-23..13-28 were merged (G-13-1-d and e were hot-fixed in 3dc3081).
 
 ## Goal Achievement
 
-### Observable Truths (ROADMAP Success Criteria)
+### Observable Truths (ROADMAP success criteria, regression check)
+
+The five roadmap truths were verified in the previous round (5/5) and the owner's live UAT then confirmed the end-to-end flow on real data (21 parts into 10 `Atomic_` libraries, Custom `bbd48c5`, parent `c6920f5`, chooser pinned, checks 1-12 confirmed). This round re-ran the regression files that cover them.
 
 | # | Truth | Status | Evidence |
 |---|-------|--------|----------|
-| 1 | Migration refuses to start while `Custom` has uncommitted changes; tags `pre-atomic` before writing; preview shows target library, footprint destination, every rename/field change and every atomic-rule failure with an edit box; Run disabled until every part passes | ✓ VERIFIED | Unchanged by 13-22; not touched by this gap-closure plan; `precheck.check_custom`/`ensure_tag` and `migration_dialog.py` still present (quick regression check — no modification since prior verification round) |
-| 2 | One transaction with rollback leaves no v1-named library; every footprint moved to `Atomic_Footprints`/official; every Footprint field and model path rewritten; every `.bak` gone; next scan reports zero atomic violations | ✓ VERIFIED | **Gap closed.** `_model_final_names`'s existing-model guard in `kicad_lib_manager/importer/migration/footprints.py` now compares `candidate.casefold()` against a prebuilt casefolded inventory `model_names_cf` (read directly in this session), and `applier.py`'s `_preflight` gained a structural `migration.rename_would_overwrite` backstop. Independently ran the exact prior-round reproduction as a real pytest test (`test_model_rename_cannot_overwrite_an_untouched_model`): the untouched model's bytes survive a full plan/gate/apply/disk round trip. All 54 tests in the three touched test files pass; the whole-fixture `test_migration_full.py` and the dialog/gate/layering suites named in the plan's own `<verification>` block also pass with no regressions. |
-| 3 | Regenerated tables drop old names, add new ones with non-empty descriptions; one `Custom` commit plus a parent ref commit offered through the commit step | ✓ VERIFIED | Unchanged by 13-22; not touched by this gap-closure plan, no regression found (quick regression check — file presence confirmed, not modified by the 13-22 commits) |
-| 4 | One confirmed action sets up KiCad 10's chooser: pins `Atomic_` libraries, adds MPN/Manufacturer columns, removes stray MANUFACTURER, shows old→new first, backs up config, refuses from a worktree/other checkout | ✓ VERIFIED | Unchanged by 13-22; not touched by this gap-closure plan, no regression found |
-| 5 | App shows/saves old→new library map plus KiCad relink steps; `CLAUDE.md`, PROJECT.md and `research/LIBRARY-NAMING.md` describe the `Atomic_` scheme and atomic rule | ✓ VERIFIED | Unchanged by 13-22; not touched by this gap-closure plan, no regression found |
+| 1 | Refuses with uncommitted `Custom`, tags `pre-atomic`, preview with edit boxes, Run disabled until every part passes | VERIFIED | Strip and Run gating still in `gate.check_plan`; `tests/test_migration_gate.py`, `test_migration_dialog.py`, `test_migration_dialog_run.py` pass (see spot-checks). The new guessed-library line only adds a block, never lifts one |
+| 2 | One transaction, no v1-named library, zero atomic violations | VERIFIED | `tests/test_migration_full.py`, `test_migration_e2e.py` pass; live UAT confirmed on real Custom/ |
+| 3 | Tables regenerated with descriptions; Custom and parent commits offered | VERIFIED | Unchanged code path; `_run_migration_generate` still selects `Atomic_` libraries then calls `_on_generate`; live UAT made both commits |
+| 4 | One confirmed action pins `Atomic_` libraries and MPN/Manufacturer columns, backup, refuses from a worktree/other checkout | VERIFIED | `kicad_setup.sync_kicad_chooser` and refusals intact; only user-facing wording changed (13-27); `tests/test_kicad_setup.py`, `test_main_window_chooser.py` pass; live UAT: chooser pinned in KiCad 10 |
+| 5 | Old -> new map shown/saved; CLAUDE.md, PROJECT.md, LIBRARY-NAMING.md describe `Atomic_` and the atomic rule | VERIFIED | `tests/test_docs_atomic.py` passes; CLAUDE.md now carries the Pin / Skip / Result-view Destination text |
 
-**Score:** 5/5 truths verified (the previously-failing truth 2 is now closed and independently confirmed)
+### Gap-closure truths (13-23..13-28 must_haves, the six UAT gaps)
 
-### Gap Closure Confirmation (what 13-22 fixed)
+| # | Gap | Truth | Status | Evidence |
+|---|-----|-------|--------|----------|
+| 6 | G-13-1-a, G-13-1-h (13-23) | App imports on Python 3.10-3.13; every annotation resolves; a list pick in the Library combo is recorded | VERIFIED | `migration_dialog.py` lines 26-28 now import `CommitPlan` and `CommitProbe`. Independent run: `py -3.11` (3.11.3, PySide6 6.5.0, offscreen) imported `migration_dialog`, `help_dialog`, `main_window` and all 77 package modules with 0 failures. `test_every_annotation_resolves`, `test_every_module_parses_as_python_3_10` pass. `_library_combo.textActivated.connect(self._on_library_activated)` at line 776; `test_library_picked_from_the_list_is_recorded` passes |
+| 7 | G-13-1-b (13-24) | Skip is offered while symbols are read; an early skip skips only the 3D check; no library or link dropped; remembered as "Skipping X..."; logged once | VERIFIED | `find_symbol_libs(..., checking=)` calls `checking(source)` at the first file of each source (library_scanner.py:444); `scan_all` passes it (711); `ScanProgressDialog._requested` keeps the "Skipping" text (scan_progress.py:30, 69-70, 97). `test_scan_skip.py` and `test_main_window.py` (incl. `test_skip_keeps_every_library_and_link`, `test_generate_after_a_skip_removes_no_entry`, `test_skip_is_offered_while_symbols_are_read`) pass. CLAUDE.md Loading Libraries bullet and 12-UAT amendment updated |
+| 8 | G-13-1-f (13-25, 13-26) | ICM-42688-P no longer lands in Atomic_Timer silently; a guess is visible and blocks Run until confirmed | VERIFIED | Ran `family_prefixes('ICM-42688-P')` -> `['ICM-42688','ICM-4','ICM-','ICM']`; CSD/USB/ATXK/RS3 outputs unchanged. `SiblingPick.weak` (siblings.py:66), `LibrarySuggestion.weak` and `from_vote` (suggest.py:152-163) let the description outrank a weak vote; Sensor_Motion rule widened and placed before Sensor_Magnetic (categories.py:53-58); `_library_basis` (symbols.py:96) at both `PartPlan` sites; `GUESSED_LIBRARY_TEXT` strip line targeting the Library field (gate.py:196-201). All named tests exist and pass (test_imu_is_suggested_into_sensor_motion, test_whole_v1_custom_migrates_to_zero_violations, test_description_outranks_a_weak_vote, test_guessed_library_blocks_run_until_confirmed, test_guessed_library_line_is_plain, test_dropdown_offers_the_alternatives, test_picking_the_guess_from_the_list_confirms_it) |
+| 9 | G-13-1-c (13-27) | Action reads "Pin Atomic Libraries in KiCad..." everywhere, from one constant, identifiers and chooser.* codes unchanged | VERIFIED | `PIN_ACTION_TEXT` / `PIN_REFUSAL_TEXT` (kicad_setup.py:30-31) feed `SETUP_CHOOSER_TEXT` (main_window.py:63), `CHOOSER_TEXT` and the next-steps line (migration_dialog.py:114,121), refusals (kicad_setup.py:314,322,490,551). `grep "Set Up KiCad Chooser"` over `kicad_lib_manager/` and CLAUDE.md returns nothing; all `chooser.*` codes still present. `test_docs_atomic.py`, `test_help_dialog.py`, `test_main_window_chooser.py`, `test_kicad_setup.py` pass |
+| 10 | G-13-1-g (13-28) | Result view shows and changes the Destination, mirrors Generate's outcome, stays window-modal, Destination box drops deleted folders | VERIFIED | `destination_changed = Signal(str)` (migration_dialog.py:518), `set_destination` (1802), `set_result_status` (1818), Browse pick emits (1830); `MainWindow._on_migration_destination_changed` -> `_use_destination` -> `_mirror_destination`; `_run_migration_generate` calls `_generate_outcome` + `_set_migration_status`; `_open_migration` still `dialog.open()` (main_window.py:1277); `_set_dest_items` filters on `Path(entry).is_dir()` and falls back to REPO_ROOT without rewriting history (478-). `test_real_result_view_changes_the_destination_end_to_end`, `test_blank_destination_is_reported_in_the_result_view`, `test_deferred_generate_is_reported_in_the_result_view`, `test_migration_window_is_window_modal`, `test_destination_history_skips_folders_that_no_longer_exist` all pass |
+| 11 | G-13-1-d, G-13-1-e (hot fix 3dc3081) | Part column and Library combo wide enough | VERIFIED | `_tree.setColumnWidth(0, 280)`, `setMinimumWidth(420)`, `_library_combo.setMinimumContentsLength(32)` present in migration_dialog.py |
 
-| Scenario | Status | Evidence |
-|---|---|---|
-| A rename candidate collides, case-insensitively only, with an untouched, pre-existing model file (the exact scenario this phase's previous VERIFICATION.md reproduced and recorded as the remaining gap) | ✓ CLOSED | `model_names_cf = {name.casefold() for name in model_name_set}` built once in `_model_final_names`; guard now reads `if candidate.casefold() in model_names_cf:`. Confirmed by direct code read and by running `test_model_rename_cannot_overwrite_an_untouched_model`, which reproduces the prior gap's own scenario (an untouched `TAKEN.STEP`/`taken.step`-style collision) and asserts the untouched file's bytes survive apply — passes. |
-| A rename candidate collides exactly (same spelling) with an on-disk model not part of any rename group | ✓ CLOSED (previously untested, now covered) | `test_model_rename_onto_an_exact_existing_name_keeps_its_name` — passes |
-| A rename chain (A→B while B→C) that would let an in-order delete remove freshly-written bytes | ✓ CLOSED | Guard keeps comparing against the *whole* pre-migration inventory, not a post-migration projection; `test_a_rename_onto_a_model_that_is_itself_renamed_is_kept` — passes |
-| Structural backstop for the defect class, independent of which planner path produces it | ✓ CLOSED | `applier.py` `_preflight` new `migration.rename_would_overwrite` block, scoped to writes carrying `source_rel`; `test_rename_overwrite_plan_is_refused` — passes |
-| Kept-name note is plain-language, single, and non-blocking | ✓ CLOSED | `test_model_kept_name_note_is_plain_and_single`, `test_untouched_model_collision_raises_no_blocking_line` — both pass |
+**Score:** 11/11 truths verified (5 roadmap + 6 gap groups). 0 present-but-behavior-unverified.
 
 ### Required Artifacts
 
-| Artifact | Expected | Status | Details |
-|----------|----------|--------|---------|
-| `kicad_lib_manager/importer/migration/footprints.py` | Casefolded existing-model guard (`model_names_cf`) in `_model_final_names` | ✓ VERIFIED | Read directly: the set is built once per call, and the guard's condition is `candidate.casefold() in model_names_cf`; the dead `and candidate != old_name` clause was correctly dropped per the plan's reasoning (the preceding case-only-self-match branch already handles that case) |
-| `kicad_lib_manager/importer/migration/applier.py` | `migration.rename_would_overwrite` invariant in `_preflight`, placed after `migration.duplicate_write` and before the staleness loop | ✓ VERIFIED | Read directly: block collects `deleted` (casefolded delete-op paths) and flags any write op with `source_rel is not None`, `base_sha256 is not None`, and a casefolded path not in `deleted`; returns early exactly like the blocks above it |
-| `tests/test_migration_e2e.py` | `test_model_rename_cannot_overwrite_an_untouched_model` | ✓ VERIFIED | Present (line 158); passes |
-| `tests/test_migration_footprints.py` | Five new regression tests (case-only, exact, chain, wording, non-blocking) | ✓ VERIFIED | All five present (lines 736, 763, 790, 823, 844); all pass |
-| `tests/test_migration_apply.py` | `test_rename_overwrite_plan_is_refused` | ✓ VERIFIED | Present (line 200); passes |
-| All other Phase 13 artifacts (table_generator.py, kicad_setup.py, mapfile.py, CLAUDE.md, LIBRARY-NAMING.md, migration_dialog.py, main_window.py, etc.) | Unchanged since prior verification | ✓ VERIFIED (regression check only) | Confirmed by `git show --stat` on all five 13-22 commits: only `footprints.py`, `applier.py`, and the three named test files were touched; no other phase artifact was modified |
+| Artifact | Status | Details |
+|----------|--------|---------|
+| `kicad_lib_manager/widgets/migration_dialog.py` | VERIFIED | imports, textActivated, tree marks, Destination row, set_result_status all present and wired |
+| `kicad_lib_manager/library_scanner.py`, `widgets/scan_progress.py` | VERIFIED | early `checking`, remembered requested sources |
+| `kicad_lib_manager/importer/siblings.py`, `suggest.py`, `categories.py` | VERIFIED | separator-aware prefixes, weak votes, widened rule |
+| `kicad_lib_manager/importer/migration/plan.py`, `symbols.py`, `gate.py` | VERIFIED | `library_basis` set at both construction sites, consumed by gate |
+| `kicad_lib_manager/kicad_setup.py`, `main_window.py` | VERIFIED | one-constant rename; Destination wiring |
+| `tests/test_annotations_resolve.py` and the other named test files | VERIFIED | all named tests exist (grepped) and pass |
 
 ### Key Link Verification
 
-| From | To | Via | Status |
-|------|----|-----|--------|
-| `footprints._model_final_names` (casefolded guard) | rename op loop (lines 477-489) | `model_final_name[old_name] == old_name`, so neither write nor delete is ever created for a kept group | ✓ WIRED — confirmed by `test_model_rename_cannot_overwrite_an_untouched_model` asserting no op `rel` starts with `Custom/3DModels/` for the colliding candidate |
-| `applier._preflight` `migration.rename_would_overwrite` | `apply_migration`'s pre-write refusal | a write op's `source_rel` present, `base_sha256` present, and casefolded path not among this plan's deletes | ✓ WIRED — confirmed by `test_rename_overwrite_plan_is_refused` asserting `result.ok is False` and the target file's bytes unchanged |
-| `_preflight`'s existing `migration.duplicate_write` block | its message text | now names both colliding ops' own `rel` spelling (review WR-01, first occurrence) | ✓ WIRED — confirmed by the corrected `test_duplicate_write_plan_is_refused` assertion (SUMMARY documents this as an auto-fixed test-assertion bug, now passing) |
+| From | To | Status |
+|------|----|--------|
+| Library combo `textActivated` | `_on_library_activated` -> `_on_library_edited` -> `_update_choice` | WIRED |
+| `scan_all` | `find_symbol_libs(..., checking=checking)` -> `ScanWorker.checking` -> `ScanProgressDialog.set_skippable` | WIRED |
+| `siblings.pick/weak` | `suggest.from_vote` -> `symbols._library_basis` -> `gate.check_plan` StripLine(TARGET_LIBRARY) | WIRED |
+| `PIN_ACTION_TEXT` | main_window, migration_dialog, help_dialog, CLAUDE.md test | WIRED |
+| Result view Browse | `destination_changed` -> `MainWindow._on_migration_destination_changed` -> history + combo -> `set_destination` | WIRED |
+| `_run_migration_generate` | `_generate_outcome` -> `_set_migration_status` -> `set_result_status` | WIRED |
 
-### Behavioral Spot-Checks / Targeted Test Runs
+### Data-Flow Trace (Level 4)
 
-Full workspace suite was not re-run (per orchestrator constraint — ~9650 tests, ~30 min). Targeted runs executed directly in this verification session:
+| Artifact | Data | Source | Real data | Status |
+|----------|------|--------|-----------|--------|
+| Result view Destination | `_dest_combo.currentText()` | saved history filtered by `is_dir()` | yes | FLOWING |
+| Result view status | `Issue` list returned by `_on_generate` | real Generate path | yes | FLOWING |
+| Tree "library to check" mark | `PartPlan.library_basis` | `suggest_library` weak flag | yes | FLOWING |
 
-| Test file(s) | Result |
-|---|---|
-| `tests/test_migration_e2e.py tests/test_migration_footprints.py tests/test_migration_apply.py` | 54 passed |
-| `tests/test_migration_gate.py tests/test_migration_dialog_files.py tests/test_migration_dialog_run.py tests/test_importer_layering.py` | 39 passed |
-| `tests/test_migration_full.py` (slow whole-fixture, real-git run) | 1 passed |
+### Behavioral Spot-Checks and Targeted Test Runs
 
-No debt markers (`TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/`PLACEHOLDER`) found in any of the five files this round's gap-closure touched.
+The whole suite was not run (about 34 minutes; the orchestrator recorded 9689 passed, 4 skipped, 0 failed on 37e7d19 with no source change since). Targeted runs in this session with `C:/Git_Repo_Clones/Kicad_Libraries-importer/env/Scripts/python.exe -m pytest` from the repo root, `QT_QPA_PLATFORM=offscreen`:
+
+| Files | Result |
+|-------|--------|
+| test_annotations_resolve, test_migration_dialog, test_scan_skip, test_siblings, test_suggest_atomic, test_categories | 140 passed |
+| test_migration_symbols, test_migration_gate, test_migration_dialog_run, test_main_window_migration, test_main_window_chooser, test_kicad_setup, test_help_dialog, test_docs_atomic | 154 passed |
+| test_main_window | 81 passed |
+| test_migration_full, test_migration_e2e, test_importer_layering | 24 passed |
+| `py -3.11` import of `migration_dialog`, `help_dialog`, `main_window` and all 77 package modules | 0 failures |
+| `family_prefixes` direct calls (ICM-42688-P, CSD85301Q2, USB4145-03-0170-C, ATXK-H14-1, RS3-1212S/H3) | as specified |
+
+### Probe Execution
+
+SKIPPED. No probe scripts are declared by any phase 13 plan.
 
 ### Requirements Coverage
 
-| Requirement | Source Plan(s) | Description | Status | Evidence |
-|---|---|---|---|---|
-| TBL-01 | 13-01, 13-17, 13-19 | Table entries carry a non-empty description | ✓ SATISFIED | Unchanged since prior verification; not touched by 13-22 |
-| TBL-02 | 13-02, 13-07, 13-18 | One confirmed action sets up KiCad 10's chooser | ✓ SATISFIED | Unchanged since prior verification; not touched by 13-22 |
-| MIG-01 | 13-03, 13-13, 13-14, 13-16, 13-18, 13-20 | Refuses to start with uncommitted changes; tags `pre-atomic` | ✓ SATISFIED | Unchanged since prior verification; not touched by 13-22 |
-| MIG-02 | 13-05, 13-06, 13-08, 13-09, 13-12, 13-14, 13-17, 13-18, 13-21, 13-22 | Preview shows target library, footprint destination, renames, field changes, atomic-rule failures with edit box; Run blocked until all pass | ✓ SATISFIED | 13-22's `migration.model_kept_name` INFO note and `gate._whole_set_lines`'s ERROR-only lift confirmed non-blocking by `test_untouched_model_collision_raises_no_blocking_line` |
-| MIG-03 | 13-05, 13-06, 13-09, 13-10, 13-13, 13-15, 13-16, 13-18, 13-20, 13-21, 13-22 | One transaction with rollback; moves every part/footprint; rewrites every Footprint field and model path | ✓ SATISFIED | **Now fully satisfied.** Both manifestations of CR-01 (group-vs-group from 13-21, and case-insensitive-vs-untouched-model from 13-22) are closed and independently confirmed by running their tests directly |
-| MIG-04 | 13-04, 13-12, 13-13, 13-17, 13-18, 13-19, 13-20 | Post-migration scan reports zero violations; tables regenerated; commit offered | ✓ SATISFIED | Unchanged since prior verification; not touched by 13-22 |
-| MIG-05 | 13-06, 13-12, 13-13, 13-16, 13-18, 13-20 | Shows/saves old→new map and relink steps | ✓ SATISFIED | Unchanged since prior verification; not touched by 13-22 |
-| DOC-01 | 13-18 | CLAUDE.md, PROJECT.md, LIBRARY-NAMING.md describe the Atomic_ scheme | ✓ SATISFIED | Unchanged since prior verification; not touched by 13-22 |
+All 8 IDs (MIG-01..05, TBL-01, TBL-02, DOC-01) appear in PLAN frontmatter and are mapped to Phase 13 in REQUIREMENTS.md; no orphans.
 
-No orphaned requirements: all 8 IDs assigned to Phase 13 in REQUIREMENTS.md (TBL-01, TBL-02, MIG-01..05, DOC-01) are claimed by at least one of the phase's 22 plans.
+| Requirement | Source plans (incl. gap closure) | Status | Evidence |
+|---|---|---|---|
+| MIG-01 | 13-03, 13-13, 13-14, 13-16, 13-18, 13-20 | SATISFIED | Precheck/tag unchanged; live UAT |
+| MIG-02 | 13-05..13-12, 13-14, 13-17, 13-18, 13-21, 13-22, 13-23, 13-25, 13-26 | SATISFIED | Preview, strip, guessed-library line, list pick |
+| MIG-03 | 13-05, 13-06, 13-09, 13-10, 13-13, 13-15, 13-16, 13-18, 13-20..13-22 | SATISFIED | Transaction and CR-01 fixes; full/e2e tests pass |
+| MIG-04 | 13-04, 13-12, 13-13, 13-16..13-20, 13-24, 13-28 | SATISFIED | Zero-violation scan, tables, commit step, Skip contract, Result-view Generate |
+| MIG-05 | 13-06, 13-12, 13-13, 13-16, 13-18, 13-20 | SATISFIED | Map shown and saved |
+| TBL-01 | 13-01, 13-17, 13-18, 13-19 | SATISFIED | Non-empty descriptions |
+| TBL-02 | 13-02, 13-07, 13-18, 13-27, 13-28 | SATISFIED | Pin action, renamed, Result-view status for blank Destination |
+| DOC-01 | 13-18, 13-24, 13-26, 13-27, 13-28 | SATISFIED | CLAUDE.md current; `test_docs_atomic.py` passes |
 
-**Note on REQUIREMENTS.md tracking table:** `.planning/REQUIREMENTS.md`'s own checkbox/status column still marks MIG-01, MIG-04, MIG-05, TBL-01, TBL-02 and DOC-01 as "Pending" (only MIG-02/MIG-03 show `[x]`/"Complete"). This is a documentation-sync lag in a file this verifier does not own, not a code defect — the prior VERIFICATION.md round already confirmed these five requirements SATISFIED with concrete evidence, and this round's regression check found no change to any of their supporting artifacts. Flagged here for the record, not as a gap.
+Tracking lag (not a code defect): `.planning/REQUIREMENTS.md` still shows `[ ]` / "Pending" for MIG-01, MIG-04, MIG-05, TBL-01, TBL-02, DOC-01. Only MIG-02 and MIG-03 are ticked. The orchestrator should tick them when the phase is marked complete.
 
 ### Anti-Patterns Found
 
-| File | Line | Pattern | Severity | Impact |
-|---|---|---|---|---|
-| `kicad_lib_manager/importer/migration/applier.py` | ~279-284 | `migration.rename_would_overwrite`'s message names only the write op's destination (`op.rel`), not the rename's source (`op.source_rel`), per the latest `13-REVIEW.md` (new finding, reused id WR-01, disposition `open` in `13-REVIEW-DISPOSITION.md`, not addressed by 13-22) | ⚠️ Warning | Diagnostic-quality only — this is a developer-facing backstop for a planner bug, not an owner-facing path (the planner path that could produce such an op was already removed by Task 1); the refusal itself still fires correctly and no data is at risk |
-| `kicad_lib_manager/widgets/commit_panel.py` | 591-597 | Deleted-row early return skips the dirty-marker check (WR-02, open per `13-REVIEW-DISPOSITION.md`, pre-existing, not touched by 13-22) | ⚠️ Warning | Currently unreachable given the precheck's clean-Custom invariant; carried forward unchanged from the prior verification round |
+No `TBD`/`FIXME`/`XXX`/`TODO`/`HACK` in the `kicad_lib_manager/` files changed since 39406d5. Open code-review findings (13-REVIEW.md, advisory, none critical, dispositions `open`):
 
-No `TBD`/`FIXME`/`XXX`/`TODO`/`HACK`/`PLACEHOLDER` markers found in `footprints.py`, `applier.py`, or any of the three test files modified by 13-22.
+| File | Finding | Severity | Impact |
+|------|---------|----------|--------|
+| `importer/suggest.py:171-186` | WR-01: a weak vote from the owner's own libraries returns before the stock vote is tried, so a strong KiCad vote can be shadowed and the part is blocked as "only a guess" | Warning | Wrong-ish suggestion shown as a blocking guess; owner can still pick by hand (not an alternative in the list). Does not break any 13-25/13-26 must-have |
+| `importer/siblings.py:66-72` | WR-02: `weak` is unconditional for any letters-only vote (even 75 of 77 on `CSD`) and does not cover the `ICM-` step | Warning | Over-blocks: such parts need one owner confirmation when the description names nothing. This matches the 13-25 truth as written ("found only on the bare leading letters"), so it is a design weakness, not a plan failure |
+| `main_window.py:1554-1583` | WR-03: Pin Atomic Libraries outcome shows in the Result view only for a blank Destination; a worktree/wrong-checkout refusal goes to the blocked main log only | Warning | The button can appear to do nothing when pressed from a worktree. Beyond the 13-28 truth, which only required the blank-Destination case |
+| `library_scanner.py:578-590`, `scan_progress.py` | IN-01: Skip for a source with no footprint files reads "Skipping X..." but records nothing | Info | Harmless label |
+| `migration/gate.py:6-11` | IN-02: garbled docstring | Info | None |
+| two test files | IN-03: import placement, fixed 200 ms wait | Info | Possible flake |
 
 ### Human Verification Required
 
-### 1. Owner's live migration UAT (main checkout, real Custom/, real KiCad 10)
+See the `human_verification` frontmatter list (five items):
 
-**Test:** Run the full migration end to end from the main checkout (`C:/Git_Repo_Clones/Kicad_Libraries`, not this worktree) against the real `Custom/` submodule and a real KiCad 10 install, following the UAT check list referenced in `13-18-SUMMARY.md` (coverage item D6).
-**Expected:** Preview shows every real part and passes; Run completes as one transaction; the post-migration scan reports zero atomic violations; Generate Tables and Set Up KiCad Chooser behave as documented; the `Custom` + parent-ref commits are made; KiCad's chooser shows the new `Atomic_` libraries pinned.
-**Why human:** This is a live run against the owner's real `Custom/` submodule and real KiCad 10 settings; `13-18-SUMMARY.md` marks this item `human_judgment: true` (coverage D6), and this verification's own instructions forbid touching the `Custom` submodule or the owner's KiCad configuration. The blocking gap that previously made this unsafe to run (CR-01's case-insensitive-vs-untouched-model manifestation) is now closed and independently confirmed in this session — the owner may proceed with this UAT.
+1. **Python 3.11 start-up from the main checkout** (13-28 Task 3). The app starts on the main checkout's Python 3.11.3 / PySide6 6.10.2 venv and the migration window opens. This verifier's own 3.11.3 / PySide6 6.5.0 import of all 77 modules passed.
+2. **Live Skip** on a real scan: Skip enabled while symbols are read, then "Skipping X...", libraries intact.
+3. **Menu name and tooltip** read "Pin Atomic Libraries in KiCad..." in the running app.
+4. **Stale Destination**: a deleted folder in the saved history is not offered; the Result view shows Destination and Browse...
+5. **Live data follow-up**: the live migration filed ICM-42688-P in `Atomic_Timer` (before 13-25). No gap plan moves already-migrated data, so confirm or move it to `Atomic_Sensor_Motion` in the main checkout's `Custom/`.
 
 ### Gaps Summary
 
-No gaps remain from this verification round. The single gap carried forward from the prior `gaps_found` round — a rename candidate colliding only by letter case with an untouched, pre-existing model file silently destroying that file's content — is closed: `_model_final_names`'s existing-model guard now casefolds its comparison against a prebuilt casefolded inventory, and a new structural `migration.rename_would_overwrite` invariant in the applier's `_preflight` backstops the whole defect class (not only the specific instance) at the transaction boundary.
-
-This was confirmed by (1) direct reading of both changed production files, confirming the code matches the plan's and SUMMARY's descriptions exactly; (2) independently running all 54 tests in the three test files 13-22 touched, all passing; (3) independently running the gate/dialog/layering suites and the slow whole-fixture `test_migration_full.py` named in the plan's own `<verification>` block, confirming zero regressions; (4) confirming via `git show --stat` on all five 13-22 commits that only the five declared files were touched, so the "unchanged since prior verification" claim for every other phase artifact holds structurally, not just by assertion; and (5) confirming `13-REVIEW-DISPOSITION.md` records CR-01 and IN-01 as `fixed`.
-
-The phase goal is now achieved in the codebase. The remaining item is the owner's own live migration run against real data, which by design no automated check may perform — this routes the overall status to `human_needed` rather than `passed`, per the decision tree (a non-empty human-verification section always does, even when every truth is independently verified). Two pre-existing `⚠️ Warning`-severity findings (WR-01 diagnostic wording, WR-02 commit-panel edge case) remain open in `13-REVIEW-DISPOSITION.md`; neither blocks the phase goal or the owner's live UAT.
+No gaps. Every must-have of 13-23..13-28 exists in the code, is wired, and has a passing named test. The Python 3.11 import failure (G-13-1-a) was reproduced as fixed by an independent run on a real 3.11 interpreter. The phase goal (previewed, reversible migration with atomic-rule-clean parts and KiCad pinned) was also confirmed on real data by the owner's live UAT on 2026-11-12. Status is `human_needed` only because the owner's live checks from the main checkout cannot be done by an automated verifier. Three advisory code-review warnings (WR-01..03) remain open and should be triaged but do not block the goal.
 
 ---
 
-*Verified: 2026-11-12T12:30:00Z*
-*Verifier: Claude (gsd-verifier)*
+_Verified: 2026-11-13T12:00:00Z_
+_Verifier: Claude (gsd-verifier)_
