@@ -27,6 +27,7 @@ from kicad_lib_manager.widgets.commit_panel import _ADDED_MARK, _CHANGED_MARK, C
 from kicad_lib_manager.widgets.conflict_row import ConflictRow
 from kicad_lib_manager.widgets.help_dialog import HELP_PAGES, TOC_STRUCTURE, HelpDialog
 from kicad_lib_manager.widgets.import_result import ImportResultView
+from kicad_lib_manager.widgets.migration_dialog import GUESS_MARK, SUGGESTED_MARK
 from kicad_lib_manager.widgets import conflict_row, help_dialog, theme
 from kicad_lib_manager.widgets.conflict_row import _button_qss
 from kicad_lib_manager.widgets.theme import (
@@ -419,6 +420,17 @@ def test_help_migrating_page():
         assert text in page, text
     assert "ki_" not in page
     assert "ki_" not in raw
+    # A guessed library is marked and blocks Run until confirmed; a confident one is only marked
+    for text in (GUESS_MARK, SUGGESTED_MARK):
+        assert text in page, text
+    assert "failure strip" in page
+    assert "only on the first letters" in page
+
+
+def test_help_importing_page_says_when_similar_parts_decide():
+    page = _page_text("importing")
+    assert "only the first letters match" in page
+    assert "description decides" in page
 
 
 def test_help_css_uses_theme_tokens_only():

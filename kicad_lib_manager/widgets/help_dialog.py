@@ -15,8 +15,8 @@ from .import_dialog import (
     REMOVE_MODEL_TEXT, VENDOR_FOOTPRINT_TEXT, fit_window,
 )
 from .migration_dialog import (
-    CHOOSER_TEXT, FILES_TAB_TEXT, GENERATE_TEXT, LEFTOVERS_TEXT, MOVE_FOOTPRINT_TEXT, OPEN_MAP_TEXT,
-    RUN_TEXT,
+    CHOOSER_TEXT, FILES_TAB_TEXT, GENERATE_TEXT, GUESS_MARK, LEFTOVERS_TEXT, MOVE_FOOTPRINT_TEXT,
+    OPEN_MAP_TEXT, RUN_TEXT, SUGGESTED_MARK,
 )
 from .theme import (
     ACCENT, AMBER, AMBER_TINT, BORDER, DISPLAY_PT, HEADING_PT, LINK, MONO_FAMILY, MONO_PT,
@@ -312,8 +312,10 @@ HELP_PAGES["importing"] = _wrap(
     "<p>The app suggests a name. It looks first at similar parts in your own "
     "<code>Atomic_</code> libraries, then at similar parts in KiCad's libraries, and then "
     "at the vendor's category and the part's description. Hover the field: the tooltip "
-    "says which of these gave the suggestion. When nothing fits, the field starts empty "
-    "and waits for you.</p>"
+    "says which of these gave the suggestion. Similar parts decide only when they agree: "
+    "when they are spread over several libraries, or only the first letters match, the "
+    "part's description decides if it names the kind of part. When nothing fits, the "
+    "field starts empty and waits for you.</p>"
     "<ul>"
     "<li>The list shows your <code>Atomic_</code> libraries first, then every other name "
     "that is allowed. Typing filters it.</li>"
@@ -478,6 +480,14 @@ HELP_PAGES["migrating"] = _wrap(
     "problems otherwise. A <b>failure strip</b> above the list names every blocking "
     "problem across all groups; click a line in the failure strip to jump straight to "
     "the part and field it is about.</p>"
+    "<p>A library the app only guessed (similar part numbers spread over several KiCad "
+    "libraries, or matching only on the first letters, with nothing in the description to "
+    "confirm it) is marked <b>" + GUESS_MARK + "</b> in the part list and gets a line in "
+    "the failure strip. Pick that library, or another one, from the <b>Library</b> list, "
+    "or type one, to confirm it, and the line goes away. A library suggested with "
+    "confidence is marked <b>" + SUGGESTED_MARK + "</b> and does not block the run. The "
+    "<b>Library</b> list also offers the other libraries that hold similar parts, and the "
+    "reason for the suggestion is shown under the field.</p>"
     "<p>Selecting a part shows its detail pane: the <b>Library</b> field with the app's "
     "suggestion, the <b>Symbol name</b> taken from the MPN, and the MPN, Manufacturer, "
     "Datasheet and Description fields, the same as importing a part. The footprint row "
