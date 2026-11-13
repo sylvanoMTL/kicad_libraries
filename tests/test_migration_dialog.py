@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QSettings, Qt
 
+from kicad_lib_manager.importer.form import library_badge
 from kicad_lib_manager.importer.migration.draft import LoadedDraft
 from kicad_lib_manager.importer.migration.gate import GateOutcome, StripLine
 from kicad_lib_manager.importer.migration.inventory import Inventory, InventoryPart
@@ -302,6 +303,62 @@ def test_library_picker_lists_atomic_libraries_and_current(qtbot, make_dialog, t
 
     qtbot.waitUntil(lambda: captured.get("choices") is not None and captured["choices"].parts.get(KEY_A) is not None)
     assert captured["choices"].parts[KEY_A].library == "Atomic_Crystal"
+
+
+def test_library_picked_from_the_list_is_recorded(qtbot, make_dialog, tmp_path):
+    suggestion = LibrarySuggestion(
+        "Atomic_Timer", "own", "Suggested from 3 similar parts in your Atomic_Timer", (), (), ()
+    )
+    part_a = _part(KEY_A, "Atomic_Oscillator", "Atomic_Timer", "OSC1", suggestion=suggestion)
+    part_b = _part(KEY_B, "Connector_X", "Atomic_Connector", "CONN1")
+    captured = {}
+
+    def fake_build_plan(inventory, choices, ctx):
+        captured["choices"] = choices
+        return _plan_for(inventory, (part_a, part_b))
+
+    def build():
+        captured.clear()
+        core = core_with(
+            tmp_path, build_plan=fake_build_plan, check_plan=lambda plan, inventory, kicad_fp_dir: GateOutcome((), {})
+        )
+        dialog = make_dialog(core)
+        qtbot.waitUntil(lambda: dialog._tree.topLevelItemCount() >= 1)
+        dialog._select_part(KEY_A)
+        assert dialog._library_combo.currentText() == "Atomic_Timer"
+        return dialog
+
+    # Guard: filling the combo for each displayed part never records a choice
+    dialog = build()
+    dialog._select_part(KEY_B)
+    dialog._select_part(KEY_A)
+    assert KEY_B not in dialog._choices.parts
+    assert KEY_A not in dialog._choices.parts
+
+    # A list pick: the combo moves to the item and emits textActivated, not textEdited
+    dialog._draft_timer.stop()
+    index = dialog._library_combo.findText("Atomic_Connector")
+    assert index >= 0
+    dialog._library_combo.setCurrentIndex(index)
+    dialog._library_combo.textActivated.emit(dialog._library_combo.itemText(index))
+    assert dialog._choices.parts[KEY_A].library == "Atomic_Connector"
+    assert dialog._draft_timer.isActive()
+    allowed = getattr(dialog._ctx, "allowed", None)
+    assert dialog._library_badge.text() == library_badge("Atomic_Connector", dialog._library_names(), allowed)
+    qtbot.waitUntil(lambda: captured["choices"].parts.get(KEY_A) is not None)
+    assert captured["choices"].parts[KEY_A].library == "Atomic_Connector"
+
+    # Picking the library already recorded changes nothing: no generation bump, no rebuild
+    generation = dialog._gen
+    dialog._library_combo.textActivated.emit("Atomic_Connector")
+    assert dialog._gen == generation
+
+    # Confirming the suggestion (the text the combo already shows) records it
+    confirm = build()
+    assert KEY_A not in confirm._choices.parts
+    confirm._library_combo.textActivated.emit("Atomic_Timer")
+    assert confirm._choices.parts[KEY_A].library == "Atomic_Timer"
+    assert KEY_B not in confirm._choices.parts
 
 
 def test_field_edits_reach_the_plan(qtbot, make_dialog, tmp_path):
